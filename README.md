@@ -6,15 +6,19 @@ A [Linkuistics](https://github.com/linkuistics) project.
 
 ---
 
-Atlas extracts a hierarchic, pattern-based description of large software systems by working both top-down and bottom-up, finding common architectural and code patterns at multiple levels of abstraction. The result is a complete map of a codebase — hence the name.
+## Vision
+
+Atlas will extract a hierarchic, pattern-based description of large software systems by working both top-down and bottom-up, finding common architectural and code patterns at multiple levels of abstraction. The result will be a complete map of a codebase — hence the name.
 
 ## Why Atlas Exists
 
-Large codebases are hard to understand. Documentation drifts, architecture diagrams go stale, and tribal knowledge leaves with departing team members. Atlas recovers the *actual* architecture — not what someone wrote on a whiteboard two years ago, but what the code actually does today.
+Large codebases are hard to understand. Documentation drifts, architecture diagrams go stale, and tribal knowledge leaves with departing team members. Atlas aims to recover the *actual* architecture — not what someone wrote on a whiteboard two years ago, but what the code actually does today.
 
-Atlas is valuable on its own as a pure discovery tool: sometimes understanding the system is the entire goal. When paired with [Uplift](https://github.com/linkuistics/Uplift), the extracted patterns become the foundation for architecture-level refactoring.
+Atlas is designed as a standalone discovery tool: sometimes understanding the system is the entire goal. When paired with [Uplift](https://github.com/linkuistics/Uplift), the extracted patterns could become the foundation for architecture-level refactoring.
 
-## What Atlas Extracts
+## Planned Capabilities
+
+The following capabilities are planned but not yet implemented.
 
 ### Multiple Levels of Abstraction
 
@@ -23,7 +27,7 @@ Atlas is valuable on its own as a pure discovery tool: sometimes understanding t
 - **Class/Type level** — type hierarchies, trait implementations, protocol conformances
 - **Function level** — call graphs, data flow, algorithmic patterns
 
-### Both Directions
+### Bidirectional Analysis
 
 - **Top-down** — decompose the system into subsystems, each subsystem into modules, each module into components
 - **Bottom-up** — identify recurring patterns in the code (factories, strategies, observers), group related code into conceptual units, compose units into architectural descriptions
@@ -44,7 +48,7 @@ Atlas is valuable on its own as a pure discovery tool: sometimes understanding t
 
 ## Status
 
-Conceptual phase. Design in progress.
+**Pre-development.** No implementation exists yet. This repository currently contains only project vision and planning.
 
 ## Related Projects
 
@@ -54,4 +58,4 @@ Conceptual phase. Design in progress.
 
 ## License
 
-TBD
+Apache-2.0 — see [LICENSE](LICENSE).
