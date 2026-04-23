@@ -1,0 +1,978 @@
+tasks:
+- id: scaffold-atlas-cargo-workspace-and-migrate-component-ontology-crate-m0-m1
+  title: Scaffold Atlas Cargo workspace and migrate component-ontology crate (M0 + M1)
+  category: foundation
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: HIGH.** Nothing else can proceed until the workspace exists and the ontology crate is in place.
+
+    **Design reference:** `docs/superpowers/specs/2026-04-23-component-discovery-design.md` §3.1 (five-crate layout) and §9.4 stages M0–M1.
+
+    ## Scope
+
+    ### Workspace scaffold (M0)
+
+    - Convert Atlas's root `Cargo.toml` to a Cargo workspace manifest.
+    - Create empty crate skeletons under `crates/`:
+      - `crates/component-ontology/`
+      - `crates/atlas-index/`
+      - `crates/atlas-engine/`
+      - `crates/atlas-llm/`
+      - `crates/atlas-cli/` (the binary target)
+    - Each skeleton has a `Cargo.toml` with a minimal description and a `src/lib.rs` (or `src/main.rs` for `atlas-cli`) containing only a module doc comment and one placeholder function that returns `()` so the crate compiles.
+    - Workspace-wide `rust-toolchain.toml` pinned to the same minimum as Ravel-Lite's.
+    - Root README unchanged in content for now; will be refreshed in a later task.
+    - Do NOT set up CI yet (out of scope for v1 per §8.6 "no CI gating").
+
+    ### component-ontology migration (M1)
+
+    - Literal copy of Ravel-Lite's `src/ontology/` into `crates/component-ontology/src/`.
+    - Copy `Ravel-Lite/defaults/ontology.yaml` to `Atlas/defaults/ontology.yaml`.
+    - Crate's `Cargo.toml` dependency list is minimal per the ontology spec §9.3: `serde`, `serde_yaml`, `anyhow`, `thiserror`. No other deps.
+    - Crate gets a short README covering standalone use (public API, semver policy).
+    - Ravel-Lite is NOT yet switched over to Atlas's crate; that's task M2 (separate backlog item). Ravel-Lite keeps its in-tree copy for now.
+    - Verify the build-time test that ships with `component-ontology` (asserting the `EdgeKind` enum matches `ontology.yaml`) still passes after the copy.
+
+    ### Tests
+
+    - `cargo build --workspace` succeeds on a clean checkout.
+    - `cargo test -p component-ontology` passes (all existing tests port cleanly).
+    - `cargo test --workspace` passes (other crates have placeholder tests).
+
+    ## Out of scope
+
+    - Any CI wiring.
+    - Publication to a registry.
+    - Ravel-Lite switching its dep (that's M2).
+    - Prompt file migration (that's M3, bundled with L5/L6 implementation).
+
+    ## Exit criteria
+
+    - `cargo build --workspace` exits 0 from a fresh checkout.
+    - `cargo test -p component-ontology` reports identical test counts and outcomes to Ravel-Lite's equivalent test before migration.
+    - `crates/component-ontology/README.md` exists and documents public API surface.
+    - The `Atlas/defaults/ontology.yaml` file byte-identical to Ravel-Lite's source.
+    - All five crate directories exist with placeholder implementations that compile.
+- id: implement-atlas-index-crate-yaml-schemas-and-rename-match
+  title: 'Implement atlas-index crate: YAML schemas and rename-match'
+  category: feature
+  status: not_started
+  dependencies:
+  - scaffold-atlas-cargo-workspace-and-migrate-component-ontology-crate-m0-m1
+  description: |
+    **Priority: HIGH.** Every other crate depends on the index schema types.
+
+    **Design reference:** §5 (data model, all four YAMLs), §5.5 (rename-match).
+
+    ## Scope
+
+    ### Schema types
+
+    In `crates/atlas-index/src/schema.rs`, define types for all four YAML files:
+
+    - `ComponentsFile` (schema_version: u32, root: PathBuf, generated_at: String, cache_fingerprints: CacheFingerprints, components: Vec<ComponentEntry>).
+    - `ComponentEntry` (id, parent: Option<String>, kind, lifecycle_roles, language, build_system, role, path_segments: Vec<PathSegment>, manifests, doc_anchors, evidence_grade, evidence_fields, rationale, deleted: bool).
+    - `PathSegment` (path: PathBuf (relative to root), content_sha: String).
+    - `OverridesFile` (schema_version, pins: BTreeMap<String, BTreeMap<String, PinValue>>, additions: Vec<ComponentEntry>).
+    - `PinValue` — tagged enum: `Value { value: String, reason: Option<String> }`, `Suppress { suppress: true }`, `SuppressChildren { suppress_children: Vec<String> }`.
+    - `ExternalsFile` (schema_version, externals: Vec<ExternalEntry>).
+    - `ExternalEntry` (id, kind, language, purl, homepage, url, discovered_from: Vec<String>, evidence_grade).
+    - Re-export `RelatedComponentsFile` from `component-ontology` so consumers only need one crate.
+
+    ### Versioning
+
+    - `COMPONENTS_SCHEMA_VERSION: u32 = 1`.
+    - `OVERRIDES_SCHEMA_VERSION: u32 = 1`.
+    - `EXTERNALS_SCHEMA_VERSION: u32 = 1`.
+    - Hard-error loader for any mismatched version, matching the pattern in `component-ontology`.
+
+    ### Load / save
+
+    - `load_components(path: &Path) -> Result<ComponentsFile>`, mirrored for the other two.
+    - `save_components_atomic(path: &Path, file: &ComponentsFile) -> Result<()>` — tmp + rename, matching `projects.rs::save_atomic` pattern from Ravel-Lite.
+    - Round-trip property tests: load → save → load preserves equality.
+
+    ### Rename-match algorithm
+
+    In `crates/atlas-index/src/rename_match.rs`:
+
+    ```rust
+    pub struct RenameMatchInput<'a> {
+        pub prior: &'a [ComponentEntry],
+        pub new_candidates: &'a [ComponentEntry],  // freshly-proposed, no ids yet
+        pub threshold: f32,   // default 0.70
+    }
+
+    pub struct RenameMatchOutput {
+        pub matches: Vec<(usize /* prior idx */, usize /* new idx */)>,
+        pub orphans: Vec<usize>,   // prior entries with no match
+        pub fresh: Vec<usize>,     // new candidates with no prior match
+    }
+
+    pub fn rename_match(input: RenameMatchInput<'_>) -> RenameMatchOutput;
+    ```
+
+    Overlap is computed as the fraction of prior's `path_segments[*].content_sha` set that appears in the new candidate's `path_segments[*].content_sha` set. Threshold ≥ 0.70 matches. Greedy bipartite matching: process prior entries in index order, pick the highest-overlap new candidate that hasn't already been matched.
+
+    ### Tests
+
+    - Round-trip tests for all three file types.
+    - Version mismatch tests (refuse to load version 2 of a v1 file).
+    - Rename-match tests:
+      - Identical entries match at overlap 1.0.
+      - Threshold boundary: 0.69 fails, 0.71 succeeds.
+      - Greedy disambiguation: two candidates overlap prior at 0.8 and 0.9 → picks 0.9.
+      - Deletion: prior with zero overlap to anything → orphan.
+      - Insertion: new candidate with zero overlap to anything → fresh.
+    - YAML golden snapshot tests: one example of each file type, pretty-printed bytes locked.
+
+    ## Out of scope
+
+    - The merge-with-overrides logic (lives in `atlas-engine`, consumes `atlas-index` types).
+    - Any LLM or filesystem walking (other crates).
+    - CLI wiring (other crate).
+
+    ## Exit criteria
+
+    - `cargo test -p atlas-index` passes with at least 15 tests.
+    - A consumer crate (e.g., Ravel-Lite post-M5) can depend on `atlas-index` and load/save the four YAMLs without pulling in Salsa, LLMs, or tokio.
+    - Atlas's own top-level `README.md` still builds without modification (will be refreshed later).
+- id: implement-atlas-llm-crate-backend-trait-and-claude-code-backend
+  title: 'Implement atlas-llm crate: backend trait and claude-code backend'
+  category: feature
+  status: not_started
+  dependencies:
+  - scaffold-atlas-cargo-workspace-and-migrate-component-ontology-crate-m0-m1
+  description: |
+    **Priority: HIGH.** The engine can't run queries without a backend.
+
+    **Design reference:** §7 (LLM interface).
+
+    ## Scope
+
+    ### Types
+
+    In `crates/atlas-llm/src/lib.rs`:
+
+    ```rust
+    pub enum PromptId { Classify, Subcarve, Stage1Surface, Stage2Edges }
+
+    pub struct LlmRequest {
+        pub prompt_template: PromptId,
+        pub inputs: serde_json::Value,
+        pub schema: ResponseSchema,
+    }
+
+    pub struct LlmFingerprint {
+        pub template_sha: [u8; 32],
+        pub ontology_sha: [u8; 32],
+        pub model_id: String,
+        pub backend_version: String,
+    }
+
+    pub trait LlmBackend: Send + Sync {
+        fn call(&self, req: &LlmRequest) -> Result<serde_json::Value>;
+        fn fingerprint(&self) -> LlmFingerprint;
+    }
+    ```
+
+    `ResponseSchema` is a newtype wrapping a JSON Schema document (as JSON). Backends pass it through; the engine uses it for validation.
+
+    ### TestBackend
+
+    In-memory, deterministic backend for testing. Constructed with a `HashMap<(PromptId, inputs_hash), serde_json::Value>` of canned responses. Returns error for unmapped requests. Fingerprint: fixed `"test-backend"` with a configurable version.
+
+    ### ClaudeCodeBackend
+
+    In `crates/atlas-llm/src/claude_code.rs`:
+
+    - Spawns `claude -p <rendered-prompt> --output-format json --model <model-id>` as a subprocess (configurable model id; default from env or a constant).
+    - Reads stdout as JSON; validates against `req.schema`.
+    - Errors on non-zero exit, on stdout that isn't valid JSON, or on schema validation failure.
+    - `fingerprint()` returns `claude --version` output cached at construction (fail construction if `claude` binary isn't found on PATH).
+
+    ### Prompt rendering
+
+    In `crates/atlas-llm/src/prompt.rs`:
+
+    - Prompts live at `defaults/prompts/*.md` in the Atlas repo.
+    - A `render(template: &str, tokens: &BTreeMap<String, String>) -> String` function performs `{{KEY}}` substitution.
+    - `template_sha` in the fingerprint is computed on the rendered output, not the raw template — so changes to the substituted value (e.g., a new item in `ontology.yaml`) correctly invalidate caches.
+    - For this task, prompts don't exist yet; the renderer is tested with a stub prompt.
+
+    ### Budget tracking
+
+    - Expose a `TokenCounter` that wraps a backend and accumulates token usage.
+    - On budget exhaustion, the wrapping call returns `Err(BudgetExhausted)` — no fallback, no partial writes, matching §7.4.
+    - The counter is constructed per-run in atlas-cli and passed into the engine.
+
+    ### Tests
+
+    - TestBackend round-trip: given a canned response, the call returns it; given an unmapped input, errors.
+    - Prompt rendering: `{{TOKEN}}` substituted correctly; missing tokens error out; double-substitution (`{{{{X}}}}`) leaves literal `{{X}}`.
+    - Budget tracking: TokenCounter enforces ceiling exactly; over-budget call returns the expected error variant.
+    - ClaudeCodeBackend tests are `#[ignore]` by default (they spawn the real `claude` binary). Gate behind a CI env var so contributors without `claude` installed aren't blocked.
+
+    ## Out of scope
+
+    - DirectApi and Codex backends (§10.2 deferred).
+    - Streaming / agentic multi-turn (§7.5 not in v1).
+    - Actual prompt files (migrated in task 7).
+
+    ## Exit criteria
+
+    - `cargo test -p atlas-llm` passes with at least 10 tests (excluding `#[ignore]`d subprocess tests).
+    - A short `crates/atlas-llm/README.md` documents how to add a new backend.
+    - The `LlmBackend` trait doc-comments include the invariants required for memoisation to be sound (deterministic given fingerprint + inputs).
+- id: implement-atlas-engine-l0-and-l1-salsa-scaffold-and-enumeration-queries
+  title: 'Implement atlas-engine L0 and L1: Salsa scaffold and enumeration queries'
+  category: feature
+  status: not_started
+  dependencies:
+  - scaffold-atlas-cargo-workspace-and-migrate-component-ontology-crate-m0-m1
+  - implement-atlas-index-crate-yaml-schemas-and-rename-match
+  - implement-atlas-llm-crate-backend-trait-and-claude-code-backend
+  description: |
+    **Priority: HIGH.** First atlas-engine task; sets up the Salsa database and the input layer.
+
+    **Design reference:** §4.1 L0 and L1.
+
+    ## Scope
+
+    ### Salsa database
+
+    In `crates/atlas-engine/src/db.rs`:
+
+    - Define the Salsa `#[salsa::database(...)]` struct `AtlasDatabase`.
+    - Include the storage needed for L0 inputs and the query traits for L1.
+    - Provide a constructor that accepts a `dyn LlmBackend`, a root path, and initial file snapshots.
+
+    ### L0 input queries
+
+    - `file_content(path: PathBuf) -> Arc<Vec<u8>>` — Salsa input.
+    - `file_tree_sha(dir: PathBuf) -> [u8; 32]` — computed via deterministic walk; input at the query level (cached) but the *computation* is encapsulated.
+    - `prior_components_yaml() -> ComponentsFile` — Salsa input, set by the driver.
+    - `prior_externals_yaml() -> ExternalsFile` — Salsa input.
+    - `prior_related_components_yaml() -> RelatedComponentsFile` — Salsa input.
+    - `components_overrides_yaml() -> OverridesFile` — Salsa input.
+    - `llm_fingerprint() -> LlmFingerprint` — Salsa input, set at DB construction.
+
+    Each input has a `set_*` method on the database that the driver uses to seed it.
+
+    ### L1 enumeration queries
+
+    As Salsa `#[tracked]` fns:
+
+    - `manifests_in(dir: PathBuf) -> Arc<Vec<PathBuf>>` — filters `file_content` entries under `dir` matching known manifest patterns (`Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod`, `setup.py`, `Gemfile`, `pom.xml`, `build.gradle`, `CMakeLists.txt`, `Dockerfile`, `*.nix`, `flake.nix`, `shard.yml`, `mix.exs`, `composer.json`, `deno.json`).
+    - `git_boundaries(dir: PathBuf) -> Arc<Vec<PathBuf>>` — directories containing `.git` (as directory or file, for submodules/worktrees) under `dir`.
+    - `doc_headings(dir: PathBuf) -> Arc<Vec<DocHeading>>` — top-level ATX headings from `README*` files and similar. `DocHeading { path, level, text }`.
+    - `shebangs(dir: PathBuf) -> Arc<Vec<ShebangEntry>>` — first-line `#!` markers on executable files. `ShebangEntry { path, interpreter }`.
+
+    ### Filesystem ingestion
+
+    In `crates/atlas-engine/src/ingest.rs`:
+
+    - `pub fn seed_filesystem(db: &mut AtlasDatabase, root: &Path, respect_gitignore: bool) -> Result<()>`.
+    - Walks `root`, honouring `.gitignore` when `respect_gitignore`, reads each file's content and registers it as an L0 input.
+    - Recomputes `file_tree_sha` deterministically (sorted child list, recursive hashing).
+    - Skips binary files larger than a threshold (configurable, default 1 MiB), recording only their hash and path.
+
+    ### Tests
+
+    - Synthetic fixture directories under `crates/atlas-engine/tests/fixtures/`:
+      - `tiny-rust-lib/` — one Cargo.toml, one src/lib.rs, one README.
+      - `mixed/` — Python project + Rust project side by side.
+      - `monorepo-fragment/` — three package.json under a shared parent.
+    - For each fixture, tests assert expected outputs of L1 queries.
+    - Incremental test: change one file's content, assert that `manifests_in` (which doesn't depend on that file) is still cache-hit, while `file_tree_sha` of the containing dir is recomputed.
+
+    ## Out of scope
+
+    - Candidate generation, classification, or anything beyond L1.
+    - Actual LLM invocations (no L5/L6 yet).
+    - File-watch mode (§10.2 deferred).
+
+    ## Exit criteria
+
+    - `cargo test -p atlas-engine` passes, with a dedicated `l0_l1_queries` test module containing at least 12 tests.
+    - The three fixture directories each produce deterministic L1 outputs on repeated runs.
+    - Salsa's cache-hit behaviour is verified: second query on unchanged input returns without recomputation (test using Salsa's `DebugQuery` or equivalent).
+- id: implement-atlas-engine-l2-and-l3-candidate-generation-and-classification
+  title: 'Implement atlas-engine L2 and L3: candidate generation and classification'
+  category: feature
+  status: not_started
+  dependencies:
+  - implement-atlas-engine-l0-and-l1-salsa-scaffold-and-enumeration-queries
+  description: |
+    **Priority: HIGH.** The core discovery step.
+
+    **Design reference:** §4.1 L2 and L3, §5.2 (pins/overrides participation), §4.4 (human edits as inputs).
+
+    ## Scope
+
+    ### L2 candidate generation
+
+    In `crates/atlas-engine/src/l2_candidates.rs`:
+
+    - `candidate_components_at(dir: PathBuf) -> Arc<Vec<Candidate>>` — Salsa tracked.
+    - `Candidate { dir: PathBuf, rationale_bundle: RationaleBundle }` where `RationaleBundle` collects per-candidate signals: which manifests fall at or near this dir; whether `.git` is here; whether a README declares a single purpose; shebangs of executable files near it; etc.
+    - The query also reads `subcarve_plan(parent_component_id)` via a `db.subcarve_plan()` call (which will be implemented in task 8). For this task, stub `subcarve_plan` to return an empty list so L2 compiles and tests can run; the back-edge will be wired in task 8.
+
+    ### L3 classification
+
+    In `crates/atlas-engine/src/l3_classify.rs`:
+
+    - `is_component(candidate: Candidate) -> Classification` — Salsa tracked.
+    - `Classification { kind: ComponentKind, language: Option<String>, build_system: Option<String>, lifecycle_roles: Vec<LifecycleRole>, role: Option<String>, evidence_grade: EvidenceGrade, evidence_fields: Vec<String>, rationale: String, is_boundary: bool }`.
+    - `ComponentKind` enum: `RustLibrary | RustCli | Workspace | NodePackage | PythonPackage | Website | Service | ConfigRepo | DocsRepo | Spec | External | NonComponent` (extend as needed).
+
+    ### Resolution order
+
+    1. **Pin short-circuit.** If `components_overrides_yaml()` contains a pin for this candidate's would-be id, return the pinned classification with `is_boundary: true` and `evidence_grade: strong`, `rationale: "human pin"`.
+    2. **Deterministic short-circuit.** If the candidate has a manifest that unambiguously declares its kind (e.g., `Cargo.toml` with `[[bin]]` → `RustCli`; `package.json` with `main` + `bin` → `NodeCli`), return without an LLM call. Evidence `strong`; evidence_fields list the manifest.
+    3. **LLM fallback.** For ambiguous candidates, call the backend with `PromptId::Classify`. Inputs: candidate dir relative path, `rationale_bundle`, `manifests_in(candidate.dir)` contents (first N kbytes of each), `doc_headings(candidate.dir)`. Response schema: a JSON object matching `Classification`.
+
+    ### Deterministic rules table
+
+    Implement a small `heuristics.rs` module with tabulated deterministic rules. Each rule has a predicate on a `Candidate` and produces a `Classification`. Initial set:
+
+    - `Cargo.toml` with `[lib]` and no `[[bin]]` → `RustLibrary`.
+    - `Cargo.toml` with `[[bin]]` → `RustCli`.
+    - `Cargo.toml` with `[workspace]` → `Workspace`.
+    - `package.json` with `main` and no `bin` → `NodePackage`.
+    - `pyproject.toml` → `PythonPackage` (refined later).
+    - Any `.git` with no manifests under it → `NonComponent` (a repo container) unless README declares otherwise.
+
+    Unmatched by any rule → LLM call (step 3 above).
+
+    ### Tests
+
+    - For each deterministic rule, a fixture directory that should hit it; test that no LLM call is made (TestBackend errors if called).
+    - For one ambiguous case, a fixture that should fall through to LLM; test with a TestBackend canned response.
+    - Pin short-circuit test: an overrides file pinning `kind: spec` on a dir that would otherwise classify as `RustLibrary`; assert the pin wins and no LLM is invoked.
+    - Override-add test: overrides file adds an entry at a directory with no manifests; L2 still emits a candidate, L3 short-circuits via pin.
+
+    ### Prompt for L3
+
+    - Write `defaults/prompts/classify.md` in this task (needed for tests to run). Keep it short — a few hundred words — describing the classification task, listing `{{COMPONENT_KINDS}}`, `{{LIFECYCLE_SCOPES}}`, and expected JSON output shape.
+    - The prompt is substituted with tokens from `ontology.yaml` plus a new atlas-owned `defaults/component-kinds.yaml` that enumerates `ComponentKind` values.
+
+    ## Out of scope
+
+    - L4 tree assembly (next task).
+    - subcarve_plan implementation (task 8).
+    - LLM memoisation wiring — that's implicit via Salsa and already works, but detailed tests for LLM call counts across re-runs live in task 9 (CLI).
+
+    ## Exit criteria
+
+    - `cargo test -p atlas-engine` passes.
+    - New tests (≥ 15) covering deterministic rules, pin short-circuit, LLM fallback, and override additions.
+    - `defaults/prompts/classify.md` exists, is ≤ 600 words, and references `{{COMPONENT_KINDS}}` and `{{LIFECYCLE_SCOPES}}`.
+    - `defaults/component-kinds.yaml` exists and enumerates all `ComponentKind` values with short descriptions.
+    - Running the tests with a TestBackend that panics on call verifies that deterministic cases never invoke the LLM.
+- id: implement-atlas-engine-l4-tree-assembly-and-rename-match-integration
+  title: 'Implement atlas-engine L4: tree assembly and rename-match integration'
+  category: feature
+  status: not_started
+  dependencies:
+  - implement-atlas-engine-l2-and-l3-candidate-generation-and-classification
+  description: |
+    **Priority: HIGH.** The component tree is the primary deliverable.
+
+    **Design reference:** §4.1 L4, §5.1 (schema), §5.5 (identifier stability, rename-match).
+
+    ## Scope
+
+    ### Core L4 queries
+
+    In `crates/atlas-engine/src/l4_tree.rs`:
+
+    - `all_components() -> Arc<Vec<ComponentEntry>>` — assembles the tree by recursively walking `candidate_components_at` starting from the root, including confirmed components only (`is_component(...).is_boundary == true`).
+    - `component_parent(id: String) -> Option<String>`.
+    - `component_children(id: String) -> Arc<Vec<String>>`.
+    - `component_path_segments(id: String) -> Arc<Vec<PathSegment>>`.
+
+    ### Identifier allocation
+
+    In `crates/atlas-engine/src/identifiers.rs`:
+
+    - `allocate_id(candidate_dir: &Path, parent_id: Option<&str>, existing_ids: &HashSet<String>) -> String`.
+    - Primary attempt: `parent_id.map(|p| format!("{p}/{}", leaf_slug)).unwrap_or(leaf_slug)`.
+    - Collision: append `-2`, `-3`, …, up to a short content-hash suffix as last resort.
+
+    ### Rename-match integration
+
+    - On each build of `all_components`, invoke `atlas_index::rename_match` with `prior_components_yaml().components` as prior and the freshly-classified candidates as `new_candidates`.
+    - For each matched pair, reuse the prior id; for fresh candidates, allocate new ids; for orphans, include them in the output with `deleted: true` for one run, then excluded on the following clean run (tracked via a small sentinel stored in L0 input).
+
+    ### Overrides: additions and suppression
+
+    - Components listed in `overrides.additions` are included directly in `all_components`, bypassing L2/L3.
+    - Components with a `suppress: true` pin are excluded.
+    - `suppress_children: [id, ...]` on a pin prevents those ids from being emitted as children even if L8 wants to sub-carve.
+
+    ### Acyclicity invariant
+
+    - During tree assembly, enforce that no component is its own ancestor. Failure is a hard engine error (§4.2 says "L4 enforces acyclicity").
+    - Implement via DFS cycle detection on the derived parent/child relation.
+
+    ### Tests
+
+    - Tree assembly on fixtures from task 4/5:
+      - Single-component project → one-entry tree.
+      - Workspace with members → parent + children.
+      - Nested: workspace containing a member with its own sub-carve (mock L8 returns a non-empty plan for testing).
+    - Rename-match tests with prior file:
+      - Path rename preserved identifier.
+      - Large-change → new identifier.
+      - Deletion marker appears once, is cleaned on next clean run.
+    - Additions test: overrides.additions entry appears in tree.
+    - Suppression test: suppressed component absent.
+    - Acyclicity test: pathological classifier that would produce a cycle causes a hard error, not an infinite loop.
+
+    ## Out of scope
+
+    - L5/L6 (next tasks).
+    - Actual back-edge from L8 (task 8 wires it; L4 just reads `subcarve_plan` and handles whatever comes back).
+
+    ## Exit criteria
+
+    - `cargo test -p atlas-engine` passes.
+    - Tree assembly produces a `Vec<ComponentEntry>` that round-trips cleanly through `atlas-index`'s `ComponentsFile` save/load.
+    - Identifier stability test: assemble tree from fixture → save → modify one file in a component → reassemble → identifier unchanged.
+- id: implement-atlas-engine-l5-and-l6-surface-and-edge-queries-with-prompt-migration-m3
+  title: 'Implement atlas-engine L5 and L6: surface and edge queries with prompt migration (M3)'
+  category: feature
+  status: not_started
+  dependencies:
+  - implement-atlas-engine-l4-tree-assembly-and-rename-match-integration
+  description: |
+    **Priority: HIGH.** Ports the Ravel-Lite discovery work into Atlas's query graph.
+
+    **Design reference:** §4.1 L5 and L6, §7.3 (prompt organisation), §9.4 M3.
+
+    ## Scope
+
+    ### Prompt migration (M3)
+
+    - Copy `Ravel-Lite/defaults/discover-stage1.md` to `Atlas/defaults/prompts/stage1-surface.md`.
+    - Copy `Ravel-Lite/defaults/discover-stage2.md` to `Atlas/defaults/prompts/stage2-edges.md`.
+    - Token edits:
+      - `project` → `component` throughout.
+      - `{{PROJECT_NAME}}` → `{{COMPONENT_ID}}`.
+      - `{{PROJECT_PATH}}` → `{{COMPONENT_PATHS}}` (now plural — a component may span multiple path_segments).
+      - Other occurrences of "project" in prose switched case-appropriately.
+    - `{{ONTOLOGY_KINDS}}` substitution continues to work from `ontology.yaml`.
+    - Ravel-Lite keeps its copies unchanged for now (deletion is task 13 — M4).
+
+    ### L5 surface extraction
+
+    In `crates/atlas-engine/src/l5_surface.rs`:
+
+    - `surface_of(id: String) -> SurfaceRecord` — Salsa tracked.
+    - `SurfaceRecord`: the same shape as Ravel-Lite's existing `SurfaceRecord` (port the type into atlas-engine or, if feasible, into a shared location).
+    - Inputs: component's path_segments' tree SHAs, the `stage1-surface.md` prompt SHA, the ontology SHA.
+    - Output is produced by calling the LLM backend with `PromptId::Stage1Surface` and parsing the JSON response against the existing Stage 1 response schema.
+    - Pin short-circuit: if the overrides file has a surface-level pin for this component (design allows a `surface: {...}` section for rare cases), return the pin.
+
+    ### L6 edge proposal
+
+    In `crates/atlas-engine/src/l6_edges.rs`:
+
+    - `candidate_edges_for(id: String) -> Arc<Vec<Edge>>` — Salsa tracked.
+    - For a given component A, iterates over all other components B and asks Stage 2 (via `PromptId::Stage2Edges`) to propose edges in each direction, given `surface_of(A)` and `surface_of(B)`.
+    - Optimization: the prompt takes a batch — all surfaces in one call — matching how Ravel-Lite currently does Stage 2. Preserve that batching, but keep the per-component query signature so Salsa invalidation is per-component.
+    - Canonicalise edges per `component-ontology::Edge::validate` before returning.
+
+    ### Tests
+
+    - Prompt-migration drift test: the new `stage1-surface.md` and `stage2-edges.md` differ from Ravel-Lite originals only in the specified token substitutions and not in other prose.
+    - L5 tests with TestBackend:
+      - Canned stage1 response for a single-component fixture; `surface_of` returns the expected parsed record.
+      - Cache hit test: re-run with unchanged inputs → zero backend calls.
+      - Cache miss test: change a file's content → one backend call.
+    - L6 tests with TestBackend:
+      - Two-component fixture; canned stage2 response produces the expected edge list.
+      - Edge canonicalisation test: symmetric kinds get sorted participants; directed kinds get preserved order.
+    - Pin short-circuit test.
+
+    ## Out of scope
+
+    - L7 structural analysis (next task).
+    - L8 back-edge (next task).
+    - Deleting Ravel-Lite's copies of the prompts (task 13, M4).
+
+    ## Exit criteria
+
+    - `cargo test -p atlas-engine` passes.
+    - `defaults/prompts/stage1-surface.md` and `defaults/prompts/stage2-edges.md` exist and a diff against Ravel-Lite's originals shows only the token edits described above.
+    - TestBackend-driven tests achieve ≥ 90% line coverage of `l5_surface.rs` and `l6_edges.rs`.
+- id: implement-atlas-engine-l7-and-l8-graph-structural-analysis-and-back-edge-closure
+  title: 'Implement atlas-engine L7 and L8: graph-structural analysis and back-edge closure'
+  category: feature
+  status: not_started
+  dependencies:
+  - implement-atlas-engine-l5-and-l6-surface-and-edge-queries-with-prompt-migration-m3
+  description: |
+    **Priority: HIGH.** Closes the fixedpoint; without this there is no recursion.
+
+    **Design reference:** §4.1 L7/L8, §4.2 (back-edge), §4.3 (stopping conditions).
+
+    ## Scope
+
+    ### L7 graph-structural analysis
+
+    In `crates/atlas-engine/src/l7_structural.rs`:
+
+    - `edge_graph() -> Arc<EdgeGraph>` — aggregates all `candidate_edges_for(id)` into one adjacency list.
+    - `sccs() -> Arc<Vec<SCC>>` — Tarjan's algorithm. Scope to directed edges only; ignore symmetric ones for SCC purposes.
+    - `cliques(min_k: u32) -> Arc<Vec<Clique>>` — Bron-Kerbosch on the undirected projection (symmetric edges + each directed edge as an undirected edge for this purpose).
+    - `seam_density(id: String) -> f32` — ratio of internal edges (both endpoints inside `id` or its descendants) to external edges (one endpoint inside, one outside).
+    - `modularity_hint(id: String) -> Option<ModularityHint>` — for a component whose edge graph shows a clear internal partition, returns the proposed partition; else None. Simple algorithm: look for an induced subgraph with two or more internally-dense, cross-sparse blocks. Louvain or a simpler spectral bisection — pick whichever is easiest to implement correctly; document the choice.
+
+    Use a widely-available crate for these if convenient (e.g., `petgraph` for SCCs). Document the dependency.
+
+    ### L8 recursion decision
+
+    In `crates/atlas-engine/src/l8_recurse.rs`:
+
+    - `should_subcarve(id: String) -> bool` — Salsa tracked.
+    - `subcarve_plan(id: String) -> Arc<Vec<PathBuf>>` — Salsa tracked. Returns directories to treat as new L2 candidate roots.
+    - Inputs to `should_subcarve`: component's `kind`, `--max-depth`, `seam_density(id)`, `modularity_hint(id)`, `cliques` touching the component, pin-suppressed children list.
+    - Per-kind policy table:
+      - `RustCli`, `NodeCli`, `Service` — stop (depth 1).
+      - `RustLibrary`, `NodePackage`, `PythonPackage` — recurse up to depth 3, more if modularity_hint fires.
+      - `Workspace` — recurse; the children are workspace members.
+      - `Spec`, `DocsRepo`, `ConfigRepo` — stop.
+      - `External`, `NonComponent` — N/A.
+    - The policy table lives in `crates/atlas-engine/src/subcarve_policy.rs` as a tabulated function — one arm per kind — matching the style of `heuristics.rs` in task 5.
+    - LLM escalation: for ambiguous cases where the policy + signals don't give a clear answer, call `PromptId::Subcarve` with the component's surface, edge neighbourhood, and structural signals. Write `defaults/prompts/subcarve.md` in this task.
+
+    ### Back-edge closure
+
+    - Replace the task-5 stub implementation of `subcarve_plan` (it returned an empty list) with the real one.
+    - Verify that Salsa correctly handles the query-graph cycle (L2 → L3 → ... → L7 → L8 → back to L2 for the sub-directories). Data cycles cannot occur because L4's acyclicity invariant remains enforced.
+
+    ### Termination
+
+    - Depth counter threaded through the recursion — abort at `--max-depth`.
+    - Fixedpoint hard cap at 8 iterations per design §8.2. Assert with a descriptive panic if exceeded.
+    - Add a `fixedpoint_iteration_count()` query for the CLI/evaluation harness to read.
+
+    ### Tests
+
+    - L7 structural tests with hand-built edge graphs:
+      - Three-node cycle → one SCC of size 3.
+      - K4 clique on four nodes → one clique of size 4.
+      - Two dense blocks with a single edge between → modularity hint identifies the two blocks.
+    - L8 policy tests:
+      - `RustCli` component never sub-carves regardless of signals.
+      - `RustLibrary` with clean interior (seam_density high) stops after one level.
+      - `RustLibrary` with modularity_hint sub-carves.
+      - `--max-depth=1` caps recursion.
+    - Back-edge integration test: a fixture with a `RustLibrary` containing two obviously-separable sub-modules (e.g., `src/auth/` and `src/billing/`) produces a tree with sub-components after sub-carving.
+    - Fixedpoint termination test: a pathological classifier that keeps proposing sub-carves → engine hits the hard cap and panics with the documented message.
+
+    ### Prompt
+
+    - `defaults/prompts/subcarve.md`, ≤ 500 words, takes `{{COMPONENT_ID}}`, `{{COMPONENT_KIND}}`, `{{STRUCTURAL_SIGNALS}}`, `{{EDGE_NEIGHBOURHOOD}}`, asks for a JSON `{ should_subcarve: bool, sub_dirs: string[], rationale: string }`.
+
+    ## Out of scope
+
+    - L9 projections (next task).
+    - CLI integration (next task).
+
+    ## Exit criteria
+
+    - `cargo test -p atlas-engine` passes.
+    - New tests (≥ 20) covering L7 algorithms, L8 policy, back-edge, and termination.
+    - `defaults/prompts/subcarve.md` exists with the specified substitution tokens.
+    - An end-to-end engine test on a fixture with nested structure shows the sub-carving produces the expected component hierarchy.
+- id: implement-atlas-engine-l9-projections-and-atlas-cli
+  title: Implement atlas-engine L9 projections and atlas-cli
+  category: feature
+  status: not_started
+  dependencies:
+  - implement-atlas-engine-l7-and-l8-graph-structural-analysis-and-back-edge-closure
+  description: |
+    **Priority: HIGH.** Makes the tool invokable end-to-end.
+
+    **Design reference:** §3.2 (invocation contract), §4.1 L9, §7.4 (budget/fail-loud).
+
+    ## Scope
+
+    ### L9 projection queries
+
+    In `crates/atlas-engine/src/l9_projections.rs`:
+
+    - `components_yaml_snapshot() -> ComponentsFile` — Salsa tracked. Collects `all_components()`, fills in `cache_fingerprints` from `llm_fingerprint()` and prompt SHAs, stamps `generated_at`.
+    - `external_components_yaml_snapshot() -> ExternalsFile` — collects external leaves discovered via manifests (e.g., Cargo dependencies, package.json dependencies). External discovery itself is a small deterministic L1.5 query added in this task: `externals_from_manifests(dir: PathBuf) -> Vec<ExternalEntry>`.
+    - `related_components_yaml_snapshot() -> RelatedComponentsFile` — collects all `candidate_edges_for(id)` into one deduped list, passing through `Edge::canonical_key` to drop duplicates and validating via `Edge::validate`.
+
+    ### atlas-cli
+
+    In `crates/atlas-cli/src/main.rs`:
+
+    - `atlas index <root>` parsing with `clap`.
+    - Flags from §3.2:
+      - `--output-dir <dir>` (default `.atlas/` under root).
+      - `--budget <N-tokens>` (required; fail-loud if not given unless `--no-budget` is passed for local development).
+      - `--max-depth <N>` (default 8).
+      - `--recarve` (force reconsideration of boundaries).
+      - `--dry-run` (compute but don't write).
+    - Pipeline:
+      1. Load any prior YAMLs in output-dir and overrides file.
+      2. Build `AtlasDatabase` with those as inputs + `ClaudeCodeBackend` (env-selectable).
+      3. Seed filesystem inputs via `atlas_engine::ingest::seed_filesystem`.
+      4. Demand the three projection queries.
+      5. Atomic-write outputs (unless `--dry-run`).
+      6. Print a summary: component count, edge count, LLM call count, token usage, fixedpoint iteration count.
+    - On budget exhaustion: print the error, exit code 2, outputs NOT written.
+
+    ### Atomic writes
+
+    Use a shared `write_atomic` helper in atlas-cli (mirror Ravel-Lite's `save_atomic`): write to `<path>.tmp` then `rename` to `<path>`. Crash between write and rename leaves the prior file intact.
+
+    ### Tests
+
+    - End-to-end integration test (in `crates/atlas-cli/tests/`):
+      - Tiny fixture under `tests/fixtures/tiny/` with one Rust library and one CLI.
+      - Run `atlas index` via `assert_cmd`.
+      - Expected `components.yaml` and `related-components.yaml` contents locked in as golden snapshots (at this scale — hand-authored).
+      - Second run on unchanged fixture → zero LLM calls, identical outputs.
+      - Modify one file → exactly one `surface_of` call and O(neighbours) edge calls.
+    - `--dry-run` test: no files written.
+    - Budget exhaustion test: set tiny budget, assert error + no file writes.
+    - `--max-depth=0` test: only top-level component emitted.
+
+    ## Out of scope
+
+    - Evaluation harness (next task).
+    - Goldens for real workspaces (tasks 10, 11).
+
+    ## Exit criteria
+
+    - `cargo test --workspace` passes.
+    - `cargo run -p atlas-cli -- index <tiny-fixture> --output-dir /tmp/atlas-smoke --budget 100000` exits 0 and produces the four YAMLs (overrides is empty but present, or absent — document choice).
+    - Rerun with unchanged fixture: zero LLM calls (log line reports `llm_calls=0`), outputs byte-identical.
+    - `atlas --version` prints the crate version.
+- id: build-evaluation-harness-with-structural-invariants-and-first-golden
+  title: Build evaluation harness with structural invariants and first golden
+  category: eval
+  status: not_started
+  dependencies:
+  - implement-atlas-engine-l9-projections-and-atlas-cli
+  description: |
+    **Priority: HIGH.** Required for any claim of "industrial quality".
+
+    **Design reference:** §8 (entire evaluation section).
+
+    ## Scope
+
+    ### Harness skeleton
+
+    Under `evaluation/` at repo root:
+
+    ```
+    evaluation/
+      goldens/
+        dev-workspace/
+          components.golden.yaml
+          external-components.golden.yaml
+          related-components.golden.yaml
+          notes.md
+      invariants/
+        mod.rs                       # Rust integration tests
+        path_coverage.rs
+        manifest_coverage.rs
+        edge_participant_existence.rs
+        rename_round_trip.rs
+        fixedpoint_termination.rs
+      harness/
+        Cargo.toml                   # a small crate atlas-eval
+        src/
+          lib.rs
+          runner.rs                  # atlas_eval::run_against_golden(golden_path, atlas_bin)
+          diff.rs                    # computes metrics from tool output vs golden
+          report.rs                  # writes YAML + HTML report
+        tests/
+          smoke_test.rs
+      results/
+        .gitkeep
+    ```
+
+    ### Structural invariants
+
+    Per §8.2:
+
+    - Path coverage: every internal component has non-empty path_segments.
+    - No parent-child overlap violation: path_segments of A do not overlap with a non-ancestor/non-descendant B.
+    - Manifest coverage: every manifest from L1 is covered by exactly one component.
+    - Git-boundary-within-component requires rationale mentioning the boundary.
+    - Edge participant existence: every edge's participants live in the union of the three component files.
+    - Rename round-trip: round-trip a path through rename-match preserves identifier.
+    - Fixedpoint terminates within 8 iterations per design §8.2.
+
+    Each invariant is a Rust integration test under `evaluation/invariants/` that takes an Atlas output directory and asserts the rule.
+
+    ### Metric computation
+
+    Per §8.3:
+
+    - Component coverage: fraction of golden components matched by overlap ≥ threshold.
+    - Spurious rate: fraction of tool-output components not in golden.
+    - Kind accuracy.
+    - Edge precision/recall, per-axis (kind, lifecycle, direction).
+    - Identifier stability across a no-op re-run.
+
+    Each metric lives in `harness/src/diff.rs` as a pure function from `(GoldenFile, ToolFile) -> f32`.
+
+    ### Differential evaluation
+
+    - `harness::diff::run_diff(output_dir, baseline_dir) -> Report` — compares two runs' outputs, flags components that changed (added/removed/modified), edges that changed, identifier changes.
+    - Stored baseline at `evaluation/results/baseline-<target>.yaml` (blessed by hand when a run is considered good); every subsequent run compared to it.
+
+    ### Reporting
+
+    - YAML snapshot at `evaluation/results/<date>-<target>.yaml` per run.
+    - Small HTML generator (pure Rust, no service) that reads all `results/*.yaml` and produces a trend page. Write to `evaluation/results/trend.html`.
+
+    ### First golden: `~/Development/`
+
+    - Hand-author `evaluation/goldens/dev-workspace/components.golden.yaml` for your `~/Development/` directory. Walk each top-level entry, decide its component identity, fill in kind/language/build_system/role/lifecycle_roles.
+    - Hand-author related edges (a small subset; exhaustive graph is not required for v1).
+    - `notes.md` explains each boundary decision.
+
+    ### Tests
+
+    - Invariants pass against the tiny fixture from task 9.
+    - Metrics are correct on synthetic golden/tool pairs constructed in tests.
+    - Differential diff correctly identifies changes on a synthetic "two runs" scenario.
+
+    ## Out of scope
+
+    - CI wiring (deferred).
+    - Second golden (next task).
+    - Research-track ablations (those are one-off runs using the harness; no special infra).
+
+    ## Exit criteria
+
+    - `cargo test -p atlas-eval` passes.
+    - Running the harness against the tiny fixture produces a `results/<date>-tiny.yaml` with all metrics present (will not be meaningful numerically because there's no golden for it — intentional, the harness must handle "no golden" as "structural invariants only").
+    - Golden for `~/Development/` exists and passes all invariants when the tool is run against it (even if the tool's output doesn't yet *match* the golden — that's the metric gap we're measuring).
+    - A trend HTML page renders from the results directory.
+- id: hand-author-second-golden-for-merged-monorepo
+  title: Hand-author second golden for merged monorepo
+  category: eval
+  status: not_started
+  dependencies:
+  - build-evaluation-harness-with-structural-invariants-and-first-golden
+  description: |
+    **Priority: MEDIUM.** Required for success criterion 6 (cross-target generalisation).
+
+    **Design reference:** §8.1, §10.3 criterion 6.
+
+    ## Scope
+
+    ### Golden
+
+    - Hand-author `evaluation/goldens/merged-monorepo/components.golden.yaml` for the merged monorepo (user to provide path or the golden lives alongside the monorepo and is symlinked into `evaluation/goldens/`).
+    - Approximate size: several hundred components.
+    - For components that are formerly-independent repos, boundary decisions are usually obvious; for internal splits, err on the side of the original repo boundary unless there's a clear lifecycle reason to split further.
+    - `notes.md` documents the decisions and particularly the cases where the golden deliberately disagrees with the original `.git` structure.
+
+    ### Cross-target validation
+
+    - Run the tool against the monorepo root; produce `evaluation/results/<date>-merged-monorepo.yaml`.
+    - Compare metrics between the two goldens:
+      - Component coverage: both ≥ 0.9?
+      - Spurious rate: both ≤ 0.1?
+      - Kind accuracy: both ≥ 0.85?
+      - Edge precision: both ≥ 0.8?
+    - Gap between targets ≤ 5 percentage points on each axis (§10.3 criterion 6).
+
+    ### Iteration loop (if gap > 5pp)
+
+    If the gap exceeds the bar, the iteration is permitted as follow-up work on earlier tasks — update prompts, heuristics, or thresholds and re-run. Document changes in a new entry under `evaluation/results/notes/<date>-iteration.md` so the experimental history is traceable.
+
+    ## Out of scope
+
+    - Ravel-Lite migration (separate tasks).
+    - Performance optimisation (§10.2 deferred).
+
+    ## Exit criteria
+
+    - Golden exists and passes all invariants.
+    - Both goldens' metrics meet their individual targets AND the cross-target gap ≤ 5pp.
+    - Report HTML shows both targets with trend lines.
+- id: ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate
+  title: 'Ravel-Lite migration M2: switch to Atlas component-ontology crate'
+  category: migration
+  status: not_started
+  dependencies:
+  - scaffold-atlas-cargo-workspace-and-migrate-component-ontology-crate-m0-m1
+  description: |
+    **Priority: MEDIUM.** Unblocks M4 and M5.
+
+    **Design reference:** §9.4 M2.
+
+    ## Scope
+
+    - In Ravel-Lite's root `Cargo.toml`, add a `[dependencies]` entry:
+      ```toml
+      component-ontology = { path = "../Atlas/crates/component-ontology" }
+      ```
+      (Use a git dependency instead if path deps are inconvenient for a given checkout setup; document the choice.)
+    - Replace every `use crate::ontology::...` or `use ravel_lite::ontology::...` in Ravel-Lite with `use component_ontology::...`.
+    - Delete `Ravel-Lite/src/ontology/` entirely.
+    - Keep `Ravel-Lite/defaults/ontology.yaml` for now — the canonical file is Atlas's, but removing Ravel-Lite's copy is M4.
+    - Run the full Ravel-Lite test suite; fix any breakage from the import path change.
+    - Commit as a single PR.
+
+    ### Tests
+
+    - Ravel-Lite's existing tests (targeting the ontology drift assertion, edge validation, etc.) continue to pass.
+    - Compatibility test: load an existing `related-components.yaml` produced pre-M2 and verify it parses bit-identical.
+
+    ## Out of scope
+
+    - Removing Ravel-Lite's `defaults/ontology.yaml` (M4).
+    - Refactoring Ravel-Lite's `src/projects.rs` (M5).
+    - Any behavioural change — this is purely a dep-source switch.
+
+    ## Exit criteria
+
+    - Ravel-Lite compiles and all tests pass with `component-ontology` sourced from Atlas.
+    - `Ravel-Lite/src/ontology/` is gone.
+    - A commit in Ravel-Lite titled "Switch component-ontology to Atlas-sourced crate" with a link to the Atlas commit that added the crate.
+- id: ravel-lite-migration-m4-delete-in-tree-ontology-copies
+  title: 'Ravel-Lite migration M4: delete in-tree ontology copies'
+  category: migration
+  status: not_started
+  dependencies:
+  - ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate
+  description: |
+    **Priority: MEDIUM.** Removes drift risk by eliminating duplicates.
+
+    **Design reference:** §9.4 M4.
+
+    ## Scope
+
+    - Delete `Ravel-Lite/defaults/ontology.yaml`. Ravel-Lite now reads the YAML from Atlas at the path resolved from the `component-ontology` crate's vendored copy (use `include_str!` via the crate's public API, or a small `component_ontology::ontology_yaml() -> &'static str` helper if not already present).
+    - Delete `Ravel-Lite/docs/component-ontology.md`. Ravel-Lite's in-tree doc becomes a stub `component-ontology.md` that just links to `Atlas/docs/component-ontology.md`.
+    - Delete `Ravel-Lite/docs/component-ontology-migration.md` — the migration is done, the doc is obsolete.
+    - Update any Ravel-Lite tests that previously loaded `Ravel-Lite/defaults/ontology.yaml` from disk to instead use the crate-exposed string.
+    - Ravel-Lite's build-time test that asserts `EdgeKind` matches `ontology.yaml` switches to assert against Atlas's canonical file (via the crate-vendored copy).
+    - Ravel-Lite's `Stage 1`/`Stage 2` prompts still exist in `Ravel-Lite/defaults/` for this task; they're removed in M5.
+
+    ### Tests
+
+    - Ravel-Lite test suite passes.
+    - Build-time `EdgeKind` vs `ontology.yaml` consistency test still runs and passes.
+    - No Ravel-Lite file other than Atlas-owned ones references `ontology.yaml` at a Ravel-Lite-local path.
+
+    ## Out of scope
+
+    - Removing Ravel-Lite's Stage 1/2 prompt copies (M5).
+    - Refactoring `src/projects.rs` (M5).
+
+    ## Exit criteria
+
+    - `Ravel-Lite/defaults/ontology.yaml` does not exist.
+    - `Ravel-Lite/docs/component-ontology.md` is a one-line redirect stub or deleted.
+    - Ravel-Lite builds and tests pass.
+- id: ravel-lite-migration-m5-consume-atlas-via-atlas-index
+  title: 'Ravel-Lite migration M5: consume Atlas via atlas-index'
+  category: migration
+  status: not_started
+  dependencies:
+  - implement-atlas-index-crate-yaml-schemas-and-rename-match
+  - ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate
+  description: |
+    **Priority: MEDIUM.** Completes the migration; single `related-components.yaml` in the ecosystem.
+
+    **Design reference:** §9.4 M5.
+
+    ## Scope
+
+    ### Ravel-Lite depends on atlas-index
+
+    - Add `atlas-index = { path = "../Atlas/crates/atlas-index" }` to Ravel-Lite's Cargo.toml.
+
+    ### Refactor projects.rs
+
+    - Ravel-Lite's `ProjectsCatalog` becomes a thin wrapper over Atlas's `ComponentsFile`.
+    - `find_by_name(name)` searches `atlas_index::ComponentsFile.components` by `id`.
+    - Only *internal* components are valid plan targets — external components (from `external-components.yaml`) are rejected with a helpful error per the user's earlier decision.
+    - Existing callers' API preserved as much as possible; public signatures remain backward-compatible where practical (change the import paths but keep the verbs).
+
+    ### Remove Stage 1/2 prompt copies
+
+    - Delete `Ravel-Lite/defaults/discover-stage1.md` and `discover-stage2.md`.
+    - Ravel-Lite loads prompts from Atlas's path: either via an env var pointing at Atlas's checkout, or via a helper in `atlas-index` that returns the canonical prompt paths.
+    - Decision: `atlas-index` exposes `prompts_dir() -> PathBuf` helper returning the Atlas-shipped prompts directory. Ravel-Lite's `discover` phase reads from there.
+
+    ### CLI surface
+
+    - `ravel-lite state related-components ...` remains as a thin pass-through — the CLI is kept but internally routes through `atlas-index` verbs.
+    - `ravel-lite state projects ...` similarly — the verbs still exist but operate on Atlas-produced `components.yaml` via `atlas-index`.
+    - Existing tests for these CLI surfaces continue to pass.
+
+    ### Tests
+
+    - End-to-end test: run a discover loop on Ravel-Lite itself using Atlas-produced YAMLs as the project catalog. Verify Stage 1/Stage 2 outputs are identical (modulo the project→component rename) to pre-migration outputs.
+    - Compatibility: a Ravel-Lite user who already has a `projects.yaml` at the old path receives a clear migration error directing them to run Atlas.
+
+    ## Out of scope
+
+    - Atlas-side changes (earlier tasks).
+    - Performance optimisation.
+
+    ## Exit criteria
+
+    - A single `related-components.yaml` exists in the ecosystem — Ravel-Lite no longer writes its own.
+    - `Ravel-Lite/defaults/discover-stage1.md` and `discover-stage2.md` do not exist.
+    - Ravel-Lite's test suite passes end to end.
+    - `ravel-lite run` on any plan directory can discover and use components produced by Atlas without any hand-authored `projects.yaml`.
+- id: verify-atlas-v1-success-criteria-end-to-end
+  title: Verify Atlas v1 success criteria end-to-end
+  category: eval
+  status: not_started
+  dependencies:
+  - hand-author-second-golden-for-merged-monorepo
+  - ravel-lite-migration-m5-consume-atlas-via-atlas-index
+  description: |
+    **Priority: HIGH.** Signs off v1.
+
+    **Design reference:** §10.3 success criteria 1–6.
+
+    ## Scope
+
+    Execute each of the six v1 success criteria from §10.3 in order, document results in `evaluation/results/v1-signoff-<date>.md`:
+
+    1. Run `atlas index /Users/antony/Development/` on a clean checkout. Assert coverage ≥ 0.9, spurious ≤ 0.1 against the golden.
+    2. Re-run with no file changes. Assert 0 LLM calls (check the CLI's summary output) and byte-identical `components.yaml`.
+    3. Touch one source file in one component. Re-run. Assert LLM call count equals exactly the affected component's `surface_of` plus its edge-neighbour count for edges. Log the numbers for future reference.
+    4. Add a pin to `components.overrides.yaml` for one component (e.g., pin `role: my-custom-role`). Delete `components.yaml`. Re-run. Assert the pin appears in the regenerated `components.yaml` without human intervention.
+    5. Run Ravel-Lite's `related-components` workflow against Atlas-produced YAMLs. Assert it runs to completion without schema errors.
+    6. Run against the merged monorepo. Assert coverage/spurious/kind/edge metrics are within 5 percentage points of the `~/Development/` run on each axis.
+
+    ### Report
+
+    - `evaluation/results/v1-signoff-<date>.md` contains each criterion, the commands run, the measured values, and pass/fail.
+    - On any failure, the criterion lists the specific gap and what next steps would close it.
+
+    ### Follow-up backlog
+
+    - If any criterion fails by a wide margin, open a new backlog task to investigate. Do not silently move on.
+
+    ## Out of scope
+
+    - Everything in §10.2 (deferred).
+
+    ## Exit criteria
+
+    - All six criteria pass or have documented follow-up tasks.
+    - Sign-off report committed to the Atlas repo.
+    - An announcement-ready short summary written (optional) as `README-v1.md` documenting what Atlas v1 does and does not do.
