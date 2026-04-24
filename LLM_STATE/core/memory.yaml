@@ -131,3 +131,11 @@ entries:
     All LLM-adjacent queries in atlas-engine (L5/L6 and any future layers) must route through `AtlasDatabase::call_llm_cached(&self, req)` rather than calling `backend.call()` directly. This wrapper consults `LlmResponseCache` before hitting the backend and records the response keyed by `(LlmFingerprint, PromptId, canonical-JSON(inputs))`.
 
     Bypassing `call_llm_cached` will silently skip the cache, causing re-runs to make redundant LLM calls and breaking the "zero LLM calls on no-op re-run" exit criterion (task L9). The cache is the memoisation substitute for the missing Salsa-tracked route (blocked by Salsa 0.26 downcast limitation per `is_component not salsa::tracked` memory).
+- id: back-edge-inputs-stored-as-workspace-fields-not-tracked-queries
+  title: Back-edge inputs stored as Workspace fields not tracked queries
+  body: |
+    The fixedpoint driver stores back-edges (`carve_back_edge`) as `Workspace` input fields rather than `#[salsa::tracked]` queries. Salsa 0.26 prohibits recursive tracked-query calls; modeling graph mutations as mutable inputs lets the driver loop set state, which auto-invalidates downstream L2 queries so L4 picks up new children without recursion across tracked boundaries.
+- id: testbackend-requires-byte-identical-llmrequest-inputs-to-match-cache
+  title: TestBackend requires byte-identical LlmRequest inputs to match cache
+  body: |
+    TestBackend caches canned responses keyed by the full serialised LlmRequest. Any field difference (e.g., `max_depth: 8` in the canned input vs `max_depth: 4` in driver config) produces a cache miss and triggers an unexpected LLM call rather than returning the canned response. All TestBackend fixture inputs must be byte-identical to what the production driver builds.
