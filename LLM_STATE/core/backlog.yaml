@@ -58,7 +58,7 @@ tasks:
 - id: implement-atlas-engine-l9-projections-and-atlas-cli
   title: Implement atlas-engine L9 projections and atlas-cli
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: HIGH.** Makes the tool invokable end-to-end.
@@ -122,6 +122,77 @@ tasks:
     - `cargo run -p atlas-cli -- index <tiny-fixture> --output-dir /tmp/atlas-smoke --budget 100000` exits 0 and produces the four YAMLs (overrides is empty but present, or absent — document choice).
     - Rerun with unchanged fixture: zero LLM calls (log line reports `llm_calls=0`), outputs byte-identical.
     - `atlas --version` prints the crate version.
+  results: |
+    ## What landed
+
+    ### L9 projection queries (atlas-engine)
+
+    New module `crates/atlas-engine/src/l9_projections.rs` exposes:
+
+    - `components_yaml_snapshot(db)` / `components_yaml_snapshot_with_prompt_shas(db, shas)` — builds `ComponentsFile` from `all_components`, stamps `cache_fingerprints` from the workspace's `LlmFingerprint`. `generated_at` is left empty; the CLI stamps the real clock value.
+    - `external_components_yaml_snapshot(db)` — wraps a new `#[salsa::tracked]` query `externals_from_manifests(workspace, dir)` that parses every manifest under `root` (Cargo.toml `dependencies` / `dev-dependencies` / `build-dependencies`; package.json `dependencies` / `devDependencies` / `peerDependencies`). Path deps are skipped; pURLs are emitted when a version string is available; manifest provenance (`discovered_from`) is deduplicated across multiple manifests referencing the same external.
+    - `related_components_yaml_snapshot(db)` — wraps `all_proposed_edges`, pushing each through `RelatedComponentsFile::add_edge` so duplicates / invalid edges collapse before disk.
+    - `known_component_ids(db)` — union of live internal + external ids; shaped for the future evaluation harness's edge-participant existence invariant.
+    - `sha256_hex(bytes)` + `PROMPT_ID_STRINGS` helpers, re-exported from `lib.rs`.
+
+    Tests: 9 new unit tests under `l9_projections::tests` covering fingerprint propagation, prompt-sha injection, Cargo / npm external extraction, path-dep filtering, multi-manifest dedup, and the known-ids union.
+
+    ### atlas-cli
+
+    Converted the stub binary into a library + binary split (`[lib] src/lib.rs` + `[[bin]] atlas`):
+
+    - `pipeline.rs` — `run_index(config, backend, counter)` implements the full pipeline: load prior YAMLs, seed filesystem, install all four prior-YAML inputs + overrides on the Workspace, wrap the caller's backend in a `BudgetSentinel`, run the fixedpoint, demand the three L9 projections, stamp a stable `generated_at`, and atomic-write outputs (skipping writes on `--dry-run` or budget exhaustion).
+    - `backend.rs` — `build_production_backend(model, budget)` materialises embedded prompts to a `TempDir`, constructs `ClaudeCodeBackend` pointed at that dir with the derived `template_sha` / `ontology_sha`, wraps in `BudgetedBackend` when a budget is set, then wraps in `BudgetSentinel` (sticky flag that notices `LlmError::BudgetExhausted` — L5/L6 swallow the error into surface notes, so the sentinel is the only reliable detection).
+    - `cache_io.rs` — persists the engine's `LlmResponseCache` to `<output_dir>/llm-cache.json` as schema-versioned JSON; missing / malformed / wrong-schema files are ignored (cache is a pure optimisation). Atomic temp-rename write; deterministic entry ordering for diffable files. Required new methods on `LlmResponseCache`: `entries_snapshot()` and `seed(key, value)`.
+    - `prompts.rs` — the four prompt bodies + ontology.yaml, embedded via `include_str!`, plus a `materialise_to(dir)` helper.
+    - `timestamp.rs` — minimal RFC3339 formatter using Howard Hinnant's `civil_from_days` algorithm, so we don't pull chrono/time just for one timestamp.
+    - `main.rs` — clap `atlas index <root>` with `--output-dir`, `--budget`, `--no-budget`, `--max-depth`, `--recarve`, `--dry-run`, `--model`, `--no-gitignore`. Fail-loud: missing `--budget` without `--no-budget` is a hard error. Budget exhaustion → exit 2 + no writes.
+
+    ### Byte-identity on no-op re-run
+
+    The contract "zero LLM calls on unchanged re-run + byte-identical outputs" required two mechanisms beyond the task brief's bullets:
+
+    - **LLM cache persistence** (see `cache_io.rs`) — without this, each CLI invocation starts with an empty cache and makes fresh calls.
+    - **Stable generated_at** (`pipeline::stable_generated_at`) — reuses the prior timestamp when the new snapshot matches content-wise, otherwise stamps `SystemTime::now()`. Without this, byte-identity fails even when nothing else changed.
+
+    Both are small, but they're load-bearing for the evaluation harness (task 10) and the v1 sign-off criterion (task 13).
+
+    ### Tests
+
+    - 9 new engine unit tests (L9).
+    - 20 new CLI unit tests across timestamp, prompts, backend, pipeline, cache_io.
+    - 8 integration tests in `tests/pipeline_integration.rs` driving `run_index` against a `LenientBackend` fixture helper.
+    - 4 binary tests in `tests/cli_binary.rs` using `assert_cmd` for version / help / error-path coverage.
+
+    Tiny fixture under `crates/atlas-cli/tests/fixtures/tiny/` with `mylib/` (Cargo `[lib]`, one `serde` dep) and `mycli/` (Cargo `[[bin]]`). Classifies deterministically, so only L5/L6/L8 hit the LLM path.
+
+    ### Workspace changes
+
+    - `Cargo.toml`: added `clap`, `assert_cmd`, `predicates` workspace deps.
+    - `atlas-cli/Cargo.toml`: switched to lib+bin layout, added direct deps on all four internal crates + clap + serde + serde_json + serde_yaml + sha2 + tempfile.
+    - `.gitignore`: added `.atlas/` (default CLI output dir).
+
+    ## What worked
+
+    - All 326 workspace tests pass (20 lib + 4 binary + 8 integration + 137 engine + 44 component-ontology + others). One "spans real claude" test in atlas-llm remains `#[ignore]`-gated as before.
+    - The integration test `second_run_on_unchanged_fixture_is_byte_identical` asserts both byte-identity AND `summary.llm_calls == 0` — both hold with the on-disk cache.
+    - The integration test `modifying_a_source_file_invalidates_that_components_surface_cache` confirms `file_tree_sha` propagates into the surface cache key, so content changes force exactly the affected component's surface to re-fire.
+    - The CLI has been manually smoke-tested: `atlas --version` → `atlas 0.1.0`; `atlas index --help` lists every flag; one accidental `atlas index .` run against the Atlas repo itself produced the four YAMLs and a sensible summary (`components=3 externals=10 edges=0 llm_calls=5`). Subsequent runs would hit zero calls thanks to the persisted cache.
+
+    ## What didn't — and what I chose not to do
+
+    - **`modifying_a_source_file` test originally asserted Stage2 re-fires.** Dropped that assertion: the `LenientBackend` returns the same default surface for every component, so after a content-sha change, the surface-record VALUE is unchanged and Stage2's batch cache key legitimately hits. The weaker assertion still proves the content-sha propagated into the cache key. If a future test needs tight Stage2 re-fire detection, the fix is to make the backend's Stage1 response vary by `{{COMPONENT_ID}}`.
+    - **No automated test for the real `claude` CLI path.** The integration-test directory `index_accepts_no_budget_override` caught this the hard way: `assert_cmd` invoked the binary, which reached the real backend, burned ~5 minutes of wall-clock and paid tokens. Deleted that test. Any CI that wants to exercise the production backend should gate behind an opt-in env var (existing pattern: `ATLAS_LLM_RUN_CLAUDE_TESTS=1` on atlas-llm's ignored tests).
+    - **No handling of Cargo.toml workspace members from this task's dep discovery.** A workspace root's `[dependencies]` is usually empty (deps live on members); `externals_from_manifests` parses each member's Cargo.toml separately and dedupes via `discovered_from`, which is the right behaviour. I did not add a special case for `[workspace.dependencies]` — if a future workspace uses it heavily the externals list will under-report; noting that as a follow-up rather than fixing it blind.
+
+    ## Suggests next
+
+    1. **Task 10 (evaluation harness) is unblocked** — L9 projections exist, the CLI produces the four YAMLs, and `known_component_ids` is ready for the edge-participant-existence invariant. The tiny fixture is reusable.
+    2. **Follow-up: split the cache schema.** `llm-cache.json` currently co-mingles per-prompt responses with fingerprint metadata. For v2 it might be worth one file per prompt type, or keying by content-sha of inputs for smaller diffs. Not urgent.
+    3. **Follow-up: `[workspace.dependencies]` in `externals_from_manifests`.** Trivial addition (one `table.get("workspace").and_then(|w| w.get("dependencies"))` branch); left for a future task to avoid scope creep here.
+    4. **Minor debt:** `atlas index` accepts `--no-gitignore` but the flag's default (`true`/respect) conflicts with test fixtures that sit inside a .gitignore'd tree. For the real target-dir use case the default is correct; for tests we set `config.respect_gitignore = false` directly.
+
+    The Ravel-Lite M2 → M4 → M5 migration chain and the prompt-protocol rewrite (backlog items 1, 6, 7, 8) remain independent of this work.
 - id: build-evaluation-harness-with-structural-invariants-and-first-golden
   title: Build evaluation harness with structural invariants and first golden
   category: eval
