@@ -2,7 +2,7 @@ tasks:
 - id: implement-atlas-engine-l2-and-l3-candidate-generation-and-classification
   title: 'Implement atlas-engine L2 and L3: candidate generation and classification'
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: HIGH.** The core discovery step.
@@ -71,6 +71,52 @@ tasks:
     - `defaults/prompts/classify.md` exists, is ≤ 600 words, and references `{{COMPONENT_KINDS}}` and `{{LIFECYCLE_SCOPES}}`.
     - `defaults/component-kinds.yaml` exists and enumerates all `ComponentKind` values with short descriptions.
     - Running the tests with a TestBackend that panics on call verifies that deterministic cases never invoke the LLM.
+  results: |
+    ## Summary
+
+    Atlas-engine L2 (candidate generation) and L3 (classification) are live, with pin short-circuits, a tabulated deterministic rules table, and an LLM fallback wired through the existing `PromptId::Classify` surface. The L8 back-edge (`subcarve_plan`) is a tracked stub returning the empty list — task 8 replaces the body in place.
+
+    ## What was done
+
+    ### Files added
+
+    - `defaults/component-kinds.yaml` — 13-kind vocabulary (rust-library, rust-cli, workspace, node-package, node-cli, python-package, website, service, config-repo, docs-repo, spec, external, non-component) plus the seven lifecycle scopes from `component-ontology`. Drift-tested against the Rust enum.
+    - `defaults/prompts/classify.md` — 403-word classification prompt using `{{COMPONENT_KINDS}}` and `{{LIFECYCLE_SCOPES}}` tokens.
+    - `crates/atlas-engine/src/types.rs` — `ComponentKind`, `Candidate`, `RationaleBundle`, `Classification`. Internal value types only (no `Serialize`/`Deserialize` on the non-enum types — LLM JSON is constructed by hand in `l3_classify::build_llm_inputs` so the wire shape is decoupled from the in-memory one).
+    - `crates/atlas-engine/src/defaults.rs` — parse/render helpers for `component-kinds.yaml`, with bijection drift tests.
+    - `crates/atlas-engine/src/manifest_parse.rs` — line-scan `Cargo.toml` (lib/bin/workspace) plus serde-json `package.json` (main/exports/bin). Avoided pulling in the `toml` crate; line scanning is robust to Cargo's section-header rules and keeps the deps tight.
+    - `crates/atlas-engine/src/heuristics.rs` — seven deterministic rules (cargo-workspace, cargo-bin, cargo-lib, package-json-bin, package-json-library, pyproject-toml, bare-git-no-manifests) tabulated as a flat `RULES` array — adding a rule is one entry, not a re-nest.
+    - `crates/atlas-engine/src/l2_candidates.rs` — Salsa-tracked `candidate_components_at(workspace, dir)`. Dedups candidates from four sources: manifest parents, `.git` dirs, `overrides.additions`, and `subcarve_plan` (stubbed). Each emitted `Candidate` carries a `RationaleBundle` scoped to its own directory.
+    - `crates/atlas-engine/src/l3_classify.rs` — `is_component(db, workspace, dir)`. Resolution order: pin → deterministic → LLM. Pin lookup tries three key forms (relative path, basename, addition id) so test authors and users can write pins naturally.
+    - `crates/atlas-engine/src/l8_recurse.rs` — Salsa-tracked `subcarve_plan(workspace, parent_id)` stub returning `Arc::new(Vec::new())`. Task 8 replaces only the body.
+    - `crates/atlas-engine/tests/l2_l3_queries.rs` — 16 integration tests covering all scenarios from the task spec.
+
+    ### Files modified
+
+    - `crates/atlas-engine/src/lib.rs` — module wiring and re-exports.
+    - `crates/atlas-engine/Cargo.toml` — added `serde`, `serde_json`, `serde_yaml` deps (all workspace-versioned).
+
+    ### Exit criteria met
+
+    - `cargo test -p atlas-engine` passes: 30 lib + 14 l0_l1 + 16 l2_l3 = **60 tests green**.
+    - **≥ 15 new tests**: 16 integration tests covering deterministic rules, pin short-circuits, LLM fallback, override additions, plus 10 new unit tests (heuristics, manifest_parse, l3_classify helpers, defaults drift).
+    - `defaults/prompts/classify.md`: 403 words (limit 600), references `{{COMPONENT_KINDS}}` and `{{LIFECYCLE_SCOPES}}`.
+    - `defaults/component-kinds.yaml`: enumerates all 13 `ComponentKind` variants with descriptions; drift test asserts bijection.
+    - Deterministic cases never invoke the LLM: `l3_deterministic_fixtures_never_dispatch_to_llm` uses a `TestBackend` with no canned responses — any dispatch would throw `TestBackendMiss`. The test passes.
+    - `cargo clippy --workspace --all-targets` clean.
+
+    ## Design decisions worth flagging for downstream work
+
+    - **L3 keys by `(workspace, dir)`, not `Candidate`.** Salsa memoises the underlying L1 queries, so rebuilding the rationale bundle inside L3 is free and keeps the query key to primitives. Passing `Candidate` as a Salsa key would force `salsa::Update` onto nested `RationaleBundle` types. Task 6 (L4) should follow the same convention when walking.
+    - **`is_component` is not yet `#[salsa::tracked]`.** The LLM backend lives on `AtlasDatabase` (outside Salsa storage), so accessing it from inside a tracked function taking `&dyn salsa::Database` would require a downcast trick that salsa 0.26 does not expose cleanly. For this task the deterministic-rule and pin short-circuit paths do not need memoisation, and L1 caching already covers the signal reads. When task 9 needs "zero LLM calls on no-op re-run" tests, options are (a) move the backend onto a Salsa-tracked extension trait, (b) add a memoisation side-table keyed by `(revision, dir)`, or (c) restructure so the LLM call itself is a tracked function with request-inputs as keys. Option (c) is probably cleanest.
+    - **`subcarve_plan` is tracked but stubbed.** Task 8 replaces only the body in `l8_recurse.rs`; every call site (only `l2_candidates.rs` today) is unaffected.
+    - **Pin lookup uses three key forms.** Until L4 (task 6) is authoritative about id allocation, L3 cannot know a candidate's final id. It accepts pins keyed by relative path (`crates/foo`), basename (`foo`), or any `overrides.additions` entry's explicit id whose first `path_segment` points at the candidate's dir. When L4 lands, we can narrow this to `final_id` if desirable, but the permissive matching is useful and documented.
+    - **`lifecycle_roles: Vec<LifecycleScope>`** — the task spec called the field `Vec<LifecycleRole>`; the existing `ComponentEntry` in `atlas-index` uses `Vec<LifecycleScope>` from `component-ontology`. Reused that type instead of inventing a parallel one — keeps the vocabulary single-sourced.
+
+    ## Suggests next
+
+    - **Task 6 (L4 tree assembly)** can proceed straight away. It walks `candidate_components_at(root)`, filters by `is_component(...).is_boundary`, allocates ids, and wires rename-match. When it calls `is_component` from inside a tracked `all_components` query, we'll need to resolve the "tracked L3" question — either by downgrading `all_components` to a normal function, or by introducing a memoisation wrapper. See design note above.
+    - **LLM memoisation (task 9 exit criterion)** — when touched, prefer option (c) above: make the backend call a tracked query keyed by a canonicalised `LlmRequest`, invoked by `is_component`. This gets per-request caching that survives `Workspace` input edits that do not change the request inputs.
 - id: implement-atlas-engine-l4-tree-assembly-and-rename-match-integration
   title: 'Implement atlas-engine L4: tree assembly and rename-match integration'
   category: feature

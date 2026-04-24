@@ -1,17 +1,15 @@
-id: session-4
-timestamp: 2026-04-24T06:15:02Z
+id: session-5
+timestamp: 2026-04-24T07:53:46Z
 phase: work
 body: |
-  ### Session 4 (2026-04-24T06:15:02Z) — Implement atlas-engine L0 and L1: Salsa scaffold and enumeration queries
+  ### Session 5 (2026-04-24T07:53:46Z) — Implement atlas-engine L2 and L3: candidate generation and classification
 
-  - What was attempted: Full implementation of task `implement-atlas-engine-l0-and-l1-salsa-scaffold-and-enumeration-queries` — Salsa database, filesystem ingestion, L1 enumeration queries, and 21 tests across three fixture directories.
-  - What worked: All scope landed. `cargo test -p atlas-engine` passes with 21 tests (7 unit + 14 integration). Full workspace: 133 tests, 0 failures. `cargo clippy -p atlas-engine --all-targets -- -D warnings` is clean. All three fixture directories (`tiny-rust-lib`, `mixed`, `monorepo-fragment`) produce deterministic L1 outputs. Cache-hit behaviour is verified via Salsa WillExecute event stream.
-  - What didn't work on first try: The cache-hit test initially failed — Salsa input setters unconditionally bump the revision even when the value is identical. Fix: all `AtlasDatabase` setters (including `register_file`'s per-file `set_bytes`) now read the current value first and return early if unchanged. This setter equality-check pattern is a load-bearing invariant for all future input fields.
-  - What this suggests trying next: Task `implement-atlas-engine-l2-and-l3-candidate-generation-and-classification` is now unblocked. Key hand-offs below inform the L2/L3 implementation.
+  - What was attempted: Full implementation of task `implement-atlas-engine-l2-and-l3-candidate-generation-and-classification` — L2 candidate generation, L3 classification, deterministic heuristics table, manifest parsing, shared types, component-kinds YAML vocabulary, classification prompt, and integration tests.
+  - What worked: All scope landed. `cargo test -p atlas-engine` passes with 60 tests (30 unit + 14 L0/L1 + 16 L2/L3), exceeding the ≥15 new-test exit criterion. `defaults/prompts/classify.md` is 403 words (limit 600), references both `{{COMPONENT_KINDS}}` and `{{LIFECYCLE_SCOPES}}`. `defaults/component-kinds.yaml` enumerates all 13 `ComponentKind` variants. The `l3_deterministic_fixtures_never_dispatch_to_llm` test uses a panic-on-call `TestBackend` and passes — confirming deterministic rules never invoke the LLM. `cargo clippy --workspace --all-targets` is clean.
+  - What didn't work / design constraints: `is_component` is not yet `#[salsa::tracked]` because the LLM backend lives on `AtlasDatabase` outside Salsa storage; accessing it from inside a tracked function taking `&dyn salsa::Database` would require a downcast that Salsa 0.26 does not expose. Deterministic and pin paths have no memoisation need; L1 caching covers signal reads. LLM-call memoisation is deferred to task 9.
+  - What this suggests trying next: Task L4 (tree assembly and rename-match integration) is now unblocked; it walks `candidate_components_at(root)`, filters by `is_component(...).is_boundary`, allocates ids, and wires rename-match. When calling `is_component` from inside a tracked `all_components` query, the cleanest option is to restructure so the LLM call itself is a tracked function keyed by canonicalised `LlmRequest` — see design note in task results.
   - Key learnings:
-    - Salsa 0.26 input setters do not perform equality checks; callers must skip when value unchanged.
-    - `#[salsa::input(debug)]` is required for `Debug` derivation on generated input structs.
-    - Wrapping foreign types (`ComponentsFile`, `ExternalsFile`, etc.) in `Arc<T>` avoids adding `salsa::Update` derives on non-Salsa crates — Salsa has a blanket `Update` impl for `Arc<T>`.
-    - `file_content(path)` is an untracked helper; tracked dependencies flow through `File::bytes(db)` once a tracked query holds the handle. L2+ code should receive `File` handles rather than calling `file_content` directly.
-    - `ignore` crate gitignore filtering only activates inside `.git`-rooted trees; standalone tempdir fixtures bypass it by design.
-    - New files: `db.rs`, `ingest.rs`, `l1_queries.rs`, `manifest_patterns.rs`, `tests/l0_l1_queries.rs`, three fixture directories.
+    - L3 keys by `(workspace, dir)` primitives rather than `Candidate` — avoids forcing `salsa::Update` onto `RationaleBundle` fields; rebuilding the rationale bundle inside L3 is free because L1 queries are memoised.
+    - Line-scanning `Cargo.toml` for section headers (`[lib]`, `[[bin]]`, `[workspace]`) avoids pulling in the `toml` crate and is robust to Cargo's section rules; the manifest_parse module uses serde-json for `package.json` only.
+    - Pin lookup accepts three key forms (relative path, basename, additions entry id) because L4 has not yet allocated final ids; permissive matching lets test authors and users write pins naturally without knowing the eventual canonical id.
+    - `lifecycle_roles` reuses `Vec<LifecycleScope>` from `component-ontology` rather than inventing a parallel `LifecycleRole` type — keeps the vocabulary single-sourced across atlas-index and atlas-engine.
