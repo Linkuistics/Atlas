@@ -47,3 +47,23 @@ entries:
   title: template_sha computed via prompt::render plus SHA-256 in atlas-engine
   body: |
     When prompt migration M3 lands, the driver should compute `template_sha` by calling `prompt::render` on each template with ontology-derived tokens and SHA-256ing the result. A helper for this belongs in `atlas-engine`, not `atlas-llm`.
+- id: salsa-0-26-input-setters-do-not-check-equality
+  title: Salsa 0.26 input setters do not check equality
+  body: |
+    Salsa 0.26 input setters unconditionally bump the revision even when the new value is identical to the existing one. All `AtlasDatabase` setter calls (including `register_file`'s per-file `set_bytes`) must read the current value first and return early if unchanged. This is a load-bearing invariant for cache-hit correctness on all future input fields.
+- id: salsa-input-debug-required-for-debug-on-input-structs
+  title: salsa::input(debug) required for Debug on input structs
+  body: |
+    `#[salsa::input(debug)]` is required to derive `Debug` on generated Salsa input structs. Without the flag, the macro does not emit the `Debug` impl.
+- id: arc-t-satisfies-salsa-update-bound-for-foreign-types
+  title: Arc<T> satisfies Salsa Update bound for foreign types
+  body: |
+    Salsa has a blanket `Update` impl for `Arc<T>`. Wrapping foreign types (`ComponentsFile`, `ExternalsFile`, etc.) in `Arc<T>` avoids adding `salsa::Update` derives on non-Salsa crates.
+- id: l2-queries-receive-file-handles-not-raw-paths
+  title: L2+ queries receive File handles not raw paths
+  body: |
+    `file_content(path)` is an untracked helper; tracked dependency chains flow through `File::bytes(db)` once a tracked query holds the handle. L2+ code must receive `File` handles rather than calling `file_content` directly, or those accesses will not participate in Salsa's incremental dependency graph.
+- id: ignore-crate-requires-git-root-for-gitignore-filtering
+  title: ignore crate requires .git root for gitignore filtering
+  body: |
+    The `ignore` crate's gitignore filtering only activates inside `.git`-rooted directory trees. Standalone tempdir fixtures bypass it by design, which is the correct behaviour for test fixtures that should not be filtered.
