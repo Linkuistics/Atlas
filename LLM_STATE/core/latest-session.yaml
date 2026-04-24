@@ -1,11 +1,11 @@
-id: session-1
-timestamp: 2026-04-24T03:28:15Z
+id: session-2
+timestamp: 2026-04-24T03:48:51Z
 phase: work
 body: |
-  ### Session 1 (2026-04-24T03:28:15Z) — Scaffold Cargo workspace and migrate component-ontology crate (M0+M1)
+  ### Session 2 (2026-04-24T03:48:51Z) — Implement atlas-index crate: schema types, YAML I/O, and rename-match
 
-  - Attempted: Complete M0 (five-crate workspace scaffold) and M1 (component-ontology migration from Ravel-Lite) per the first backlog task.
-  - What worked: `cargo build --workspace` exits 0 with 0 warnings; `cargo test --workspace` runs 44 tests in component-ontology, 0 in placeholders — all pass. Test count matches Ravel-Lite's ontology tests exactly. `defaults/ontology.yaml` confirmed byte-identical to Ravel-Lite source. Drift tests pass with the adjusted `include_str!` path crossing the crate-to-workspace boundary.
-  - What didn't: The `include_str!` path `../../../defaults/ontology.yaml` crosses the crate boundary, which is fine for path/git deps (§9.5) but would require a rework if the crate is ever published to crates.io. The `thiserror` workspace dep is declared but no crate uses it yet — left in place for future crates.
-  - What this suggests next: Task 2 (atlas-index) and Task 3 (atlas-llm) are now both unblocked and parallelisable. Ravel-Lite migration M2 is also unblocked. The workspace-deps and lint policy infrastructure is in place for all subsequent tasks.
-  - Key learnings: Migrating a lib crate from a binary host removes the need for `#[allow(dead_code)]` on public API items; the dead-code lint doesn't fire for public items in a lib crate. Path `include_str!` macros are relative to the source file, so reaching outside the crate directory works for local/git deps but not for registry publication.
+  - Attempted: Complete the `implement-atlas-index-crate-yaml-schemas-and-rename-match` backlog task — all three source modules, re-exports from component-ontology, and integration test golden snapshots.
+  - What worked: All scope landed cleanly. `cargo test -p atlas-index` reports 36 tests (33 unit inline + 3 golden-snapshot integration), exceeding the ≥15 exit criterion. `cargo test --workspace` runs 80 tests with 0 failures. Dep chain is lightweight: anyhow, serde, serde_yaml, component-ontology, tempfile (dev) — no Salsa, no tokio, no LLM. The `AlwaysTrue` marker on `PinValue::Suppress` enforces that `suppress: false` is a parse error rather than a silent no-op. Per-file error messages distinguish generated files (delete-and-regenerate) from user-authored overrides (migrate by hand). Golden snapshots pin the serialised YAML byte-for-byte as a regression ratchet.
+  - What didn't: `kind: String` rather than a `ComponentKind` enum — deferred because anchoring the schema types to an enum now would churn downstream consumers every time the vocabulary grows; task 5 (atlas-engine) is the right owner of the vocabulary. No drift test between Rust schema types and the design doc because the doc is not committed in-tree; once it is, a drift test analogous to component-ontology's edge-kind drift test would be appropriate.
+  - What this suggests next: `implement-atlas-llm-crate-backend-trait-and-claude-code-backend` and `implement-atlas-engine-l0-and-l1-salsa-scaffold-and-enumeration-queries` are the natural follow-ons; atlas-engine has a dependency on atlas-index which is now satisfied. Atlas-llm is parallelisable with atlas-engine L0/L1.
+  - Key learnings: Greedy bipartite matching by content-SHA overlap is a practical proxy for rename detection in a directory-structure index — it avoids the quadratic cost of full-tree diffing while remaining accurate for the common case (component moved, files unchanged). The untagged-enum `PinValue` serialisation requires care with serde: field name collisions between variants can cause ambiguous deserialisation, so keeping each variant's distinguishing field unique is load-bearing.

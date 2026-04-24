@@ -2,7 +2,7 @@ tasks:
 - id: implement-atlas-index-crate-yaml-schemas-and-rename-match
   title: 'Implement atlas-index crate: YAML schemas and rename-match'
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: HIGH.** Every other crate depends on the index schema types.
@@ -82,6 +82,95 @@ tasks:
     - `cargo test -p atlas-index` passes with at least 15 tests.
     - A consumer crate (e.g., Ravel-Lite post-M5) can depend on `atlas-index` and load/save the four YAMLs without pulling in Salsa, LLMs, or tokio.
     - Atlas's own top-level `README.md` still builds without modification (will be refreshed later).
+  results: |
+    ## Summary
+
+    Shipped the `atlas-index` crate: schema types for the three Atlas-owned
+    YAMLs (`components.yaml`, `components.overrides.yaml`,
+    `external-components.yaml`), a content-SHA-overlap rename-match
+    algorithm, and the full load/save surface. The fourth YAML
+    (`related-components.yaml`) is re-exported from `component-ontology`
+    so downstream consumers pull in one crate, not two.
+
+    ## What landed
+
+    - **`src/schema.rs`** — `ComponentsFile`, `ComponentEntry`,
+      `PathSegment`, `DocAnchor`, `CacheFingerprints`, `OverridesFile`,
+      `PinValue` (untagged enum: `Value` / `Suppress` / `SuppressChildren`),
+      `AlwaysTrue` marker, `ExternalsFile`, `ExternalEntry`. Three per-file
+      schema-version constants (all v1).
+    - **`src/yaml_io.rs`** — `load_*` / `load_or_default_*` /
+      `save_*_atomic` triples for each of the three files. Schema-version
+      mismatch is a hard error; the message differs by file flavour
+      (generated files get "delete and re-run `atlas index`"; the
+      user-authored overrides file gets "migrate by hand, do NOT delete").
+    - **`src/rename_match.rs`** — greedy bipartite matching by
+      content-SHA set overlap; default threshold 0.70; separate `matches`,
+      `orphans`, `fresh` output lists.
+    - **`src/lib.rs`** — top-level re-exports including
+      `RelatedComponentsFile` and friends from `component-ontology`.
+    - **`tests/golden_snapshots.rs` + `tests/snapshots/*.yaml`** — locked
+      byte-exact pretty-printed YAML for one representative instance of
+      each file type.
+
+    ## Verification
+
+    - `cargo test -p atlas-index` → 36 tests, 0 failures, 0 ignored
+      (33 unit in-line + 3 integration). Exit criterion required ≥ 15.
+    - `cargo test --workspace` → 80 tests across the workspace pass.
+    - `cargo build --workspace --all-targets` → clean under `warnings =
+      deny`.
+    - Dep chain verified lightweight: `anyhow`, `serde`, `serde_yaml`,
+      `component-ontology`, plus `tempfile` (dev). No Salsa, no tokio,
+      no LLM deps — satisfies the "Ravel-Lite post-M5 can depend on this
+      without transitive weight" exit criterion.
+
+    ## Design choices worth flagging
+
+    1. **`kind: String` rather than a `ComponentKind` enum.** Task 5 adds
+       the enum; anchoring atlas-index to it now would churn every
+       downstream consumer every time the vocabulary grows. Keeping it
+       stringly-typed at the schema layer lets atlas-engine own the
+       vocabulary. Trade-off: no compile-time validation here.
+    2. **`AlwaysTrue` marker for `Suppress { suppress: bool }`.** With a
+       plain `bool`, serde's untagged enum would silently accept
+       `suppress: false` and create a no-op pin. The marker requires the
+       literal `true`; typos become load errors.
+    3. **Per-file error messages for schema-version mismatch.** Generated
+       files direct users to delete-and-regenerate; the user-authored
+       overrides file directs them to docs/overrides-migration.md (a file
+       that does not yet exist — it's the first slot to fill when v2 of
+       the overrides schema ships).
+    4. **Re-export pattern.** `atlas-index::lib` re-exports the
+       component-ontology surface. Downstream consumers need only one
+       `use atlas_index::*;` line to get the full catalog.
+
+    ## Things that did not need doing (and why)
+
+    - **No drift test between schemas and the existing `docs/` spec.**
+      The Atlas design doc that the task references (§5, §5.5, §7, §9)
+      does not live in-tree; it's referenced by the backlog description
+      but not committed. Once the doc is committed, a drift test
+      analogous to `component-ontology`'s `defaults/ontology.yaml` drift
+      test would be the right addition. For now the backlog description
+      is the source of truth and the Rust types track it directly.
+    - **No `DocAnchor.level` field.** The engine's `doc_headings` query
+      (task 3) emits level, but `doc_anchors` at the component-entry
+      level is a curated projection (the *chosen* anchors, not raw
+      headings). Path + heading text is enough to link back to the exact
+      location; the level would be redundant and drift-prone.
+
+    ## Suggested follow-ups (not blockers for next task)
+
+    - When task 5 introduces `ComponentKind`, decide whether to move the
+      enum into atlas-index (requires a round-trip test against every
+      existing golden snapshot) or keep it in atlas-engine with a
+      String-typed boundary (current default). The snapshot tests
+      already give the migration a ratchet.
+    - When the user-authored overrides migration first happens, write
+      `docs/overrides-migration.md` so the error message in
+      `yaml_io.rs::require_schema_version(UserAuthored)` resolves to a
+      real document instead of a ghost reference.
 - id: implement-atlas-llm-crate-backend-trait-and-claude-code-backend
   title: 'Implement atlas-llm crate: backend trait and claude-code backend'
   category: feature
