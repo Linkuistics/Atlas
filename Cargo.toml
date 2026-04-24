@@ -16,6 +16,7 @@ repository = "https://github.com/linkuistics/Atlas"
 [workspace.dependencies]
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 serde_yaml = "0.9"
 thiserror = "2"
 
