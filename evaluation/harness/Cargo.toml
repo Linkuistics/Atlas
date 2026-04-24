@@ -1,0 +1,48 @@
+[package]
+name = "atlas-eval"
+version = "0.1.0"
+description = "Evaluation harness for Atlas: structural invariants, metric computation, differential reports."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "atlas_eval"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+atlas-index = { path = "../../crates/atlas-index" }
+component-ontology = { path = "../../crates/component-ontology" }
+ignore = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+tempfile = { workspace = true }
+
+[[test]]
+name = "path_coverage"
+path = "../invariants/path_coverage.rs"
+
+[[test]]
+name = "manifest_coverage"
+path = "../invariants/manifest_coverage.rs"
+
+[[test]]
+name = "edge_participant_existence"
+path = "../invariants/edge_participant_existence.rs"
+
+[[test]]
+name = "rename_round_trip"
+path = "../invariants/rename_round_trip.rs"
+
+[[test]]
+name = "fixedpoint_termination"
+path = "../invariants/fixedpoint_termination.rs"
+
+[lints]
+workspace = true

@@ -10,3 +10,6 @@ work
 # atlas-cli default output (components.yaml et al.)
 .atlas/
 
+# atlas-eval regenerates the trend page from results/*.yaml
+/evaluation/results/trend.html
+

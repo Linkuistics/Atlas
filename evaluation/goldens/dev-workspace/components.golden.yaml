@@ -1,0 +1,363 @@
+schema_version: 1
+root: /Users/antony/Development
+generated_at: '2026-04-24'
+cache_fingerprints:
+  ontology_sha: ''
+  prompt_shas: {}
+  model_id: ''
+  backend_version: ''
+components:
+- id: Atlas
+  kind: rust-workspace
+  lifecycle_roles: [design, build, test]
+  language: rust
+  build_system: cargo
+  role: tool
+  path_segments:
+  - path: Atlas
+    content_sha: hand-authored-placeholder
+  manifests:
+  - Atlas/Cargo.toml
+  doc_anchors:
+  - path: Atlas/README.md
+    heading: Atlas
+  evidence_grade: strong
+  evidence_fields:
+  - Cargo.toml:[workspace]
+  - README.md:title
+  rationale: 'Cargo.toml declares `[workspace]` with five member crates; README identifies the project. This is the Atlas repo itself.'
+
+- id: Ravel-Lite
+  kind: rust-workspace
+  lifecycle_roles: [build, test, dev-workflow]
+  language: rust
+  build_system: cargo
+  role: tool
+  path_segments:
+  - path: Ravel-Lite
+    content_sha: hand-authored-placeholder
+  manifests:
+  - Ravel-Lite/Cargo.toml
+  doc_anchors:
+  - path: Ravel-Lite/README.md
+    heading: Ravel-Lite
+  evidence_grade: strong
+  evidence_fields:
+  - Cargo.toml:[workspace]
+  - build.rs
+  rationale: 'Cargo.toml + build.rs; crates/ and defaults/ subtrees. Host tool for multi-session planning, peer to Atlas.'
+
+- id: ravel-lite-config
+  kind: configuration-bundle
+  lifecycle_roles: [dev-workflow]
+  language: yaml
+  role: configuration
+  path_segments:
+  - path: ravel-lite-config
+    content_sha: hand-authored-placeholder
+  doc_anchors: []
+  evidence_grade: medium
+  evidence_fields:
+  - fixed-memory/
+  - agents/
+  rationale: 'No build manifest; contents are YAML config + prompt/memory markdown consumed by Ravel-Lite at runtime.'
+
+- id: Ravel
+  kind: tool
+  lifecycle_roles: [dev-workflow]
+  language: racket
+  role: tool
+  path_segments:
+  - path: Ravel
+    content_sha: hand-authored-placeholder
+  doc_anchors: []
+  evidence_grade: weak
+  evidence_fields:
+  - LICENSE
+  rationale: 'Predecessor of Ravel-Lite. No cargo/package manifest; Racket-style `_build` and `lib` layout. Classification needs confirmation — see notes.md.'
+
+- id: mdformat-rs
+  kind: rust-workspace
+  lifecycle_roles: [build]
+  language: rust
+  build_system: cargo
+  role: library
+  path_segments:
+  - path: mdformat-rs
+    content_sha: hand-authored-placeholder
+  manifests:
+  - mdformat-rs/Cargo.toml
+  doc_anchors: []
+  evidence_grade: strong
+  evidence_fields:
+  - Cargo.toml
+  rationale: 'Rust workspace with crates/ subdirectory; LLM_STATE suggests active Ravel-Lite-managed development.'
+
+- id: homebrew-taps
+  kind: package-distribution
+  lifecycle_roles: [deploy]
+  language: ruby
+  build_system: homebrew
+  role: distribution
+  path_segments:
+  - path: homebrew-taps
+    content_sha: hand-authored-placeholder
+  doc_anchors: []
+  evidence_grade: strong
+  evidence_fields:
+  - Formula/
+  rationale: 'Contains a Formula/ directory — a Homebrew tap by convention. Deployment artefact, not an executable build target.'
+
+- id: zellij-alt-nav
+  kind: rust-binary
+  lifecycle_roles: [build, runtime]
+  language: rust
+  build_system: cargo
+  role: tool
+  path_segments:
+  - path: zellij-alt-nav
+    content_sha: hand-authored-placeholder
+  manifests:
+  - zellij-alt-nav/Cargo.toml
+  doc_anchors: []
+  evidence_grade: strong
+  evidence_fields:
+  - Cargo.toml
+  - justfile
+  rationale: 'Single-crate Rust project with justfile; small tool. Likely a zellij plugin or helper.'
+
+- id: HeavyMentalToolkit
+  kind: node-workspace
+  lifecycle_roles: [build]
+  language: javascript
+  build_system: npm
+  role: library
+  path_segments:
+  - path: HeavyMentalToolkit
+    content_sha: hand-authored-placeholder
+  manifests:
+  - HeavyMentalToolkit/package.json
+  doc_anchors: []
+  evidence_grade: strong
+  evidence_fields:
+  - package.json
+  - packages/
+  rationale: 'package.json + packages/ subdir — a Node.js workspace/monorepo.'
+
+- id: APIAnyware-MacOS
+  kind: rust-workspace
+  lifecycle_roles: [build, runtime]
+  language: rust
+  build_system: cargo
+  role: application
+  path_segments:
+  - path: APIAnyware-MacOS
+    content_sha: hand-authored-placeholder
+  manifests:
+  - APIAnyware-MacOS/Cargo.toml
+  doc_anchors: []
+  evidence_grade: strong
+  evidence_fields:
+  - Cargo.toml
+  rationale: 'Cargo workspace; directory name implies a macOS application with analysis/collection subsystems.'
+
+- id: Modaliser
+  kind: configuration-bundle
+  lifecycle_roles: [runtime]
+  language: scheme
+  role: configuration
+  path_segments:
+  - path: Modaliser
+    content_sha: hand-authored-placeholder
+  doc_anchors: []
+  evidence_grade: weak
+  evidence_fields:
+  - config.scm
+  - Info.plist
+  rationale: 'config.scm + Info.plist + icons; classification is uncertain. Could be a karabiner/keyboard-modifier config bundle.'
+
+- id: Modaliser-Racket
+  kind: application
+  lifecycle_roles: [build, runtime]
+  language: racket
+  role: application
+  path_segments:
+  - path: Modaliser-Racket
+    content_sha: hand-authored-placeholder
+  doc_anchors: []
+  evidence_grade: medium
+  evidence_fields:
+  - bindings/
+  - bundle/
+  - core/
+  rationale: 'Racket project with bindings/bundle/core substructure; sibling of Modaliser. Classification provisional.'
+
+- id: TheGreatExplainer
+  kind: spec
+  lifecycle_roles: [design]
+  language: markdown
+  role: specification
+  path_segments:
+  - path: TheGreatExplainer
+    content_sha: hand-authored-placeholder
+  doc_anchors:
+  - path: TheGreatExplainer/README.md
+    heading: TheGreatExplainer
+  evidence_grade: medium
+  evidence_fields:
+  - docs/
+  - TODO.md
+  rationale: 'docs/ + README + TODO with no build manifest — a specification/planning project, no runnable artefact.'
+
+- id: www.linkuistics.com
+  kind: static-site
+  lifecycle_roles: [deploy]
+  language: html
+  role: website
+  path_segments:
+  - path: www.linkuistics.com
+    content_sha: hand-authored-placeholder
+  doc_anchors:
+  - path: www.linkuistics.com/index.html
+    heading: Linkuistics
+  evidence_grade: strong
+  evidence_fields:
+  - index.html
+  - css/
+  - js/
+  rationale: 'Plain HTML+CSS+JS site; no package.json, so deployed as-is.'
+
+- id: Branding
+  kind: asset-collection
+  lifecycle_roles: [design]
+  role: assets
+  path_segments:
+  - path: Branding
+    content_sha: hand-authored-placeholder
+  doc_anchors: []
+  evidence_grade: medium
+  evidence_fields:
+  - svg
+  - png
+  rationale: 'Linkuistics logo/banner SVG and PNG; design assets, not a buildable project.'
+
+- id: 0-docs
+  kind: spec
+  lifecycle_roles: [design]
+  language: markdown
+  role: specification
+  path_segments:
+  - path: 0-docs
+    content_sha: hand-authored-placeholder
+  doc_anchors: []
+  evidence_grade: medium
+  evidence_fields:
+  - designs/
+  - plans/
+  - prompts/
+  rationale: 'Cross-project design docs, plans, and prompts; not a build target.'
+
+- id: Roadmap
+  kind: spec
+  lifecycle_roles: [design]
+  language: markdown
+  role: specification
+  path_segments:
+  - path: Roadmap
+    content_sha: hand-authored-placeholder
+  doc_anchors:
+  - path: Roadmap/README.md
+    heading: Roadmap
+  evidence_grade: strong
+  evidence_fields:
+  - README.md
+  - TODO.md
+  rationale: 'Small README+TODO project with no build manifest — a spec/roadmap document bundle.'
+
+- id: InTheLoop
+  kind: spec
+  lifecycle_roles: [design]
+  language: markdown
+  role: specification
+  path_segments:
+  - path: InTheLoop
+    content_sha: hand-authored-placeholder
+  doc_anchors:
+  - path: InTheLoop/README.md
+    heading: InTheLoop
+  evidence_grade: strong
+  evidence_fields:
+  - README.md
+  - TODO.md
+  rationale: 'Same shape as Roadmap — planning/spec project, no build.'
+
+- id: TestSubject
+  kind: spec
+  lifecycle_roles: [design]
+  language: markdown
+  role: specification
+  path_segments:
+  - path: TestSubject
+    content_sha: hand-authored-placeholder
+  doc_anchors:
+  - path: TestSubject/README.md
+    heading: TestSubject
+  evidence_grade: medium
+  evidence_fields:
+  - README.md
+  - TODO.md
+  rationale: 'Planning/spec directory; purpose noted in README.'
+
+- id: TestAnyware
+  kind: tool
+  lifecycle_roles: [dev-workflow]
+  role: tool
+  path_segments:
+  - path: TestAnyware
+    content_sha: hand-authored-placeholder
+  doc_anchors: []
+  evidence_grade: medium
+  evidence_fields:
+  - agents/
+  - cli/
+  - LLM_INSTRUCTIONS.md
+  rationale: 'agents/ + cli/ + LLM_INSTRUCTIONS.md suggests an LLM-driven testing/agents harness; language uncertain without opening files.'
+
+- id: IDEs
+  kind: monorepo-collection
+  lifecycle_roles: [build]
+  role: subprojects
+  path_segments:
+  - path: IDEs
+    content_sha: hand-authored-placeholder
+  doc_anchors: []
+  evidence_grade: weak
+  evidence_fields:
+  - subdirectories
+  rationale: 'Folder of sub-projects (AppleDylan, ChezPro, ClozurePro, GerbilPro, HaskellPro) — a workspace collection, not a single component. v2 should expand into per-sub-IDE components.'
+
+- id: Legacy
+  kind: monorepo-collection
+  lifecycle_roles: [design]
+  role: archive
+  path_segments:
+  - path: Legacy
+    content_sha: hand-authored-placeholder
+  doc_anchors: []
+  evidence_grade: weak
+  evidence_fields:
+  - subdirectories
+  rationale: 'Archive of older projects (asdf-mercury, asdf-racket, BaselineFinder, ...). Treated as a single archival bucket for v1.'
+
+- id: MaxLovesBlue
+  kind: art-asset-collection
+  lifecycle_roles: [runtime]
+  role: art
+  path_segments:
+  - path: MaxLovesBlue
+    content_sha: hand-authored-placeholder
+  doc_anchors: []
+  evidence_grade: weak
+  evidence_fields:
+  - Max-Loves-Blue/
+  rationale: 'Max/MSP-style naming; art/music assets rather than code. Classification provisional.'

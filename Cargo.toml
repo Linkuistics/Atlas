@@ -6,6 +6,7 @@ members = [
     "crates/atlas-engine",
     "crates/atlas-llm",
     "crates/atlas-cli",
+    "evaluation/harness",
 ]
 
 [workspace.package]
