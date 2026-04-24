@@ -5,17 +5,20 @@
 //!
 //! - L0 inputs and L1 enumeration queries — live.
 //! - L2 candidate generation, L3 classification — live.
+//! - L4 tree assembly + rename-match — live.
 //! - L8 subcarve back-edge — stubbed; real implementation lands in
 //!   the L7/L8 backlog task.
-//! - L4–L7, L9, CLI — upcoming tasks.
+//! - L5–L7, L9, CLI — upcoming tasks.
 
 pub mod db;
 pub mod defaults;
 pub mod heuristics;
+pub mod identifiers;
 pub mod ingest;
 pub mod l1_queries;
 pub mod l2_candidates;
 pub mod l3_classify;
+pub mod l4_tree;
 pub mod l8_recurse;
 pub mod manifest_parse;
 pub mod manifest_patterns;
@@ -34,6 +37,10 @@ pub use l1_queries::{
 };
 pub use l2_candidates::candidate_components_at;
 pub use l3_classify::is_component;
+pub use l4_tree::{
+    all_components, component_children, component_parent, component_path_segments, try_assemble,
+    TreeAssemblyError,
+};
 pub use l8_recurse::subcarve_plan;
 pub use manifest_patterns::is_manifest_file;
 pub use types::{Candidate, Classification, ComponentKind, RationaleBundle};
