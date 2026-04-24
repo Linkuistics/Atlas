@@ -16,9 +16,9 @@ entries:
   body: |
     Serde untagged enums require each variant's distinguishing field name to be unique across variants. Field name collisions between variants cause ambiguous deserialisation. This constraint is load-bearing for `PinValue` in atlas-index.
 - id: componentkind-enum-deferred-to-atlas-engine
-  title: ComponentKind enum deferred to atlas-engine
+  title: ComponentKind enum lives in atlas-engine not atlas-index
   body: |
-    `ComponentEntry::kind` is `String`, not a `ComponentKind` enum. A vocabulary enum would churn downstream consumers on every new term; atlas-engine (task 5) is the correct owner for that enum.
+    `ComponentKind` is defined in `atlas-engine`, not `atlas-index`. `ComponentEntry::kind` in atlas-index remains `String` to avoid churning downstream consumers when the vocabulary expands. The enum is the authoritative classification vocabulary and currently has 13 variants enumerated in `defaults/component-kinds.yaml`.
 - id: pinvalue-suppress-uses-alwaystrue-to-ban-suppress-false
   title: PinValue::Suppress uses AlwaysTrue to ban suppress:false
   body: |
@@ -75,3 +75,23 @@ entries:
     **Implementation reference:** `crates/atlas-engine/src/db.rs` — `AtlasDatabase::register_file` and `AtlasDatabase::set_workspace_*` wrappers.
 
     **Consequence for future fields:** Any new `Workspace` input field added in L2/L3/L4 must have a skip-if-equal guard in its `AtlasDatabase` setter method. Consider factoring into a macro or helper once three or more fields follow the pattern — the L0/L1 implementation left this as a future refactor to keep the change small.
+- id: l3-classification-keys-by-workspace-dir-not-candidate
+  title: L3 classification keys by (workspace, dir) not Candidate
+  body: |
+    L3 classification queries take `(workspace: Workspace, dir: VfsPath)` primitives rather than a `Candidate` struct. This avoids forcing `salsa::Update` on `RationaleBundle` fields; the candidate is reconstructed inside L3 from L1-memoised queries at zero cost.
+- id: cargo-toml-manifest-parsing-uses-line-scanning-not-toml-crate
+  title: Cargo.toml manifest parsing uses line-scanning not toml crate
+  body: |
+    `manifest_parse` line-scans `Cargo.toml` for section headers (`[lib]`, `[[bin]]`, `[workspace]`) rather than pulling in the `toml` crate. This is robust to Cargo's section rules. `serde-json` is used only for `package.json` parsing.
+- id: pin-lookup-accepts-relative-path-basename-or-additions-id
+  title: Pin lookup accepts relative path, basename, or additions id
+  body: |
+    Pin lookup in L3 accepts three key forms: relative path, basename, and additions entry id. L4 has not yet allocated final component ids, so permissive matching lets users write pins naturally before canonical ids are known.
+- id: lifecycle-roles-uses-vec-lifecyclescope-from-component-ontology
+  title: lifecycle_roles uses Vec<LifecycleScope> from component-ontology
+  body: |
+    `lifecycle_roles` on classification output reuses `Vec<LifecycleScope>` from `component-ontology` rather than a parallel type. Vocabulary is single-sourced across atlas-index and atlas-engine.
+- id: is-component-not-salsa-tracked-salsa-0-26-lacks-downcast
+  title: is_component not salsa::tracked; Salsa 0.26 lacks downcast
+  body: |
+    `is_component` is not `#[salsa::tracked]` because the LLM backend lives on `AtlasDatabase` outside Salsa storage. Tracked functions receive `&dyn salsa::Database`; Salsa 0.26 does not expose a downcast to the concrete type. Deterministic and pin paths have no memoisation need (L1 caching covers signal reads). LLM-call memoisation is deferred to a later task.
