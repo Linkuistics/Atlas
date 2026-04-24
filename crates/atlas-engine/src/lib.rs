@@ -6,9 +6,10 @@
 //! - L0 inputs and L1 enumeration queries — live.
 //! - L2 candidate generation, L3 classification — live.
 //! - L4 tree assembly + rename-match — live.
+//! - L5 surface extraction, L6 candidate-edge proposal — live.
 //! - L8 subcarve back-edge — stubbed; real implementation lands in
 //!   the L7/L8 backlog task.
-//! - L5–L7, L9, CLI — upcoming tasks.
+//! - L7, L9, CLI — upcoming tasks.
 
 pub mod db;
 pub mod defaults;
@@ -19,9 +20,14 @@ pub mod l1_queries;
 pub mod l2_candidates;
 pub mod l3_classify;
 pub mod l4_tree;
+pub mod l5_surface;
+pub mod l6_edges;
 pub mod l8_recurse;
+pub mod llm_cache;
 pub mod manifest_parse;
 pub mod manifest_patterns;
+pub mod prompt_migration;
+pub mod surface_types;
 pub mod types;
 
 pub use db::{AtlasDatabase, ExecutedEvent, File, Workspace};
@@ -41,6 +47,10 @@ pub use l4_tree::{
     all_components, component_children, component_parent, component_path_segments, try_assemble,
     TreeAssemblyError,
 };
+pub use l5_surface::{surface_of, EMBEDDED_STAGE1_SURFACE_PROMPT};
+pub use l6_edges::{all_proposed_edges, candidate_edges_for, EMBEDDED_STAGE2_EDGES_PROMPT};
 pub use l8_recurse::subcarve_plan;
+pub use llm_cache::{LlmCacheKey, LlmResponseCache};
 pub use manifest_patterns::is_manifest_file;
+pub use surface_types::{InteractionRoleHint, SurfaceRecord};
 pub use types::{Candidate, Classification, ComponentKind, RationaleBundle};

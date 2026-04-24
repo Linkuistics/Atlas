@@ -33,6 +33,8 @@ use atlas_index::{ComponentsFile, ExternalsFile, OverridesFile, RelatedComponent
 use atlas_llm::{LlmBackend, LlmFingerprint};
 use salsa::Setter;
 
+use crate::llm_cache::LlmResponseCache;
+
 /// One file known to the engine. Salsa input: content changes via
 /// [`File::set_bytes`] invalidate queries that read the file, without
 /// disturbing queries that only looked at the enclosing [`Workspace`]'s
@@ -91,6 +93,11 @@ pub struct AtlasDatabase {
     workspace: Option<Workspace>,
     files_by_path: Arc<Mutex<BTreeMap<PathBuf, File>>>,
     execution_log: Arc<Mutex<Option<Vec<ExecutedEvent>>>>,
+    /// Per-run LLM response cache consulted by L5/L6 (and any future
+    /// LLM-driven query) via [`AtlasDatabase::call_llm_cached`]. Keyed
+    /// by backend fingerprint + request, so a Workspace-input edit that
+    /// does not move the request-level inputs is a cache hit.
+    llm_cache: LlmResponseCache,
 }
 
 impl AtlasDatabase {
@@ -122,6 +129,7 @@ impl AtlasDatabase {
             workspace: None,
             files_by_path: Arc::default(),
             execution_log,
+            llm_cache: LlmResponseCache::new(),
         };
         let workspace = Workspace::new(
             &db,
@@ -140,6 +148,21 @@ impl AtlasDatabase {
 
     pub fn backend(&self) -> &Arc<dyn LlmBackend> {
         &self.backend
+    }
+
+    /// Memoised backend call. Every LLM-adjacent query (L3's
+    /// `classify_via_llm`, L5 `surface_of`, L6 `candidate_edges_for`)
+    /// should go through this wrapper so the cache-hit contract in the
+    /// task 9 exit criteria holds.
+    pub fn call_llm_cached(
+        &self,
+        request: &atlas_llm::LlmRequest,
+    ) -> Result<Arc<serde_json::Value>, atlas_llm::LlmError> {
+        self.llm_cache.call_cached(self.backend.as_ref(), request)
+    }
+
+    pub fn llm_cache(&self) -> &LlmResponseCache {
+        &self.llm_cache
     }
 
     pub fn workspace(&self) -> Workspace {
