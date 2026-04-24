@@ -67,3 +67,11 @@ entries:
   title: ignore crate requires .git root for gitignore filtering
   body: |
     The `ignore` crate's gitignore filtering only activates inside `.git`-rooted directory trees. Standalone tempdir fixtures bypass it by design, which is the correct behaviour for test fixtures that should not be filtered.
+- id: salsa-setter-equality-check-pattern-implementation-reference
+  title: Salsa setter equality-check pattern (implementation reference)
+  body: |
+    All `AtlasDatabase` setter wrappers (e.g. `register_file`, future `set_*` for Workspace fields) must read the current value and return early when the incoming value is equal. Salsa 0.26 input setters unconditionally bump the revision even when the value is unchanged; without this guard, every re-seed (e.g. on file-watcher tick) invalidates all downstream tracked queries, destroying incremental caching.
+
+    **Implementation reference:** `crates/atlas-engine/src/db.rs` — `AtlasDatabase::register_file` and `AtlasDatabase::set_workspace_*` wrappers.
+
+    **Consequence for future fields:** Any new `Workspace` input field added in L2/L3/L4 must have a skip-if-equal guard in its `AtlasDatabase` setter method. Consider factoring into a macro or helper once three or more fields follow the pattern — the L0/L1 implementation left this as a future refactor to keep the change small.
