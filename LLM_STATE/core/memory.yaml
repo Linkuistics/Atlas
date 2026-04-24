@@ -125,3 +125,9 @@ entries:
   title: L6 batch queries all_proposed_edges/candidate_edges_for share cache key
   body: |
     L6 `all_proposed_edges` and `candidate_edges_for` share a single cache key (the full component-pair input batch). One LLM call covers all pairs, but a single component input change invalidates the entire batch's cached result.
+- id: l5-l6-llm-calls-must-route-through-call-llm-cached-not-backend-call-directly
+  title: L5/L6+ LLM calls must route through call_llm_cached not backend.call directly
+  body: |
+    All LLM-adjacent queries in atlas-engine (L5/L6 and any future layers) must route through `AtlasDatabase::call_llm_cached(&self, req)` rather than calling `backend.call()` directly. This wrapper consults `LlmResponseCache` before hitting the backend and records the response keyed by `(LlmFingerprint, PromptId, canonical-JSON(inputs))`.
+
+    Bypassing `call_llm_cached` will silently skip the cache, causing re-runs to make redundant LLM calls and breaking the "zero LLM calls on no-op re-run" exit criterion (task L9). The cache is the memoisation substitute for the missing Salsa-tracked route (blocked by Salsa 0.26 downcast limitation per `is_component not salsa::tracked` memory).
