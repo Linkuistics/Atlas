@@ -1,6 +1,13 @@
 # Discovery — Stage 1: Extract Interaction Surface
 
-You are analysing the component rooted at your current working directory.
+You are analysing the component whose catalog id is **`{{COMPONENT_ID}}`**.
+Its source lives at these workspace-relative paths:
+
+`{{COMPONENT_PATHS}}`
+
+Limit your analysis to files inside those paths. Each element of the
+array above is one of the component's path segments; a component may
+span more than one directory.
 
 Your task is to read the component thoroughly and emit a structured
 interaction-surface record describing how this component interacts with
@@ -16,13 +23,8 @@ judgement.
 For each field below, include evidence from the code — do not speculate.
 If a field does not apply, emit an empty list or empty string.
 
-**List-item formatting rule (applies to every list-typed field below):**
-each list item must be a bare name, path, or URL — no parenthetical
-descriptions, no inline annotations, no colons except as part of a URL
-scheme. For example, write `- EventLogLine`, NOT `- EventLogLine (text:
-"...")`. If you need to disambiguate or describe a list item, mention
-it in the `notes` field instead. Adding a parenthetical with a colon
-inside breaks YAML parsing because YAML reads `key: value` as a map.
+**List-item rule:** each list item is a bare name, path, or URL. Put
+descriptive context in the `notes` field, not inline with list items.
 
 - `purpose` — one paragraph describing what this component does, written
   from evidence in the README, main entry points, and top-level modules.
@@ -95,34 +97,27 @@ names are valid values for `explicit_cross_component_mentions`:
 
 {{CATALOG_COMPONENTS}}
 
-## Output format
+## Output
 
-Write your output as YAML to `{{SURFACE_OUTPUT_PATH}}` — exactly one
-`SurfaceRecord` document. Do NOT emit the `schema_version`, `component`,
-`tree_sha`, or `analysed_at` fields — those are injected by the caller.
+Return **only** a single JSON object on stdout. No markdown fences, no
+prose preamble, no trailing commentary — the calling process parses your
+entire stdout as one JSON document and will error on any extra bytes.
 
-Your output must be parseable by this Rust struct (field order flexible):
+The object must match this schema (every field is required; use an
+empty list or empty string where the field does not apply):
 
-```yaml
-purpose: |
-  <one paragraph>
-consumes_files:
-  - <glob or path>
-produces_files:
-  - <glob or path>
-network_endpoints:
-  - <protocol>://<address>
-data_formats:
-  - <name>
-external_tools_spawned:
-  - <binary-name>
-explicit_cross_component_mentions:
-  - <component-name-or-path>
-interaction_role_hints:
-  - <role from the vocabulary above>
-notes: |
-  <free-form prose>
-```
+    {
+      "purpose": "<one paragraph>",
+      "consumes_files": ["<glob or path>", "..."],
+      "produces_files": ["<glob or path>", "..."],
+      "network_endpoints": ["<protocol>://<address>", "..."],
+      "data_formats": ["<name>", "..."],
+      "external_tools_spawned": ["<binary-name>", "..."],
+      "explicit_cross_component_mentions": ["<catalog-component-name>", "..."],
+      "interaction_role_hints": ["<role from the vocabulary above>", "..."],
+      "notes": "<free-form prose>"
+    }
 
-After writing the YAML file, your final message should confirm the path
-written. No other output is required.
+Do NOT emit `schema_version`, `component`, `tree_sha`, or `analysed_at`
+— those fields are injected by the caller. Do NOT write this record to
+a file on disk: stdout is the only channel consumed.

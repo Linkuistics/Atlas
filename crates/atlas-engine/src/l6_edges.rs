@@ -94,10 +94,10 @@ struct SurfaceWithId {
 }
 
 fn build_inputs(surfaces: &[SurfaceWithId]) -> Value {
-    // Render the surfaces as YAML because the Ravel-Lite-inherited
-    // prompt's `{{SURFACE_RECORDS_YAML}}` token expects a YAML
-    // fragment. ONTOLOGY_KINDS is populated from the embedded
-    // ontology so the prompt's kind-list substitution renders cleanly.
+    // Render the surfaces as a YAML fragment for the
+    // `{{SURFACE_RECORDS_YAML}}` token; `{{ONTOLOGY_KINDS}}` comes from
+    // the embedded ontology so the model sees the same vocabulary the
+    // parser validates against.
     let surfaces_yaml = serde_yaml::to_string(&SurfacesWrapper { surfaces })
         .unwrap_or_else(|_| String::from("surfaces: []\n"));
     let ontology_block =
@@ -105,7 +105,6 @@ fn build_inputs(surfaces: &[SurfaceWithId]) -> Value {
 
     json!({
         "ONTOLOGY_KINDS": ontology_block,
-        "CONFIG_ROOT": "(unused — Atlas does not shell out to a CLI)",
         "SURFACE_RECORDS_YAML": surfaces_yaml,
     })
 }
@@ -219,22 +218,36 @@ mod tests {
     use crate::db::AtlasDatabase;
     use crate::ingest::seed_filesystem;
     use crate::l5_surface::EMBEDDED_STAGE1_SURFACE_PROMPT;
-    use crate::prompt_migration::project_to_component;
     use atlas_llm::{LlmFingerprint, TestBackend};
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    const RAVEL_LITE_STAGE2: &str =
-        include_str!("../../../../Ravel-Lite/defaults/discover-stage2.md");
+    #[test]
+    fn stage2_edges_prompt_exposes_required_substitution_tokens() {
+        for token in ["{{ONTOLOGY_KINDS}}", "{{SURFACE_RECORDS_YAML}}"] {
+            assert!(
+                EMBEDDED_STAGE2_EDGES_PROMPT.contains(token),
+                "stage2-edges.md must expose `{token}` — the engine's \
+                 `build_inputs` populates it and the prompt is expected \
+                 to reference it"
+            );
+        }
+    }
 
     #[test]
-    fn stage2_edges_prompt_is_the_transformed_ravel_lite_original() {
-        let expected = project_to_component(RAVEL_LITE_STAGE2);
-        assert_eq!(
-            EMBEDDED_STAGE2_EDGES_PROMPT, expected,
-            "Atlas stage2-edges.md diverged from Ravel-Lite's discover-stage2.md \
-             modulo the documented project→component substitutions"
-        );
+    fn stage2_edges_prompt_has_no_ravel_lite_protocol_remnants() {
+        // The Ravel-Lite-era prompt told the model to shell out to
+        // `ravel-lite state discover-proposals add-proposal` once per
+        // edge. Atlas's `ClaudeCodeBackend` expects a JSON array on
+        // stdout; those instructions are now wrong and must stay gone.
+        for forbidden in ["CONFIG_ROOT", "ravel-lite", "Ravel-Lite", "add-proposal"] {
+            assert!(
+                !EMBEDDED_STAGE2_EDGES_PROMPT.contains(forbidden),
+                "stage2-edges.md still contains `{forbidden}` — this is \
+                 a leftover Ravel-Lite protocol reference that conflicts \
+                 with Atlas's JSON-on-stdout contract"
+            );
+        }
     }
 
     #[test]
@@ -251,6 +264,61 @@ mod tests {
     fn both_prompts_are_non_empty() {
         assert!(!EMBEDDED_STAGE1_SURFACE_PROMPT.is_empty());
         assert!(!EMBEDDED_STAGE2_EDGES_PROMPT.is_empty());
+    }
+
+    #[test]
+    fn stage2_edges_prompt_tokens_are_all_supplied_by_build_inputs() {
+        let (db, backend, _tmp) = two_component_setup();
+        let ids = prime_surfaces(&db, &backend);
+        let surfaces: Vec<SurfaceWithId> = ids
+            .iter()
+            .map(|id| SurfaceWithId {
+                id: id.clone(),
+                surface: (*surface_of(&db, id.clone())).clone(),
+            })
+            .collect();
+        let inputs = build_inputs(&surfaces);
+        let supplied: std::collections::HashSet<String> = inputs
+            .as_object()
+            .expect("build_inputs must return an object")
+            .keys()
+            .cloned()
+            .collect();
+
+        for token in collect_template_tokens(EMBEDDED_STAGE2_EDGES_PROMPT) {
+            assert!(
+                supplied.contains(&token),
+                "stage2-edges.md references `{{{{{token}}}}}` but \
+                 build_inputs does not populate key `{token}`"
+            );
+        }
+    }
+
+    /// Extract every `{{TOKEN}}` name referenced in `template`, using
+    /// the same grammar as `atlas_llm::prompt::render`: `{{TOKEN}}`
+    /// substitutes, `{{{{` and `}}}}` are literal-brace escapes.
+    fn collect_template_tokens(template: &str) -> Vec<String> {
+        let mut tokens = Vec::new();
+        let mut rest = template;
+        while !rest.is_empty() {
+            if let Some(body) = rest.strip_prefix("{{{{") {
+                rest = body;
+                continue;
+            }
+            if let Some(body) = rest.strip_prefix("}}}}") {
+                rest = body;
+                continue;
+            }
+            if let Some(body) = rest.strip_prefix("{{") {
+                let end = body.find("}}").expect("template must close `{{`");
+                tokens.push(body[..end].trim().to_string());
+                rest = &body[end + 2..];
+                continue;
+            }
+            let ch = rest.chars().next().unwrap();
+            rest = &rest[ch.len_utf8()..];
+        }
+        tokens
     }
 
     // ---------------------------------------------------------------

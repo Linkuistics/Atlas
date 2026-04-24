@@ -101,18 +101,18 @@ pub fn surface_of(db: &AtlasDatabase, id: String) -> Arc<SurfaceRecord> {
 ///
 /// Fields:
 ///
-/// - `COMPONENT_ID` — so a future prompt version can key directly on it.
+/// - `COMPONENT_ID` — rendered as `{{COMPONENT_ID}}` in the prompt so
+///   the model knows which catalog id it is analysing.
 /// - `COMPONENT_PATHS` — a JSON array of the relative path segments
 ///   the component spans (design §4.1 L5 notes that a component may
-///   span multiple segments).
+///   span multiple segments). Rendered as `{{COMPONENT_PATHS}}`.
 /// - `COMPONENT_CONTENT_SHAS` — the matching per-segment content SHAs
-///   so a file-level content change invalidates the cache key.
+///   so a file-level content change invalidates the cache key. Not
+///   referenced by the prompt prose; present only for cache-key
+///   fidelity.
 /// - `CATALOG_COMPONENTS` — marker-formatted list of peer component
 ///   ids so `{{CATALOG_COMPONENTS}}` substitution in the shipped
 ///   prompt has something to expand to.
-/// - `SURFACE_OUTPUT_PATH` — placeholder so the Ravel-Lite-inherited
-///   output instruction renders without a template error; the value
-///   is cosmetic for backends that consume JSON via stdout.
 fn build_inputs(component: &ComponentEntry, peer_ids: &[String]) -> Value {
     let component_paths: Vec<String> = component
         .path_segments
@@ -131,7 +131,6 @@ fn build_inputs(component: &ComponentEntry, peer_ids: &[String]) -> Value {
         "COMPONENT_PATHS": component_paths,
         "COMPONENT_CONTENT_SHAS": content_shas,
         "CATALOG_COMPONENTS": catalog_block,
-        "SURFACE_OUTPUT_PATH": "(stdout)",
     })
 }
 
@@ -218,50 +217,114 @@ mod tests {
     use super::*;
     use crate::db::AtlasDatabase;
     use crate::ingest::seed_filesystem;
-    use crate::prompt_migration::project_to_component;
     use atlas_llm::{LlmFingerprint, TestBackend};
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    const RAVEL_LITE_STAGE1: &str =
-        include_str!("../../../../Ravel-Lite/defaults/discover-stage1.md");
-
     #[test]
-    fn stage1_surface_prompt_is_the_transformed_ravel_lite_original() {
-        let expected = project_to_component(RAVEL_LITE_STAGE1);
-        assert_eq!(
-            EMBEDDED_STAGE1_SURFACE_PROMPT, expected,
-            "Atlas stage1-surface.md diverged from Ravel-Lite's discover-stage1.md \
-             modulo the documented project→component substitutions; either the \
-             Ravel-Lite prose changed, or the Atlas copy was edited outside the \
-             transformation. Reconcile in one place."
-        );
+    fn stage1_surface_prompt_exposes_required_substitution_tokens() {
+        for token in [
+            "{{COMPONENT_ID}}",
+            "{{COMPONENT_PATHS}}",
+            "{{CATALOG_COMPONENTS}}",
+        ] {
+            assert!(
+                EMBEDDED_STAGE1_SURFACE_PROMPT.contains(token),
+                "stage1-surface.md must expose `{token}` — the engine's \
+                 `build_inputs` populates it and the prompt is expected \
+                 to reference it"
+            );
+        }
     }
 
     #[test]
-    fn stage1_surface_prompt_mentions_the_catalog_components_token() {
-        assert!(
-            EMBEDDED_STAGE1_SURFACE_PROMPT.contains("{{CATALOG_COMPONENTS}}"),
-            "stage1-surface.md must expose the renamed catalog token"
-        );
-        assert!(
-            !EMBEDDED_STAGE1_SURFACE_PROMPT.contains("{{CATALOG_PROJECTS}}"),
-            "stage1-surface.md must not retain the pre-migration token name"
-        );
+    fn stage1_surface_prompt_has_no_ravel_lite_protocol_remnants() {
+        // The Ravel-Lite-era prompt told the model to write YAML to a
+        // path passed via `{{SURFACE_OUTPUT_PATH}}` and referred to
+        // the upstream tool by name. Atlas's `ClaudeCodeBackend`
+        // expects JSON on stdout; those instructions are now wrong
+        // and must stay gone.
+        for forbidden in ["SURFACE_OUTPUT_PATH", "ravel-lite", "Ravel-Lite"] {
+            assert!(
+                !EMBEDDED_STAGE1_SURFACE_PROMPT.contains(forbidden),
+                "stage1-surface.md still contains `{forbidden}` — this is \
+                 a leftover Ravel-Lite protocol reference that conflicts \
+                 with Atlas's JSON-on-stdout contract"
+            );
+        }
     }
 
     #[test]
     fn stage1_surface_prompt_has_no_residual_project_word() {
-        // Every occurrence of "project" case-variants is a migration
-        // miss. The substitution is exhaustive in both Ravel-Lite's
-        // current prose and any drift — a "project" word re-entering
-        // the corpus should fail loud.
+        // The prompt was migrated from Ravel-Lite's project-oriented
+        // vocabulary; any stray `project` word means the migration
+        // missed a spot.
         for stem in ["project", "Project", "PROJECT"] {
             assert!(
                 !EMBEDDED_STAGE1_SURFACE_PROMPT.contains(stem),
                 "stage1-surface.md contains stray `{stem}` token"
             );
         }
+    }
+
+    #[test]
+    fn stage1_surface_prompt_tokens_are_all_supplied_by_build_inputs() {
+        // `prompt::render` errors if the prompt references a token for
+        // which inputs supply no value. Confirm every `{{TOKEN}}` in
+        // the shipped prompt maps to a key in `build_inputs`'s output;
+        // otherwise the first real backend call panics on
+        // `TemplateSyntax`.
+        let tmp = TempDir::new().unwrap();
+        write_cargo_lib_fixture(tmp.path(), "fixture");
+        let (db, _backend) = db_with_shared_backend(&tmp);
+        let id = all_components(&db)
+            .iter()
+            .find(|c| !c.deleted)
+            .expect("fixture must produce a component")
+            .id
+            .clone();
+        let inputs = inputs_for_id(&db, &id);
+        let supplied: std::collections::HashSet<String> = inputs
+            .as_object()
+            .expect("build_inputs must return an object")
+            .keys()
+            .cloned()
+            .collect();
+
+        for token in collect_template_tokens(EMBEDDED_STAGE1_SURFACE_PROMPT) {
+            assert!(
+                supplied.contains(&token),
+                "stage1-surface.md references `{{{{{token}}}}}` but \
+                 build_inputs does not populate key `{token}`"
+            );
+        }
+    }
+
+    /// Extract every `{{TOKEN}}` name referenced in `template`, using
+    /// the same grammar as `atlas_llm::prompt::render`: `{{TOKEN}}`
+    /// substitutes, `{{{{` and `}}}}` are literal-brace escapes.
+    fn collect_template_tokens(template: &str) -> Vec<String> {
+        let mut tokens = Vec::new();
+        let mut rest = template;
+        while !rest.is_empty() {
+            if let Some(body) = rest.strip_prefix("{{{{") {
+                rest = body;
+                continue;
+            }
+            if let Some(body) = rest.strip_prefix("}}}}") {
+                rest = body;
+                continue;
+            }
+            if let Some(body) = rest.strip_prefix("{{") {
+                let end = body.find("}}").expect("template must close `{{`");
+                tokens.push(body[..end].trim().to_string());
+                rest = &body[end + 2..];
+                continue;
+            }
+            let ch = rest.chars().next().unwrap();
+            rest = &rest[ch.len_utf8()..];
+        }
+        tokens
     }
 
     // ---------------------------------------------------------------

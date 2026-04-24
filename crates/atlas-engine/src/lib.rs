@@ -31,7 +31,6 @@ pub mod subcarve_policy;
 pub mod llm_cache;
 pub mod manifest_parse;
 pub mod manifest_patterns;
-pub mod prompt_migration;
 pub mod surface_types;
 pub mod types;
 

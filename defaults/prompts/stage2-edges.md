@@ -125,48 +125,45 @@ Annotate every proposal with one of:
   weakness.
 
 `evidence_fields` lists the surface paths that justify the edge (e.g.
-`Alpha.surface.produces_files`, `Beta.surface.consumes_files`). May
-be empty only when `evidence_grade: weak` AND `rationale` justifies
-it explicitly.
+`Alpha.produces_files`, `Beta.consumes_files`). May be empty only when
+`evidence_grade: weak` AND `rationale` justifies it explicitly.
 
-## Output — invoke the CLI once per edge
+## Output
 
-Do NOT write a YAML file. For each edge you propose, invoke this shell
-command via the `Bash` tool:
+Return **only** a JSON array of edge objects on stdout. No markdown
+fences, no prose preamble, no trailing commentary — the calling process
+parses your entire stdout as one JSON document and will error on any
+extra bytes.
 
-```bash
-ravel-lite state discover-proposals add-proposal \
-  --config "{{CONFIG_ROOT}}" \
-  --kind <kebab-case kind from the ontology above> \
-  --lifecycle <kebab-case lifecycle from the ontology above> \
-  --participant <name1> \
-  --participant <name2> \
-  --evidence-grade <strong|medium|weak> \
-  --evidence-field "<e.g., Alpha.surface.produces_files>" \
-  --evidence-field "<e.g., Beta.surface.consumes_files>" \
-  --rationale "<one paragraph citing specific surface fields from the input>"
-```
+Each element of the array is an object with this shape:
+
+    {
+      "kind": "<kebab-case kind from the ontology above>",
+      "lifecycle": "<kebab-case lifecycle from the ontology above>",
+      "participants": ["<component-id-A>", "<component-id-B>"],
+      "evidence_grade": "<strong|medium|weak>",
+      "evidence_fields": ["<e.g. Alpha.produces_files>", "<e.g. Beta.consumes_files>"],
+      "rationale": "<one paragraph citing specific surface fields from the input>"
+    }
 
 Rules:
 
-- **One invocation per edge.** A pair with two `(kind, lifecycle)` tuples
-  (§3.5) is two invocations.
-- **Participant order matters for directed kinds.** The first
-  `--participant` is the canonical-order "from" component and the
-  second is the "to" component (e.g. `generates`: first produces,
-  second consumes). For symmetric kinds the CLI canonicalises to
-  alphabetical order internally, so either order is accepted.
-- **Only catalogued components.** Use component names exactly as they
-  appear in the input — no paths, no aliases. The CLI rejects unknown
-  names with a list of the valid ones.
-- **Repeat `--evidence-field` for multiple fields.** Omit the flag
-  entirely only when `--evidence-grade weak` (the CLI will reject
-  empty evidence on `strong`/`medium`).
-
-If an invocation returns a non-zero exit, read the stderr — it will
-cite the invalid argument and list the valid vocabulary or catalog
-entries. Correct the argument and retry. When every edge has been
-proposed, exit. No summary message is required.
+- **`participants` is an array of exactly two component ids.** Ids must
+  match the `id` field on one of the surface records in the input
+  block below; references to unknown ids are dropped silently by the
+  parser.
+- **Participant order matters for directed kinds.** Index 0 is the
+  canonical "from" component, index 1 is the "to" (e.g. `generates`:
+  first produces, second consumes). For symmetric kinds the parser
+  sorts participants alphabetically after reading them, so either
+  order is accepted.
+- **One entry per edge.** A pair that warrants two `(kind, lifecycle)`
+  tuples (§3.5) produces two entries.
+- **Evidence on `strong` / `medium`.** `evidence_fields` must list at
+  least one surface path on those grades; an empty list is only
+  permitted for `weak` and must be justified in `rationale`.
+- **Emit `[]` when no edges meet the bar.** An empty array is a valid
+  answer — false positives are costlier than missed edges.
 
 ## Input
 
