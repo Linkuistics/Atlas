@@ -1,0 +1,16 @@
+[package]
+name = "atlas-cli"
+version = "0.1.0"
+description = "Atlas CLI binary; command parsing, configuration, atomic file writes, driver for atlas-engine."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "atlas"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

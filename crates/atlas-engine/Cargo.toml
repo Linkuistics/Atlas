@@ -1,0 +1,12 @@
+[package]
+name = "atlas-engine"
+version = "0.1.0"
+description = "Salsa-backed query graph that drives Atlas's component-discovery fixedpoint."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

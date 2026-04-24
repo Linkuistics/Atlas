@@ -1,0 +1,19 @@
+[package]
+name = "component-ontology"
+version = "0.1.0"
+description = "Host-agnostic ontology of component-relationship edges (kinds, lifecycles, evidence grades) and the related-components.yaml schema."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+
+[dev-dependencies]
+regex = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

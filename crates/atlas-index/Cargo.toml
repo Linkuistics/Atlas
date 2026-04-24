@@ -1,0 +1,12 @@
+[package]
+name = "atlas-index"
+version = "0.1.0"
+description = "Schema and reader for the four Atlas YAMLs; rename-matching and merge-with-overrides."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
