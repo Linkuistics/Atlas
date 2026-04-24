@@ -1,14 +1,19 @@
 id: session-12
-timestamp: 2026-04-24T14:12:28Z
+timestamp: 2026-04-24T14:12:42Z
 phase: work
 body: |
-  ### Session 12 (2026-04-24T14:12:28Z) — Extract component-ontology and atlas-index to linkuistics/atlas-contracts
+  ### Session 12 (2026-04-24T14:12:42Z) — Extract component-ontology and atlas-index to public linkuistics/atlas-contracts repo
 
-  - Extracted the `component-ontology` and `atlas-index` crates (plus `defaults/ontology.yaml`) from Atlas into a new public GitHub repo `linkuistics/atlas-contracts`, a Cargo workspace mirroring Atlas's workspace style. Bootstrap commit sha: `337c54368eb1393f2c3f8839a5e9042ce72cf964`.
-  - Verified the extracted workspace builds and all 80 tests pass in isolation (33 atlas-index unit, 3 atlas-index golden, 44 component-ontology).
-  - Wired Atlas up: dropped the two crates from `[workspace.members]`, added git deps pinned by sha in `[workspace.dependencies]`, switched `atlas-cli`, `atlas-engine`, `evaluation/harness` to `workspace = true` deps, deleted local `crates/component-ontology/`, `crates/atlas-index/`, `defaults/ontology.yaml`.
-  - Ran full Atlas test suite: 281 passed, 2 ignored (pre-existing opt-in), 0 failed.
-  - Rewrote M2, M4, M5 task descriptions to reference the git-dep source rather than path deps or crates.io; unblocked M2.
-  - Updated the `cross-crate-include-str-paths-break-crates-io-publication` memory entry to note its structural mootness under the Brew-bottle distribution model.
-  - Key decision: skipped `git filter-repo` history transplant per user preference — a clean "Initial extraction" bootstrap commit is cleaner for a public repo; Atlas history is still accessible via the private Atlas log.
-  - Key learning: `evaluation/harness/Cargo.toml` still had a direct path dep on `atlas-index` that was missed in the initial sweep; grepping before deletion would have caught it earlier.
+  - Brainstormed with user and confirmed distribution model: Atlas and Ravel-Lite ship as Homebrew bottles built by CI, not via crates.io. This made `include_str!` cross-crate path concerns structurally moot and unlocked git deps as the appropriate dependency source. Saved as persistent project memory.
+  - Rewrote the task description to drop crates.io scope and target a single umbrella `atlas-contracts` repo with git-dep wiring.
+  - Created public GitHub repo `linkuistics/atlas-contracts` (Apache-2.0 Cargo workspace). Bootstrapped with a single "Initial extraction from Atlas" commit (sha `337c54368eb1393f2c3f8839a5e9042ce72cf964`) — skipped `git filter-repo` per user preference for simplicity over history preservation.
+  - Verified the extracted workspace in isolation: 80 tests passed (33 atlas-index unit, 3 atlas-index golden, 44 component-ontology), 0 failed.
+  - Wired Atlas to use git deps pinned by sha: dropped both crates from `[workspace.members]`, added them as `[workspace.dependencies]` with `git = "https://github.com/linkuistics/atlas-contracts"`, switched `atlas-cli`, `atlas-engine`, `evaluation/harness` from path deps to `workspace = true`. Deleted local `crates/component-ontology/`, `crates/atlas-index/`, `defaults/ontology.yaml`.
+  - Ran full Atlas test suite post-wiring: 281 passed, 2 ignored (pre-existing opt-in LLM tests), 0 failed.
+  - Rewrote M2, M4, M5 backlog task descriptions to reference the new git-dep source. M5 gained a Stage-1/2 prompt discussion recommending Ravel-Lite keeps its own prompts ("public contracts, private computation" split).
+  - M2 unblocked (its dependency on this task now resolved).
+  - Updated the `cross-crate-include-str-paths-break-crates-io-publication` memory entry to note structural mootness under the Brew-bottle model.
+
+  What worked: skipping filter-repo in favour of a bootstrap commit was cleaner. `workspace = true` deps centralise the sha pin — a single bump upgrades all downstream crates in lockstep.
+
+  What this suggests next: M2 (switch Ravel-Lite to the atlas-contracts git dep) is unblocked and ready to pick up.

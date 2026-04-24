@@ -164,12 +164,16 @@ entries:
   body: |
     Byte-comparison drift tests against Ravel-Lite originals (as in the deleted `prompt_migration.rs`) require a live Ravel-Lite sibling checkout and produce false failures once Atlas prompts genuinely diverge. Use required-token presence, no-Ravel-Lite-remnants, and template-token coverage tests instead. See: L5/L6 tests include template-token coverage check.
 - id: component-ontology-targets-linkuistics-extraction-for-oss
-  title: component-ontology targets Linkuistics extraction for OSS
+  title: component-ontology and atlas-index live in linkuistics/atlas-contracts
   body: |
-    component-ontology (and possibly atlas-index) is planned for extraction to a public Linkuistics crate. Extraction unblocks Ravel-Lite OSS migration tasks that require shared ontology types across crates.
+    `component-ontology` and `atlas-index` were extracted from Atlas into the public `linkuistics/atlas-contracts` Cargo workspace on GitHub (bootstrap commit `337c54368eb1393f2c3f8839a5e9042ce72cf964`). Atlas consumes both as git deps pinned by SHA in `[workspace.dependencies]`; `atlas-cli`, `atlas-engine`, and `evaluation/harness` declare them via `workspace = true`. The `defaults/ontology.yaml` asset also moved to `atlas-contracts`. History was not transplanted — a clean bootstrap commit was preferred for the public repo; Atlas history covers the pre-extraction lineage.
 - id: dev-workspace-golden-is-top-level-only-expect-high-spurious-rate-on-first-v1-metrics-run
   title: Dev-workspace golden is top-level only; expect high spurious rate on first v1 metrics run
   body: |
     Dev-workspace golden covers only 22 top-level components (one per top-level `~/Development/` directory). The atlas tool sub-carves monorepos and multi-crate workspaces into finer components. Expect high spurious-rate and low coverage on first v1 sign-off runs — this is structural, not a regression.
 
     **Resolution options already wired:** (a) refine the golden to sub-carve depth to match tool output, or (b) tune `OverlapThreshold` at call sites in `atlas-eval` (plumbing already exists). Notes on the tradeoff are in `evaluation/goldens/dev-workspace/notes.md`.
+- id: grep-all-workspace-members-before-deleting-extracted-crates
+  title: Grep all workspace members before deleting extracted crates
+  body: |
+    After extracting crates from a Cargo workspace, grep the remaining members for path deps pointing to the extracted crates before deleting them. `evaluation/harness/Cargo.toml` had a direct path dep on `atlas-index` that was missed in the initial sweep and required a follow-up fix.
