@@ -13,6 +13,9 @@ atlas-llm = { path = "../atlas-llm" }
 component-ontology = { path = "../component-ontology" }
 ignore = { workspace = true }
 salsa = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 sha2 = { workspace = true }
 
 [dev-dependencies]

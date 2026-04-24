@@ -1,0 +1,116 @@
+# Atlas component-kind vocabulary — data form.
+#
+# Source of truth: this file. The Rust enum `ComponentKind` in
+# `crates/atlas-engine/src/types.rs` mirrors every entry here; a drift
+# test in that module asserts bijection. Adding a kind in one place
+# without the other fails the build.
+#
+# Independent of `defaults/ontology.yaml`: that file describes
+# *relationships* between components (the `related-components.yaml`
+# vocabulary); this file describes *what a component is* (the `kind`
+# field in `components.yaml`).
+#
+# The `{{COMPONENT_KINDS}}` token in the classification prompt expands
+# to a markdown bullet list rendered from this file, so edits here
+# propagate to the prompt automatically.
+
+schema_version: 1
+
+kinds:
+  - name: rust-library
+    description: |
+      A Rust crate exposing a library interface. Recognised by
+      `Cargo.toml` containing a `[lib]` section with no `[[bin]]`
+      section, or by `src/lib.rs` alongside a manifest. Typical
+      lifecycles: build, runtime.
+
+  - name: rust-cli
+    description: |
+      A Rust crate that produces one or more executable binaries.
+      Recognised by `Cargo.toml` containing a `[[bin]]` section, or by
+      `src/main.rs` alongside a manifest. Typical lifecycles: build,
+      runtime.
+
+  - name: workspace
+    description: |
+      A multi-crate (or multi-package) workspace root. Recognised by
+      `Cargo.toml` with `[workspace]`, a `pnpm-workspace.yaml`, or
+      similar workspace manifests. The root is a component in its own
+      right; its members are child components.
+
+  - name: node-package
+    description: |
+      A Node.js package exposing a library interface. Recognised by
+      `package.json` with a `main` or `exports` field and no `bin`
+      field.
+
+  - name: node-cli
+    description: |
+      A Node.js package that installs one or more CLI executables.
+      Recognised by `package.json` with a `bin` field.
+
+  - name: python-package
+    description: |
+      A Python package. Recognised by `pyproject.toml` or `setup.py`.
+      Further refinement into application / library is deferred until
+      deeper heuristics land.
+
+  - name: website
+    description: |
+      A static or server-rendered web frontend. Recognised by a
+      combination of a frontend framework manifest (Next.js, SvelteKit,
+      Vite) and a build output directory.
+
+  - name: service
+    description: |
+      A long-running server process — HTTP, gRPC, message-queue
+      consumer, or similar. Typically identified by a Dockerfile plus
+      a main-module manifest, or by a declared deployment target.
+
+  - name: config-repo
+    description: |
+      A repository that exists primarily to hold configuration
+      (dotfiles, infrastructure-as-code, declarative deployment specs)
+      rather than code.
+
+  - name: docs-repo
+    description: |
+      A repository whose purpose is documentation — prose, reference
+      material, or a specification authored in Markdown or similar.
+
+  - name: spec
+    description: |
+      A specification document or collection of documents describing
+      behaviour that other components implement. Distinguished from a
+      docs-repo by its role as a contract rather than reference prose.
+
+  - name: external
+    description: |
+      A third-party component referenced from a manifest (e.g., a
+      published crate or npm package). Externals live in
+      `external-components.yaml`, not `components.yaml`.
+
+  - name: non-component
+    description: |
+      A directory that looks like a candidate on paper but is confirmed
+      not to be a component — for example, a `.git`-rooted directory
+      whose contents are just metadata, or an empty placeholder.
+
+lifecycle_scopes:
+  # The `{{LIFECYCLE_SCOPES}}` token in the classification prompt
+  # expands to this list. Values must match
+  # `component_ontology::LifecycleScope` (shared vocabulary).
+  - name: design
+    description: Design-time activities — specifications, architecture documents, RFCs.
+  - name: codegen
+    description: Code generation — schema compilers, scaffolding tools, template processors.
+  - name: build
+    description: Build-time activities — compilation, linking, packaging.
+  - name: test
+    description: Test-time activities — unit, integration, or acceptance tests.
+  - name: deploy
+    description: Deploy-time activities — packaging, provisioning, orchestration.
+  - name: runtime
+    description: Runtime activities — the live behaviour of the deployed system.
+  - name: dev-workflow
+    description: Developer workflow — tools used during development but not at runtime.
