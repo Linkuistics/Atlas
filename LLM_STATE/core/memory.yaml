@@ -1,0 +1,9 @@
+entries:
+- id: cross-crate-include-str-paths-break-crates-io-publication
+  title: Cross-crate include_str! paths break crates.io publication
+  body: |
+    `include_str!` paths are relative to the source file, allowing paths like `../../../defaults/ontology.yaml` to reach outside the crate directory. Works for path/git deps but is incompatible with crates.io publication (all included files must be within the crate root). Any crate using such paths must be reworked before registry publication.
+- id: lib-crate-public-items-do-not-trigger-dead-code-lint
+  title: Lib crate public items do not trigger dead-code lint
+  body: |
+    When a crate is a library (not a binary), the Rust compiler does not fire the dead-code lint for `pub` items, because they are considered part of a public API. Binary-host crates required `#[allow(dead_code)]` on the same items; migrating to a lib crate removes that need.
