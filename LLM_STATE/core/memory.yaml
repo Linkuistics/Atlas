@@ -187,3 +187,15 @@ entries:
     2. **CI:** No CI pipeline exists on `linkuistics/atlas-contracts`. Atlas's own CI catches regressions by building against the SHA-pinned deps. If the contracts repo grows (more crates, multiple consumers), add a minimal `cargo test --workspace` workflow.
 
     3. **Cargo.lock bumping:** Any future SHA bump for `atlas-contracts` deps in Atlas's `Cargo.toml` requires running `cargo update -p component-ontology -p atlas-index` to keep the lockfile in sync (or simply editing `Cargo.toml` and letting the next build auto-update it).
+- id: hand-author-second-golden-task-is-blocked
+  title: hand-author-second-golden task is blocked
+  body: |
+    `hand-author-second-golden-for-merged-monorepo` is blocked: the task requires a third-party merged monorepo that is not present in the local environment. Task state is `blocked`, not abandoned.
+- id: v1-criterion-6-unsatisfiable-without-second-golden
+  title: V1 criterion 6 unsatisfiable without second golden
+  body: |
+    V1 success criterion 6 (`verify-atlas-v1-success-criteria-end-to-end`) is structurally unsatisfiable while the second eval golden is blocked. Three triage options: (a) drop criterion 6, (b) substitute a synthetic second target under `~/Development/`, or (c) defer to v2. Triage should resolve this before the criterion can be evaluated.
+- id: m2-migration-is-pure-import-path-swap
+  title: M2 migration is pure import-path swap
+  body: |
+    `component-ontology` at `linkuistics/atlas-contracts` SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` matches Ravel-Lite's `src/ontology/mod.rs` public surface 1:1. The migration (`ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate`) is a pure import-path swap with no API churn. Prerequisite: Ravel-Lite must be quiescent; it currently has an in-progress refactor in `src/state/backlog/`.
