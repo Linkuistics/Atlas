@@ -157,3 +157,7 @@ entries:
   title: Prompt drift tests against Ravel-Lite are invalid
   body: |
     Byte-comparison drift tests against Ravel-Lite originals (as in the deleted `prompt_migration.rs`) require a live Ravel-Lite sibling checkout and produce false failures once Atlas prompts genuinely diverge. Use required-token presence, no-Ravel-Lite-remnants, and template-token coverage tests instead. See: L5/L6 tests include template-token coverage check.
+- id: component-ontology-targets-linkuistics-extraction-for-oss
+  title: component-ontology targets Linkuistics extraction for OSS
+  body: |
+    component-ontology (and possibly atlas-index) is planned for extraction to a public Linkuistics crate. Extraction unblocks Ravel-Lite OSS migration tasks that require shared ontology types across crates.
