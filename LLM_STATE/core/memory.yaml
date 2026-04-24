@@ -2,7 +2,7 @@ entries:
 - id: cross-crate-include-str-paths-break-crates-io-publication
   title: Cross-crate include_str! paths break crates.io publication
   body: |
-    `include_str!` paths are relative to the source file, allowing paths like `../../../defaults/ontology.yaml` to reach outside the crate directory. Works for path/git deps but is incompatible with crates.io publication (all included files must be within the crate root). Any crate using such paths must be reworked before registry publication.
+    Paths like `../../../defaults/ontology.yaml` work for path/git deps but break crates.io publication, which requires all included files within the crate root. Any crate using cross-directory `include_str!` must be reworked before registry publication.
 - id: lib-crate-public-items-do-not-trigger-dead-code-lint
   title: Lib crate public items do not trigger dead-code lint
   body: |
@@ -24,9 +24,9 @@ entries:
   body: |
     `PinValue::Suppress` carries an `AlwaysTrue` marker field so that `suppress: false` is a parse error rather than a silent no-op. Omitting `suppress: true` entirely is the intended representation of "no suppression".
 - id: docs-overrides-migration-md-is-a-ghost-reference-until-v2-schema-ships
-  title: docs/overrides-migration.md is a ghost reference until v2 schema ships
+  title: docs/overrides-migration.md is a ghost path
   body: |
-    When the overrides schema reaches v2, write `docs/overrides-migration.md` so the error message in `yaml_io.rs::require_schema_version(UserAuthored)` resolves to a real document. The error currently refers to this path as a ghost reference. The user-authored overrides file intentionally gets a different error message from generated files ("migrate by hand, do NOT delete" vs "delete and re-run `atlas index`").
+    `yaml_io.rs::require_schema_version(UserAuthored)` refers to `docs/overrides-migration.md` which does not yet exist. Write it when the overrides schema reaches v2. User-authored overrides get "migrate by hand, do NOT delete"; generated files get "delete and re-run `atlas index`".
 - id: llmfingerprint-fields-are-driver-populated-via-with-fingerprint-inputs
   title: LlmFingerprint fields are driver-populated via with_fingerprint_inputs
   body: |
@@ -50,7 +50,7 @@ entries:
 - id: salsa-0-26-input-setters-do-not-check-equality
   title: Salsa 0.26 input setters do not check equality
   body: |
-    Salsa 0.26 input setters unconditionally bump the revision even when the new value is identical to the existing one. All `AtlasDatabase` setter calls (including `register_file`'s per-file `set_bytes`) must read the current value first and return early if unchanged. This is a load-bearing invariant for cache-hit correctness on all future input fields.
+    Salsa 0.26 input setters unconditionally bump the revision even when the new value equals the old. All `AtlasDatabase` setter wrappers must read the current value and return early if unchanged. Implementation: `crates/atlas-engine/src/db.rs` — `register_file` and `set_workspace_*`. Any new Workspace input field must have a skip-if-equal guard in its setter.
 - id: salsa-input-debug-required-for-debug-on-input-structs
   title: salsa::input(debug) required for Debug on input structs
   body: |
@@ -67,18 +67,10 @@ entries:
   title: ignore crate requires .git root for gitignore filtering
   body: |
     The `ignore` crate's gitignore filtering only activates inside `.git`-rooted directory trees. Standalone tempdir fixtures bypass it by design, which is the correct behaviour for test fixtures that should not be filtered.
-- id: salsa-setter-equality-check-pattern-implementation-reference
-  title: Salsa setter equality-check pattern (implementation reference)
-  body: |
-    All `AtlasDatabase` setter wrappers (e.g. `register_file`, future `set_*` for Workspace fields) must read the current value and return early when the incoming value is equal. Salsa 0.26 input setters unconditionally bump the revision even when the value is unchanged; without this guard, every re-seed (e.g. on file-watcher tick) invalidates all downstream tracked queries, destroying incremental caching.
-
-    **Implementation reference:** `crates/atlas-engine/src/db.rs` — `AtlasDatabase::register_file` and `AtlasDatabase::set_workspace_*` wrappers.
-
-    **Consequence for future fields:** Any new `Workspace` input field added in L2/L3/L4 must have a skip-if-equal guard in its `AtlasDatabase` setter method. Consider factoring into a macro or helper once three or more fields follow the pattern — the L0/L1 implementation left this as a future refactor to keep the change small.
 - id: l3-classification-keys-by-workspace-dir-not-candidate
-  title: L3 classification keys by (workspace, dir) not Candidate
+  title: L3+ tracked queries key by (workspace, dir) not Candidate
   body: |
-    L3 classification queries take `(workspace: Workspace, dir: VfsPath)` primitives rather than a `Candidate` struct. This avoids forcing `salsa::Update` on `RationaleBundle` fields; the candidate is reconstructed inside L3 from L1-memoised queries at zero cost.
+    L3+ tracked queries use `(workspace: Workspace, dir: VfsPath)` primitives as Salsa keys rather than `Candidate` or aggregate structs. This avoids forcing `salsa::Update` on `RationaleBundle` fields; the candidate is reconstructed inside the query from L1-memoised calls at zero cost. Applies to: `all_components`, `component_parent`, `component_children`, and any new L4–L9 tracked queries that receive component information.
 - id: cargo-toml-manifest-parsing-uses-line-scanning-not-toml-crate
   title: Cargo.toml manifest parsing uses the toml crate
   body: |
@@ -94,21 +86,11 @@ entries:
 - id: is-component-not-salsa-tracked-salsa-0-26-lacks-downcast
   title: is_component not salsa::tracked; Salsa 0.26 lacks downcast
   body: |
-    `is_component` is not `#[salsa::tracked]` because the LLM backend lives on `AtlasDatabase` outside Salsa storage. Tracked functions receive `&dyn salsa::Database`; Salsa 0.26 does not expose a downcast to the concrete type. Deterministic and pin paths have no memoisation need (L1 caching covers signal reads). LLM-call memoisation is deferred to a later task.
+    `is_component` is not `#[salsa::tracked]` because the LLM backend lives on `AtlasDatabase` outside Salsa storage. Tracked functions receive `&dyn salsa::Database`; Salsa 0.26 does not expose a downcast to the concrete type. Deterministic and pin paths have no memoisation need (L1 caching covers signal reads).
 - id: llm-memoisation-preferred-strategy-tracked-query-keyed-by-llmrequest
-  title: 'LLM memoisation preferred strategy: tracked query keyed by LlmRequest'
+  title: LLM memoisation uses tracked query keyed by LlmRequest
   body: |
-    When implementing LLM call memoisation (required for task 9's "zero LLM calls on no-op re-run" exit criterion), prefer option (c): make the backend call a `#[salsa::tracked]` query keyed by a canonicalised `LlmRequest` struct, invoked by `is_component`. This gives per-request caching that survives Workspace input edits that do not change the request inputs.
-
-    Rejected options:
-    - (a) Move backend onto a Salsa-tracked extension trait — adds complexity to every backend implementor.
-    - (b) Memoisation side-table keyed by `(revision, dir)` — revision granularity is too coarse; misses cache when Workspace changes but request inputs are unchanged.
-- id: l4-tracked-queries-must-key-by-workspace-dir-primitives-not-candidate
-  title: L4+ tracked queries must key by (workspace, dir) primitives not Candidate
-  body: |
-    All L4+ tracked queries that walk over candidates should use `(workspace: Workspace, dir: VfsPath)` primitives as Salsa keys, not `Candidate` or other aggregate structs. This is the convention established in L3 (`is_component` keyed by `(workspace, dir)`): Salsa memoises signal reads via L1 queries, so reconstructing a `Candidate` inside the tracked function is free, while passing `Candidate` as a key would force `salsa::Update` on `RationaleBundle` fields.
-
-    Applies to: `all_components`, `component_parent`, `component_children`, and any new L4–L9 tracked queries that receive component information as input.
+    LLM call memoisation uses a `#[salsa::tracked]` query keyed by a canonicalised `LlmRequest` struct, invoked by `is_component`. This gives per-request caching that survives Workspace input edits that do not change the request inputs.
 - id: stable-id-allocation-uses-slug-suffix-sha-cascade
   title: Stable id allocation uses slug→suffix→sha cascade
   body: |
@@ -128,9 +110,7 @@ entries:
 - id: l5-l6-llm-calls-must-route-through-call-llm-cached-not-backend-call-directly
   title: L5/L6+ LLM calls must route through call_llm_cached not backend.call directly
   body: |
-    All LLM-adjacent queries in atlas-engine (L5/L6 and any future layers) must route through `AtlasDatabase::call_llm_cached(&self, req)` rather than calling `backend.call()` directly. This wrapper consults `LlmResponseCache` before hitting the backend and records the response keyed by `(LlmFingerprint, PromptId, canonical-JSON(inputs))`.
-
-    Bypassing `call_llm_cached` will silently skip the cache, causing re-runs to make redundant LLM calls and breaking the "zero LLM calls on no-op re-run" exit criterion (task L9). The cache is the memoisation substitute for the missing Salsa-tracked route (blocked by Salsa 0.26 downcast limitation per `is_component not salsa::tracked` memory).
+    All LLM-adjacent queries in atlas-engine (L5/L6 and any future layers) must route through `AtlasDatabase::call_llm_cached(&self, req)` rather than calling `backend.call()` directly. This wrapper consults `LlmResponseCache` before hitting the backend and records the response keyed by `(LlmFingerprint, PromptId, canonical-JSON(inputs))`. Bypassing `call_llm_cached` silently skips the cache, causing redundant LLM calls and breaking the "zero LLM calls on no-op re-run" exit criterion.
 - id: back-edge-inputs-stored-as-workspace-fields-not-tracked-queries
   title: Back-edge inputs stored as Workspace fields not tracked queries
   body: |
