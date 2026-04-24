@@ -46,7 +46,7 @@ entries:
 - id: template-sha-computed-via-prompt-render-plus-sha-256-in-atlas-engine
   title: template_sha computed via prompt::render plus SHA-256 in atlas-engine
   body: |
-    When prompt migration M3 lands, the driver should compute `template_sha` by calling `prompt::render` on each template with ontology-derived tokens and SHA-256ing the result. A helper for this belongs in `atlas-engine`, not `atlas-llm`.
+    The driver computes `template_sha` by calling `prompt::render` on each template with ontology-derived tokens and SHA-256ing the result. The helper lives in `atlas-engine`, not `atlas-llm`.
 - id: salsa-0-26-input-setters-do-not-check-equality
   title: Salsa 0.26 input setters do not check equality
   body: |
@@ -117,3 +117,11 @@ entries:
   title: rename_match orphans marked deleted:true for one index cycle
   body: |
     `atlas_index::rename_match` returns three sets: matched pairs (reuse prior id), fresh candidates (allocate new id), and orphans. Orphans receive `deleted: true` in the index for one cycle then are dropped entirely.
+- id: plural-token-substitution-must-precede-singular
+  title: Plural token substitution must precede singular
+  body: |
+    Plural replacement must be applied before singular when substituting token pairs (e.g. `components` → `components` before `component` → `component`). Reversing the order produces a double-suffix artifact (`componentss`) because the singular pass mutates the already-substituted plural string.
+- id: l6-batch-queries-all-proposed-edges-candidate-edges-for-share-cache-key
+  title: L6 batch queries all_proposed_edges/candidate_edges_for share cache key
+  body: |
+    L6 `all_proposed_edges` and `candidate_edges_for` share a single cache key (the full component-pair input batch). One LLM call covers all pairs, but a single component input change invalidates the entire batch's cached result.
