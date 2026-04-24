@@ -1,178 +1,81 @@
 tasks:
-- id: build-evaluation-harness-with-structural-invariants-and-first-golden
-  title: Build evaluation harness with structural invariants and first golden
-  category: eval
-  status: done
+- id: extract-component-ontology-and-possibly-atlas-index-to-a-public-linkuistics-crate
+  title: Extract component-ontology (and possibly atlas-index) to a public Linkuistics crate
+  category: migration
+  status: not_started
   dependencies: []
   description: |
-    **Priority: HIGH.** Required for any claim of "industrial quality".
+    **Priority: HIGH.** Unblocks the Ravel-Lite migration tasks (M2 / M4 / M5), which are currently infeasible as written because they would force OSS Ravel-Lite to depend on closed-source Atlas via Cargo path deps.
 
-    **Design reference:** §8 (entire evaluation section).
+    ## Problem
+
+    Ravel-Lite is open source with external users. Atlas is a private repository. The existing migration design (§9.4 M2) has Ravel-Lite depending on Atlas's `component-ontology` (and later `atlas-index`) via `path = "../Atlas/..."`. That is incompatible with OSS distribution:
+
+    - Path deps only resolve for a local sibling checkout; OSS users cannot `cargo install ravel-lite` because Cargo cannot fetch `../Atlas` from an unauthenticated context.
+    - Git deps to a private repo require credentials — unacceptable UX for external users.
+    - Publishing Atlas-hosted crates to crates.io would require the repo to be public.
+
+    Memory entry `cross-crate-include-str-paths-break-crates-io-publication` flags an adjacent remediation: current `include_str!` paths (`../../../defaults/ontology.yaml`) would also break registry publication because registry packages must be self-contained under the crate root.
+
+    ## Solution
+
+    Extract the data-format / vocabulary layer of Atlas into a new public Linkuistics repository and publish the crates to crates.io. Both Atlas (private) and Ravel-Lite (OSS) depend on the public crate. The IP-sensitive parts of Atlas (`atlas-engine`, prompts, Salsa pipeline, LLM wiring) stay in the private Atlas repo.
+
+    ### What moves (proposal — part of this task is to confirm)
+
+    - **Must be public:** `component-ontology` crate. This is the public vocabulary (EdgeKind, LifecycleScope, EvidenceGrade, the ontology.yaml itself). Ravel-Lite currently ships its own copy; Atlas needs one; the drift this migration was meant to eliminate is the reason this crate exists.
+    - **Probably public:** `atlas-index` schemas (`ComponentsFile`, `ExternalsFile`, `PinValue`, etc.). These are typed readers/writers for the three YAML files Atlas emits — they're format contracts, not IP. Publishing them lets Ravel-Lite consume Atlas outputs cleanly in M5.
+    - **Stays private (in Atlas):** `atlas-engine`, the Salsa L1–L9 pipeline, prompt templates in `defaults/discover-*.md`, `atlas-llm`, `atlas-cli`. These encode Atlas's discovery heuristics.
+    - **Open design question:** `atlas-index::prompts_dir()` as proposed in M5 bridges Ravel-Lite to Atlas's prompt tree. If prompts are private, that helper can't live in a public crate. Either (a) Ravel-Lite keeps its own prompts (undo the prompt-deletion part of M5), or (b) the prompts themselves become public artifacts. Defer the decision until the extraction is done.
+
+    ### New public repo
+
+    - Name: tbd — e.g., `linkuistics/atlas-schemas`, or just `linkuistics/component-ontology` promoted from its current Atlas home. Pick during the task.
+    - License: Apache-2.0 to match Atlas and Ravel-Lite.
+    - Contents: the extracted crates, `defaults/ontology.yaml` (or whichever canonical YAML assets need to ship with them), tests, CI for crates.io publication.
+    - Publication: push to crates.io so Ravel-Lite OSS users get it transparently via `cargo install`.
+
+    ### Remediation work pulled in from memory
+
+    - Fix `include_str!` paths so every included file lives within its crate root (per memory `cross-crate-include-str-paths-break-crates-io-publication`). For `component-ontology`, move `defaults/ontology.yaml` inside the crate directory or embed via a `build.rs` that copies into `OUT_DIR`.
+
+    ### Impact on existing backlog tasks
+
+    After this task lands, the following must be rewritten before they're picked up:
+
+    - **M2** (`ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate`): the dep source changes from `path = "../Atlas/crates/component-ontology"` to the published crates.io version. The rest of the task (replace imports, delete Ravel-Lite's `src/ontology/`) is unchanged.
+    - **M4** (`ravel-lite-migration-m4-delete-in-tree-ontology-copies`): the canonical ontology.yaml now lives in the OSS crate, not in Atlas. Asset-loading switches to the public crate.
+    - **M5** (`ravel-lite-migration-m5-consume-atlas-via-atlas-index`): depends on whether `atlas-index` was extracted; the `prompts_dir()` question above needs an answer. Atlas's `components.yaml` producer side is unchanged; the consumer side in Ravel-Lite uses the public `atlas-index` crate.
+
+    Recommend marking M2/M4/M5 `blocked` on this task during triage, with a reason pointing here.
 
     ## Scope
 
-    ### Harness skeleton
-
-    Under `evaluation/` at repo root:
-
-    ```
-    evaluation/
-      goldens/
-        dev-workspace/
-          components.golden.yaml
-          external-components.golden.yaml
-          related-components.golden.yaml
-          notes.md
-      invariants/
-        mod.rs                       # Rust integration tests
-        path_coverage.rs
-        manifest_coverage.rs
-        edge_participant_existence.rs
-        rename_round_trip.rs
-        fixedpoint_termination.rs
-      harness/
-        Cargo.toml                   # a small crate atlas-eval
-        src/
-          lib.rs
-          runner.rs                  # atlas_eval::run_against_golden(golden_path, atlas_bin)
-          diff.rs                    # computes metrics from tool output vs golden
-          report.rs                  # writes YAML + HTML report
-        tests/
-          smoke_test.rs
-      results/
-        .gitkeep
-    ```
-
-    ### Structural invariants
-
-    Per §8.2:
-
-    - Path coverage: every internal component has non-empty path_segments.
-    - No parent-child overlap violation: path_segments of A do not overlap with a non-ancestor/non-descendant B.
-    - Manifest coverage: every manifest from L1 is covered by exactly one component.
-    - Git-boundary-within-component requires rationale mentioning the boundary.
-    - Edge participant existence: every edge's participants live in the union of the three component files.
-    - Rename round-trip: round-trip a path through rename-match preserves identifier.
-    - Fixedpoint terminates within 8 iterations per design §8.2.
-
-    Each invariant is a Rust integration test under `evaluation/invariants/` that takes an Atlas output directory and asserts the rule.
-
-    ### Metric computation
-
-    Per §8.3:
-
-    - Component coverage: fraction of golden components matched by overlap ≥ threshold.
-    - Spurious rate: fraction of tool-output components not in golden.
-    - Kind accuracy.
-    - Edge precision/recall, per-axis (kind, lifecycle, direction).
-    - Identifier stability across a no-op re-run.
-
-    Each metric lives in `harness/src/diff.rs` as a pure function from `(GoldenFile, ToolFile) -> f32`.
-
-    ### Differential evaluation
-
-    - `harness::diff::run_diff(output_dir, baseline_dir) -> Report` — compares two runs' outputs, flags components that changed (added/removed/modified), edges that changed, identifier changes.
-    - Stored baseline at `evaluation/results/baseline-<target>.yaml` (blessed by hand when a run is considered good); every subsequent run compared to it.
-
-    ### Reporting
-
-    - YAML snapshot at `evaluation/results/<date>-<target>.yaml` per run.
-    - Small HTML generator (pure Rust, no service) that reads all `results/*.yaml` and produces a trend page. Write to `evaluation/results/trend.html`.
-
-    ### First golden: `~/Development/`
-
-    - Hand-author `evaluation/goldens/dev-workspace/components.golden.yaml` for your `~/Development/` directory. Walk each top-level entry, decide its component identity, fill in kind/language/build_system/role/lifecycle_roles.
-    - Hand-author related edges (a small subset; exhaustive graph is not required for v1).
-    - `notes.md` explains each boundary decision.
-
-    ### Tests
-
-    - Invariants pass against the tiny fixture from task 9.
-    - Metrics are correct on synthetic golden/tool pairs constructed in tests.
-    - Differential diff correctly identifies changes on a synthetic "two runs" scenario.
+    1. Decide the crate boundary (at minimum `component-ontology`; probably `atlas-index` schemas).
+    2. Create the new public Linkuistics repo; move the crates there with full git history if practical (`git filter-repo` or `git subtree`).
+    3. Rework `include_str!` paths so nothing reaches above the crate root.
+    4. Update Atlas's Cargo workspace to pull the crates from crates.io (or a git dep during transition).
+    5. Run the full Atlas test suite; fix any import churn.
+    6. Publish initial versions to crates.io under `0.1.0`.
+    7. Rewrite M2/M4/M5 descriptions to reference the new crate source.
 
     ## Out of scope
 
-    - CI wiring (deferred).
-    - Second golden (next task).
-    - Research-track ablations (those are one-off runs using the harness; no special infra).
+    - Actually executing M2/M4/M5 (those remain separate backlog tasks).
+    - Making Atlas's prompt templates public (separate decision if ever needed).
+    - Making `atlas-engine` public (explicitly private).
 
     ## Exit criteria
 
-    - `cargo test -p atlas-eval` passes.
-    - Running the harness against the tiny fixture produces a `results/<date>-tiny.yaml` with all metrics present (will not be meaningful numerically because there's no golden for it — intentional, the harness must handle "no golden" as "structural invariants only").
-    - Golden for `~/Development/` exists and passes all invariants when the tool is run against it (even if the tool's output doesn't yet *match* the golden — that's the metric gap we're measuring).
-    - A trend HTML page renders from the results directory.
-  results: |
-    ## What was built
-
-    Created a new `atlas-eval` crate under `evaluation/harness/` and the surrounding tree (`evaluation/goldens/dev-workspace/`, `evaluation/invariants/`, `evaluation/results/`). Wired the crate into the workspace.
-
-    ### Library (`atlas-eval`)
-
-    - `invariants.rs` — seven structural invariants as pure functions: `path_coverage`, `no_path_overlap`, `manifest_coverage` (conservative walker, Cargo/npm/pyproject/go.mod only), `edge_participant_existence`, `git_boundary_rationale`, `fixedpoint_termination`, `rename_round_trip_holds`. Outcomes collected into an `InvariantReport` (BTreeMap of name → Pass/Fail/Skipped).
-    - `diff.rs` — metric functions: `component_coverage`, `spurious_rate`, `kind_accuracy`, `edge_precision_recall` (optionally filtered by kind/lifecycle), `identifier_stability`, plus a `run_diff` that walks two output directories and flags added/removed/modified components, added/removed edges, and identifier changes (detected via shared `content_sha`).
-    - `runner.rs` — ties it together. `run_against_golden` and `run_without_golden` both emit a `RunReport` that converts to a `ResultFile`. Invariants requiring the target filesystem (`manifest_coverage`, `git_boundary_rationale`) are gracefully `Skipped` when the target directory does not exist.
-    - `report.rs` — `write_result_yaml` persists a run; `render_trend_html` scans `results/*.yaml` and emits a dependency-free static HTML trend page (no JS, inline CSS, chronological rows, failing rows get a red background).
-
-    ### Tests
-
-    - 58 `atlas-eval` tests pass: 41 unit + 13 integration invariant tests (five files under `evaluation/invariants/`) + 1 end-to-end smoke test + 3 golden-parse tests.
-    - Full workspace test count: **381 passed, 0 failed** — no regressions.
-    - Smoke test constructs a plausible tool output for the existing `crates/atlas-cli/tests/fixtures/tiny` fixture, runs the harness without a golden, and asserts the `ResultFile` shape (target label, generated_at, invariants present, metrics absent) plus that `render_trend_html` produces a page containing "tiny".
-
-    ### First golden: `~/Development/`
-
-    - `evaluation/goldens/dev-workspace/components.golden.yaml` — 22 top-level components hand-authored from a directory walk. Evidence grades run strong → medium → weak depending on manifest availability. Uses `content_sha: hand-authored-placeholder` everywhere (rename-match metrics are not meaningful against goldens by design).
-    - `external-components.golden.yaml` — empty; externals live at sub-component granularity and v1 keeps the top-level golden coarse.
-    - `related-components.golden.yaml` — three edges covering the Atlas/Ravel-Lite/ravel-lite-config/mdformat-rs relationships I am most confident about.
-    - `notes.md` — documents scope (top-level only), why each ambiguous boundary was chosen, known limitations (no sub-components, weak classifications, placeholder SHAs).
-
-    ### Deviations from the task's literal layout
-
-    - Task spec called for `harness/src/lib.rs`; I also added `harness/src/{invariants,diff,runner,report}.rs` (sub-modules of the library). Matches the spirit of the scope.
-    - Integration tests under `evaluation/invariants/` are wired via `[[test]] path = "../invariants/<name>.rs"` entries in `harness/Cargo.toml` — standard Cargo mechanism; the task's `mod.rs` filename would not compile under Cargo's integration test conventions.
-    - Added `harness/tests/golden_parses.rs` as a small guard to prevent the dev-workspace golden from silently drifting against the schema.
-
-    ## What works
-
-    1. `cargo test -p atlas-eval` — 58 passed, 0 failed.
-    2. `cargo test --workspace` — 381 passed, 0 failed.
-    3. `cargo clippy -p atlas-eval --all-targets` — clean (a pre-existing `atlas-cli` warning exists but is outside this task's scope).
-    4. Hand-authored dev-workspace golden loads via `atlas_index::load_components` without schema errors and every component has non-empty `path_segments` and rationale (verified in `golden_parses.rs`).
-    5. Smoke test produces a results YAML with the expected shape and renders a trend HTML page that includes the run.
-    6. All three documented exit criteria addressed: `cargo test -p atlas-eval` passes; harness can be run against the tiny fixture and emits a results YAML (shape checked in smoke test); golden for `~/Development/` exists and is well-formed.
-
-    ## What doesn't / deferred
-
-    1. **Real-binary smoke test is absent.** Running `atlas index ~/Development/` and piping through the harness would require an LLM budget and a live Claude backend. Per memory entry `assert_cmd-real-binary-tests-must-be-gated-behind-atlas-llm-run-claude-tests-1`, any such test must be gated behind `ATLAS_LLM_RUN_CLAUDE_TESTS=1`. Not added here — the exit criterion about the tool's output passing invariants against `~/Development/` is a run-time exercise for the user, not a unit-level check.
-    2. **Metrics measured against the dev-workspace golden will read badly.** The golden is top-level-only while the tool will sub-carve Atlas into its crates, Ravel-Lite into its workspace, HeavyMentalToolkit into its packages. Expect high spurious-rate and low coverage numbers on the first run. `notes.md` calls this out.
-    3. **Manifest-coverage invariant is conservative.** It walks for `Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod` only — atlas-engine's L1 has a richer ontology-driven definition. The invariant is a floor, not a match. Acceptable for v1; revisit if it lets real regressions slip through.
-    4. **Identifier-stability metric needs two runs.** Exposed as `identifier_stability(run_a, run_b)` but not wired into the default `metric_summary`. Caller supplies `Some(value)` after doing a no-op re-run. The no-op re-run verification criterion (§10.3 criterion 2) is exercised through a separate pathway — the v1 sign-off task will drive this.
-    5. **No CLI for `atlas-eval`.** Currently library-only; smoke test drives it from Rust. If the operator ergonomics become awkward, a thin `cargo run -p atlas-eval -- ...` CLI would be a small follow-up.
-
-    ## What this suggests next
-
-    - **v1 sign-off task** (`verify-atlas-v1-success-criteria-end-to-end`) can now drive the six §10.3 criteria against real runs. Each criterion maps to one `run_against_golden` call + one `write_result_yaml` per target.
-    - **Second golden** (`hand-author-second-golden-for-merged-monorepo`) follows the same recipe as `dev-workspace/` — `notes.md` documents the pattern.
-    - If the tool-vs-golden gap is consistently wide, consider either (a) refining the golden to match the tool's sub-carving, or (b) adding an `overlap_threshold` tunable at the call site — the plumbing is already there (`OverlapThreshold`).
-    - The migration-track backlog tasks (M2/M4/M5) are blocked on `extract-component-ontology-and-possibly-atlas-index-to-a-public-linkuistics-crate`, a new task added earlier this session to resolve the OSS-distribution conflict between Ravel-Lite's external users and Atlas's private repo status.
-
-    ## Files added / changed
-
-    - Added: `evaluation/harness/{Cargo.toml, src/{lib,invariants,diff,runner,report}.rs, tests/{smoke_test,golden_parses}.rs}`
-    - Added: `evaluation/invariants/{path_coverage,manifest_coverage,edge_participant_existence,rename_round_trip,fixedpoint_termination}.rs`
-    - Added: `evaluation/goldens/dev-workspace/{components.golden.yaml, external-components.golden.yaml, related-components.golden.yaml, notes.md}`
-    - Added: `evaluation/results/.gitkeep`
-    - Modified: `Cargo.toml` (added `evaluation/harness` to workspace)
-    - Modified: `.gitignore` (added `/evaluation/results/trend.html`)
-    - Auto-modified: `Cargo.lock`
+    - New public Linkuistics repo exists with `component-ontology` (and optionally `atlas-index`) as published crates on crates.io.
+    - Atlas compiles against the published versions; all Atlas tests pass.
+    - M2/M4/M5 descriptions have been rewritten to target the public crate and are marked `blocked` pending this task's completion is lifted.
+    - Memory entry `cross-crate-include-str-paths-break-crates-io-publication` is updated or retired once its remediation ships.
 - id: hand-author-second-golden-for-merged-monorepo
   title: Hand-author second golden for merged monorepo
   category: eval
   status: not_started
-  dependencies:
-  - build-evaluation-harness-with-structural-invariants-and-first-golden
+  dependencies: []
   description: |
     **Priority: MEDIUM.** Required for success criterion 6 (cross-target generalisation).
 
@@ -214,8 +117,10 @@ tasks:
 - id: ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate
   title: 'Ravel-Lite migration M2: switch to Atlas component-ontology crate'
   category: migration
-  status: not_started
-  dependencies: []
+  status: blocked
+  blocked_reason: 'Blocked on extract-component-ontology-and-possibly-atlas-index-to-a-public-linkuistics-crate: the crate must be published to crates.io before Ravel-Lite (OSS) can safely depend on it'
+  dependencies:
+  - extract-component-ontology-and-possibly-atlas-index-to-a-public-linkuistics-crate
   description: |
     **Priority: MEDIUM.** Unblocks M4 and M5.
 
@@ -379,75 +284,3 @@ tasks:
     - All six criteria pass or have documented follow-up tasks.
     - Sign-off report committed to the Atlas repo.
     - An announcement-ready short summary written (optional) as `README-v1.md` documenting what Atlas v1 does and does not do.
-- id: extract-component-ontology-and-possibly-atlas-index-to-a-public-linkuistics-crate
-  title: Extract component-ontology (and possibly atlas-index) to a public Linkuistics crate
-  category: migration
-  status: not_started
-  dependencies: []
-  description: |
-    **Priority: HIGH.** Unblocks the Ravel-Lite migration tasks (M2 / M4 / M5), which are currently infeasible as written because they would force OSS Ravel-Lite to depend on closed-source Atlas via Cargo path deps.
-
-    ## Problem
-
-    Ravel-Lite is open source with external users. Atlas is a private repository. The existing migration design (§9.4 M2) has Ravel-Lite depending on Atlas's `component-ontology` (and later `atlas-index`) via `path = "../Atlas/..."`. That is incompatible with OSS distribution:
-
-    - Path deps only resolve for a local sibling checkout; OSS users cannot `cargo install ravel-lite` because Cargo cannot fetch `../Atlas` from an unauthenticated context.
-    - Git deps to a private repo require credentials — unacceptable UX for external users.
-    - Publishing Atlas-hosted crates to crates.io would require the repo to be public.
-
-    Memory entry `cross-crate-include-str-paths-break-crates-io-publication` flags an adjacent remediation: current `include_str!` paths (`../../../defaults/ontology.yaml`) would also break registry publication because registry packages must be self-contained under the crate root.
-
-    ## Solution
-
-    Extract the data-format / vocabulary layer of Atlas into a new public Linkuistics repository and publish the crates to crates.io. Both Atlas (private) and Ravel-Lite (OSS) depend on the public crate. The IP-sensitive parts of Atlas (`atlas-engine`, prompts, Salsa pipeline, LLM wiring) stay in the private Atlas repo.
-
-    ### What moves (proposal — part of this task is to confirm)
-
-    - **Must be public:** `component-ontology` crate. This is the public vocabulary (EdgeKind, LifecycleScope, EvidenceGrade, the ontology.yaml itself). Ravel-Lite currently ships its own copy; Atlas needs one; the drift this migration was meant to eliminate is the reason this crate exists.
-    - **Probably public:** `atlas-index` schemas (`ComponentsFile`, `ExternalsFile`, `PinValue`, etc.). These are typed readers/writers for the three YAML files Atlas emits — they're format contracts, not IP. Publishing them lets Ravel-Lite consume Atlas outputs cleanly in M5.
-    - **Stays private (in Atlas):** `atlas-engine`, the Salsa L1–L9 pipeline, prompt templates in `defaults/discover-*.md`, `atlas-llm`, `atlas-cli`. These encode Atlas's discovery heuristics.
-    - **Open design question:** `atlas-index::prompts_dir()` as proposed in M5 bridges Ravel-Lite to Atlas's prompt tree. If prompts are private, that helper can't live in a public crate. Either (a) Ravel-Lite keeps its own prompts (undo the prompt-deletion part of M5), or (b) the prompts themselves become public artifacts. Defer the decision until the extraction is done.
-
-    ### New public repo
-
-    - Name: tbd — e.g., `linkuistics/atlas-schemas`, or just `linkuistics/component-ontology` promoted from its current Atlas home. Pick during the task.
-    - License: Apache-2.0 to match Atlas and Ravel-Lite.
-    - Contents: the extracted crates, `defaults/ontology.yaml` (or whichever canonical YAML assets need to ship with them), tests, CI for crates.io publication.
-    - Publication: push to crates.io so Ravel-Lite OSS users get it transparently via `cargo install`.
-
-    ### Remediation work pulled in from memory
-
-    - Fix `include_str!` paths so every included file lives within its crate root (per memory `cross-crate-include-str-paths-break-crates-io-publication`). For `component-ontology`, move `defaults/ontology.yaml` inside the crate directory or embed via a `build.rs` that copies into `OUT_DIR`.
-
-    ### Impact on existing backlog tasks
-
-    After this task lands, the following must be rewritten before they're picked up:
-
-    - **M2** (`ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate`): the dep source changes from `path = "../Atlas/crates/component-ontology"` to the published crates.io version. The rest of the task (replace imports, delete Ravel-Lite's `src/ontology/`) is unchanged.
-    - **M4** (`ravel-lite-migration-m4-delete-in-tree-ontology-copies`): the canonical ontology.yaml now lives in the OSS crate, not in Atlas. Asset-loading switches to the public crate.
-    - **M5** (`ravel-lite-migration-m5-consume-atlas-via-atlas-index`): depends on whether `atlas-index` was extracted; the `prompts_dir()` question above needs an answer. Atlas's `components.yaml` producer side is unchanged; the consumer side in Ravel-Lite uses the public `atlas-index` crate.
-
-    Recommend marking M2/M4/M5 `blocked` on this task during triage, with a reason pointing here.
-
-    ## Scope
-
-    1. Decide the crate boundary (at minimum `component-ontology`; probably `atlas-index` schemas).
-    2. Create the new public Linkuistics repo; move the crates there with full git history if practical (`git filter-repo` or `git subtree`).
-    3. Rework `include_str!` paths so nothing reaches above the crate root.
-    4. Update Atlas's Cargo workspace to pull the crates from crates.io (or a git dep during transition).
-    5. Run the full Atlas test suite; fix any import churn.
-    6. Publish initial versions to crates.io under `0.1.0`.
-    7. Rewrite M2/M4/M5 descriptions to reference the new crate source.
-
-    ## Out of scope
-
-    - Actually executing M2/M4/M5 (those remain separate backlog tasks).
-    - Making Atlas's prompt templates public (separate decision if ever needed).
-    - Making `atlas-engine` public (explicitly private).
-
-    ## Exit criteria
-
-    - New public Linkuistics repo exists with `component-ontology` (and optionally `atlas-index`) as published crates on crates.io.
-    - Atlas compiles against the published versions; all Atlas tests pass.
-    - M2/M4/M5 descriptions have been rewritten to target the public crate and are marked `blocked` pending this task's completion is lifted.
-    - Memory entry `cross-crate-include-str-paths-break-crates-io-publication` is updated or retired once its remediation ships.

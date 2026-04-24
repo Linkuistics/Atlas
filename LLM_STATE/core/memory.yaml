@@ -161,3 +161,9 @@ entries:
   title: component-ontology targets Linkuistics extraction for OSS
   body: |
     component-ontology (and possibly atlas-index) is planned for extraction to a public Linkuistics crate. Extraction unblocks Ravel-Lite OSS migration tasks that require shared ontology types across crates.
+- id: dev-workspace-golden-is-top-level-only-expect-high-spurious-rate-on-first-v1-metrics-run
+  title: Dev-workspace golden is top-level only; expect high spurious rate on first v1 metrics run
+  body: |
+    Dev-workspace golden covers only 22 top-level components (one per top-level `~/Development/` directory). The atlas tool sub-carves monorepos and multi-crate workspaces into finer components. Expect high spurious-rate and low coverage on first v1 sign-off runs — this is structural, not a regression.
+
+    **Resolution options already wired:** (a) refine the golden to sub-carve depth to match tool output, or (b) tune `OverlapThreshold` at call sites in `atlas-eval` (plumbing already exists). Notes on the tradeoff are in `evaluation/goldens/dev-workspace/notes.md`.
