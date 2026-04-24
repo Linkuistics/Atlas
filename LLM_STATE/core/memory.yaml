@@ -7,3 +7,19 @@ entries:
   title: Lib crate public items do not trigger dead-code lint
   body: |
     When a crate is a library (not a binary), the Rust compiler does not fire the dead-code lint for `pub` items, because they are considered part of a public API. Binary-host crates required `#[allow(dead_code)]` on the same items; migrating to a lib crate removes that need.
+- id: rename-detection-uses-greedy-bipartite-matching-on-content-sha
+  title: Rename detection uses greedy bipartite matching on content-SHA
+  body: |
+    Rename detection uses greedy bipartite matching on content-SHA overlap. This avoids the quadratic cost of full-tree diffing and is accurate for the common case where a component moves directories but its files are unchanged.
+- id: serde-untagged-enum-variants-need-unique-field-names
+  title: Serde untagged enum variants need unique field names
+  body: |
+    Serde untagged enums require each variant's distinguishing field name to be unique across variants. Field name collisions between variants cause ambiguous deserialisation. This constraint is load-bearing for `PinValue` in atlas-index.
+- id: componentkind-enum-deferred-to-atlas-engine
+  title: ComponentKind enum deferred to atlas-engine
+  body: |
+    `ComponentEntry::kind` is `String`, not a `ComponentKind` enum. A vocabulary enum would churn downstream consumers on every new term; atlas-engine (task 5) is the correct owner for that enum.
+- id: pinvalue-suppress-uses-alwaystrue-to-ban-suppress-false
+  title: PinValue::Suppress uses AlwaysTrue to ban suppress:false
+  body: |
+    `PinValue::Suppress` carries an `AlwaysTrue` marker field so that `suppress: false` is a parse error rather than a silent no-op. Omitting `suppress: true` entirely is the intended representation of "no suppression".
