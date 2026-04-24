@@ -125,3 +125,19 @@ entries:
     seam_density and modularity_hint signals are computed on each L7 pass, but on iteration 0 every component has no sub-components yet, so there are no internal edges. This means on the first fixedpoint iteration the signals are uniformly uninformative: seam_density is 0.0 or INFINITY (no internal edges to count) and modularity_hint returns None (< 4 descendants). The signals only become meaningful on iteration 2+ once sub-carved children exist and their edges are visible.
 
     **Practical consequence:** LLM Subcarve calls on iteration 0 receive no structural signals. If evaluation shows many spurious sub-carves, consider deferring L8 LLM escalation until iteration 2, or passing "iteration=0, signals unavailable" in the prompt so the LLM knows to use conservative priors.
+- id: no-op-re-run-byte-identity-needs-cache-persistence-stable-generated-at
+  title: No-op re-run byte-identity needs cache persistence + stable generated_at
+  body: |
+    Cache persistence across processes (llm-cache.json) and stable generated_at timestamps are both required for zero-diff no-op re-runs in atlas-cli. Stable generated_at reuses the prior timestamp when file content is unchanged. Missing either mechanism produces spurious diffs even when no source files changed.
+- id: budgetsentinel-is-only-reliable-budget-exhaustion-detection-path
+  title: BudgetSentinel is only reliable budget-exhaustion detection path
+  body: |
+    L5 and L6 swallow `LlmError::BudgetExhausted` into surface notes rather than propagating it. The `BudgetSentinel` wrapper intercepts the error before it enters L5/L6, making it the only reliable signal for detecting budget exhaustion in the pipeline.
+- id: assert-cmd-real-binary-tests-must-be-gated-behind-atlas-llm-run-claude-tests-1
+  title: assert_cmd real-binary tests must be gated behind ATLAS_LLM_RUN_CLAUDE_TESTS=1
+  body: |
+    Integration tests using assert_cmd that invoke the real atlas-cli binary must be gated behind `ATLAS_LLM_RUN_CLAUDE_TESTS=1`. Without the guard, running the test suite hits the production LLM backend and burns tokens.
+- id: externals-from-manifests-omits-workspace-dependencies-entries
+  title: externals_from_manifests omits [workspace.dependencies] entries
+  body: |
+    `externals_from_manifests` parses each Cargo.toml independently and does not resolve `{ workspace = true }` dependency declarations. Workspace-inherited dependencies are silently omitted from external component detection. Deferred as a follow-up.
