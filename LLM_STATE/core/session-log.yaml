@@ -149,3 +149,14 @@ sessions:
     - Updated the `cross-crate-include-str-paths-break-crates-io-publication` memory entry to note its structural mootness under the Brew-bottle distribution model.
     - Key decision: skipped `git filter-repo` history transplant per user preference — a clean "Initial extraction" bootstrap commit is cleaner for a public repo; Atlas history is still accessible via the private Atlas log.
     - Key learning: `evaluation/harness/Cargo.toml` still had a direct path dep on `atlas-index` that was missed in the initial sweep; grepping before deletion would have caught it earlier.
+- id: session-13
+  timestamp: 2026-04-24T14:48:18Z
+  phase: work
+  body: |
+    ### Session 13 (2026-04-24T14:48:18Z) — Block second golden; surface M2 compatibility observations
+
+    - **Attempted:** Evaluate whether the second eval golden (`hand-author-second-golden-for-merged-monorepo`) could be authored — the task requires a third-party merged monorepo that is not available in the local environment.
+    - **Outcome:** Task marked `blocked` rather than carried forward or abandoned. A detailed `results` block was written documenting the decision, downstream impact on `verify-atlas-v1-success-criteria-end-to-end` criterion 6 (now structurally unsatisfiable), and three triage options (drop criterion 6, substitute a synthetic second target, or defer to v2).
+    - **Attempted (rolled back):** M2 migration (`ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate`) was tentatively started as the only other unblocked root. Work was halted because Ravel-Lite had unrelated in-progress refactor work in `src/state/backlog/`; all Ravel-Lite-side changes were reverted to byte-identical state.
+    - **Key observation (forward-looking):** `component-ontology` at SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` from `linkuistics/atlas-contracts` builds cleanly as a git dep against Ravel-Lite. Its public surface matches `Ravel-Lite/src/ontology/mod.rs` 1:1 — the M2 migration is a pure import-path swap with no API churn, once Ravel-Lite is quiescent.
+    - **What next:** Triage should resolve criterion 6 (recommend: substitute a synthetic second target under `~/Development/`) and unblock `verify-atlas-v1-success-criteria-end-to-end`. Once Ravel-Lite is quiescent, M2 is ready to execute.
