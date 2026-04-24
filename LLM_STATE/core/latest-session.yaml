@@ -1,11 +1,13 @@
-id: session-10
-timestamp: 2026-04-24T12:21:00Z
+id: session-11
+timestamp: 2026-04-24T12:53:34Z
 phase: work
 body: |
-  ### Session 10 (2026-04-24T12:21:00Z) — Rewrite prompt files for Atlas JSON-on-stdout protocol
+  ### Session 11 (2026-04-24T12:53:34Z) — Build evaluation harness and first golden
 
-  - What was attempted: Complete `rewrite-stage1-surface-md-and-stage2-edges-md-prose-to-match-atlas-json-on-stdout-protocol` — rewrite both LLM prompt files to match Atlas's actual JSON-on-stdout contract, replacing Ravel-Lite-era protocol instructions.
-  - What worked: Both prompt files successfully rewritten. `defaults/prompts/stage1-surface.md` now instructs the model to return a JSON object on stdout (not write YAML to `{{SURFACE_OUTPUT_PATH}}`); adds `{{COMPONENT_ID}}` and `{{COMPONENT_PATHS}}` context headers. `defaults/prompts/stage2-edges.md` now instructs the model to return a JSON array on stdout (not shell out to `ravel-lite state discover-proposals add-proposal`); participant order semantics documented inline. `crates/atlas-engine/src/prompt_migration.rs` deleted — the drift-test approach (byte-comparing against Ravel-Lite's originals) was invalid once the prompts genuinely diverged. In `l5_surface.rs`: removed `SURFACE_OUTPUT_PATH` from `build_inputs` and replaced drift/token-presence tests with three new tests: required-token presence, no-Ravel-Lite-remnants, and full template-token coverage (every `{{TOKEN}}` in the prompt is supplied by `build_inputs`). In `l6_edges.rs`: removed `CONFIG_ROOT` from `build_inputs`; same three-test pattern. All 326 workspace tests pass.
-  - What didn't: Nothing notable — the rewrite was straightforward once the correct JSON schemas were confirmed against `surface_types.rs` and the L6 response parser.
-  - What this suggests next: The prompt protocol is now correct for real LLM backend use. The `build-evaluation-harness-with-structural-invariants-and-first-golden` task is unblocked (dependency on the now-deleted `implement-atlas-engine-l9-projections-and-atlas-cli` was already cleared).
-  - Key learnings: The template-token coverage test (`collect_template_tokens` + assert each maps to a `build_inputs` key) is a valuable pattern — it catches `TemplateSyntax` panics at test time rather than at the first real LLM call. The prior drift-test approach required a live Ravel-Lite sibling checkout and broke the moment the prompts genuinely diverged; the replacement tests are self-contained and more descriptive of the actual invariants.
+  - Implemented the `atlas-eval` crate at `evaluation/harness/` with structural invariant checks, metric computation (coverage, spurious rate, kind accuracy, edge precision/recall), differential evaluation, and a small HTML trend reporter.
+  - Created `evaluation/invariants/` with standalone Rust integration-test sources for all six invariants: path coverage, manifest coverage, edge participant existence, rename round-trip, and fixedpoint termination.
+  - Hand-authored the first golden dataset at `evaluation/goldens/dev-workspace/`: components.golden.yaml, external-components.golden.yaml, related-components.golden.yaml, and notes.md documenting boundary decisions.
+  - Added `evaluation/results/.gitkeep` and wired evaluation/harness into the workspace Cargo.toml; registered trend.html in .gitignore.
+  - A new backlog task was added to extract component-ontology (and possibly atlas-index) to a public Linkuistics crate, unblocking Ravel-Lite OSS migration tasks.
+  - The task was flipped to `done`; no structural invariant test failures were recorded in the results.
+  - Next step: run atlas-eval against a live Atlas run on ~/Development/ to validate goldens against real output and measure initial coverage/spurious metrics.

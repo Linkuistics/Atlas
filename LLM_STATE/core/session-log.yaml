@@ -122,3 +122,16 @@ sessions:
     - What didn't: Nothing notable — the rewrite was straightforward once the correct JSON schemas were confirmed against `surface_types.rs` and the L6 response parser.
     - What this suggests next: The prompt protocol is now correct for real LLM backend use. The `build-evaluation-harness-with-structural-invariants-and-first-golden` task is unblocked (dependency on the now-deleted `implement-atlas-engine-l9-projections-and-atlas-cli` was already cleared).
     - Key learnings: The template-token coverage test (`collect_template_tokens` + assert each maps to a `build_inputs` key) is a valuable pattern — it catches `TemplateSyntax` panics at test time rather than at the first real LLM call. The prior drift-test approach required a live Ravel-Lite sibling checkout and broke the moment the prompts genuinely diverged; the replacement tests are self-contained and more descriptive of the actual invariants.
+- id: session-11
+  timestamp: 2026-04-24T12:53:34Z
+  phase: work
+  body: |
+    ### Session 11 (2026-04-24T12:53:34Z) — Build evaluation harness and first golden
+
+    - Implemented the `atlas-eval` crate at `evaluation/harness/` with structural invariant checks, metric computation (coverage, spurious rate, kind accuracy, edge precision/recall), differential evaluation, and a small HTML trend reporter.
+    - Created `evaluation/invariants/` with standalone Rust integration-test sources for all six invariants: path coverage, manifest coverage, edge participant existence, rename round-trip, and fixedpoint termination.
+    - Hand-authored the first golden dataset at `evaluation/goldens/dev-workspace/`: components.golden.yaml, external-components.golden.yaml, related-components.golden.yaml, and notes.md documenting boundary decisions.
+    - Added `evaluation/results/.gitkeep` and wired evaluation/harness into the workspace Cargo.toml; registered trend.html in .gitignore.
+    - A new backlog task was added to extract component-ontology (and possibly atlas-index) to a public Linkuistics crate, unblocking Ravel-Lite OSS migration tasks.
+    - The task was flipped to `done`; no structural invariant test failures were recorded in the results.
+    - Next step: run atlas-eval against a live Atlas run on ~/Development/ to validate goldens against real output and measure initial coverage/spurious metrics.
