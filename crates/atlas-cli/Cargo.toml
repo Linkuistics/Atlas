@@ -17,10 +17,10 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 atlas-engine = { path = "../atlas-engine" }
-atlas-index = { path = "../atlas-index" }
+atlas-index = { workspace = true }
 atlas-llm = { path = "../atlas-llm" }
 clap = { workspace = true }
-component-ontology = { path = "../component-ontology" }
+component-ontology = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

@@ -8,9 +8,9 @@ repository.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-atlas-index = { path = "../atlas-index" }
+atlas-index = { workspace = true }
 atlas-llm = { path = "../atlas-llm" }
-component-ontology = { path = "../component-ontology" }
+component-ontology = { workspace = true }
 ignore = { workspace = true }
 petgraph = { workspace = true }
 salsa = { workspace = true }

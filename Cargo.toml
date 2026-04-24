@@ -1,8 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/component-ontology",
-    "crates/atlas-index",
     "crates/atlas-engine",
     "crates/atlas-llm",
     "crates/atlas-cli",
@@ -26,6 +24,11 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 thiserror = "2"
 toml = "1"
+
+# Public data-format / vocabulary crates, hosted at linkuistics/atlas-contracts.
+# Pinned by sha for reproducible builds — bump both revs in lockstep when the upstream repo advances.
+component-ontology = { git = "https://github.com/linkuistics/atlas-contracts", rev = "337c54368eb1393f2c3f8839a5e9042ce72cf964" }
+atlas-index = { git = "https://github.com/linkuistics/atlas-contracts", rev = "337c54368eb1393f2c3f8839a5e9042ce72cf964" }
 
 # Test-only deps shared by multiple crates.
 assert_cmd = "2"

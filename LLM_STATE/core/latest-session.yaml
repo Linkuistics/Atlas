@@ -1,13 +1,14 @@
-id: session-11
-timestamp: 2026-04-24T12:53:34Z
+id: session-12
+timestamp: 2026-04-24T14:12:28Z
 phase: work
 body: |
-  ### Session 11 (2026-04-24T12:53:34Z) — Build evaluation harness and first golden
+  ### Session 12 (2026-04-24T14:12:28Z) — Extract component-ontology and atlas-index to linkuistics/atlas-contracts
 
-  - Implemented the `atlas-eval` crate at `evaluation/harness/` with structural invariant checks, metric computation (coverage, spurious rate, kind accuracy, edge precision/recall), differential evaluation, and a small HTML trend reporter.
-  - Created `evaluation/invariants/` with standalone Rust integration-test sources for all six invariants: path coverage, manifest coverage, edge participant existence, rename round-trip, and fixedpoint termination.
-  - Hand-authored the first golden dataset at `evaluation/goldens/dev-workspace/`: components.golden.yaml, external-components.golden.yaml, related-components.golden.yaml, and notes.md documenting boundary decisions.
-  - Added `evaluation/results/.gitkeep` and wired evaluation/harness into the workspace Cargo.toml; registered trend.html in .gitignore.
-  - A new backlog task was added to extract component-ontology (and possibly atlas-index) to a public Linkuistics crate, unblocking Ravel-Lite OSS migration tasks.
-  - The task was flipped to `done`; no structural invariant test failures were recorded in the results.
-  - Next step: run atlas-eval against a live Atlas run on ~/Development/ to validate goldens against real output and measure initial coverage/spurious metrics.
+  - Extracted the `component-ontology` and `atlas-index` crates (plus `defaults/ontology.yaml`) from Atlas into a new public GitHub repo `linkuistics/atlas-contracts`, a Cargo workspace mirroring Atlas's workspace style. Bootstrap commit sha: `337c54368eb1393f2c3f8839a5e9042ce72cf964`.
+  - Verified the extracted workspace builds and all 80 tests pass in isolation (33 atlas-index unit, 3 atlas-index golden, 44 component-ontology).
+  - Wired Atlas up: dropped the two crates from `[workspace.members]`, added git deps pinned by sha in `[workspace.dependencies]`, switched `atlas-cli`, `atlas-engine`, `evaluation/harness` to `workspace = true` deps, deleted local `crates/component-ontology/`, `crates/atlas-index/`, `defaults/ontology.yaml`.
+  - Ran full Atlas test suite: 281 passed, 2 ignored (pre-existing opt-in), 0 failed.
+  - Rewrote M2, M4, M5 task descriptions to reference the git-dep source rather than path deps or crates.io; unblocked M2.
+  - Updated the `cross-crate-include-str-paths-break-crates-io-publication` memory entry to note its structural mootness under the Brew-bottle distribution model.
+  - Key decision: skipped `git filter-repo` history transplant per user preference — a clean "Initial extraction" bootstrap commit is cleaner for a public repo; Atlas history is still accessible via the private Atlas log.
+  - Key learning: `evaluation/harness/Cargo.toml` still had a direct path dep on `atlas-index` that was missed in the initial sweep; grepping before deletion would have caught it earlier.

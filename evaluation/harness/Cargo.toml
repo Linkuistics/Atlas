@@ -12,8 +12,8 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow = { workspace = true }
-atlas-index = { path = "../../crates/atlas-index" }
-component-ontology = { path = "../../crates/component-ontology" }
+atlas-index = { workspace = true }
+component-ontology = { workspace = true }
 ignore = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }

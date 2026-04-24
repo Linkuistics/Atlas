@@ -2,75 +2,116 @@ tasks:
 - id: extract-component-ontology-and-possibly-atlas-index-to-a-public-linkuistics-crate
   title: Extract component-ontology (and possibly atlas-index) to a public Linkuistics crate
   category: migration
-  status: not_started
+  status: done
   dependencies: []
   description: |
-    **Priority: HIGH.** Unblocks the Ravel-Lite migration tasks (M2 / M4 / M5), which are currently infeasible as written because they would force OSS Ravel-Lite to depend on closed-source Atlas via Cargo path deps.
+    **Priority: HIGH.** Unblocks the Ravel-Lite migration tasks (M2 / M4 / M5).
 
     ## Problem
 
-    Ravel-Lite is open source with external users. Atlas is a private repository. The existing migration design (§9.4 M2) has Ravel-Lite depending on Atlas's `component-ontology` (and later `atlas-index`) via `path = "../Atlas/..."`. That is incompatible with OSS distribution:
-
-    - Path deps only resolve for a local sibling checkout; OSS users cannot `cargo install ravel-lite` because Cargo cannot fetch `../Atlas` from an unauthenticated context.
-    - Git deps to a private repo require credentials — unacceptable UX for external users.
-    - Publishing Atlas-hosted crates to crates.io would require the repo to be public.
-
-    Memory entry `cross-crate-include-str-paths-break-crates-io-publication` flags an adjacent remediation: current `include_str!` paths (`../../../defaults/ontology.yaml`) would also break registry publication because registry packages must be self-contained under the crate root.
+    Ravel-Lite is open source with external users. Atlas is a private repository. The existing migration design (§9.4 M2) has Ravel-Lite depending on Atlas's `component-ontology` (and later `atlas-index`) via `path = "../Atlas/..."`. That works only for a local sibling checkout and cannot survive outside a developer machine.
 
     ## Solution
 
-    Extract the data-format / vocabulary layer of Atlas into a new public Linkuistics repository and publish the crates to crates.io. Both Atlas (private) and Ravel-Lite (OSS) depend on the public crate. The IP-sensitive parts of Atlas (`atlas-engine`, prompts, Salsa pipeline, LLM wiring) stay in the private Atlas repo.
+    Extract the public, data-format / vocabulary layer of Atlas into a new Linkuistics repository and reference it as a git dependency. Both Atlas (private) and Ravel-Lite (OSS) depend on it. The IP-sensitive parts of Atlas (`atlas-engine`, prompts, Salsa pipeline, LLM wiring) stay in the private Atlas repo.
 
-    ### What moves (proposal — part of this task is to confirm)
+    **Distribution model** (confirmed 2026-04-24): Ravel-Lite and Atlas ship as **Homebrew bottles** built by CI. End users never run `cargo build`, so `git = "https://github.com/..."` dependencies are the appropriate and cheapest source for cross-project code. See memory entry `project_distribution_brew_bottles`. Because `cargo publish` is not on the roadmap, the `include_str!` cross-crate path concerns (memory entry `cross-crate-include-str-paths-break-crates-io-publication`) are structurally moot and need no remediation in this task.
 
-    - **Must be public:** `component-ontology` crate. This is the public vocabulary (EdgeKind, LifecycleScope, EvidenceGrade, the ontology.yaml itself). Ravel-Lite currently ships its own copy; Atlas needs one; the drift this migration was meant to eliminate is the reason this crate exists.
-    - **Probably public:** `atlas-index` schemas (`ComponentsFile`, `ExternalsFile`, `PinValue`, etc.). These are typed readers/writers for the three YAML files Atlas emits — they're format contracts, not IP. Publishing them lets Ravel-Lite consume Atlas outputs cleanly in M5.
-    - **Stays private (in Atlas):** `atlas-engine`, the Salsa L1–L9 pipeline, prompt templates in `defaults/discover-*.md`, `atlas-llm`, `atlas-cli`. These encode Atlas's discovery heuristics.
-    - **Open design question:** `atlas-index::prompts_dir()` as proposed in M5 bridges Ravel-Lite to Atlas's prompt tree. If prompts are private, that helper can't live in a public crate. Either (a) Ravel-Lite keeps its own prompts (undo the prompt-deletion part of M5), or (b) the prompts themselves become public artifacts. Defer the decision until the extraction is done.
+    ## Plan
 
-    ### New public repo
+    ### 1. New public repo: `linkuistics/atlas-contracts`
 
-    - Name: tbd — e.g., `linkuistics/atlas-schemas`, or just `linkuistics/component-ontology` promoted from its current Atlas home. Pick during the task.
-    - License: Apache-2.0 to match Atlas and Ravel-Lite.
-    - Contents: the extracted crates, `defaults/ontology.yaml` (or whichever canonical YAML assets need to ship with them), tests, CI for crates.io publication.
-    - Publication: push to crates.io so Ravel-Lite OSS users get it transparently via `cargo install`.
+    - Single umbrella Cargo workspace containing all the public, data-format / vocabulary layer of Atlas.
+    - Initial members: `component-ontology`, `atlas-index`.
+    - License: Apache-2.0 (matches Atlas and Ravel-Lite).
+    - Name rationale: "contracts" captures intent — this is the set of data-formats, types, protocols, and standards that Atlas produces/consumes and that external tools need to speak. Distinguishes it from `atlas-engine` (computational / private).
+    - Future home for any additional public Atlas crates (prompt-schema crates, results-schema crates, etc.) that emerge later.
 
-    ### Remediation work pulled in from memory
+    ### 2. Extraction
 
-    - Fix `include_str!` paths so every included file lives within its crate root (per memory `cross-crate-include-str-paths-break-crates-io-publication`). For `component-ontology`, move `defaults/ontology.yaml` inside the crate directory or embed via a `build.rs` that copies into `OUT_DIR`.
+    - Use `git filter-repo` to carve `crates/component-ontology/`, `crates/atlas-index/`, and `defaults/ontology.yaml` out of Atlas with full history.
+    - Layout in `atlas-contracts`:
+      - `crates/component-ontology/` (unchanged)
+      - `crates/atlas-index/` (unchanged; still depends on `component-ontology` via workspace path dep)
+      - `defaults/ontology.yaml` at workspace root, kept at `../../../defaults/ontology.yaml` relative to `crates/component-ontology/src/defaults.rs` — the `include_str!` path is identical under the new workspace root.
+    - Root `Cargo.toml` mirrors Atlas's workspace style (shared `[workspace.package]`, `[workspace.dependencies]` for `anyhow`, `serde`, `serde_yaml`, etc., and `[workspace.lints]`).
 
-    ### Impact on existing backlog tasks
+    ### 3. Wire Atlas up
 
-    After this task lands, the following must be rewritten before they're picked up:
+    - Delete `Atlas/crates/component-ontology/` and `Atlas/crates/atlas-index/` and their workspace entries.
+    - In Atlas's root `Cargo.toml` add git deps:
+      ```toml
+      [workspace.dependencies]
+      component-ontology = { git = "https://github.com/linkuistics/atlas-contracts", rev = "<sha>" }
+      atlas-index = { git = "https://github.com/linkuistics/atlas-contracts", rev = "<sha>" }
+      ```
+      Pin by rev for reproducible builds; consider tag-based pinning (`tag = "v0.1.0"`) if ergonomics want a human-readable version.
+    - Keep `Atlas/defaults/ontology.yaml` for the moment if anything in Atlas still loads it from disk; otherwise delete. The canonical copy now lives in `atlas-contracts/defaults/ontology.yaml`.
+    - Run full Atlas test suite; fix any import-path churn.
 
-    - **M2** (`ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate`): the dep source changes from `path = "../Atlas/crates/component-ontology"` to the published crates.io version. The rest of the task (replace imports, delete Ravel-Lite's `src/ontology/`) is unchanged.
-    - **M4** (`ravel-lite-migration-m4-delete-in-tree-ontology-copies`): the canonical ontology.yaml now lives in the OSS crate, not in Atlas. Asset-loading switches to the public crate.
-    - **M5** (`ravel-lite-migration-m5-consume-atlas-via-atlas-index`): depends on whether `atlas-index` was extracted; the `prompts_dir()` question above needs an answer. Atlas's `components.yaml` producer side is unchanged; the consumer side in Ravel-Lite uses the public `atlas-index` crate.
+    ### 4. Impact on downstream backlog tasks
 
-    Recommend marking M2/M4/M5 `blocked` on this task during triage, with a reason pointing here.
+    After this task lands, rewrite the migration tasks to reference `git = "https://github.com/linkuistics/atlas-contracts"` rather than path deps or crates.io:
 
-    ## Scope
+    - **M2**: dep source becomes the git dep; the rest (replace imports, delete `Ravel-Lite/src/ontology/`) is unchanged.
+    - **M4**: the canonical `ontology.yaml` lives in `atlas-contracts/defaults/`; asset-loading switches to the crate-exposed string.
+    - **M5**: `atlas-index` is now available cleanly as a git dep. The earlier `prompts_dir()` open question is unchanged — resolve during M5.
 
-    1. Decide the crate boundary (at minimum `component-ontology`; probably `atlas-index` schemas).
-    2. Create the new public Linkuistics repo; move the crates there with full git history if practical (`git filter-repo` or `git subtree`).
-    3. Rework `include_str!` paths so nothing reaches above the crate root.
-    4. Update Atlas's Cargo workspace to pull the crates from crates.io (or a git dep during transition).
-    5. Run the full Atlas test suite; fix any import churn.
-    6. Publish initial versions to crates.io under `0.1.0`.
-    7. Rewrite M2/M4/M5 descriptions to reference the new crate source.
+    ### 5. Memory updates
+
+    - Update the `cross-crate-include-str-paths-break-crates-io-publication` memory entry to note that it's structurally moot under the Brew-bottle distribution model.
+    - No other memory changes needed (the Brew-bottle memory was saved in this task's pre-work).
 
     ## Out of scope
 
-    - Actually executing M2/M4/M5 (those remain separate backlog tasks).
-    - Making Atlas's prompt templates public (separate decision if ever needed).
-    - Making `atlas-engine` public (explicitly private).
+    - Actually executing M2/M4/M5 (separate tasks).
+    - Making Atlas's prompt templates or `atlas-engine` public.
+    - Crates.io publication (explicitly not on the roadmap).
+    - `include_str!` path rework.
 
     ## Exit criteria
 
-    - New public Linkuistics repo exists with `component-ontology` (and optionally `atlas-index`) as published crates on crates.io.
-    - Atlas compiles against the published versions; all Atlas tests pass.
-    - M2/M4/M5 descriptions have been rewritten to target the public crate and are marked `blocked` pending this task's completion is lifted.
-    - Memory entry `cross-crate-include-str-paths-break-crates-io-publication` is updated or retired once its remediation ships.
+    - `github.com/linkuistics/atlas-contracts` exists publicly, is an Apache-2.0 licensed Cargo workspace, and contains `component-ontology` + `atlas-index` with preserved git history.
+    - Atlas compiles against the git-dep versions; all Atlas tests pass.
+    - `Atlas/crates/component-ontology/` and `Atlas/crates/atlas-index/` are gone.
+    - M2/M4/M5 descriptions reference the git dep source; M2 is unblocked (dependency resolved).
+    - Memory entry `cross-crate-include-str-paths-break-crates-io-publication` updated to note its structural mootness.
+  results: |
+    ## What was done
+
+    - Brainstormed distribution constraints with the user. Original task assumed crates.io publication; user clarified Atlas and Ravel-Lite ship as Homebrew bottles built by CI, so git deps are the appropriate source and crates.io constraints do not apply. Saved this as a persistent project memory (`project_distribution_brew_bottles.md`).
+    - Rewrote this task's description to drop the crates.io scope and target a single umbrella repo + git-dep source.
+    - Created public GitHub repo `linkuistics/atlas-contracts` (Apache-2.0, single Cargo workspace).
+    - Extracted `component-ontology` and `atlas-index` crates and `defaults/ontology.yaml` from Atlas, wrote a new top-level `Cargo.toml` mirroring Atlas's workspace-inherit style, plus README and `.gitignore`. Bootstrap commit sha: `337c54368eb1393f2c3f8839a5e9042ce72cf964`.
+    - Verified the extracted workspace builds and tests in isolation (80 tests: 33 atlas-index unit, 3 atlas-index golden, 44 component-ontology — all green).
+    - Wired Atlas up:
+      - Dropped the two crates from `[workspace.members]`.
+      - Added both as `[workspace.dependencies]` pinned by sha.
+      - Switched `atlas-cli`, `atlas-engine`, `evaluation/harness` from path deps to `workspace = true` deps.
+      - Deleted local `crates/component-ontology/`, `crates/atlas-index/`, `defaults/ontology.yaml`.
+    - Ran full Atlas test suite: 281 passed, 2 ignored (pre-existing opt-in tests gated on `ATLAS_LLM_RUN_CLAUDE_TESTS=1`), 0 failed.
+    - Rewrote M2, M4, M5 task descriptions to reference the new git-dep source. M5 also got an added discussion of the Stage-1/2 prompt question with a revised default recommendation (Ravel-Lite keeps its own prompts, since publishing Atlas prompts to the public contracts repo contradicts the "public contracts, private computation" split).
+    - Updated the `cross-crate-include-str-paths-break-crates-io-publication` memory entry to note its structural mootness under the Brew-bottle model, with a clear "if the distribution model changes" escape hatch.
+
+    ## What worked
+
+    - Skipping `git filter-repo` per the user's preference and going straight to a bootstrap commit was much cleaner. The public repo has a single clear "Initial extraction from Atlas" commit; anyone needing history can follow the link back to the private Atlas repo's log.
+    - Cargo's git-dep resolution Just Works with an sha pin; no CI configuration or registry coordination needed.
+    - Switching the downstream Atlas crates to `workspace = true` deps (instead of repeating the `git = ...` URL three times) centralised the pin in the root `Cargo.toml`. A single sha bump upgrades everything in lockstep.
+
+    ## What didn't work
+
+    - First `cargo check` failed because `evaluation/harness/Cargo.toml` still had a path dep at `../../crates/atlas-index`. Grepping before deletion would have caught this earlier; filed that learning implicitly (the `.grep` I did afterwards did catch it). No lasting harm.
+    - Five Edit calls failed at first because the files hadn't been Read in this session yet. Rewrote after reading. Minor friction, no rework.
+
+    ## What this suggests next
+
+    - **M2 is now unblockable.** Its `blocked` status should flip to `not_started` — I'll flip it in the step after this.
+    - **M5's prompt question:** the revised default is "Ravel-Lite keeps its own prompt copies." If Ravel-Lite's Stage-1/2 prompts are drifting meaningfully from Atlas's, that's an intentional divergence; they don't need to be the same across projects. The user should decide when M5 is picked up.
+    - **`atlas-contracts` versioning:** currently one commit on main, pinned by sha. No tag strategy. If the repo starts taking contributions or gets third-party consumers beyond Atlas/Ravel-Lite, introducing semantic tags (`v0.1.0`, `v0.2.0`) and pinning by tag instead of sha would be worth revisiting.
+    - **`atlas-contracts` CI:** not set up. For now Atlas's own CI catches regressions by building against the sha-pinned deps. If the contracts repo grows (more crates, multiple consumers), a minimal CI (just `cargo test --workspace`) becomes worth adding.
+    - **`atlas-contracts` README:** points at Atlas for context but doesn't yet say "we accept external contributions" or similar. If the Linkuistics org wants to invite outside maintainers, a CONTRIBUTING.md will be needed.
+    - **Atlas's `Cargo.lock`:** the lockfile now includes the git-dep sha. Any future bump of the `atlas-contracts` pin needs to be done in BOTH `Cargo.toml` and the lockfile (or just in `Cargo.toml`, then `cargo update -p component-ontology -p atlas-index`). Document this in a developer-facing note if team members are likely to trip over it.
 - id: hand-author-second-golden-for-merged-monorepo
   title: Hand-author second golden for merged monorepo
   category: eval
@@ -117,8 +158,7 @@ tasks:
 - id: ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate
   title: 'Ravel-Lite migration M2: switch to Atlas component-ontology crate'
   category: migration
-  status: blocked
-  blocked_reason: 'Blocked on extract-component-ontology-and-possibly-atlas-index-to-a-public-linkuistics-crate: the crate must be published to crates.io before Ravel-Lite (OSS) can safely depend on it'
+  status: not_started
   dependencies:
   - extract-component-ontology-and-possibly-atlas-index-to-a-public-linkuistics-crate
   description: |
@@ -128,14 +168,14 @@ tasks:
 
     ## Scope
 
-    - In Ravel-Lite's root `Cargo.toml`, add a `[dependencies]` entry:
+    - In Ravel-Lite's root `Cargo.toml`, add a `[workspace.dependencies]` entry (or plain `[dependencies]` if Ravel-Lite is single-crate):
       ```toml
-      component-ontology = { path = "../Atlas/crates/component-ontology" }
+      component-ontology = { git = "https://github.com/linkuistics/atlas-contracts", rev = "<sha>" }
       ```
-      (Use a git dependency instead if path deps are inconvenient for a given checkout setup; document the choice.)
+      Pin by commit sha. The canonical repo is `linkuistics/atlas-contracts` (a public Cargo workspace hosting Atlas's data-format / vocabulary crates — see the extraction task for context).
     - Replace every `use crate::ontology::...` or `use ravel_lite::ontology::...` in Ravel-Lite with `use component_ontology::...`.
     - Delete `Ravel-Lite/src/ontology/` entirely.
-    - Keep `Ravel-Lite/defaults/ontology.yaml` for now — the canonical file is Atlas's, but removing Ravel-Lite's copy is M4.
+    - Keep `Ravel-Lite/defaults/ontology.yaml` for now — the canonical file is shipped by `component-ontology` via `include_str!`, but removing Ravel-Lite's local copy is M4.
     - Run the full Ravel-Lite test suite; fix any breakage from the import path change.
     - Commit as a single PR.
 
@@ -152,9 +192,9 @@ tasks:
 
     ## Exit criteria
 
-    - Ravel-Lite compiles and all tests pass with `component-ontology` sourced from Atlas.
+    - Ravel-Lite compiles and all tests pass with `component-ontology` sourced as a git dep from `linkuistics/atlas-contracts`.
     - `Ravel-Lite/src/ontology/` is gone.
-    - A commit in Ravel-Lite titled "Switch component-ontology to Atlas-sourced crate" with a link to the Atlas commit that added the crate.
+    - A commit in Ravel-Lite titled "Switch component-ontology to atlas-contracts git dep" with a link to the `atlas-contracts` commit it pins.
 - id: ravel-lite-migration-m4-delete-in-tree-ontology-copies
   title: 'Ravel-Lite migration M4: delete in-tree ontology copies'
   category: migration
@@ -168,18 +208,18 @@ tasks:
 
     ## Scope
 
-    - Delete `Ravel-Lite/defaults/ontology.yaml`. Ravel-Lite now reads the YAML from Atlas at the path resolved from the `component-ontology` crate's vendored copy (use `include_str!` via the crate's public API, or a small `component_ontology::ontology_yaml() -> &'static str` helper if not already present).
-    - Delete `Ravel-Lite/docs/component-ontology.md`. Ravel-Lite's in-tree doc becomes a stub `component-ontology.md` that just links to `Atlas/docs/component-ontology.md`.
+    - Delete `Ravel-Lite/defaults/ontology.yaml`. Ravel-Lite now reads the YAML from the `component-ontology` crate (hosted at `linkuistics/atlas-contracts`) via its exposed `component_ontology::EMBEDDED_ONTOLOGY_YAML` constant.
+    - Delete `Ravel-Lite/docs/component-ontology.md`. Ravel-Lite's in-tree doc becomes a stub `component-ontology.md` that just links to `atlas-contracts/crates/component-ontology/README.md` (or equivalent upstream docs).
     - Delete `Ravel-Lite/docs/component-ontology-migration.md` — the migration is done, the doc is obsolete.
-    - Update any Ravel-Lite tests that previously loaded `Ravel-Lite/defaults/ontology.yaml` from disk to instead use the crate-exposed string.
-    - Ravel-Lite's build-time test that asserts `EdgeKind` matches `ontology.yaml` switches to assert against Atlas's canonical file (via the crate-vendored copy).
-    - Ravel-Lite's `Stage 1`/`Stage 2` prompts still exist in `Ravel-Lite/defaults/` for this task; they're removed in M5.
+    - Update any Ravel-Lite tests that previously loaded `Ravel-Lite/defaults/ontology.yaml` from disk to instead use `component_ontology::EMBEDDED_ONTOLOGY_YAML`.
+    - Ravel-Lite's build-time test that asserts `EdgeKind` matches `ontology.yaml` switches to assert against the crate-exposed constant (which is the canonical file).
+    - Ravel-Lite's Stage 1 / Stage 2 prompts still exist in `Ravel-Lite/defaults/` for this task; they're removed in M5.
 
     ### Tests
 
     - Ravel-Lite test suite passes.
     - Build-time `EdgeKind` vs `ontology.yaml` consistency test still runs and passes.
-    - No Ravel-Lite file other than Atlas-owned ones references `ontology.yaml` at a Ravel-Lite-local path.
+    - No Ravel-Lite file other than `component-ontology`-sourced strings references `ontology.yaml` at a Ravel-Lite-local path.
 
     ## Out of scope
 
@@ -206,7 +246,7 @@ tasks:
 
     ### Ravel-Lite depends on atlas-index
 
-    - Add `atlas-index = { path = "../Atlas/crates/atlas-index" }` to Ravel-Lite's Cargo.toml.
+    - Add `atlas-index = { git = "https://github.com/linkuistics/atlas-contracts", rev = "<sha>" }` to Ravel-Lite's Cargo.toml. Pin the same rev used for `component-ontology` in M2 (both crates live in the same workspace).
 
     ### Refactor projects.rs
 
@@ -215,11 +255,17 @@ tasks:
     - Only *internal* components are valid plan targets — external components (from `external-components.yaml`) are rejected with a helpful error per the user's earlier decision.
     - Existing callers' API preserved as much as possible; public signatures remain backward-compatible where practical (change the import paths but keep the verbs).
 
-    ### Remove Stage 1/2 prompt copies
+    ### Remove Stage 1/2 prompt copies — resolution of the open question
 
-    - Delete `Ravel-Lite/defaults/discover-stage1.md` and `discover-stage2.md`.
-    - Ravel-Lite loads prompts from Atlas's path: either via an env var pointing at Atlas's checkout, or via a helper in `atlas-index` that returns the canonical prompt paths.
-    - Decision: `atlas-index` exposes `prompts_dir() -> PathBuf` helper returning the Atlas-shipped prompts directory. Ravel-Lite's `discover` phase reads from there.
+    The earlier open question was where Ravel-Lite should read Atlas's prompts from once the prompt files live in the private Atlas repo. Resolution options:
+
+    1. **Add prompts to `atlas-contracts`** — promote them to the public contracts repo. Simplest for Ravel-Lite, exposes Atlas prompt IP publicly.
+    2. **Ravel-Lite keeps its own prompt copies** — revert the deletion step; Ravel-Lite stays prompt-independent. Reintroduces drift risk.
+    3. **Optional env-var / path-based lookup** — Ravel-Lite has no prompts of its own and requires a sibling Atlas checkout via `ATLAS_PROMPTS_DIR` or similar.
+
+    Decide during this task. Default recommendation (revised from original task): **option 2** (Ravel-Lite keeps its own prompt copies). Rationale: prompts are the heart of Atlas's IP; publishing them via `atlas-contracts` contradicts the "public data-formats, private computational parts" split that motivated the whole extraction. Ravel-Lite's Stage-1/2 prompts are lighter than Atlas's discover-* prompts and can diverge intentionally.
+
+    If option 2 is picked, this section collapses to "leave `Ravel-Lite/defaults/discover-stage1.md` and `discover-stage2.md` alone" and the exit criterion below changes accordingly.
 
     ### CLI surface
 
@@ -240,9 +286,9 @@ tasks:
     ## Exit criteria
 
     - A single `related-components.yaml` exists in the ecosystem — Ravel-Lite no longer writes its own.
-    - `Ravel-Lite/defaults/discover-stage1.md` and `discover-stage2.md` do not exist.
     - Ravel-Lite's test suite passes end to end.
     - `ravel-lite run` on any plan directory can discover and use components produced by Atlas without any hand-authored `projects.yaml`.
+    - The Stage-1/2 prompt question is answered and the chosen option's sub-steps are applied.
 - id: verify-atlas-v1-success-criteria-end-to-end
   title: Verify Atlas v1 success criteria end-to-end
   category: eval

@@ -2,7 +2,13 @@ entries:
 - id: cross-crate-include-str-paths-break-crates-io-publication
   title: Cross-crate include_str! paths break crates.io publication
   body: |
-    Paths like `../../../defaults/ontology.yaml` work for path/git deps but break crates.io publication, which requires all included files within the crate root. Any crate using cross-directory `include_str!` must be reworked before registry publication.
+    **Status (2026-04-25): structurally moot under current distribution model.**
+
+    Paths like `../../../defaults/ontology.yaml` work for path and git deps but would break `cargo publish`, which requires all included files within the crate root. This only bites at registry-publication time.
+
+    Atlas and Ravel-Lite are distributed as Homebrew bottles built by CI (see separate distribution memory). Neither project ships to crates.io, so this constraint does not apply. Existing cross-crate `include_str!` paths (e.g. `component-ontology/src/defaults.rs` reading `../../../defaults/ontology.yaml` from its workspace root) are fine indefinitely.
+
+    **If the distribution model ever changes and crates.io publication is on the table:** rework the paths so every included file lives within its crate root, either by moving assets under the crate directory or embedding via `build.rs` into `OUT_DIR`.
 - id: lib-crate-public-items-do-not-trigger-dead-code-lint
   title: Lib crate public items do not trigger dead-code lint
   body: |

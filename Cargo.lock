@@ -147,12 +147,12 @@ dependencies = [
 [[package]]
 name = "atlas-index"
 version = "0.1.0"
+source = "git+https://github.com/linkuistics/atlas-contracts?rev=337c54368eb1393f2c3f8839a5e9042ce72cf964#337c54368eb1393f2c3f8839a5e9042ce72cf964"
 dependencies = [
  "anyhow",
  "component-ontology",
  "serde",
  "serde_yaml",
- "tempfile",
 ]
 
 [[package]]
@@ -258,12 +258,11 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 [[package]]
 name = "component-ontology"
 version = "0.1.0"
+source = "git+https://github.com/linkuistics/atlas-contracts?rev=337c54368eb1393f2c3f8839a5e9042ce72cf964#337c54368eb1393f2c3f8839a5e9042ce72cf964"
 dependencies = [
  "anyhow",
- "regex",
  "serde",
  "serde_yaml",
- "tempfile",
 ]
 
 [[package]]
