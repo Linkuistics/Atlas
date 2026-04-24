@@ -141,3 +141,11 @@ entries:
   title: externals_from_manifests omits [workspace.dependencies] entries
   body: |
     `externals_from_manifests` parses each Cargo.toml independently and does not resolve `{ workspace = true }` dependency declarations. Workspace-inherited dependencies are silently omitted from external component detection. Deferred as a follow-up.
+- id: llm-cache-json-schema-split-deferred-to-v2
+  title: llm-cache.json schema split deferred to v2
+  body: |
+    The `llm-cache.json` currently co-mingles per-prompt responses with fingerprint metadata in a single flat file. For v2 it may be worth one file per prompt type, or keying by content-sha of inputs rather than the full request object, to produce smaller diffs and cheaper cache invalidation on fingerprint-only changes.
+
+    **Why:** Noted during L9/atlas-cli implementation (cycle that delivered `cache_io.rs`). Explicitly deferred as "not urgent" — byte-identity on no-op re-runs already works.
+
+    **How to apply:** Surface this if the llm-cache.json file grows large or diffs are hard to read in PR review. Not a blocker for any current task.
