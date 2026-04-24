@@ -2,7 +2,7 @@ tasks:
 - id: implement-atlas-engine-l5-and-l6-surface-and-edge-queries-with-prompt-migration-m3
   title: 'Implement atlas-engine L5 and L6: surface and edge queries with prompt migration (M3)'
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: HIGH.** Ports the Ravel-Lite discovery work into Atlas's query graph.
@@ -65,6 +65,148 @@ tasks:
     - `cargo test -p atlas-engine` passes.
     - `defaults/prompts/stage1-surface.md` and `defaults/prompts/stage2-edges.md` exist and a diff against Ravel-Lite's originals shows only the token edits described above.
     - TestBackend-driven tests achieve ≥ 90% line coverage of `l5_surface.rs` and `l6_edges.rs`.
+  results: |
+    ## What was done
+
+    Implemented atlas-engine L5 (surface extraction) and L6 (candidate-edge proposal)
+    end-to-end with TestBackend-driven tests, plus the M3 prompt migration from
+    Ravel-Lite.
+
+    ### New modules
+
+    - `crates/atlas-engine/src/surface_types.rs` — `SurfaceRecord` and the closed
+      `InteractionRoleHint` vocabulary, ported verbatim from Ravel-Lite's
+      `discover/schema.rs` with the sole rename
+      `explicit_cross_project_mentions` → `explicit_cross_component_mentions`.
+    - `crates/atlas-engine/src/prompt_migration.rs` — pure
+      `project_to_component(s: &str) -> String` transformation. Plural-before-
+      singular ordering avoids double-suffix artefacts (`components` → `componentss`).
+    - `crates/atlas-engine/src/llm_cache.rs` — `LlmResponseCache` keyed by
+      `(LlmFingerprint, PromptId, canonical-JSON(inputs))`. Kept separate from
+      Salsa because the backend lives on `AtlasDatabase` outside Salsa storage
+      (memory: "is_component not salsa::tracked; Salsa 0.26 lacks downcast").
+    - `crates/atlas-engine/src/l5_surface.rs` — `surface_of(db, id)` with:
+      - Pin short-circuit via `overrides.pins[<id>]["surface"]` (YAML-encoded
+        `SurfaceRecord` in the pin value).
+      - Memoised backend call through the cache. Inputs include
+        `COMPONENT_CONTENT_SHAS` so a file-level content change invalidates the
+        cache key.
+      - Soft-fail returning a default `SurfaceRecord` with the reason recorded in
+        `notes` — mirrors L3's posture (no panics deep in the pipeline).
+    - `crates/atlas-engine/src/l6_edges.rs` — `candidate_edges_for(db, id)` and
+      `all_proposed_edges(db)`. One batch backend call per run (Ravel-Lite's
+      Stage 2 shape preserved); per-component view is a filter on the batch,
+      cheap because both routes share the same cache key.
+
+    ### Prompts
+
+    `defaults/prompts/stage1-surface.md` and `defaults/prompts/stage2-edges.md`
+    produced by programmatic transformation of
+    `Ravel-Lite/defaults/discover-stage1.md` and `discover-stage2.md`. The
+    transformation is the same function the drift tests run, so the files are
+    byte-equal to what the test expects.
+
+    ### Database plumbing
+
+    `AtlasDatabase` gained:
+    - `llm_cache: LlmResponseCache` field.
+    - `call_llm_cached(&self, req) -> Result<Arc<Value>, LlmError>` wrapper that
+      every LLM-adjacent query should go through.
+    - `llm_cache()` accessor for tests.
+
+    ### Tests (all passing)
+
+    - **Prompt-migration drift**: `stage1_surface_prompt_is_the_transformed_ravel_lite_original`
+      and the Stage 2 counterpart apply the transformation to Ravel-Lite's
+      shipped bytes and assert byte-equality with Atlas's embedded copies.
+      Additional residual-word tests guard against any future `project` leaking
+      back in.
+    - **L5 integration tests with TestBackend**:
+      - Canned Stage 1 response parsed back into the expected `SurfaceRecord`.
+      - Cache hit on second identical call (call-count stays at 1).
+      - Cache miss when a file content changes (content_sha propagates through
+        to the cache key).
+      - Surface pin short-circuit: no backend call, pinned record returned.
+      - Unknown id returns default record without touching the backend.
+      - Response-shape parser tests for bare-record and `surface`-wrapped
+        variants.
+    - **L6 integration tests with TestBackend**:
+      - Canned Stage 2 batch parsed back into an `Edge` list; `candidate_edges_for`
+        filters by participant correctly.
+      - Symmetric-kind participants get sorted during canonicalisation (input
+        order reversed in the canned response; output is canonical).
+      - Directed-kind participants preserve caller-supplied order.
+      - Single-component run makes zero Stage 2 calls (no pairs).
+      - Response-shape parser tests: top-level array, `edges`-wrapped object,
+        malformed-entry silent skip.
+      - Duplicate edges within a batch are collapsed to one via `canonical_key`.
+
+    ### Verification
+
+    ```
+    cargo build --workspace     → clean
+    cargo clippy --workspace    → clean (no warnings; lint profile = deny-warnings)
+    cargo test --workspace      → 239 tests pass, 2 ignored (claude-CLI)
+    ```
+
+    The new atlas-engine module adds **85 unit tests** (was 49) plus re-uses the
+    11 L4, 16 L2/L3, 14 L0/L1 integration tests which continue to pass.
+
+    ## What worked
+
+    - The "shared `Arc<TestBackend>` + `Arc<dyn LlmBackend>`" pattern gives
+      tests a clean handle to register canned responses on the same backend
+      instance the engine sees. Much better than the unsafe `Arc::from_raw`
+      downcast hack I started with.
+    - Keying the LLM cache on the full canonical-JSON of inputs (rather than a
+      hash) makes debugging easy — a miss shows up as a key-mismatch that can be
+      read. Any performance hit is irrelevant at this scale.
+    - The pure-text-substitution approach to the M3 migration produces a
+      tight drift test: any prose change in either repo is caught mechanically,
+      so the two prompt corpora cannot silently diverge until task M4 deletes
+      Ravel-Lite's copies.
+
+    ## What didn't work / compromises
+
+    - **Prompt prose is now out of sync with Atlas's backend protocol.**
+      Ravel-Lite's Stage 1 instructs the LLM to "write YAML to
+      {{SURFACE_OUTPUT_PATH}}" and Stage 2 instructs it to shell out to
+      `ravel-lite state discover-proposals add-proposal`. Atlas's
+      `ClaudeCodeBackend` expects JSON on stdout. The M3 task brief explicitly
+      forbids substantive prompt changes here ("differ only in the specified
+      token substitutions"), so this mismatch is accepted for now: TestBackend
+      unit tests cover the parsing path independently of the prompt, and a
+      follow-on task can rewrite the prose against the real protocol.
+    - **`surface_of` is not `#[salsa::tracked]`.** The task brief says "Salsa
+      tracked" but the current Atlas pattern (per the "is_component not
+      salsa::tracked" memory) is to route LLM-adjacent queries through plain
+      fns taking `&AtlasDatabase` because Salsa 0.26 does not expose a
+      downcast from `&dyn salsa::Database`. The cache-behaviour exit criteria
+      are satisfied via `LlmResponseCache` instead; cache tests confirm "zero
+      backend calls on no-op re-run" and "exactly one miss on content change."
+      When task 9 lands, the preferred in-Salsa keying-by-`LlmRequest` strategy
+      can layer on top without disturbing L5/L6 call sites.
+    - **Cross-workspace `include_str!` in drift tests** reaches
+      `../../../../Ravel-Lite/defaults/discover-stage1.md`. Works when both
+      repos are co-located under `~/Development/` (Atlas's actual layout) but
+      fails to compile otherwise. Acceptable for this task; if a CI runner
+      ever lacks Ravel-Lite, we can snapshot the prompts into
+      `crates/atlas-engine/tests/fixtures/ravel-lite-originals/` and compare
+      against the snapshot.
+
+    ## What this suggests next
+
+    - **Task L7/L8** is unblocked. L6 already deduplicates by canonical key so
+      L7's `edge_graph()` aggregation gets a clean input. L5's cache
+      invariants carry through: any L7/L8 tracked-query additions should key
+      off `(workspace, id)` per the L4+ convention memory.
+    - **Prompt prose rewrite** — when time permits, rewrite
+      `defaults/prompts/stage1-surface.md` and `defaults/prompts/stage2-edges.md`
+      to match the JSON-over-stdout protocol. The drift test would then be
+      dropped (since Ravel-Lite's copies will be removed by task M4 anyway).
+    - **Memory worth adding**: "L5/L6 queries go through `AtlasDatabase::call_llm_cached`
+      not `backend.call()` directly" — reinforces the cache-hit invariant for
+      future LLM-adjacent work.
 - id: implement-atlas-engine-l7-and-l8-graph-structural-analysis-and-back-edge-closure
   title: 'Implement atlas-engine L7 and L8: graph-structural analysis and back-edge closure'
   category: feature

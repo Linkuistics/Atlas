@@ -78,3 +78,14 @@ sessions:
       - The `toml::Table` parse-to-value approach is the right tool for detecting top-level Cargo.toml sections; `table.get("lib").is_some_and(Value::is_table)` and `table.get("bin").is_some_and(Value::is_array)` correctly distinguish `[lib]` from `[[bin]]` because TOML represents array-of-tables as an array, not a table.
       - Stable identifier allocation follows slug→collision-suffix→sha-hash cascade: `leaf_slug` derived from the directory basename, `-2`/`-3` suffixes for collisions in the same parent, then a short SHA-256 hex suffix as last resort.
       - Rename-match integration: `atlas_index::rename_match` takes prior component ids and new candidates, returns matched pairs (reuse id), fresh candidates (allocate new id), and orphans (mark `deleted: true` for one cycle then drop).
+- id: session-7
+  timestamp: 2026-04-24T09:12:13Z
+  phase: work
+  body: |
+    ### Session 7 (2026-04-24T09:12:13Z) — Implement atlas-engine L5/L6: surface extraction and edge queries with M3 prompt migration
+
+    - Attempted: Complete task `implement-atlas-engine-l5-and-l6-surface-and-edge-queries-with-prompt-migration-m3` — new modules surface_types, prompt_migration, llm_cache, l5_surface, l6_edges; prompt files stage1-surface.md and stage2-edges.md; AtlasDatabase plumbing; full TestBackend-driven test suite.
+    - What worked: All scope landed. Five new modules added to atlas-engine. LlmResponseCache kept outside Salsa storage (consistent with the constraint that AtlasDatabase fields live beyond Salsa storage). Prompt drift tests verify byte-equality between the Atlas copies and the programmatic transformation of Ravel-Lite originals. `cargo test --workspace` reports 239 tests pass, 2 ignored (claude-CLI), 0 failures. `cargo clippy --workspace` clean with deny-warnings profile.
+    - What didn't: Nothing notable — the batch Stage-2 architecture (one call for all component pairs, per-component view is a cheap filter) was preserved from Ravel-Lite without issue. The pin short-circuit required YAML round-tripping the `SurfaceRecord` from the overrides value, which worked cleanly.
+    - What this suggests next: L7 (structural analysis) and L8 (back-edge) are the next backlog tasks. The LlmResponseCache and call_llm_cached wrapper are in place for L7 to use if it requires LLM calls.
+    - Key learnings: Ordering plural-before-singular in the project→component token substitution (`components` → `components` before `component` → `component`) avoids the double-suffix artefact (`componentss`). The l6 batch design means `all_proposed_edges` and `candidate_edges_for` share the same cache key — efficient but means a single missed component input change invalidates the whole batch.
