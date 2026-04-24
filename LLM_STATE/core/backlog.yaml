@@ -1,72 +1,4 @@
 tasks:
-- id: hand-author-second-golden-for-merged-monorepo
-  title: Hand-author second golden for merged monorepo
-  category: eval
-  status: blocked
-  blocked_reason: Merged monorepo target is third-party and unavailable for evaluation. v1 ships with the dev-workspace golden only. Triage should revise verify-atlas-v1-success-criteria-end-to-end (criterion 6 cross-target gap is unsatisfiable as written) — drop criterion 6 or substitute a synthetic second target.
-  dependencies: []
-  description: |
-    **Priority: MEDIUM.** Required for success criterion 6 (cross-target generalisation).
-
-    **Design reference:** §8.1, §10.3 criterion 6.
-
-    ## Scope
-
-    ### Golden
-
-    - Hand-author `evaluation/goldens/merged-monorepo/components.golden.yaml` for the merged monorepo (user to provide path or the golden lives alongside the monorepo and is symlinked into `evaluation/goldens/`).
-    - Approximate size: several hundred components.
-    - For components that are formerly-independent repos, boundary decisions are usually obvious; for internal splits, err on the side of the original repo boundary unless there's a clear lifecycle reason to split further.
-    - `notes.md` documents the decisions and particularly the cases where the golden deliberately disagrees with the original `.git` structure.
-
-    ### Cross-target validation
-
-    - Run the tool against the monorepo root; produce `evaluation/results/<date>-merged-monorepo.yaml`.
-    - Compare metrics between the two goldens:
-      - Component coverage: both ≥ 0.9?
-      - Spurious rate: both ≤ 0.1?
-      - Kind accuracy: both ≥ 0.85?
-      - Edge precision: both ≥ 0.8?
-    - Gap between targets ≤ 5 percentage points on each axis (§10.3 criterion 6).
-
-    ### Iteration loop (if gap > 5pp)
-
-    If the gap exceeds the bar, the iteration is permitted as follow-up work on earlier tasks — update prompts, heuristics, or thresholds and re-run. Document changes in a new entry under `evaluation/results/notes/<date>-iteration.md` so the experimental history is traceable.
-
-    ## Out of scope
-
-    - Ravel-Lite migration (separate tasks).
-    - Performance optimisation (§10.2 deferred).
-
-    ## Exit criteria
-
-    - Golden exists and passes all invariants.
-    - Both goldens' metrics meet their individual targets AND the cross-target gap ≤ 5pp.
-    - Report HTML shows both targets with trend lines.
-  results: |
-    ## Decision
-
-    Marked `blocked` rather than `done` or carried-forward. The merged monorepo target named in the task scope is third-party and not available for Atlas's evaluation harness; v1 will ship with the dev-workspace golden as the sole target.
-
-    ## What this changes downstream
-
-    `verify-atlas-v1-success-criteria-end-to-end` (HIGH-priority sign-off task) currently has criterion 6 — "Run against the merged monorepo. Assert coverage/spurious/kind/edge metrics are within 5 percentage points of the `~/Development/` run on each axis" — which is now structurally unsatisfiable. The dependency edge from sign-off → this task should also be revisited; with this task `blocked` permanently, the v1 sign-off would inherit the block.
-
-    ## Recommended triage actions
-
-    Triage should pick one of:
-
-    1. **Drop criterion 6 outright.** v1 ships with single-target validation. The cross-target generalisation claim becomes a v2 success criterion when a second target is genuinely available.
-    2. **Substitute a synthetic second target.** Pick a multi-crate Cargo workspace already present under `~/Development/` (e.g. one of the larger sibling repos) as a "second target" — boundaries differ enough from the dev-workspace top-level to exercise cross-target stability without inventing new infrastructure.
-    3. **Defer to v2.** Move the entire sign-off task to a v2 backlog and ship v1 against the criteria 1–5 subset, with criterion 6 explicitly listed as an outstanding follow-up.
-
-    My read: option 2 is closest to the original spec's intent (two structurally different targets, same metrics bar) without requiring third-party access. The dev-workspace golden notes already flag that Atlas sub-carves Cargo workspaces — a synthetic monorepo target would naturally exercise that path.
-
-    ## What was attempted but rolled back
-
-    The next backlog item, `ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate`, was tentatively started in this phase as the only other unblocked root. The user paused that work mid-implementation because Ravel-Lite is being concurrently edited (the Ravel-Lite tree had unrelated in-progress refactor work for `src/state/backlog/`). All Ravel-Lite-side changes were reverted; the working tree there is byte-identical to the state at phase start.
-
-    Mid-flight observation worth keeping for the eventual M2 attempt: `component-ontology` (pinned at SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` from `linkuistics/atlas-contracts`) builds cleanly as a git dep against Ravel-Lite, and the contracts crate's public surface (`Edge`, `EdgeKind`, `EvidenceGrade`, `LifecycleScope`, `RelatedComponentsFile`, the `defaults::*` re-exports, `cli::parse_*`, `yaml_io::*`) matches Ravel-Lite's `src/ontology/mod.rs` re-export list 1:1. The migration is a pure path-swap — no API churn — once Ravel-Lite is quiescent.
 - id: ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate
   title: 'Ravel-Lite migration M2: switch to Atlas component-ontology crate'
   category: migration
@@ -106,6 +38,60 @@ tasks:
     - Ravel-Lite compiles and all tests pass with `component-ontology` sourced as a git dep from `linkuistics/atlas-contracts`.
     - `Ravel-Lite/src/ontology/` is gone.
     - A commit in Ravel-Lite titled "Switch component-ontology to atlas-contracts git dep" with a link to the `atlas-contracts` commit it pins.
+- id: hand-author-second-golden-for-merged-monorepo
+  title: Hand-author synthetic second golden for cross-target validation
+  category: eval
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** Required for success criterion 6 (cross-target generalisation).
+
+    **Context:** The merged monorepo target originally specified for this task is third-party and unavailable. Repurposed to use a synthetic second target from `~/Development/` — a multi-crate Cargo workspace structurally different from the dev-workspace root, sufficient to exercise cross-target stability.
+
+    ## Target selection
+
+    Pick a sibling repo under `~/Development/` that:
+    - Is a multi-crate Cargo workspace (sub-carves differently from the top-level dev-workspace)
+    - Has ≥ 10 components when Atlas sub-carves it
+    - Is not the dev-workspace root itself (must exercise a different sub-carve path)
+
+    Good candidates: any larger workspace-organised repo already present under `~/Development/` (e.g. Ravel, or another multi-crate workspace). Document the selection rationale in `notes.md`.
+
+    ## Scope
+
+    ### Golden
+
+    - Hand-author `evaluation/goldens/<target-name>/components.golden.yaml` for the selected target.
+    - Approximate size: tens of components (need not be hundreds — enough to stress the cross-target gap assertion).
+    - `notes.md` documents: target selected, why it was chosen, and any boundary decisions that differ from what Atlas naturally produces.
+
+    ### Cross-target validation
+
+    - Run the tool against the synthetic target root; produce `evaluation/results/<date>-<target-name>.yaml`.
+    - Compare metrics between the two goldens (dev-workspace and synthetic target):
+      - Component coverage: both ≥ 0.9?
+      - Spurious rate: both ≤ 0.1?
+      - Kind accuracy: both ≥ 0.85?
+      - Edge precision: both ≥ 0.8?
+    - Gap between targets ≤ 5 percentage points on each axis (criterion 6).
+
+    ### Iteration loop (if gap > 5pp)
+
+    If the gap exceeds the bar, iterate on prompts, heuristics, or thresholds and re-run. Document changes in `evaluation/results/notes/<date>-iteration.md`.
+
+    ## Out of scope
+
+    - Ravel-Lite migration (separate tasks).
+    - Performance optimisation.
+
+    ## Exit criteria
+
+    - Target selected and documented in `notes.md`.
+    - Golden exists and passes all invariants.
+    - Both goldens' metrics meet their individual targets AND cross-target gap ≤ 5pp.
+    - Report HTML shows both targets with trend lines.
+  results: |
+    Repurposed in triage (2026-04-25): merged monorepo target is third-party and unavailable. Task pivoted to synthetic second target from `~/Development/` per option 2 in the blocked-cycle recommendation. Prior blocked-cycle context: `component-ontology` at `linkuistics/atlas-contracts` SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` matches Ravel-Lite's ontology surface 1:1; M2 migration is a pure import-path swap once Ravel-Lite is quiescent.
 - id: ravel-lite-migration-m4-delete-in-tree-ontology-copies
   title: 'Ravel-Lite migration M4: delete in-tree ontology copies'
   category: migration
@@ -221,7 +207,7 @@ tasks:
     3. Touch one source file in one component. Re-run. Assert LLM call count equals exactly the affected component's `surface_of` plus its edge-neighbour count for edges. Log the numbers for future reference.
     4. Add a pin to `components.overrides.yaml` for one component (e.g., pin `role: my-custom-role`). Delete `components.yaml`. Re-run. Assert the pin appears in the regenerated `components.yaml` without human intervention.
     5. Run Ravel-Lite's `related-components` workflow against Atlas-produced YAMLs. Assert it runs to completion without schema errors.
-    6. Run against the merged monorepo. Assert coverage/spurious/kind/edge metrics are within 5 percentage points of the `~/Development/` run on each axis.
+    6. Run against the synthetic second target selected and evaluated in `hand-author-second-golden-for-merged-monorepo`. Assert coverage/spurious/kind/edge metrics are within 5 percentage points of the `~/Development/` run on each axis.
 
     ### Report
 
