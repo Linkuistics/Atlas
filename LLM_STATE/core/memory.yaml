@@ -177,3 +177,13 @@ entries:
   title: Grep all workspace members before deleting extracted crates
   body: |
     After extracting crates from a Cargo workspace, grep the remaining members for path deps pointing to the extracted crates before deleting them. `evaluation/harness/Cargo.toml` had a direct path dep on `atlas-index` that was missed in the initial sweep and required a follow-up fix.
+- id: atlas-contracts-infrastructure-versioning-ci-and-lockfile-bumping
+  title: 'atlas-contracts infrastructure: versioning, CI, and lockfile bumping'
+  body: |
+    Three follow-up items noted after the `atlas-contracts` extraction landed (2026-04-25):
+
+    1. **Versioning strategy:** currently a single commit on `main`, pinned by SHA in Atlas's `[workspace.dependencies]`. If the repo gets third-party consumers beyond Atlas/Ravel-Lite, introduce semantic tags (`v0.1.0`, etc.) and pin by tag for human-readable history. Not urgent now.
+
+    2. **CI:** No CI pipeline exists on `linkuistics/atlas-contracts`. Atlas's own CI catches regressions by building against the SHA-pinned deps. If the contracts repo grows (more crates, multiple consumers), add a minimal `cargo test --workspace` workflow.
+
+    3. **Cargo.lock bumping:** Any future SHA bump for `atlas-contracts` deps in Atlas's `Cargo.toml` requires running `cargo update -p component-ontology -p atlas-index` to keep the lockfile in sync (or simply editing `Cargo.toml` and letting the next build auto-update it).
