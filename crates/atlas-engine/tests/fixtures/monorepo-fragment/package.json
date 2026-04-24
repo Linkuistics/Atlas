@@ -1,0 +1,5 @@
+{
+  "name": "monorepo-root",
+  "private": true,
+  "workspaces": ["pkg-a", "pkg-b", "pkg-c"]
+}
