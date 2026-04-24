@@ -95,3 +95,17 @@ entries:
   title: is_component not salsa::tracked; Salsa 0.26 lacks downcast
   body: |
     `is_component` is not `#[salsa::tracked]` because the LLM backend lives on `AtlasDatabase` outside Salsa storage. Tracked functions receive `&dyn salsa::Database`; Salsa 0.26 does not expose a downcast to the concrete type. Deterministic and pin paths have no memoisation need (L1 caching covers signal reads). LLM-call memoisation is deferred to a later task.
+- id: llm-memoisation-preferred-strategy-tracked-query-keyed-by-llmrequest
+  title: 'LLM memoisation preferred strategy: tracked query keyed by LlmRequest'
+  body: |
+    When implementing LLM call memoisation (required for task 9's "zero LLM calls on no-op re-run" exit criterion), prefer option (c): make the backend call a `#[salsa::tracked]` query keyed by a canonicalised `LlmRequest` struct, invoked by `is_component`. This gives per-request caching that survives Workspace input edits that do not change the request inputs.
+
+    Rejected options:
+    - (a) Move backend onto a Salsa-tracked extension trait — adds complexity to every backend implementor.
+    - (b) Memoisation side-table keyed by `(revision, dir)` — revision granularity is too coarse; misses cache when Workspace changes but request inputs are unchanged.
+- id: l4-tracked-queries-must-key-by-workspace-dir-primitives-not-candidate
+  title: L4+ tracked queries must key by (workspace, dir) primitives not Candidate
+  body: |
+    All L4+ tracked queries that walk over candidates should use `(workspace: Workspace, dir: VfsPath)` primitives as Salsa keys, not `Candidate` or other aggregate structs. This is the convention established in L3 (`is_component` keyed by `(workspace, dir)`): Salsa memoises signal reads via L1 queries, so reconstructing a `Candidate` inside the tracked function is free, while passing `Candidate` as a key would force `salsa::Update` on `RationaleBundle` fields.
+
+    Applies to: `all_components`, `component_parent`, `component_children`, and any new L4–L9 tracked queries that receive component information as input.
