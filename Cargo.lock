@@ -28,6 +28,13 @@ version = "0.1.0"
 [[package]]
 name = "atlas-index"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "component-ontology",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+]
 
 [[package]]
 name = "atlas-llm"

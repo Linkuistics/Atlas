@@ -7,6 +7,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+component-ontology = { path = "../component-ontology" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

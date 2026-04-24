@@ -1,0 +1,35 @@
+schema_version: 1
+pins:
+  atlas:
+    deleted:
+      suppress: true
+    role:
+      value: spec
+      reason: hand-curated docs repo
+    suppress_children:
+      suppress_children:
+      - atlas/old-crate
+      - atlas/older-crate
+additions:
+- id: atlas/component-ontology
+  parent: atlas
+  kind: rust-library
+  lifecycle_roles:
+  - build
+  - design
+  language: rust
+  build_system: cargo
+  role: library
+  path_segments:
+  - path: crates/component-ontology
+    content_sha: abc123
+  manifests:
+  - crates/component-ontology/Cargo.toml
+  doc_anchors:
+  - path: crates/component-ontology/README.md
+    heading: component-ontology
+  evidence_grade: strong
+  evidence_fields:
+  - Cargo.toml:[lib]
+  rationale: Cargo.toml declares a library crate
+  deleted: false
