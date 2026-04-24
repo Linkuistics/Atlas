@@ -27,3 +27,23 @@ entries:
   title: docs/overrides-migration.md is a ghost reference until v2 schema ships
   body: |
     When the overrides schema reaches v2, write `docs/overrides-migration.md` so the error message in `yaml_io.rs::require_schema_version(UserAuthored)` resolves to a real document. The error currently refers to this path as a ghost reference. The user-authored overrides file intentionally gets a different error message from generated files ("migrate by hand, do NOT delete" vs "delete and re-run `atlas index`").
+- id: llmfingerprint-fields-are-driver-populated-via-with-fingerprint-inputs
+  title: LlmFingerprint fields are driver-populated via with_fingerprint_inputs
+  body: |
+    `template_sha` and `ontology_sha` inside `LlmFingerprint` are set by the driver calling `.with_fingerprint_inputs()`, not by the backend constructor. This keeps `LlmBackend` implementors free of ontology plumbing.
+- id: llm-response-json-schema-validation-is-hand-rolled-type-required-subset
+  title: LLM response JSON Schema validation is hand-rolled type/required subset
+  body: |
+    Atlas's four LLM response schemas are hand-authored and small, so validation checks only `type` and `required` fields — a hand-rolled subset rather than a full JSON Schema crate dependency.
+- id: tokencounter-charge-uses-cas-loop-on-atomicu64
+  title: TokenCounter::charge uses CAS loop on AtomicU64
+  body: |
+    `TokenCounter::charge` uses a compare-and-swap loop on `AtomicU64` rather than a mutex. This avoids serialising parallel Salsa queries that call the backend concurrently.
+- id: budgetedbackend-charges-tokens-after-inner-call-returns
+  title: BudgetedBackend charges tokens after inner call returns
+  body: |
+    `BudgetedBackend` calls `TokenCounter::charge` after the wrapped backend returns, not before. Pre-call estimation would diverge from actual usage for providers that return real token counts in their response.
+- id: template-sha-computed-via-prompt-render-plus-sha-256-in-atlas-engine
+  title: template_sha computed via prompt::render plus SHA-256 in atlas-engine
+  body: |
+    When prompt migration M3 lands, the driver should compute `template_sha` by calling `prompt::render` on each template with ontology-derived tokens and SHA-256ing the result. A helper for this belongs in `atlas-engine`, not `atlas-llm`.
