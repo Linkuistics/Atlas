@@ -5,9 +5,12 @@
 //! produce one; pinned dirs are treated the same as any other
 //! candidate at this layer (the short-circuit happens in L3).
 //!
-//! `subcarve_plan` is consulted per candidate for extra sub-dirs to
-//! recurse into. The real implementation lands in task 8; today the
-//! stub in [`crate::l8_recurse`] returns the empty list.
+//! The fixedpoint back-edge (L8 → L2) flows through
+//! `workspace.carve_back_edge`, a Workspace input the driver in
+//! [`crate::fixedpoint`] populates between iterations. L2 reads it at
+//! tracked-query depth (primitive inputs) without needing concrete-type
+//! access to the database; real [`crate::l8_recurse::subcarve_plan`]
+//! runs outside the Salsa graph and consumes the LLM backend directly.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -15,7 +18,6 @@ use std::sync::Arc;
 
 use crate::db::Workspace;
 use crate::l1_queries::{doc_headings, git_boundaries, manifests_in, shebangs};
-use crate::l8_recurse::subcarve_plan;
 use crate::types::{Candidate, RationaleBundle};
 
 /// Enumerate every candidate component directory at or under `dir`.
@@ -67,13 +69,16 @@ pub fn candidate_components_at<'db>(
         }
     }
 
-    // Source 4: subcarve_plan sub-dirs per id listed in prior components.
-    // Today the stub returns empty; keeping the back-edge wired here
-    // means task 8 only needs to implement the real query.
-    let prior = workspace.prior_components(db);
-    for component in &prior.components {
-        let sub_dirs = subcarve_plan(db, workspace, component.id.clone());
-        for sub_dir in sub_dirs.iter() {
+    // Source 4: the fixedpoint back-edge. The driver records per-
+    // component sub-dirs in `workspace.carve_back_edge`; every value
+    // path that falls under `dir` joins the candidate set. Iterating
+    // the map by component-id is irrelevant here — L2 only cares about
+    // the union of sub-directories — but keeping the map structure
+    // preserves provenance for anything higher up the stack that needs
+    // to know which parent asked for which sub-dirs.
+    let back_edge = workspace.carve_back_edge(db);
+    for sub_dirs in back_edge.values() {
+        for sub_dir in sub_dirs {
             let abs_path = absolute_under_root(root, sub_dir);
             if path_is_inside(&abs_path, &dir) {
                 candidate_dirs.insert(abs_path);

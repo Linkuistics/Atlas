@@ -7,9 +7,9 @@
 //! - L2 candidate generation, L3 classification — live.
 //! - L4 tree assembly + rename-match — live.
 //! - L5 surface extraction, L6 candidate-edge proposal — live.
-//! - L8 subcarve back-edge — stubbed; real implementation lands in
-//!   the L7/L8 backlog task.
-//! - L7, L9, CLI — upcoming tasks.
+//! - L7 graph-structural analysis, L8 sub-carve decision + fixedpoint
+//!   driver — live.
+//! - L9 projections, CLI — upcoming tasks.
 
 pub mod db;
 pub mod defaults;
@@ -22,7 +22,10 @@ pub mod l3_classify;
 pub mod l4_tree;
 pub mod l5_surface;
 pub mod l6_edges;
+pub mod fixedpoint;
+pub mod l7_structural;
 pub mod l8_recurse;
+pub mod subcarve_policy;
 pub mod llm_cache;
 pub mod manifest_parse;
 pub mod manifest_patterns;
@@ -30,7 +33,8 @@ pub mod prompt_migration;
 pub mod surface_types;
 pub mod types;
 
-pub use db::{AtlasDatabase, ExecutedEvent, File, Workspace};
+pub use db::{AtlasDatabase, ExecutedEvent, File, Workspace, DEFAULT_MAX_DEPTH};
+pub use fixedpoint::{run_fixedpoint, FixedpointConfig, FixedpointResult, FIXEDPOINT_HARD_CAP};
 pub use defaults::{
     parse as parse_component_kinds_yaml, parse_embedded as parse_embedded_component_kinds_yaml,
     render_kinds_for_prompt, render_lifecycle_scopes_for_prompt, ComponentKindsYaml,
@@ -49,7 +53,13 @@ pub use l4_tree::{
 };
 pub use l5_surface::{surface_of, EMBEDDED_STAGE1_SURFACE_PROMPT};
 pub use l6_edges::{all_proposed_edges, candidate_edges_for, EMBEDDED_STAGE2_EDGES_PROMPT};
-pub use l8_recurse::subcarve_plan;
+pub use l7_structural::{
+    cliques, edge_graph, modularity_hint, seam_density, sccs, Clique, EdgeGraph, ModularityHint,
+    Scc,
+};
+pub use l8_recurse::{
+    should_subcarve, subcarve_decision, subcarve_plan, SubcarveDecision, EMBEDDED_SUBCARVE_PROMPT,
+};
 pub use llm_cache::{LlmCacheKey, LlmResponseCache};
 pub use manifest_patterns::is_manifest_file;
 pub use surface_types::{InteractionRoleHint, SurfaceRecord};

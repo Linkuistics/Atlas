@@ -71,6 +71,13 @@ pub struct Workspace {
     pub components_overrides: Arc<OverridesFile>,
     #[returns(ref)]
     pub llm_fingerprint: Arc<LlmFingerprint>,
+    /// Fixedpoint back-edge: per-component sub-directories that L8 has
+    /// decided to treat as new L2 candidate roots. L2 reads this to
+    /// expand its `candidate_dirs` set during within-run recursion; the
+    /// driver in [`crate::fixedpoint`] mutates it between iterations.
+    /// Empty on a fresh run (no back-edge fired yet).
+    #[returns(ref)]
+    pub carve_back_edge: Arc<BTreeMap<String, Vec<PathBuf>>>,
 }
 
 /// Event-log entry recorded when Salsa executes (not cache-hits) a
@@ -98,7 +105,19 @@ pub struct AtlasDatabase {
     /// by backend fingerprint + request, so a Workspace-input edit that
     /// does not move the request-level inputs is a cache hit.
     llm_cache: LlmResponseCache,
+    /// Maximum recursion depth for L8's sub-carve policy. 0 means "only
+    /// top-level components". Default [`DEFAULT_MAX_DEPTH`] matches the
+    /// design-doc §8.2 fixedpoint cap. Lives outside Salsa storage
+    /// because L8 is a plain function over `&AtlasDatabase`.
+    max_depth: Arc<Mutex<u32>>,
+    /// Iteration counter bumped by [`crate::fixedpoint::run_fixedpoint`]
+    /// on each back-edge pass. Zero before the driver runs; reset
+    /// explicitly when a caller wants a fresh count.
+    fixedpoint_iterations: Arc<Mutex<u32>>,
 }
+
+/// Default value for [`AtlasDatabase::max_depth`]. Mirrors design §8.2.
+pub const DEFAULT_MAX_DEPTH: u32 = 8;
 
 impl AtlasDatabase {
     /// Construct a database seeded with an LLM backend, a root path,
@@ -130,6 +149,8 @@ impl AtlasDatabase {
             files_by_path: Arc::default(),
             execution_log,
             llm_cache: LlmResponseCache::new(),
+            max_depth: Arc::new(Mutex::new(DEFAULT_MAX_DEPTH)),
+            fixedpoint_iterations: Arc::new(Mutex::new(0)),
         };
         let workspace = Workspace::new(
             &db,
@@ -141,6 +162,7 @@ impl AtlasDatabase {
             Arc::new(RelatedComponentsFile::default()),
             Arc::new(OverridesFile::default()),
             Arc::new(fingerprint),
+            Arc::new(BTreeMap::new()),
         );
         db.workspace = Some(workspace);
         db
@@ -257,8 +279,43 @@ impl AtlasDatabase {
         ws.set_llm_fingerprint(self).to(Arc::new(value));
     }
 
+    pub fn set_carve_back_edge(&mut self, value: BTreeMap<String, Vec<PathBuf>>) {
+        let ws = self.workspace();
+        if **ws.carve_back_edge(self as &dyn salsa::Database) == value {
+            return;
+        }
+        ws.set_carve_back_edge(self).to(Arc::new(value));
+    }
+
     pub fn file_by_path(&self, path: &Path) -> Option<File> {
         self.files_by_path.lock().unwrap().get(path).copied()
+    }
+
+    pub fn max_depth(&self) -> u32 {
+        *self.max_depth.lock().expect("max_depth poisoned")
+    }
+
+    pub fn set_max_depth(&self, value: u32) {
+        *self.max_depth.lock().expect("max_depth poisoned") = value;
+    }
+
+    /// Number of fixedpoint iterations recorded by the most recent
+    /// driver run. Readable without a database mutation.
+    pub fn fixedpoint_iteration_count(&self) -> u32 {
+        *self
+            .fixedpoint_iterations
+            .lock()
+            .expect("fixedpoint_iterations poisoned")
+    }
+
+    /// Overwrite the fixedpoint iteration counter. Used by
+    /// [`crate::fixedpoint::run_fixedpoint`] to record progress;
+    /// exposed publicly so tests can reset the counter.
+    pub fn set_fixedpoint_iteration_count(&self, value: u32) {
+        *self
+            .fixedpoint_iterations
+            .lock()
+            .expect("fixedpoint_iterations poisoned") = value;
     }
 
     /// Enable recording of Salsa `WillExecute` events until the next
