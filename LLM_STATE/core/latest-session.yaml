@@ -1,0 +1,11 @@
+id: session-1
+timestamp: 2026-04-24T03:28:15Z
+phase: work
+body: |
+  ### Session 1 (2026-04-24T03:28:15Z) — Scaffold Cargo workspace and migrate component-ontology crate (M0+M1)
+
+  - Attempted: Complete M0 (five-crate workspace scaffold) and M1 (component-ontology migration from Ravel-Lite) per the first backlog task.
+  - What worked: `cargo build --workspace` exits 0 with 0 warnings; `cargo test --workspace` runs 44 tests in component-ontology, 0 in placeholders — all pass. Test count matches Ravel-Lite's ontology tests exactly. `defaults/ontology.yaml` confirmed byte-identical to Ravel-Lite source. Drift tests pass with the adjusted `include_str!` path crossing the crate-to-workspace boundary.
+  - What didn't: The `include_str!` path `../../../defaults/ontology.yaml` crosses the crate boundary, which is fine for path/git deps (§9.5) but would require a rework if the crate is ever published to crates.io. The `thiserror` workspace dep is declared but no crate uses it yet — left in place for future crates.
+  - What this suggests next: Task 2 (atlas-index) and Task 3 (atlas-llm) are now both unblocked and parallelisable. Ravel-Lite migration M2 is also unblocked. The workspace-deps and lint policy infrastructure is in place for all subsequent tasks.
+  - Key learnings: Migrating a lib crate from a binary host removes the need for `#[allow(dead_code)]` on public API items; the dead-code lint doesn't fire for public items in a lib crate. Path `include_str!` macros are relative to the source file, so reaching outside the crate directory works for local/git deps but not for registry publication.

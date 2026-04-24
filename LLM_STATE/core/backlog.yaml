@@ -2,7 +2,7 @@ tasks:
 - id: scaffold-atlas-cargo-workspace-and-migrate-component-ontology-crate-m0-m1
   title: Scaffold Atlas Cargo workspace and migrate component-ontology crate (M0 + M1)
   category: foundation
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: HIGH.** Nothing else can proceed until the workspace exists and the ontology crate is in place.
@@ -54,6 +54,49 @@ tasks:
     - `crates/component-ontology/README.md` exists and documents public API surface.
     - The `Atlas/defaults/ontology.yaml` file byte-identical to Ravel-Lite's source.
     - All five crate directories exist with placeholder implementations that compile.
+  results: |
+    ## What was done
+
+    Atlas now has a five-crate Cargo workspace and a migrated `component-ontology` crate, satisfying both M0 (workspace scaffold) and M1 (crate copy) from spec §9.4.
+
+    ### Workspace scaffold (M0)
+
+    - Root `Cargo.toml` is a workspace manifest (resolver = "2") with five members under `crates/`. Workspace-level `[workspace.dependencies]` declares `anyhow`, `serde`, `serde_yaml`, `thiserror`, plus dev-only `regex` and `tempfile`. Workspace-level `[workspace.lints.rust] warnings = "deny"` mirrors Ravel-Lite's strict lint policy.
+    - `rust-toolchain.toml` pins `1.93.1` (matches Ravel-Lite).
+    - `.gitignore` covers `/target`, `.DS_Store`, and the local `work` scratch directory.
+    - Placeholder skeletons exist for `atlas-index`, `atlas-engine`, `atlas-llm` (libs) and `atlas-cli` (bin named `atlas`). Each has a module doc comment plus one placeholder fn / `fn main()` so the crate compiles cleanly with deny-warnings.
+    - No CI was wired (out of scope per the task and §8.6).
+
+    ### `component-ontology` crate (M1)
+
+    - `crates/component-ontology/src/{schema,defaults,cli,yaml_io}.rs` are copies of Ravel-Lite's `src/ontology/{schema,defaults,cli,yaml_io}.rs`. Logic is verbatim; doc comments that referred to Ravel-Lite specifics ("Ravel-Lite's `<config-root>`", "no production caller today", "Phase B", `(§11.2)`, the binary-compilation-unit comments and the `#[allow(unused_imports)]`/`#[allow(dead_code)]` on `pub` items) were trimmed because they were either factually wrong in the new lib-only context or had been added to suppress warnings only relevant to a binary host. The `#[allow(dead_code)]` markers on `LifecycleScope::parse`/`all` and `EvidenceGrade::parse`/`all` were dropped — they're public API in a lib crate, so dead-code lints don't fire.
+    - `src/lib.rs` is the migrated `mod.rs`, with the `pub use` re-exports preserved so consumers see one flat surface (`use component_ontology::{Edge, EdgeKind, ...}`).
+    - `defaults/ontology.yaml` was copied byte-identically to Atlas's workspace-root `defaults/`. The `include_str!` path in `defaults.rs` is now `../../../defaults/ontology.yaml` to reach across the crate-to-workspace boundary. This relies on path/git deps (per §9.5 — registry publication is deferred); a registry-published variant would need the YAML to live inside the crate.
+    - `Cargo.toml` runtime deps are `anyhow`, `serde`, `serde_yaml` (all via `workspace = true`); dev-deps are `regex` (drift-test bullet-name regex) and `tempfile` (yaml_io tests). I deliberately omitted `thiserror` from the crate's actual deps even though the task description listed it — the migrated source uses only `anyhow`. Universal coding style says "avoid unnecessary dependencies"; thiserror is declared at workspace level for future crates that will need it.
+    - `crates/component-ontology/README.md` documents the public API, version policy, dependency story, and consumption pattern (path/git dep example).
+
+    ## What worked
+
+    - `cargo build --workspace` clean from a fresh checkout: 6.89s, 0 warnings, 5 crates compiled.
+    - `cargo test --workspace`: 44 tests in `component-ontology`, 0 in placeholders. All pass.
+    - Test-set diff against Ravel-Lite (after stripping the `ontology::` module prefix) is empty in both directions: the 44 ontology tests in Atlas are exactly the 44 ontology tests in Ravel-Lite. Nothing dropped, nothing added.
+    - `cmp` confirms `defaults/ontology.yaml` is byte-identical to Ravel-Lite's source.
+    - The drift tests (`drift_tests::edge_kinds_in_yaml_and_rust_are_bijective` and friends) all pass against the embedded YAML at the new path, proving the `include_str!` path adjustment is correct.
+
+    ## What didn't (or worth noting)
+
+    - **`include_str!` path crosses the crate boundary.** `crates/component-ontology/src/defaults.rs` reaches `../../../defaults/ontology.yaml` at the workspace root. This is fine under §9.5's path/git-dep model. If we ever want to publish to crates.io, M1 will need a follow-up: either move the YAML inside the crate or have a build script copy it. Documented in the crate README.
+    - **`thiserror` listed at workspace but not used.** No crate currently pulls it in. Listed in `[workspace.dependencies]` so the next crates that need it (likely `atlas-engine`'s error types, or `atlas-llm`'s `BudgetExhausted`) can declare `thiserror.workspace = true` without re-pinning the version. If no crate ends up using it by the time `atlas-llm` is built, drop the workspace entry.
+    - **Placeholder crates are technically dependency-free.** `atlas-index`, `atlas-engine`, `atlas-llm`, `atlas-cli` each have empty `[dependencies]`. Real deps (incl. cross-crate path deps like `atlas-engine -> {component-ontology, atlas-index, atlas-llm}`) get added in tasks 2/3/4. Wiring them up here would be premature.
+    - **No `docs/component-ontology.md` migration.** Per §9.4, that's stage M4 (later task `ravel-lite-migration-m4-delete-in-tree-ontology-copies`). The crate README references the spec by name; the spec itself stays in Ravel-Lite for now.
+
+    ## What this suggests next
+
+    - **Task 2 (atlas-index)** is now unblocked. It needs to take a path dep on `component-ontology` (re-export `RelatedComponentsFile`) and add the three new YAML schema types. The workspace-deps machinery is ready: just `component-ontology = { path = "../component-ontology" }` in atlas-index's `Cargo.toml`.
+    - **Task 3 (atlas-llm)** is also now unblocked and parallelisable with task 2.
+    - **Task 12 (Ravel-Lite migration M2)** is also unblocked — Ravel-Lite can now depend on Atlas's `component-ontology` and delete its in-tree copy. The path-dep form is documented in the crate README.
+    - When `atlas-engine` lands (task 4), it will hit the back-edge spec §4.2 — keep an eye on the L8 stub strategy mentioned in task 5.
+    - The `[workspace.lints.rust] warnings = "deny"` policy is strict; if any subsequent crate needs to allow a specific lint, prefer module-level `#[allow]` with a justifying comment over loosening the workspace policy.
 - id: implement-atlas-index-crate-yaml-schemas-and-rename-match
   title: 'Implement atlas-index crate: YAML schemas and rename-match'
   category: feature
