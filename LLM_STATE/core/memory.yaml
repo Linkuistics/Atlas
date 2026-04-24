@@ -23,3 +23,7 @@ entries:
   title: PinValue::Suppress uses AlwaysTrue to ban suppress:false
   body: |
     `PinValue::Suppress` carries an `AlwaysTrue` marker field so that `suppress: false` is a parse error rather than a silent no-op. Omitting `suppress: true` entirely is the intended representation of "no suppression".
+- id: docs-overrides-migration-md-is-a-ghost-reference-until-v2-schema-ships
+  title: docs/overrides-migration.md is a ghost reference until v2 schema ships
+  body: |
+    When the overrides schema reaches v2, write `docs/overrides-migration.md` so the error message in `yaml_io.rs::require_schema_version(UserAuthored)` resolves to a real document. The error currently refers to this path as a ghost reference. The user-authored overrides file intentionally gets a different error message from generated files ("migrate by hand, do NOT delete" vs "delete and re-run `atlas index`").
