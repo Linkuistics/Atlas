@@ -2,7 +2,7 @@ tasks:
 - id: implement-atlas-engine-l4-tree-assembly-and-rename-match-integration
   title: 'Implement atlas-engine L4: tree assembly and rename-match integration'
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: HIGH.** The component tree is the primary deliverable.
@@ -68,6 +68,96 @@ tasks:
     - `cargo test -p atlas-engine` passes.
     - Tree assembly produces a `Vec<ComponentEntry>` that round-trips cleanly through `atlas-index`'s `ComponentsFile` save/load.
     - Identifier stability test: assemble tree from fixture → save → modify one file in a component → reassemble → identifier unchanged.
+  results: |
+    ## Outcome
+
+    Implemented atlas-engine L4 tree assembly + rename-match integration, plus
+    adjacent refactor of `manifest_parse` to the `toml` crate per user feedback.
+
+    ### What landed
+
+    - `crates/atlas-engine/src/manifest_parse.rs` — switched from line-scanning
+      to `toml::Table` parsing. Preserved all prior behaviour; added regression
+      tests for the multiline-string-containing-`[lib]` case and for the
+      single-table-vs-array-of-tables `[bin]` distinction, both of which the
+      line scanner got wrong or would get wrong on related inputs.
+    - `crates/atlas-engine/src/identifiers.rs` — `allocate_id` with
+      parent-prefixed slug, numeric collision suffixes up to 1000, and an
+      8-char content-hash suffix for pathological cases. 10 unit tests cover
+      slug canonicalisation (kebab-case, dash-compression, leading/trailing
+      strip), collision progression, hash fallback activation, and the
+      empty-leaf `"root"` degradation.
+    - `crates/atlas-engine/src/l4_tree.rs` — `all_components`,
+      `component_parent`, `component_children`, `component_path_segments`,
+      plus a fallible `try_assemble` for tests that want to assert the
+      acyclicity error reaches callers. Internally three phases:
+      `gather_live_components` → `resolve_ids_and_tombstones` →
+      `enforce_acyclicity`. Overrides additions and `suppress_children`
+      pins are both honoured; `suppress: true` is handled upstream by L3
+      setting `is_boundary: false` (tested).
+    - `crates/atlas-engine/tests/l4_tree.rs` — 11 integration tests covering:
+      single-component tree, workspace with members, component accessor
+      queries, YAML round-trip, identifier stability across file edits,
+      identifier preservation through rename-match, tombstone emission +
+      cleanup on second run, additions without signals, suppress pin,
+      suppress_children pin, acyclicity hard error from cyclic additions.
+
+    ### What did not land
+
+    - The §4.1 spec mentioned tracking emitted tombstones via a "sentinel in
+      L0 input". The simpler implementation — filtering `deleted: true`
+      entries out of the prior list at rename-match time — delivers the same
+      "emit once, then clean" semantics without a new L0 field. If a future
+      requirement needs a persistent tombstone count (e.g., an explicit
+      "keep deleted for N runs" policy), the sentinel becomes load-bearing.
+      Documented as the simplification choice in the module-level comment.
+    - No per-id salsa-tracked caching of `all_components` / related queries.
+      Rationale: `is_component` is explicitly non-tracked (per memory entry
+      about backend-outside-Salsa), so tracking a derived query would
+      require separate infrastructure. Callers should compute the tree
+      once per CLI invocation and pass it around; the CLI integration task
+      will wire this up.
+
+    ### Verification
+
+    - `cargo test -p atlas-engine` → 47 lib + 14 + 16 + 11 integration
+      tests, all pass.
+    - `cargo test --workspace` → 201 tests across all crates, 0 failures.
+    - `cargo build --workspace` → clean under `warnings = "deny"`.
+    - Round-trip test: the assembled `Vec<ComponentEntry>` serialises via
+      `serde_yaml` and deserialises bit-identical — the v1 exit criterion
+      for atlas-index interop.
+    - Identifier stability test: modify one file inside a component, rebuild
+      the database from scratch, reassemble the tree → component id
+      unchanged (the dir-based primary slug is stable). Rename test: prior
+      component at old path with matching content-SHA is paired with new
+      path via `atlas_index::rename_match`; the prior id is carried
+      forward.
+
+    ### Adjacent fix: toml crate for manifest parsing
+
+    The user flagged during the work phase that hand-rolled TOML
+    line-scanning "often breaks" and that the `toml` crate should be used
+    instead. The existing `parse_cargo_toml` in `manifest_parse.rs` was
+    line-scanning. Refactored to `toml::Table::from_str` — handles multiline
+    strings, quoted keys, and inline tables correctly. All existing tests
+    and behaviour preserved; added two new tests that exercise cases the
+    line scanner would have miscounted. Memory entry
+    `cargo-toml-manifest-parsing-uses-line-scanning-not-toml-crate`
+    superseded and retitled. `toml = "1"` added to workspace dependencies.
+
+    ### Follow-ups for triage
+
+    - **L5/L6 surface and edge queries** (next HIGH-priority backlog task).
+      Depends on this L4 work being committed.
+    - **Emit-once sentinel**: if an explicit "keep tombstones for N runs"
+      policy becomes necessary, add a `Workspace::emitted_deleted_ids`
+      input and thread it through `resolve_ids_and_tombstones`. Today's
+      prior-filter approach is sufficient.
+    - **Tracked caching of the tree**: the CLI task (L9) will decide
+      whether to memoise `all_components` via a database-level cache. If
+      per-query memoisation is desired earlier, lift the backend onto a
+      Salsa extension trait so `is_component` can be tracked.
 - id: implement-atlas-engine-l5-and-l6-surface-and-edge-queries-with-prompt-migration-m3
   title: 'Implement atlas-engine L5 and L6: surface and edge queries with prompt migration (M3)'
   category: feature

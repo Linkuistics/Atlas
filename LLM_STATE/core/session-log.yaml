@@ -64,3 +64,17 @@ sessions:
       - Line-scanning `Cargo.toml` for section headers (`[lib]`, `[[bin]]`, `[workspace]`) avoids pulling in the `toml` crate and is robust to Cargo's section rules; the manifest_parse module uses serde-json for `package.json` only.
       - Pin lookup accepts three key forms (relative path, basename, additions entry id) because L4 has not yet allocated final ids; permissive matching lets test authors and users write pins naturally without knowing the eventual canonical id.
       - `lifecycle_roles` reuses `Vec<LifecycleScope>` from `component-ontology` rather than inventing a parallel `LifecycleRole` type — keeps the vocabulary single-sourced across atlas-index and atlas-engine.
+- id: session-6
+  timestamp: 2026-04-24T08:26:36Z
+  phase: work
+  body: |
+    ### Session 6 (2026-04-24T08:26:36Z) — Implement atlas-engine L4: tree assembly, identifier allocation, rename-match
+
+    - What was attempted: Full implementation of task `implement-atlas-engine-l4-tree-assembly-and-rename-match-integration` — `l4_tree.rs` (all_components, component_parent/children/path_segments, try_assemble), `identifiers.rs` (allocate_id with slug→collision-suffix→sha-hash fallback), rename-match integration, and overrides (additions/suppression). Also rewrote `manifest_parse.rs` to use the `toml` crate instead of hand-rolled line-scanning.
+    - What worked: All scope landed. `cargo test -p atlas-engine` passes (tests include L4 integration suite in `tests/l4_tree.rs`). `cargo clippy --workspace` is clean. The `toml` crate rewrite eliminates the multiline-string false-positive bug that the prior line-scanner had. `lib.rs` exposes `all_components`, `component_children`, `component_parent`, `component_path_segments`, `try_assemble`, and `TreeAssemblyError` as public API. Five new tests for `manifest_parse` edge cases added alongside the toml migration.
+    - What didn't work / design constraints: The hand-rolled Cargo.toml line-scanner (introduced in Session 5) was replaced in this session because it was flagged as fragile — multiline string literals containing `[lib]` would produce false positives. The `toml` crate parses correctly and degrades to `CargoTomlShape::default()` on malformed input (LLM fallback path unchanged).
+    - What this suggests trying next: Task `implement-atlas-engine-l5-and-l6-surface-and-edge-queries-with-prompt-migration-m3` is now unblocked.
+    - Key learnings:
+      - The `toml::Table` parse-to-value approach is the right tool for detecting top-level Cargo.toml sections; `table.get("lib").is_some_and(Value::is_table)` and `table.get("bin").is_some_and(Value::is_array)` correctly distinguish `[lib]` from `[[bin]]` because TOML represents array-of-tables as an array, not a table.
+      - Stable identifier allocation follows slug→collision-suffix→sha-hash cascade: `leaf_slug` derived from the directory basename, `-2`/`-3` suffixes for collisions in the same parent, then a short SHA-256 hex suffix as last resort.
+      - Rename-match integration: `atlas_index::rename_match` takes prior component ids and new candidates, returns matched pairs (reuse id), fresh candidates (allocate new id), and orphans (mark `deleted: true` for one cycle then drop).

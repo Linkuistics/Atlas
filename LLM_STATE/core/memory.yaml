@@ -80,9 +80,9 @@ entries:
   body: |
     L3 classification queries take `(workspace: Workspace, dir: VfsPath)` primitives rather than a `Candidate` struct. This avoids forcing `salsa::Update` on `RationaleBundle` fields; the candidate is reconstructed inside L3 from L1-memoised queries at zero cost.
 - id: cargo-toml-manifest-parsing-uses-line-scanning-not-toml-crate
-  title: Cargo.toml manifest parsing uses line-scanning not toml crate
+  title: Cargo.toml manifest parsing uses toml crate (line-scanning superseded)
   body: |
-    `manifest_parse` line-scans `Cargo.toml` for section headers (`[lib]`, `[[bin]]`, `[workspace]`) rather than pulling in the `toml` crate. This is robust to Cargo's section rules. `serde-json` is used only for `package.json` parsing.
+    **SUPERSEDED 2026-04-24.** The original decision was to line-scan `Cargo.toml` for section headers to avoid the `toml` crate dependency. Per user feedback, this approach is rejected: hand-rolled TOML scanning is fragile (multiline arrays, quoted keys, inline tables, comments-in-strings). New policy: use the `toml` crate for any Cargo.toml / manifest parsing in Atlas. `serde_json` is still used only for `package.json` parsing. Any remaining line-scanning in `manifest_parse` or similar is a migration debt to be replaced on next touch.
 - id: pin-lookup-accepts-relative-path-basename-or-additions-id
   title: Pin lookup accepts relative path, basename, or additions id
   body: |
