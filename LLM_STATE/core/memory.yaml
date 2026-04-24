@@ -149,3 +149,11 @@ entries:
     **Why:** Noted during L9/atlas-cli implementation (cycle that delivered `cache_io.rs`). Explicitly deferred as "not urgent" — byte-identity on no-op re-runs already works.
 
     **How to apply:** Surface this if the llm-cache.json file grows large or diffs are hard to read in PR review. Not a blocker for any current task.
+- id: l5-l6-tests-include-template-token-coverage-check
+  title: L5/L6 tests include template-token coverage check
+  body: |
+    L5/L6 prompt tests must collect all `{{TOKEN}}` placeholders from the rendered prompt and assert each maps to a key in `build_inputs`. This catches `TemplateSyntax` panics at test time rather than at the first real LLM call. Implementation: `collect_template_tokens` helper + `assert!(build_inputs.contains_key(token))` loop. Applied in `l5_surface.rs` and `l6_edges.rs`.
+- id: prompt-drift-tests-against-ravel-lite-are-invalid
+  title: Prompt drift tests against Ravel-Lite are invalid
+  body: |
+    Byte-comparison drift tests against Ravel-Lite originals (as in the deleted `prompt_migration.rs`) require a live Ravel-Lite sibling checkout and produce false failures once Atlas prompts genuinely diverge. Use required-token presence, no-Ravel-Lite-remnants, and template-token coverage tests instead. See: L5/L6 tests include template-token coverage check.
