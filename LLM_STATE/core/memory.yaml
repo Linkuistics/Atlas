@@ -119,3 +119,9 @@ entries:
   title: TestBackend requires byte-identical LlmRequest inputs to match cache
   body: |
     TestBackend caches canned responses keyed by the full serialised LlmRequest. Any field difference (e.g., `max_depth: 8` in the canned input vs `max_depth: 4` in driver config) produces a cache miss and triggers an unexpected LLM call rather than returning the canned response. All TestBackend fixture inputs must be byte-identical to what the production driver builds.
+- id: seam-density-modularity-hint-uninformative-on-fixedpoint-iteration-0
+  title: seam_density/modularity_hint uninformative on fixedpoint iteration 0
+  body: |
+    seam_density and modularity_hint signals are computed on each L7 pass, but on iteration 0 every component has no sub-components yet, so there are no internal edges. This means on the first fixedpoint iteration the signals are uniformly uninformative: seam_density is 0.0 or INFINITY (no internal edges to count) and modularity_hint returns None (< 4 descendants). The signals only become meaningful on iteration 2+ once sub-carved children exist and their edges are visible.
+
+    **Practical consequence:** LLM Subcarve calls on iteration 0 receive no structural signals. If evaluation shows many spurious sub-carves, consider deferring L8 LLM escalation until iteration 2, or passing "iteration=0, signals unavailable" in the prompt so the LLM knows to use conservative priors.
