@@ -80,9 +80,9 @@ entries:
   body: |
     L3 classification queries take `(workspace: Workspace, dir: VfsPath)` primitives rather than a `Candidate` struct. This avoids forcing `salsa::Update` on `RationaleBundle` fields; the candidate is reconstructed inside L3 from L1-memoised queries at zero cost.
 - id: cargo-toml-manifest-parsing-uses-line-scanning-not-toml-crate
-  title: Cargo.toml manifest parsing uses toml crate (line-scanning superseded)
+  title: Cargo.toml manifest parsing uses the toml crate
   body: |
-    **SUPERSEDED 2026-04-24.** The original decision was to line-scan `Cargo.toml` for section headers to avoid the `toml` crate dependency. Per user feedback, this approach is rejected: hand-rolled TOML scanning is fragile (multiline arrays, quoted keys, inline tables, comments-in-strings). New policy: use the `toml` crate for any Cargo.toml / manifest parsing in Atlas. `serde_json` is still used only for `package.json` parsing. Any remaining line-scanning in `manifest_parse` or similar is a migration debt to be replaced on next touch.
+    Use the `toml` crate for Cargo.toml / manifest parsing. Hand-rolled line-scanning is rejected: multiline strings containing section-like text (e.g. `[lib]` inside a string literal) produce false positives. `table.get("lib").is_some_and(Value::is_table)` detects `[lib]`; `table.get("bin").is_some_and(Value::is_array)` detects `[[bin]]`—TOML represents array-of-tables as an array, not a table. Malformed input degrades to `CargoTomlShape::default()`.
 - id: pin-lookup-accepts-relative-path-basename-or-additions-id
   title: Pin lookup accepts relative path, basename, or additions id
   body: |
@@ -109,3 +109,11 @@ entries:
     All L4+ tracked queries that walk over candidates should use `(workspace: Workspace, dir: VfsPath)` primitives as Salsa keys, not `Candidate` or other aggregate structs. This is the convention established in L3 (`is_component` keyed by `(workspace, dir)`): Salsa memoises signal reads via L1 queries, so reconstructing a `Candidate` inside the tracked function is free, while passing `Candidate` as a key would force `salsa::Update` on `RationaleBundle` fields.
 
     Applies to: `all_components`, `component_parent`, `component_children`, and any new L4–L9 tracked queries that receive component information as input.
+- id: stable-id-allocation-uses-slug-suffix-sha-cascade
+  title: Stable id allocation uses slug→suffix→sha cascade
+  body: |
+    Component id allocation uses a three-step cascade: (1) `leaf_slug` derived from directory basename, (2) `-2`/`-3` collision suffixes for siblings sharing the same slug within a parent, (3) short SHA-256 hex suffix as last resort. Guarantees stable ids across re-runs for the common case.
+- id: rename-match-orphans-marked-deleted-true-for-one-index-cycle
+  title: rename_match orphans marked deleted:true for one index cycle
+  body: |
+    `atlas_index::rename_match` returns three sets: matched pairs (reuse prior id), fresh candidates (allocate new id), and orphans. Orphans receive `deleted: true` in the index for one cycle then are dropped entirely.
