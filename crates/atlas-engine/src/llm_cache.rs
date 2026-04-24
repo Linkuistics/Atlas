@@ -121,6 +121,28 @@ impl LlmResponseCache {
         inner.entries.clear();
         inner.call_count = 0;
     }
+
+    /// Snapshot of every `(key, response)` pair currently cached.
+    /// Exposed so drivers (atlas-cli) can persist the cache across
+    /// process invocations — the "zero LLM calls on no-op re-run"
+    /// contract depends on reloading the prior run's cache into a
+    /// fresh database.
+    pub fn entries_snapshot(&self) -> Vec<(LlmCacheKey, Arc<Value>)> {
+        let inner = self.inner.lock().expect("llm cache poisoned");
+        inner
+            .entries
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    /// Install a pre-computed entry in the cache without invoking the
+    /// backend. Used by the CLI to seed the cache from a prior run's
+    /// on-disk snapshot.
+    pub fn seed(&self, key: LlmCacheKey, value: Arc<Value>) {
+        let mut inner = self.inner.lock().expect("llm cache poisoned");
+        inner.entries.insert(key, value);
+    }
 }
 
 #[cfg(test)]

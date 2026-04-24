@@ -1,0 +1,350 @@
+//! End-to-end integration tests for `atlas_cli::run_index`, driving
+//! the full pipeline (L0 seed → fixedpoint → L9 projections → atomic
+//! writes) against a shared canned-response backend.
+//!
+//! The fixture lives in `tests/fixtures/tiny/` and contains a Rust
+//! library and a Rust CLI. Both classify deterministically (via
+//! `rule_cargo_lib` / `rule_cargo_bin`), so no `Classify` LLM calls
+//! fire; L5 (surface_of) and L6 (all_proposed_edges) do issue calls,
+//! and L8 (subcarve) asks the LLM for the library.
+
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use atlas_cli::{run_index, IndexConfig, IndexError};
+use atlas_llm::{
+    LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId, TokenCounter,
+};
+use serde_json::{json, Value};
+use tempfile::TempDir;
+
+fn fingerprint() -> LlmFingerprint {
+    LlmFingerprint {
+        template_sha: [1u8; 32],
+        ontology_sha: [2u8; 32],
+        model_id: "test-backend".into(),
+        backend_version: "v-test".into(),
+    }
+}
+
+/// Backend that returns canned defaults for every prompt — L5 sees a
+/// minimal surface, L6 sees an empty edge list, L8 sees "do not
+/// recurse". Tests can override the default per-prompt by registering
+/// a specific response.
+struct LenientBackend {
+    fingerprint: LlmFingerprint,
+    call_log: Mutex<Vec<PromptId>>,
+    overrides: Mutex<Vec<(PromptId, String, Value)>>,
+    force_error: Mutex<Option<LlmError>>,
+}
+
+impl LenientBackend {
+    fn new() -> Arc<Self> {
+        Arc::new(LenientBackend {
+            fingerprint: fingerprint(),
+            call_log: Mutex::new(Vec::new()),
+            overrides: Mutex::new(Vec::new()),
+            force_error: Mutex::new(None),
+        })
+    }
+
+    fn calls(&self) -> Vec<PromptId> {
+        self.call_log.lock().unwrap().clone()
+    }
+
+    fn call_count(&self) -> usize {
+        self.call_log.lock().unwrap().len()
+    }
+}
+
+impl LlmBackend for LenientBackend {
+    fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        self.call_log.lock().unwrap().push(req.prompt_template);
+
+        if let Some(err) = self.force_error.lock().unwrap().take() {
+            return Err(err);
+        }
+
+        let inputs_canonical = serde_json::to_string(&req.inputs).unwrap_or_default();
+        let mut overrides = self.overrides.lock().unwrap();
+        if let Some(pos) = overrides
+            .iter()
+            .position(|(id, inputs, _)| *id == req.prompt_template && *inputs == inputs_canonical)
+        {
+            let (_, _, value) = overrides.remove(pos);
+            return Ok(value);
+        }
+        drop(overrides);
+
+        Ok(match req.prompt_template {
+            PromptId::Classify => json!({
+                "kind": "rust-library",
+                "language": "rust",
+                "build_system": "cargo",
+                "evidence_grade": "medium",
+                "evidence_fields": [],
+                "rationale": "default lenient classification",
+                "is_boundary": true,
+            }),
+            PromptId::Stage1Surface => json!({
+                "purpose": "default lenient surface",
+                "notes": "",
+            }),
+            PromptId::Stage2Edges => json!([]),
+            PromptId::Subcarve => json!({
+                "should_subcarve": false,
+                "sub_dirs": [],
+                "rationale": "policy declined",
+            }),
+        })
+    }
+
+    fn fingerprint(&self) -> LlmFingerprint {
+        self.fingerprint.clone()
+    }
+}
+
+fn tiny_fixture_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("tiny")
+}
+
+fn copy_fixture_to_tmp(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_fixture_to_tmp(&from, &to);
+        } else {
+            std::fs::copy(&from, &to).unwrap();
+        }
+    }
+}
+
+fn materialise_tiny_fixture() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    copy_fixture_to_tmp(&tiny_fixture_root(), tmp.path());
+    tmp
+}
+
+fn base_config(root: &Path) -> IndexConfig {
+    let mut config = IndexConfig::new(root.to_path_buf());
+    config.output_dir = root.join(".atlas");
+    config.respect_gitignore = false;
+    config.fingerprint_override = Some(fingerprint());
+    config
+}
+
+// ---------------------------------------------------------------
+// first-run / second-run contract
+// ---------------------------------------------------------------
+
+#[test]
+fn first_run_produces_the_three_generated_yamls() {
+    let tmp = materialise_tiny_fixture();
+    let backend = LenientBackend::new();
+    let config = base_config(tmp.path());
+
+    let summary = run_index(&config, backend.clone(), None).expect("run_index");
+
+    assert!(summary.outputs_written);
+    assert!(summary.component_count >= 2, "expected lib + cli, got {summary:?}");
+    assert!(config.output_dir.join("components.yaml").exists());
+    assert!(config.output_dir.join("external-components.yaml").exists());
+    assert!(config.output_dir.join("related-components.yaml").exists());
+    assert!(backend.call_count() > 0, "first run must exercise the backend");
+}
+
+#[test]
+fn second_run_on_unchanged_fixture_is_byte_identical() {
+    let tmp = materialise_tiny_fixture();
+    let config = base_config(tmp.path());
+
+    let backend1 = LenientBackend::new();
+    run_index(&config, backend1, None).unwrap();
+    let first = std::fs::read(config.output_dir.join("components.yaml")).unwrap();
+    let first_edges = std::fs::read(config.output_dir.join("related-components.yaml")).unwrap();
+    let first_externals = std::fs::read(config.output_dir.join("external-components.yaml")).unwrap();
+
+    // Second run with a fresh backend — the on-disk LLM cache seeds
+    // the new database, so a deterministic-input run makes no fresh
+    // backend calls at all.
+    let backend2 = LenientBackend::new();
+    let summary2 = run_index(&config, backend2.clone(), None).unwrap();
+    let second = std::fs::read(config.output_dir.join("components.yaml")).unwrap();
+    let second_edges = std::fs::read(config.output_dir.join("related-components.yaml")).unwrap();
+    let second_externals = std::fs::read(config.output_dir.join("external-components.yaml")).unwrap();
+
+    assert_eq!(first, second, "components.yaml must be byte-identical on re-run");
+    assert_eq!(first_edges, second_edges, "related-components.yaml must be byte-identical on re-run");
+    assert_eq!(first_externals, second_externals);
+    assert_eq!(
+        backend2.call_count(),
+        0,
+        "on-disk cache must satisfy every request on no-op re-run; actual calls: {:?}",
+        backend2.calls()
+    );
+    assert_eq!(summary2.llm_calls, 0, "summary must report llm_calls=0 on no-op re-run");
+}
+
+#[test]
+fn modifying_a_source_file_invalidates_that_components_surface_cache() {
+    let tmp = materialise_tiny_fixture();
+    let config = base_config(tmp.path());
+
+    let backend1 = LenientBackend::new();
+    run_index(&config, backend1, None).unwrap();
+
+    // Touch one file in the library; re-run with a fresh backend.
+    // L1's `file_tree_sha` changes for the library's directory only,
+    // so L5 re-runs at least one surface call for that component.
+    // L6's batch key depends on the full surface-record set, so if
+    // the returned record differs the batch also re-fires — with the
+    // LenientBackend's constant default response that's not
+    // guaranteed, hence the weaker assertion on Stage2 below.
+    std::fs::write(tmp.path().join("mylib/src/lib.rs"), "// modified\n").unwrap();
+
+    let backend2 = LenientBackend::new();
+    run_index(&config, backend2.clone(), None).unwrap();
+
+    let calls = backend2.calls();
+    let surface_calls = calls.iter().filter(|p| **p == PromptId::Stage1Surface).count();
+    assert!(
+        surface_calls >= 1,
+        "expected at least one Stage1Surface call after source change, got {calls:?}"
+    );
+    // At minimum we made a backend call; the no-op re-run contract
+    // asserts 0, so `>0` proves the content-sha propagated into the
+    // cache key the way the engine's memoisation contract requires.
+    assert!(!calls.is_empty());
+}
+
+// ---------------------------------------------------------------
+// --dry-run
+// ---------------------------------------------------------------
+
+#[test]
+fn dry_run_produces_summary_but_writes_no_files() {
+    let tmp = materialise_tiny_fixture();
+    let mut config = base_config(tmp.path());
+    config.dry_run = true;
+    let backend = LenientBackend::new();
+
+    let summary = run_index(&config, backend, None).unwrap();
+
+    assert!(!summary.outputs_written);
+    assert!(summary.component_count >= 2);
+    assert!(!config.output_dir.join("components.yaml").exists());
+    assert!(!config.output_dir.join("external-components.yaml").exists());
+    assert!(!config.output_dir.join("related-components.yaml").exists());
+}
+
+// ---------------------------------------------------------------
+// Budget exhaustion
+// ---------------------------------------------------------------
+
+#[test]
+fn tiny_budget_triggers_budget_exhausted_and_no_writes() {
+    use atlas_llm::{default_token_estimator, BudgetedBackend};
+
+    let tmp = materialise_tiny_fixture();
+    let config = base_config(tmp.path());
+    let counter = Arc::new(TokenCounter::new(1));
+    let inner = LenientBackend::new();
+    let backend: Arc<dyn LlmBackend> = Arc::new(BudgetedBackend::new(
+        inner,
+        counter.clone(),
+        default_token_estimator(),
+    ));
+
+    let err = run_index(&config, backend, Some(counter.clone())).unwrap_err();
+
+    assert!(
+        matches!(err, IndexError::BudgetExhausted),
+        "expected BudgetExhausted, got {err:?}"
+    );
+    assert!(
+        !config.output_dir.join("components.yaml").exists(),
+        "budget-exhausted run must not have written outputs"
+    );
+}
+
+// ---------------------------------------------------------------
+// --max-depth=0 semantics
+// ---------------------------------------------------------------
+
+#[test]
+fn max_depth_zero_still_emits_top_level_components_but_no_subcarve_back_edge() {
+    let tmp = materialise_tiny_fixture();
+    let mut config = base_config(tmp.path());
+    config.max_depth = 0;
+    let backend = LenientBackend::new();
+
+    let summary = run_index(&config, backend.clone(), None).unwrap();
+
+    // With max_depth=0 the policy returns Stop for every kind, so no
+    // Subcarve LLM call fires (see subcarve_policy::decide).
+    let subcarve_calls = backend
+        .calls()
+        .iter()
+        .filter(|p| **p == PromptId::Subcarve)
+        .count();
+    assert_eq!(
+        subcarve_calls, 0,
+        "max_depth=0 must short-circuit every subcarve policy call"
+    );
+    // Top-level components are still classified — both lib and cli
+    // live under root, so they both appear.
+    assert!(summary.component_count >= 2);
+    assert_eq!(summary.fixedpoint_iterations, 0);
+}
+
+// ---------------------------------------------------------------
+// Overrides are left alone
+// ---------------------------------------------------------------
+
+#[test]
+fn overrides_file_never_written_by_pipeline() {
+    let tmp = materialise_tiny_fixture();
+    let config = base_config(tmp.path());
+    std::fs::create_dir_all(&config.output_dir).unwrap();
+    let overrides_path = config.output_dir.join("components.overrides.yaml");
+    std::fs::write(
+        &overrides_path,
+        "schema_version: 1\npins: {}\nadditions: []\n",
+    )
+    .unwrap();
+    let before = std::fs::read(&overrides_path).unwrap();
+
+    let backend = LenientBackend::new();
+    run_index(&config, backend, None).unwrap();
+
+    let after = std::fs::read(&overrides_path).unwrap();
+    assert_eq!(before, after, "pipeline must never touch components.overrides.yaml");
+}
+
+// ---------------------------------------------------------------
+// LLM cache persistence
+// ---------------------------------------------------------------
+
+#[test]
+fn llm_cache_json_is_written_and_read_across_invocations() {
+    let tmp = materialise_tiny_fixture();
+    let config = base_config(tmp.path());
+
+    let backend1 = LenientBackend::new();
+    run_index(&config, backend1.clone(), None).unwrap();
+    let cache_path = config.output_dir.join("llm-cache.json");
+    assert!(cache_path.exists(), "cache file must be written on success");
+    let cache_bytes = std::fs::read_to_string(&cache_path).unwrap();
+    assert!(cache_bytes.contains("schema_version"));
+
+    // On the next run the backend sees zero requests.
+    let backend2 = LenientBackend::new();
+    run_index(&config, backend2.clone(), None).unwrap();
+    assert_eq!(backend2.call_count(), 0);
+}

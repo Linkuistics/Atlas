@@ -9,7 +9,8 @@
 //! - L5 surface extraction, L6 candidate-edge proposal — live.
 //! - L7 graph-structural analysis, L8 sub-carve decision + fixedpoint
 //!   driver — live.
-//! - L9 projections, CLI — upcoming tasks.
+//! - L9 projections — live.
+//! - CLI — lives in the `atlas-cli` crate.
 
 pub mod db;
 pub mod defaults;
@@ -25,6 +26,7 @@ pub mod l6_edges;
 pub mod fixedpoint;
 pub mod l7_structural;
 pub mod l8_recurse;
+pub mod l9_projections;
 pub mod subcarve_policy;
 pub mod llm_cache;
 pub mod manifest_parse;
@@ -59,6 +61,11 @@ pub use l7_structural::{
 };
 pub use l8_recurse::{
     should_subcarve, subcarve_decision, subcarve_plan, SubcarveDecision, EMBEDDED_SUBCARVE_PROMPT,
+};
+pub use l9_projections::{
+    components_yaml_snapshot, components_yaml_snapshot_with_prompt_shas,
+    external_components_yaml_snapshot, externals_from_manifests, known_component_ids,
+    related_components_yaml_snapshot, sha256_hex, PROMPT_ID_STRINGS,
 };
 pub use llm_cache::{LlmCacheKey, LlmResponseCache};
 pub use manifest_patterns::is_manifest_file;

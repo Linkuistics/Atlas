@@ -6,3 +6,7 @@
 
 # Editor / scratch
 work
+
+# atlas-cli default output (components.yaml et al.)
+.atlas/
+
