@@ -26,9 +26,11 @@ thiserror = "2"
 toml = "1"
 
 # Public data-format / vocabulary crates, hosted at linkuistics/atlas-contracts.
-# Pinned by sha for reproducible builds — bump both revs in lockstep when the upstream repo advances.
-component-ontology = { git = "https://github.com/linkuistics/atlas-contracts", rev = "337c54368eb1393f2c3f8839a5e9042ce72cf964" }
-atlas-index = { git = "https://github.com/linkuistics/atlas-contracts", rev = "337c54368eb1393f2c3f8839a5e9042ce72cf964" }
+# Local path deps during development so changes in ../atlas-contracts propagate to consumers
+# without a commit/push round-trip. Before publishing, flip these to a git+rev pin (the upstream
+# repo must be committed and pushed first) and revert after release.
+component-ontology = { path = "../atlas-contracts/crates/component-ontology" }
+atlas-index = { path = "../atlas-contracts/crates/atlas-index" }
 
 # Test-only deps shared by multiple crates.
 assert_cmd = "2"

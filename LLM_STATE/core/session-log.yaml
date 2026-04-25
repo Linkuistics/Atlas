@@ -160,3 +160,15 @@ sessions:
     - **Attempted (rolled back):** M2 migration (`ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate`) was tentatively started as the only other unblocked root. Work was halted because Ravel-Lite had unrelated in-progress refactor work in `src/state/backlog/`; all Ravel-Lite-side changes were reverted to byte-identical state.
     - **Key observation (forward-looking):** `component-ontology` at SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` from `linkuistics/atlas-contracts` builds cleanly as a git dep against Ravel-Lite. Its public surface matches `Ravel-Lite/src/ontology/mod.rs` 1:1 — the M2 migration is a pure import-path swap with no API churn, once Ravel-Lite is quiescent.
     - **What next:** Triage should resolve criterion 6 (recommend: substitute a synthetic second target under `~/Development/`) and unblock `verify-atlas-v1-success-criteria-end-to-end`. Once Ravel-Lite is quiescent, M2 is ready to execute.
+- id: session-14
+  timestamp: 2026-04-25T11:05:19Z
+  phase: work
+  body: |
+    ### Session 14 (2026-04-25T11:05:19Z) — Switch atlas-contracts deps to local path
+
+    - Switched `component-ontology` and `atlas-index` workspace dependencies in `Cargo.toml` from SHA-pinned git refs (`rev = "337c54368..."`) to local path deps (`path = "../atlas-contracts/crates/<crate>"`), per user direction that `atlas-contracts` is checked out at `~/Development/atlas-contracts/`.
+    - Added inline comment documenting the publish-time flip procedure (commit + push upstream, switch to git+rev, publish, revert).
+    - `Cargo.lock` updated: only the two `source = "git+..."` lines removed; no transitive churn, confirming the local checkout is lockfile-equivalent to the pinned SHA.
+    - `cargo check --workspace --all-targets` and `cargo test --workspace` both clean — no regressions.
+    - Task completed first try; the local atlas-contracts checkout matched the previously-pinned SHA exactly.
+    - The M2 Ravel-Lite migration task description should be updated to use path deps (matching the new Atlas convention) rather than git deps once M2 is implemented.
