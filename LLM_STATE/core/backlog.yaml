@@ -38,60 +38,6 @@ tasks:
     - Ravel-Lite compiles and all tests pass with `component-ontology` sourced as a git dep from `linkuistics/atlas-contracts`.
     - `Ravel-Lite/src/ontology/` is gone.
     - A commit in Ravel-Lite titled "Switch component-ontology to atlas-contracts git dep" with a link to the `atlas-contracts` commit it pins.
-- id: hand-author-second-golden-for-merged-monorepo
-  title: Hand-author synthetic second golden for cross-target validation
-  category: eval
-  status: not_started
-  dependencies: []
-  description: |
-    **Priority: MEDIUM.** Required for success criterion 6 (cross-target generalisation).
-
-    **Context:** The merged monorepo target originally specified for this task is third-party and unavailable. Repurposed to use a synthetic second target from `~/Development/` — a multi-crate Cargo workspace structurally different from the dev-workspace root, sufficient to exercise cross-target stability.
-
-    ## Target selection
-
-    Pick a sibling repo under `~/Development/` that:
-    - Is a multi-crate Cargo workspace (sub-carves differently from the top-level dev-workspace)
-    - Has ≥ 10 components when Atlas sub-carves it
-    - Is not the dev-workspace root itself (must exercise a different sub-carve path)
-
-    Good candidates: any larger workspace-organised repo already present under `~/Development/` (e.g. Ravel, or another multi-crate workspace). Document the selection rationale in `notes.md`.
-
-    ## Scope
-
-    ### Golden
-
-    - Hand-author `evaluation/goldens/<target-name>/components.golden.yaml` for the selected target.
-    - Approximate size: tens of components (need not be hundreds — enough to stress the cross-target gap assertion).
-    - `notes.md` documents: target selected, why it was chosen, and any boundary decisions that differ from what Atlas naturally produces.
-
-    ### Cross-target validation
-
-    - Run the tool against the synthetic target root; produce `evaluation/results/<date>-<target-name>.yaml`.
-    - Compare metrics between the two goldens (dev-workspace and synthetic target):
-      - Component coverage: both ≥ 0.9?
-      - Spurious rate: both ≤ 0.1?
-      - Kind accuracy: both ≥ 0.85?
-      - Edge precision: both ≥ 0.8?
-    - Gap between targets ≤ 5 percentage points on each axis (criterion 6).
-
-    ### Iteration loop (if gap > 5pp)
-
-    If the gap exceeds the bar, iterate on prompts, heuristics, or thresholds and re-run. Document changes in `evaluation/results/notes/<date>-iteration.md`.
-
-    ## Out of scope
-
-    - Ravel-Lite migration (separate tasks).
-    - Performance optimisation.
-
-    ## Exit criteria
-
-    - Target selected and documented in `notes.md`.
-    - Golden exists and passes all invariants.
-    - Both goldens' metrics meet their individual targets AND cross-target gap ≤ 5pp.
-    - Report HTML shows both targets with trend lines.
-  results: |
-    Repurposed in triage (2026-04-25): merged monorepo target is third-party and unavailable. Task pivoted to synthetic second target from `~/Development/` per option 2 in the blocked-cycle recommendation. Prior blocked-cycle context: `component-ontology` at `linkuistics/atlas-contracts` SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` matches Ravel-Lite's ontology surface 1:1; M2 migration is a pure import-path swap once Ravel-Lite is quiescent.
 - id: ravel-lite-migration-m4-delete-in-tree-ontology-copies
   title: 'Ravel-Lite migration M4: delete in-tree ontology copies'
   category: migration
@@ -186,6 +132,60 @@ tasks:
     - Ravel-Lite's test suite passes end to end.
     - `ravel-lite run` on any plan directory can discover and use components produced by Atlas without any hand-authored `projects.yaml`.
     - The Stage-1/2 prompt question is answered and the chosen option's sub-steps are applied.
+- id: hand-author-second-golden-for-merged-monorepo
+  title: Hand-author synthetic second golden for cross-target validation
+  category: eval
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** Required for success criterion 6 (cross-target generalisation).
+
+    **Context:** The merged monorepo target originally specified for this task is third-party and unavailable. Repurposed to use a synthetic second target from `~/Development/` — a multi-crate Cargo workspace structurally different from the dev-workspace root, sufficient to exercise cross-target stability.
+
+    ## Target selection
+
+    Pick a sibling repo under `~/Development/` that:
+    - Is a multi-crate Cargo workspace (sub-carves differently from the top-level dev-workspace)
+    - Has ≥ 10 components when Atlas sub-carves it
+    - Is not the dev-workspace root itself (must exercise a different sub-carve path)
+
+    Good candidates: any larger workspace-organised repo already present under `~/Development/` (e.g. Ravel, or another multi-crate workspace). Document the selection rationale in `notes.md`.
+
+    ## Scope
+
+    ### Golden
+
+    - Hand-author `evaluation/goldens/<target-name>/components.golden.yaml` for the selected target.
+    - Approximate size: tens of components (need not be hundreds — enough to stress the cross-target gap assertion).
+    - `notes.md` documents: target selected, why it was chosen, and any boundary decisions that differ from what Atlas naturally produces.
+
+    ### Cross-target validation
+
+    - Run the tool against the synthetic target root; produce `evaluation/results/<date>-<target-name>.yaml`.
+    - Compare metrics between the two goldens (dev-workspace and synthetic target):
+      - Component coverage: both ≥ 0.9?
+      - Spurious rate: both ≤ 0.1?
+      - Kind accuracy: both ≥ 0.85?
+      - Edge precision: both ≥ 0.8?
+    - Gap between targets ≤ 5 percentage points on each axis (criterion 6).
+
+    ### Iteration loop (if gap > 5pp)
+
+    If the gap exceeds the bar, iterate on prompts, heuristics, or thresholds and re-run. Document changes in `evaluation/results/notes/<date>-iteration.md`.
+
+    ## Out of scope
+
+    - Ravel-Lite migration (separate tasks).
+    - Performance optimisation.
+
+    ## Exit criteria
+
+    - Target selected and documented in `notes.md`.
+    - Golden exists and passes all invariants.
+    - Both goldens' metrics meet their individual targets AND cross-target gap ≤ 5pp.
+    - Report HTML shows both targets with trend lines.
+  results: |
+    Repurposed in triage (2026-04-25): merged monorepo target is third-party and unavailable. Task pivoted to synthetic second target from `~/Development/` per option 2 in the blocked-cycle recommendation. Prior blocked-cycle context: `component-ontology` at `linkuistics/atlas-contracts` SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` matches Ravel-Lite's ontology surface 1:1; M2 migration is a pure import-path swap once Ravel-Lite is quiescent.
 - id: verify-atlas-v1-success-criteria-end-to-end
   title: Verify Atlas v1 success criteria end-to-end
   category: eval
@@ -227,48 +227,3 @@ tasks:
     - All six criteria pass or have documented follow-up tasks.
     - Sign-off report committed to the Atlas repo.
     - An announcement-ready short summary written (optional) as `README-v1.md` documenting what Atlas v1 does and does not do.
-- id: switch-atlas-atlas-contracts-deps-from-git-sha-to-local-path
-  title: Switch Atlas atlas-contracts deps from git SHA to local path
-  category: migration
-  status: done
-  dependencies: []
-  description: |
-    Per user direction (2026-04-25): atlas-contracts is now checked out at ../atlas-contracts; switch the two workspace.dependencies entries (component-ontology, atlas-index) from git+rev pins to path = "../atlas-contracts/crates/<crate>" so local edits propagate to consumers without commit/push churn. Note in a comment that publish-time will need to flip back to a git rev pin (deferred, separate task).
-  results: |
-    ## What was done
-
-    Switched Atlas's `[workspace.dependencies]` entries for `component-ontology` and `atlas-index` from SHA-pinned git refs (`git = "https://github.com/linkuistics/atlas-contracts", rev = "337c54368eb1393f2c3f8839a5e9042ce72cf964"`) to local path deps:
-
-    ```toml
-    component-ontology = { path = "../atlas-contracts/crates/component-ontology" }
-    atlas-index = { path = "../atlas-contracts/crates/atlas-index" }
-    ```
-
-    Added an inline comment in `Cargo.toml` flagging the publish-time procedure (commit + push the upstream repo, flip the dep to a git+rev pin, publish, then revert).
-
-    ## Why
-
-    Per user direction (2026-04-25): the user has `atlas-contracts` checked out at `~/Development/atlas-contracts/` and wants edits there to propagate immediately to consumers without a commit/push round-trip. The previous SHA-pinned git deps required a push to upstream + a SHA bump in this repo before changes could be observed. Path deps eliminate that loop during development. The publish-time GitHub-ref restoration is recognised as a separate future task.
-
-    ## Verification
-
-    - `cargo check --workspace --all-targets` — clean (Cargo correctly added the path-resolved crates `Adding atlas-index v0.1.0 (/Users/antony/Development/atlas-contracts/crates/atlas-index)` and `Adding component-ontology v0.1.0 (...)`; no warnings, `warnings = "deny"` is active).
-    - `cargo test --workspace` — all suites green; LLM-gated tests stayed correctly skipped (no `ATLAS_LLM_RUN_CLAUDE_TESTS=1`).
-    - `Cargo.lock` diff is minimal: only the two `source = "git+..."` lines for the two crates were stripped (path-resolved workspace members carry no `source` field). No transitive churn, confirming the local checkout was lockfile-equivalent to the SHA we were pinned to.
-
-    ## What worked / what didn't
-
-    Worked first try — atlas-contracts's local checkout matches the previously-pinned SHA, so no API or transitive-dep drift. The single-line edit in the workspace root manifest covered all three consumer crates (atlas-cli, atlas-engine, evaluation/harness) thanks to the `workspace = true` indirection.
-
-    ## Memory hygiene
-
-    - Updated auto-memory `project_distribution_brew_bottles.md` (and the MEMORY.md index entry) to record the new path-deps-during-dev / git-ref-at-publish-time convention. The previous "prefer git deps for public Linkuistics crates" guidance is now scoped to publish time only.
-    - Two distilled-memory entries in `LLM_STATE/core/memory.yaml` will need a triage-phase refresh:
-      - `component-ontology-targets-linkuistics-extraction-for-oss` — currently asserts "Atlas consumes both as git deps pinned by SHA in `[workspace.dependencies]`"; this is no longer true for local development.
-      - `atlas-contracts-infrastructure-versioning-ci-and-lockfile-bumping` — section 3 ("Cargo.lock bumping") describes a SHA-bump workflow that won't apply during day-to-day dev (path deps auto-pick-up edits). Keep the lockfile-bumping note for the publish-time flip path.
-
-    ## What this suggests next
-
-    - **Apply the same change to Ravel-Lite** when M2 lands: have Ravel-Lite consume `component-ontology` (and later `atlas-index`) via `path = "../atlas-contracts/crates/<crate>"` rather than git deps, matching the Atlas convention. Update the M2 task description / definition-of-done to specify path deps.
-    - **Capture a publish-time checklist as a backlog task** so the manifest-flip dance is documented before the first OSS release. Candidate steps: (1) ensure atlas-contracts is committed + pushed and tagged; (2) flip Atlas + Ravel-Lite Cargo.toml entries to `git = "...", rev = "..."`; (3) build/release; (4) revert manifests to path deps. A `[patch."https://github.com/linkuistics/atlas-contracts"]` block (or a `--frozen` build script) could automate the override and avoid the manual flip — worth investigating later but not required now.
-    - The two distilled-memory entries above should be refreshed during the upcoming triage phase.
