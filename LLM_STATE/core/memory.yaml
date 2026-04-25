@@ -166,7 +166,7 @@ entries:
 - id: component-ontology-targets-linkuistics-extraction-for-oss
   title: component-ontology and atlas-index live in linkuistics/atlas-contracts
   body: |
-    `component-ontology` and `atlas-index` were extracted from Atlas into the public `linkuistics/atlas-contracts` Cargo workspace on GitHub (bootstrap commit `337c54368eb1393f2c3f8839a5e9042ce72cf964`). Atlas consumes both as git deps pinned by SHA in `[workspace.dependencies]`; `atlas-cli`, `atlas-engine`, and `evaluation/harness` declare them via `workspace = true`. The `defaults/ontology.yaml` asset also moved to `atlas-contracts`. History was not transplanted — a clean bootstrap commit was preferred for the public repo; Atlas history covers the pre-extraction lineage.
+    `component-ontology` and `atlas-index` live in the public `linkuistics/atlas-contracts` Cargo workspace on GitHub (bootstrap commit `337c54368eb1393f2c3f8839a5e9042ce72cf964`). Atlas consumes both as **local path deps** during development (`path = "../atlas-contracts/crates/<crate>"`; checkout at `~/Development/atlas-contracts/`). At publish time: flip to `git+rev` refs, publish, revert to path deps. `atlas-cli`, `atlas-engine`, and `evaluation/harness` declare them via `workspace = true`. The `defaults/ontology.yaml` asset also moved to `atlas-contracts`. History was not transplanted — a clean bootstrap commit was preferred for the public repo.
 - id: dev-workspace-golden-is-top-level-only-expect-high-spurious-rate-on-first-v1-metrics-run
   title: Dev-workspace golden is top-level only; expect high spurious rate on first v1 metrics run
   body: |
@@ -180,13 +180,13 @@ entries:
 - id: atlas-contracts-infrastructure-versioning-ci-and-lockfile-bumping
   title: 'atlas-contracts infrastructure: versioning, CI, and lockfile bumping'
   body: |
-    Three follow-up items noted after the `atlas-contracts` extraction landed (2026-04-25):
+    Three follow-up items noted after the `atlas-contracts` extraction landed:
 
-    1. **Versioning strategy:** currently a single commit on `main`, pinned by SHA in Atlas's `[workspace.dependencies]`. If the repo gets third-party consumers beyond Atlas/Ravel-Lite, introduce semantic tags (`v0.1.0`, etc.) and pin by tag for human-readable history. Not urgent now.
+    1. **Versioning strategy:** Single `main` branch, pinned by SHA in Atlas's `[workspace.dependencies]` for git+rev mode (used at publish time). If the repo gets third-party consumers beyond Atlas/Ravel-Lite, introduce semantic tags (`v0.1.0`, etc.). Not urgent.
 
-    2. **CI:** No CI pipeline exists on `linkuistics/atlas-contracts`. Atlas's own CI catches regressions by building against the SHA-pinned deps. If the contracts repo grows (more crates, multiple consumers), add a minimal `cargo test --workspace` workflow.
+    2. **CI:** No CI pipeline exists on `linkuistics/atlas-contracts`. Atlas's own CI catches regressions. If the contracts repo grows, add a minimal `cargo test --workspace` workflow.
 
-    3. **Cargo.lock bumping:** Any future SHA bump for `atlas-contracts` deps in Atlas's `Cargo.toml` requires running `cargo update -p component-ontology -p atlas-index` to keep the lockfile in sync (or simply editing `Cargo.toml` and letting the next build auto-update it).
+    3. **Cargo.lock at publish time:** When flipping from path deps to git+rev for publication, run `cargo update -p component-ontology -p atlas-index` to keep the lockfile in sync. During development (path deps), lockfile churn is minimal — only the `source = "git+..."` lines are absent.
 - id: hand-author-second-golden-task-is-blocked
   title: hand-author-second-golden task is blocked
   body: |
@@ -198,4 +198,4 @@ entries:
 - id: m2-migration-is-pure-import-path-swap
   title: M2 migration is pure import-path swap
   body: |
-    `component-ontology` at `linkuistics/atlas-contracts` SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` matches Ravel-Lite's `src/ontology/mod.rs` public surface 1:1. The migration (`ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate`) is a pure import-path swap with no API churn. Prerequisite: Ravel-Lite must be quiescent; it currently has an in-progress refactor in `src/state/backlog/`.
+    `component-ontology` at `linkuistics/atlas-contracts` SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` matches Ravel-Lite's `src/ontology/mod.rs` public surface 1:1. The migration (`ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate`) is a pure import-path swap with no API churn. Use **local path deps** matching the current Atlas convention (`path = "../atlas-contracts/crates/component-ontology"`), not git+rev refs. Prerequisite: Ravel-Lite must be quiescent; it currently has an in-progress refactor in `src/state/backlog/`.
