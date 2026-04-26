@@ -1,0 +1,10 @@
+name: Atlas
+slug: atlas
+tagline: Design recovery and architectural pattern extraction for large codebases.
+summary: |
+  Atlas extracts a hierarchic, pattern-based description of large software systems by
+  working both top-down and bottom-up, finding common architectural and code patterns
+  at multiple levels of abstraction. The result is a complete map of a codebase.
+status: progress
+github_url: https://github.com/Linkuistics/Atlas
+tags: [ai-tools, ai-analysis]
