@@ -1,12 +1,10 @@
-id: session-14
-timestamp: 2026-04-25T11:05:19Z
+id: session-15
+timestamp: 2026-04-28T13:27:32Z
 phase: work
 body: |
-  ### Session 14 (2026-04-25T11:05:19Z) — Switch atlas-contracts deps to local path
+  ### Session 15 (2026-04-28T13:27:32Z) — Move Ravel-Lite migration tasks to their home backlog
 
-  - Switched `component-ontology` and `atlas-index` workspace dependencies in `Cargo.toml` from SHA-pinned git refs (`rev = "337c54368..."`) to local path deps (`path = "../atlas-contracts/crates/<crate>"`), per user direction that `atlas-contracts` is checked out at `~/Development/atlas-contracts/`.
-  - Added inline comment documenting the publish-time flip procedure (commit + push upstream, switch to git+rev, publish, revert).
-  - `Cargo.lock` updated: only the two `source = "git+..."` lines removed; no transitive churn, confirming the local checkout is lockfile-equivalent to the pinned SHA.
-  - `cargo check --workspace --all-targets` and `cargo test --workspace` both clean — no regressions.
-  - Task completed first try; the local atlas-contracts checkout matched the previously-pinned SHA exactly.
-  - The M2 Ravel-Lite migration task description should be updated to use path deps (matching the new Atlas convention) rather than git deps once M2 is implemented.
+  - Attempted: remove M2, M4, M5 Ravel-Lite migration tasks from Atlas's backlog; they were authored here but the work is owned by Ravel-Lite
+  - What worked: tasks deleted cleanly; `verify-atlas-v1-success-criteria-end-to-end` dependency on `ravel-lite-migration-m5-consume-atlas-via-atlas-index` replaced with cross-plan prose note; memory entry updated to record the task relocation
+  - What this suggests: Atlas's backlog is now clean — only Atlas-owned eval tasks remain; Ravel-Lite's cycle should surface the migration tasks there
+  - Key learnings: criterion 5 of the v1 sign-off is gated on Ravel-Lite's M5, tracked in prose rather than as a structural dep since M5 lives in a different plan; website mini-site content (`website/index.md`, `website/meta.yml`) was bootstrapped in the prior session and is included in this commit

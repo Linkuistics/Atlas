@@ -1,137 +1,4 @@
 tasks:
-- id: ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate
-  title: 'Ravel-Lite migration M2: switch to Atlas component-ontology crate'
-  category: migration
-  status: not_started
-  dependencies: []
-  description: |
-    **Priority: MEDIUM.** Unblocks M4 and M5.
-
-    **Design reference:** §9.4 M2.
-
-    ## Scope
-
-    - In Ravel-Lite's root `Cargo.toml`, add a `[workspace.dependencies]` entry (or plain `[dependencies]` if Ravel-Lite is single-crate):
-      ```toml
-      component-ontology = { git = "https://github.com/linkuistics/atlas-contracts", rev = "<sha>" }
-      ```
-      Pin by commit sha. The canonical repo is `linkuistics/atlas-contracts` (a public Cargo workspace hosting Atlas's data-format / vocabulary crates — see the extraction task for context).
-    - Replace every `use crate::ontology::...` or `use ravel_lite::ontology::...` in Ravel-Lite with `use component_ontology::...`.
-    - Delete `Ravel-Lite/src/ontology/` entirely.
-    - Keep `Ravel-Lite/defaults/ontology.yaml` for now — the canonical file is shipped by `component-ontology` via `include_str!`, but removing Ravel-Lite's local copy is M4.
-    - Run the full Ravel-Lite test suite; fix any breakage from the import path change.
-    - Commit as a single PR.
-
-    ### Tests
-
-    - Ravel-Lite's existing tests (targeting the ontology drift assertion, edge validation, etc.) continue to pass.
-    - Compatibility test: load an existing `related-components.yaml` produced pre-M2 and verify it parses bit-identical.
-
-    ## Out of scope
-
-    - Removing Ravel-Lite's `defaults/ontology.yaml` (M4).
-    - Refactoring Ravel-Lite's `src/projects.rs` (M5).
-    - Any behavioural change — this is purely a dep-source switch.
-
-    ## Exit criteria
-
-    - Ravel-Lite compiles and all tests pass with `component-ontology` sourced as a git dep from `linkuistics/atlas-contracts`.
-    - `Ravel-Lite/src/ontology/` is gone.
-    - A commit in Ravel-Lite titled "Switch component-ontology to atlas-contracts git dep" with a link to the `atlas-contracts` commit it pins.
-- id: ravel-lite-migration-m4-delete-in-tree-ontology-copies
-  title: 'Ravel-Lite migration M4: delete in-tree ontology copies'
-  category: migration
-  status: not_started
-  dependencies:
-  - ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate
-  description: |
-    **Priority: MEDIUM.** Removes drift risk by eliminating duplicates.
-
-    **Design reference:** §9.4 M4.
-
-    ## Scope
-
-    - Delete `Ravel-Lite/defaults/ontology.yaml`. Ravel-Lite now reads the YAML from the `component-ontology` crate (hosted at `linkuistics/atlas-contracts`) via its exposed `component_ontology::EMBEDDED_ONTOLOGY_YAML` constant.
-    - Delete `Ravel-Lite/docs/component-ontology.md`. Ravel-Lite's in-tree doc becomes a stub `component-ontology.md` that just links to `atlas-contracts/crates/component-ontology/README.md` (or equivalent upstream docs).
-    - Delete `Ravel-Lite/docs/component-ontology-migration.md` — the migration is done, the doc is obsolete.
-    - Update any Ravel-Lite tests that previously loaded `Ravel-Lite/defaults/ontology.yaml` from disk to instead use `component_ontology::EMBEDDED_ONTOLOGY_YAML`.
-    - Ravel-Lite's build-time test that asserts `EdgeKind` matches `ontology.yaml` switches to assert against the crate-exposed constant (which is the canonical file).
-    - Ravel-Lite's Stage 1 / Stage 2 prompts still exist in `Ravel-Lite/defaults/` for this task; they're removed in M5.
-
-    ### Tests
-
-    - Ravel-Lite test suite passes.
-    - Build-time `EdgeKind` vs `ontology.yaml` consistency test still runs and passes.
-    - No Ravel-Lite file other than `component-ontology`-sourced strings references `ontology.yaml` at a Ravel-Lite-local path.
-
-    ## Out of scope
-
-    - Removing Ravel-Lite's Stage 1/2 prompt copies (M5).
-    - Refactoring `src/projects.rs` (M5).
-
-    ## Exit criteria
-
-    - `Ravel-Lite/defaults/ontology.yaml` does not exist.
-    - `Ravel-Lite/docs/component-ontology.md` is a one-line redirect stub or deleted.
-    - Ravel-Lite builds and tests pass.
-- id: ravel-lite-migration-m5-consume-atlas-via-atlas-index
-  title: 'Ravel-Lite migration M5: consume Atlas via atlas-index'
-  category: migration
-  status: not_started
-  dependencies:
-  - ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate
-  description: |
-    **Priority: MEDIUM.** Completes the migration; single `related-components.yaml` in the ecosystem.
-
-    **Design reference:** §9.4 M5.
-
-    ## Scope
-
-    ### Ravel-Lite depends on atlas-index
-
-    - Add `atlas-index = { git = "https://github.com/linkuistics/atlas-contracts", rev = "<sha>" }` to Ravel-Lite's Cargo.toml. Pin the same rev used for `component-ontology` in M2 (both crates live in the same workspace).
-
-    ### Refactor projects.rs
-
-    - Ravel-Lite's `ProjectsCatalog` becomes a thin wrapper over Atlas's `ComponentsFile`.
-    - `find_by_name(name)` searches `atlas_index::ComponentsFile.components` by `id`.
-    - Only *internal* components are valid plan targets — external components (from `external-components.yaml`) are rejected with a helpful error per the user's earlier decision.
-    - Existing callers' API preserved as much as possible; public signatures remain backward-compatible where practical (change the import paths but keep the verbs).
-
-    ### Remove Stage 1/2 prompt copies — resolution of the open question
-
-    The earlier open question was where Ravel-Lite should read Atlas's prompts from once the prompt files live in the private Atlas repo. Resolution options:
-
-    1. **Add prompts to `atlas-contracts`** — promote them to the public contracts repo. Simplest for Ravel-Lite, exposes Atlas prompt IP publicly.
-    2. **Ravel-Lite keeps its own prompt copies** — revert the deletion step; Ravel-Lite stays prompt-independent. Reintroduces drift risk.
-    3. **Optional env-var / path-based lookup** — Ravel-Lite has no prompts of its own and requires a sibling Atlas checkout via `ATLAS_PROMPTS_DIR` or similar.
-
-    Decide during this task. Default recommendation (revised from original task): **option 2** (Ravel-Lite keeps its own prompt copies). Rationale: prompts are the heart of Atlas's IP; publishing them via `atlas-contracts` contradicts the "public data-formats, private computational parts" split that motivated the whole extraction. Ravel-Lite's Stage-1/2 prompts are lighter than Atlas's discover-* prompts and can diverge intentionally.
-
-    If option 2 is picked, this section collapses to "leave `Ravel-Lite/defaults/discover-stage1.md` and `discover-stage2.md` alone" and the exit criterion below changes accordingly.
-
-    ### CLI surface
-
-    - `ravel-lite state related-components ...` remains as a thin pass-through — the CLI is kept but internally routes through `atlas-index` verbs.
-    - `ravel-lite state projects ...` similarly — the verbs still exist but operate on Atlas-produced `components.yaml` via `atlas-index`.
-    - Existing tests for these CLI surfaces continue to pass.
-
-    ### Tests
-
-    - End-to-end test: run a discover loop on Ravel-Lite itself using Atlas-produced YAMLs as the project catalog. Verify Stage 1/Stage 2 outputs are identical (modulo the project→component rename) to pre-migration outputs.
-    - Compatibility: a Ravel-Lite user who already has a `projects.yaml` at the old path receives a clear migration error directing them to run Atlas.
-
-    ## Out of scope
-
-    - Atlas-side changes (earlier tasks).
-    - Performance optimisation.
-
-    ## Exit criteria
-
-    - A single `related-components.yaml` exists in the ecosystem — Ravel-Lite no longer writes its own.
-    - Ravel-Lite's test suite passes end to end.
-    - `ravel-lite run` on any plan directory can discover and use components produced by Atlas without any hand-authored `projects.yaml`.
-    - The Stage-1/2 prompt question is answered and the chosen option's sub-steps are applied.
 - id: hand-author-second-golden-for-merged-monorepo
   title: Hand-author synthetic second golden for cross-target validation
   category: eval
@@ -192,7 +59,6 @@ tasks:
   status: not_started
   dependencies:
   - hand-author-second-golden-for-merged-monorepo
-  - ravel-lite-migration-m5-consume-atlas-via-atlas-index
   description: |
     **Priority: HIGH.** Signs off v1.
 
@@ -209,6 +75,16 @@ tasks:
     5. Run Ravel-Lite's `related-components` workflow against Atlas-produced YAMLs. Assert it runs to completion without schema errors.
     6. Run against the synthetic second target selected and evaluated in `hand-author-second-golden-for-merged-monorepo`. Assert coverage/spurious/kind/edge metrics are within 5 percentage points of the `~/Development/` run on each axis.
 
+    ### Cross-plan dependency
+
+    Criterion 5 cannot run until **Ravel-Lite's M5 migration** (`Migration M5: consume Atlas via atlas-index` in Ravel-Lite's backlog, formerly `ravel-lite-migration-m5-consume-atlas-via-atlas-index` in Atlas's) is complete. M5 lives in Ravel-Lite's plan, not Atlas's, so it cannot be expressed as a structural dependency here. Before starting this task, confirm M5 is `done` in Ravel-Lite by running:
+
+    ```
+    ravel-lite state backlog list /Users/antony/Development/Ravel-Lite/LLM_STATE/core --category migration
+    ```
+
+    If M5 is not done, criterion 5 must be skipped and recorded as "blocked on Ravel-Lite M5" in the sign-off report; the other five criteria can still proceed.
+
     ### Report
 
     - `evaluation/results/v1-signoff-<date>.md` contains each criterion, the commands run, the measured values, and pass/fail.
@@ -224,6 +100,6 @@ tasks:
 
     ## Exit criteria
 
-    - All six criteria pass or have documented follow-up tasks.
+    - All six criteria pass or have documented follow-up tasks (criterion 5 may be deferred pending Ravel-Lite M5).
     - Sign-off report committed to the Atlas repo.
     - An announcement-ready short summary written (optional) as `README-v1.md` documenting what Atlas v1 does and does not do.

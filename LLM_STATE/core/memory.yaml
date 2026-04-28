@@ -198,4 +198,6 @@ entries:
 - id: m2-migration-is-pure-import-path-swap
   title: M2 migration is pure import-path swap
   body: |
-    `component-ontology` at `linkuistics/atlas-contracts` SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` matches Ravel-Lite's `src/ontology/mod.rs` public surface 1:1. The migration (`ravel-lite-migration-m2-switch-to-atlas-component-ontology-crate`) is a pure import-path swap with no API churn. Use **local path deps** matching the current Atlas convention (`path = "../atlas-contracts/crates/component-ontology"`), not git+rev refs. Prerequisite: Ravel-Lite must be quiescent; it currently has an in-progress refactor in `src/state/backlog/`.
+    `component-ontology` at `linkuistics/atlas-contracts` SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` matches Ravel-Lite's `src/ontology/mod.rs` public surface 1:1. The migration is a pure import-path swap with no API churn. Use **local path deps** matching the current Atlas convention (`path = "../atlas-contracts/crates/component-ontology"`), not git+rev refs. Prerequisite: Ravel-Lite must be quiescent; it currently has an in-progress refactor in `src/state/backlog/`.
+
+    The migration task (M2/M4/M5) lives in **Ravel-Lite's** backlog, not Atlas's — moved on 2026-04-28 because Ravel-Lite owns the work; Atlas is the upstream. To check progress: `ravel-lite state backlog list /Users/antony/Development/Ravel-Lite/LLM_STATE/core --category migration`. Atlas's `verify-atlas-v1-success-criteria-end-to-end` criterion 5 is gated on Ravel-Lite's M5 — tracked in prose, not as a structural dep.
