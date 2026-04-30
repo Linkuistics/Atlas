@@ -190,6 +190,21 @@ pub fn run_index(
 
     // ---- demand L9 projections ------------------------------------
     reporter.on_event(ProgressEvent::Phase(Phase::Project));
+    let live_components: Vec<_> = atlas_engine::all_components(&db)
+        .iter()
+        .filter(|c| !c.deleted)
+        .cloned()
+        .collect();
+    let n = live_components.len() as u64;
+    for (i, comp) in live_components.iter().enumerate() {
+        reporter.on_event(ProgressEvent::Surface {
+            component_id: comp.id.clone(),
+            relpath: atlas_engine::relpath_of(comp),
+            k: (i as u64) + 1,
+            n,
+        });
+        let _ = atlas_engine::surface_of(&db, comp.id.clone());
+    }
     let prompt_shas = config.prompt_shas.clone().unwrap_or_default();
     let mut components_file =
         (*components_yaml_snapshot_with_prompt_shas(&db, prompt_shas)).clone();
