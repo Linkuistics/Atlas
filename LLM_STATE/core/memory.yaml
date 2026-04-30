@@ -209,3 +209,11 @@ entries:
   title: Crate versions inherit from workspace root
   body: |
     All crate `Cargo.toml` files use `version.workspace = true`; the authoritative version lives only in `[workspace.package]` in the root `Cargo.toml`. Adding a new crate: declare `version.workspace = true`, not a pinned literal.
+- id: progressbackend-sits-outside-llmresponsecache-counts-cache-misses-only
+  title: ProgressBackend sits outside LlmResponseCache; counts cache misses only
+  body: |
+    `ProgressBackend` is inserted between `BudgetSentinel` and `LlmResponseCache` in the backend chain. It only observes calls that escape the cache (cache misses). A fully-cached re-run produces no progress output. Inserting it inside the cache would count cache hits as live calls, which is incorrect.
+- id: phase-level-progress-needs-engine-side-hooks-in-run-fixedpoint
+  title: Phase-level progress needs engine-side hooks in run_fixedpoint
+  body: |
+    Per-phase progress (e.g., "L3 classification: 47/120 dirs") requires a `ProgressEvent` callback threaded through `run_fixedpoint` in `atlas-engine`. The current `ProgressBackend` in `atlas-cli` only observes LLM calls, not fixedpoint iteration boundaries. Deferred from the v1 progress implementation.
