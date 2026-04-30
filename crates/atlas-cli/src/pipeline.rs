@@ -237,6 +237,28 @@ pub fn run_index(
         outputs_written: !config.dry_run,
     };
 
+    if !config.dry_run {
+        std::fs::create_dir_all(&config.output_dir)
+            .with_context(|| format!("failed to create {}", config.output_dir.display()))
+            .map_err(IndexError::Other)?;
+
+        save_components_atomic(&prior_components_path, &components_file)
+            .map_err(IndexError::Other)?;
+        save_externals_atomic(&prior_externals_path, &externals_file).map_err(IndexError::Other)?;
+        save_related_components_atomic(&prior_related_path, &related_file)
+            .map_err(IndexError::Other)?;
+
+        // Persist the LLM response cache. A failed save is not fatal —
+        // the outputs are already committed; we just lose the cache hit
+        // on the next run, which is a perf regression, not a
+        // correctness issue.
+        let _ = cache_io::save_from(&cache_path, db.llm_cache());
+    }
+
+    // Finished fires AFTER the writes (or after the dry-run no-op) so a
+    // consumer interpreting the event as "outputs are on disk" sees it
+    // only once that is actually true. Spec §6.2 places the `done`
+    // banner as the last line of scrollback for a successful run.
     reporter.on_event(ProgressEvent::Finished {
         components: summary.component_count as u64,
         llm_calls: summary.llm_calls,
@@ -245,24 +267,6 @@ pub fn run_index(
         elapsed: started_at.elapsed(),
         breakdown: reporter.breakdown_snapshot(),
     });
-
-    if config.dry_run {
-        return Ok(summary);
-    }
-
-    std::fs::create_dir_all(&config.output_dir)
-        .with_context(|| format!("failed to create {}", config.output_dir.display()))
-        .map_err(IndexError::Other)?;
-
-    save_components_atomic(&prior_components_path, &components_file).map_err(IndexError::Other)?;
-    save_externals_atomic(&prior_externals_path, &externals_file).map_err(IndexError::Other)?;
-    save_related_components_atomic(&prior_related_path, &related_file)
-        .map_err(IndexError::Other)?;
-
-    // Persist the LLM response cache. A failed save is not fatal — the
-    // outputs are already committed; we just lose the cache hit on the
-    // next run, which is a perf regression, not a correctness issue.
-    let _ = cache_io::save_from(&cache_path, db.llm_cache());
 
     Ok(summary)
 }
