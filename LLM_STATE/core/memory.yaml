@@ -2,13 +2,9 @@ entries:
 - id: cross-crate-include-str-paths-break-crates-io-publication
   title: Cross-crate include_str! paths break crates.io publication
   body: |
-    **Status (2026-04-25): structurally moot under current distribution model.**
+    Cross-crate `include_str!` paths (e.g. `../../../defaults/ontology.yaml`) work for path and git deps but fail `cargo publish`, which requires all included files within the crate root. Atlas and Ravel-Lite ship as Homebrew bottles; neither publishes to crates.io, so existing cross-crate paths are safe indefinitely.
 
-    Paths like `../../../defaults/ontology.yaml` work for path and git deps but would break `cargo publish`, which requires all included files within the crate root. This only bites at registry-publication time.
-
-    Atlas and Ravel-Lite are distributed as Homebrew bottles built by CI (see separate distribution memory). Neither project ships to crates.io, so this constraint does not apply. Existing cross-crate `include_str!` paths (e.g. `component-ontology/src/defaults.rs` reading `../../../defaults/ontology.yaml` from its workspace root) are fine indefinitely.
-
-    **If the distribution model ever changes and crates.io publication is on the table:** rework the paths so every included file lives within its crate root, either by moving assets under the crate directory or embedding via `build.rs` into `OUT_DIR`.
+    **If crates.io publication becomes required:** rework paths so every included file lives within its crate root — move assets under the crate directory or embed via `build.rs` into `OUT_DIR`.
 - id: lib-crate-public-items-do-not-trigger-dead-code-lint
   title: Lib crate public items do not trigger dead-code lint
   body: |
@@ -128,9 +124,9 @@ entries:
 - id: seam-density-modularity-hint-uninformative-on-fixedpoint-iteration-0
   title: seam_density/modularity_hint uninformative on fixedpoint iteration 0
   body: |
-    seam_density and modularity_hint signals are computed on each L7 pass, but on iteration 0 every component has no sub-components yet, so there are no internal edges. This means on the first fixedpoint iteration the signals are uniformly uninformative: seam_density is 0.0 or INFINITY (no internal edges to count) and modularity_hint returns None (< 4 descendants). The signals only become meaningful on iteration 2+ once sub-carved children exist and their edges are visible.
+    On fixedpoint iteration 0, every component has no sub-components yet: seam_density is 0.0 or INFINITY (no internal edges) and modularity_hint returns None (< 4 descendants). LLM Subcarve calls on iteration 0 receive no structural signals; the signals only become meaningful from iteration 2 onward.
 
-    **Practical consequence:** LLM Subcarve calls on iteration 0 receive no structural signals. If evaluation shows many spurious sub-carves, consider deferring L8 LLM escalation until iteration 2, or passing "iteration=0, signals unavailable" in the prompt so the LLM knows to use conservative priors.
+    If evaluation shows many spurious sub-carves, defer L8 LLM escalation until iteration 2, or pass "iteration=0, signals unavailable" in the prompt.
 - id: no-op-re-run-byte-identity-needs-cache-persistence-stable-generated-at
   title: No-op re-run byte-identity needs cache persistence + stable generated_at
   body: |
@@ -150,11 +146,7 @@ entries:
 - id: llm-cache-json-schema-split-deferred-to-v2
   title: llm-cache.json schema split deferred to v2
   body: |
-    The `llm-cache.json` currently co-mingles per-prompt responses with fingerprint metadata in a single flat file. For v2 it may be worth one file per prompt type, or keying by content-sha of inputs rather than the full request object, to produce smaller diffs and cheaper cache invalidation on fingerprint-only changes.
-
-    **Why:** Noted during L9/atlas-cli implementation (cycle that delivered `cache_io.rs`). Explicitly deferred as "not urgent" — byte-identity on no-op re-runs already works.
-
-    **How to apply:** Surface this if the llm-cache.json file grows large or diffs are hard to read in PR review. Not a blocker for any current task.
+    `llm-cache.json` co-mingles per-prompt responses with fingerprint metadata in a single flat file. Not urgent — byte-identity on no-op re-runs works. A v2 refactor (one file per prompt type, or content-sha keying) would produce smaller diffs and cheaper cache invalidation on fingerprint-only changes. Surface if the file grows large or diffs are hard to review.
 - id: l5-l6-tests-include-template-token-coverage-check
   title: L5/L6 tests include template-token coverage check
   body: |
@@ -166,13 +158,13 @@ entries:
 - id: component-ontology-targets-linkuistics-extraction-for-oss
   title: component-ontology and atlas-index live in linkuistics/atlas-contracts
   body: |
-    `component-ontology` and `atlas-index` live in the public `linkuistics/atlas-contracts` Cargo workspace on GitHub (bootstrap commit `337c54368eb1393f2c3f8839a5e9042ce72cf964`). Atlas consumes both as **local path deps** during development (`path = "../atlas-contracts/crates/<crate>"`; checkout at `~/Development/atlas-contracts/`). At publish time: flip to `git+rev` refs, publish, revert to path deps. `atlas-cli`, `atlas-engine`, and `evaluation/harness` declare them via `workspace = true`. The `defaults/ontology.yaml` asset also moved to `atlas-contracts`. History was not transplanted — a clean bootstrap commit was preferred for the public repo.
+    `component-ontology` and `atlas-index` live in the public `linkuistics/atlas-contracts` Cargo workspace on GitHub (bootstrap commit `337c54368eb1393f2c3f8839a5e9042ce72cf964`). Atlas consumes both as **local path deps** during development (`path = "../atlas-contracts/crates/<crate>"`; checkout at `~/Development/atlas-contracts/`). At publish time: flip to `git+rev` refs, publish, revert to path deps. `atlas-cli`, `atlas-engine`, and `evaluation/harness` declare them via `workspace = true`. `defaults/ontology.yaml` also moved to `atlas-contracts`.
 - id: dev-workspace-golden-is-top-level-only-expect-high-spurious-rate-on-first-v1-metrics-run
-  title: Dev-workspace golden is top-level only; expect high spurious rate on first v1 metrics run
+  title: Dev-workspace golden covers top-level only; expect high spurious rate
   body: |
-    Dev-workspace golden covers only 22 top-level components (one per top-level `~/Development/` directory). The atlas tool sub-carves monorepos and multi-crate workspaces into finer components. Expect high spurious-rate and low coverage on first v1 sign-off runs — this is structural, not a regression.
+    Dev-workspace golden covers only 22 top-level components (one per `~/Development/` directory). Atlas sub-carves monorepos and multi-crate workspaces into finer components, so high spurious rate and low coverage on first v1 sign-off runs is structural, not a regression.
 
-    **Resolution options already wired:** (a) refine the golden to sub-carve depth to match tool output, or (b) tune `OverlapThreshold` at call sites in `atlas-eval` (plumbing already exists). Notes on the tradeoff are in `evaluation/goldens/dev-workspace/notes.md`.
+    Resolution: (a) refine the golden to sub-carve depth, or (b) tune `OverlapThreshold` at call sites in `atlas-eval` (plumbing exists). Tradeoff notes in `evaluation/goldens/dev-workspace/notes.md`.
 - id: grep-all-workspace-members-before-deleting-extracted-crates
   title: Grep all workspace members before deleting extracted crates
   body: |
@@ -180,19 +172,19 @@ entries:
 - id: atlas-contracts-infrastructure-versioning-ci-and-lockfile-bumping
   title: 'atlas-contracts infrastructure: versioning, CI, and lockfile bumping'
   body: |
-    Three follow-up items noted after the `atlas-contracts` extraction landed:
+    Three deferred items for `atlas-contracts` infrastructure:
 
-    1. **Versioning strategy:** Single `main` branch, pinned by SHA in Atlas's `[workspace.dependencies]` for git+rev mode (used at publish time). If the repo gets third-party consumers beyond Atlas/Ravel-Lite, introduce semantic tags (`v0.1.0`, etc.). Not urgent.
+    1. **Versioning:** Single `main` branch, pinned by SHA in Atlas `[workspace.dependencies]` for git+rev mode. Add semantic tags only if third-party consumers join.
 
-    2. **CI:** No CI pipeline exists on `linkuistics/atlas-contracts`. Atlas's own CI catches regressions. If the contracts repo grows, add a minimal `cargo test --workspace` workflow.
+    2. **CI:** No pipeline on `linkuistics/atlas-contracts`; Atlas's own CI catches regressions. Add `cargo test --workspace` there if the contracts repo grows.
 
-    3. **Cargo.lock at publish time:** When flipping from path deps to git+rev for publication, run `cargo update -p component-ontology -p atlas-index` to keep the lockfile in sync. During development (path deps), lockfile churn is minimal — only the `source = "git+..."` lines are absent.
+    3. **Lockfile:** When flipping from path deps to git+rev for publication, run `cargo update -p component-ontology -p atlas-index`.
 - id: m2-migration-is-pure-import-path-swap
   title: M2 migration is pure import-path swap
   body: |
-    `component-ontology` at `linkuistics/atlas-contracts` SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` matches Ravel-Lite's `src/ontology/mod.rs` public surface 1:1. The migration is a pure import-path swap with no API churn. Use **local path deps** matching the current Atlas convention (`path = "../atlas-contracts/crates/component-ontology"`), not git+rev refs. Prerequisite: Ravel-Lite must be quiescent; it currently has an in-progress refactor in `src/state/backlog/`.
+    `component-ontology` at `linkuistics/atlas-contracts` SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` matches Ravel-Lite's `src/ontology/mod.rs` public surface 1:1. The migration (M2/M4/M5) is a pure import-path swap with no API churn; use **local path deps** (`path = "../atlas-contracts/crates/component-ontology"`), not git+rev refs.
 
-    The migration task (M2/M4/M5) lives in **Ravel-Lite's** backlog, not Atlas's — moved on 2026-04-28 because Ravel-Lite owns the work; Atlas is the upstream. To check progress: `ravel-lite state backlog list /Users/antony/Development/Ravel-Lite/LLM_STATE/core --category migration`. Atlas's `verify-atlas-v1-success-criteria-end-to-end` criterion 5 is gated on Ravel-Lite's M5 — tracked in prose, not as a structural dep.
+    The task lives in **Ravel-Lite's** backlog (not Atlas's): `ravel-lite state backlog list /Users/antony/Development/Ravel-Lite/LLM_STATE/core --category migration`. Atlas's `verify-atlas-v1-success-criteria-end-to-end` criterion 5 is gated on Ravel-Lite's M5.
 - id: atlas-tap-publish-requires-linkuistics-homebrew-taps-formula-dir
   title: Atlas tap publish requires linkuistics/homebrew-taps Formula/ dir
   body: |
@@ -216,9 +208,9 @@ entries:
 - id: phase-level-progress-needs-engine-side-hooks-in-run-fixedpoint
   title: Reporter wiring into FixedpointConfig is the remaining progress task
   body: |
-    `ProgressEvent` enum and `run_fixedpoint` hooks (tasks 1–6) and the CLI `Reporter` with indicatif rendering (tasks 7–15) are complete. The remaining work is pipeline wiring: passing `Arc<Reporter>` into `FixedpointConfig` and adding a byte-identity regression (tasks 16–19, backlog task `wire-reporter-into-pipeline-decompose-l5-demand-and-add-byte-identity-regression`).
+    `ProgressEvent` enum, `run_fixedpoint` hooks, and CLI `Reporter` with indicatif rendering are complete. Remaining: pass `Arc<Reporter>` into `FixedpointConfig` and add a byte-identity regression (backlog task `wire-reporter-into-pipeline-decompose-l5-demand-and-add-byte-identity-regression`).
 
-    Implementation references: plan at `docs/superpowers/plans/2026-05-01-engine-progress-events.md`, design spec at `docs/superpowers/specs/2026-05-01-engine-progress-events-design.md`.
+    Plan: `docs/superpowers/plans/2026-05-01-engine-progress-events.md`. Design spec: `docs/superpowers/specs/2026-05-01-engine-progress-events-design.md`.
 - id: dyn-trait-field-in-struct-requires-hand-rolled-debug
   title: dyn Trait field in struct requires hand-rolled Debug
   body: |
@@ -226,7 +218,7 @@ entries:
 - id: subcarve-event-emitted-before-subcarve-decision-spec-7-2
   title: Subcarve event emitted before subcarve_decision (spec §7.2)
   body: |
-    `ProgressEvent::Subcarve` must be emitted before calling `subcarve_decision` (spec §7.2). The ordering is a runtime invariant: the progress callback fires while the LLM backend call count is still at its pre-decision value. The test `engine_emits_subcarve_event_before_calling_decision` verifies this by reading `call_count()` from inside the sink callback via a shared-state clone of the `RecordingSink`. `RecordingSink` lives in `crates/atlas-engine/src/progress.rs` and is the canonical test helper for progress-event ordering assertions.
+    `ProgressEvent::Subcarve` must be emitted before calling `subcarve_decision` (spec §7.2) — the callback fires while the LLM backend call count is still at its pre-decision value. Test `engine_emits_subcarve_event_before_calling_decision` verifies this by reading `call_count()` inside the sink callback via a shared-state clone of `RecordingSink`. `RecordingSink` lives in `crates/atlas-engine/src/progress.rs` and is the canonical test helper for progress-event ordering assertions.
 - id: subcarve-surface-events-set-authoritative-k-n-over-llm-tap
   title: Subcarve/Surface events set authoritative k/n over LLM-tap
   body: |
