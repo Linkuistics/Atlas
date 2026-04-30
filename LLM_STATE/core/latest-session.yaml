@@ -1,17 +1,11 @@
-id: session-19
-timestamp: 2026-04-30T07:34:36Z
+id: session-20
+timestamp: 2026-04-30T15:13:15Z
 phase: work
 body: |
-  ### Session 19 (2026-04-30T07:34:36Z) — Add progress diagnostics to atlas index
+  ### Session 20 (2026-04-30T15:13:15Z) — Draft implementation plan for engine-side ProgressEvent + indicatif rendering
 
-  - Implemented `ProgressBackend` decorator and `ProgressReporter` in `crates/atlas-cli/src/progress.rs`. The decorator wraps the existing LLM backend chain and emits a running per-call tally (prompt counts + token usage) to stderr — in-place via `\r` on TTY, line-by-line otherwise.
-  - Added `--progress` (force-on) and `--no-progress` (suppress) flags to `atlas index` in `main.rs`. Default: auto-on when stderr is a TTY.
-  - A start banner (`[atlas] indexing <root>`) is printed before the first LLM call; `finish()` cleans up the in-place line before the stdout summary.
-  - 11 unit tests in `progress::tests` cover counter accumulation, line rendering, TTY vs. non-TTY, and end-to-end forwarding.
-  - Side fix: pre-existing `io_other_error` clippy warning in `cache_io.rs:115` resolved (`io::Error::new(io::ErrorKind::Other, e)` → `io::Error::other(e)`).
-
-  What worked: decorator pattern fits cleanly over the existing `BudgetedBackend`/`BudgetSentinel` chain with no engine-side changes. The wrapper only sees un-cached calls, so a fully-cached re-run is correctly silent.
-
-  What's deferred: phase markers (e.g., "L3 classification: 47/120 dirs") require engine-side hooks in `run_fixedpoint`; throttling for non-TTY output is not implemented. Neither was needed for the v1 verification run.
-
-  What this suggests next: `verify-atlas-v1-success-criteria-end-to-end` is now better-positioned — the progress tally gives live feedback during long indexing runs. If absolute per-phase progress is needed, thread a `ProgressEvent` callback through `run_fixedpoint`.
+  - **What was attempted:** Drafted the full implementation plan for wiring structured `ProgressEvent` emissions from `atlas-engine` through to an `indicatif` multi-region renderer in `atlas-cli`. Also approved a design spec via brainstorming flow.
+  - **What worked:** The brainstorming session produced a clean architecture split into 19 numbered tasks across four logical phases (engine events, CLI reporter, pipeline wiring, byte-identity regression). The design spec (`docs/superpowers/specs/2026-05-01-engine-progress-events-design.md`) was approved and committed. The full step-by-step implementation plan with verbatim code blocks was written to `docs/superpowers/plans/2026-05-01-engine-progress-events.md` (67 KB). Three backlog tasks were created pointing at specific task ranges within the plan.
+  - **What didn't work / what's deferred:** No implementation code was written in this session — the session was purely plan-authoring.
+  - **What this suggests next:** Execute `implement-engine-side-progressevent-and-run-fixedpoint-hooks` (plan tasks 1–6), then `implement-cli-reporter-and-indicatif-rendering` (tasks 7–15), then `wire-reporter-into-pipeline-decompose-l5-demand-and-add-byte-identity-regression` (tasks 16–19).
+  - **Key learnings:** The plan decomposes the surface into three independently testable work items, each with clear exit criteria and explicit "out of scope" boundaries. The plan contains every code block verbatim to reduce per-session research overhead.
