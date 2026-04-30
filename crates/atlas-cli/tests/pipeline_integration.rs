@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use atlas_cli::progress::{make_stderr_reporter, ProgressMode};
 use atlas_cli::{run_index, IndexConfig, IndexError};
 use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId, TokenCounter};
 use serde_json::{json, Value};
@@ -147,7 +148,13 @@ fn first_run_produces_the_three_generated_yamls() {
     let backend = LenientBackend::new();
     let config = base_config(tmp.path());
 
-    let summary = run_index(&config, backend.clone(), None).expect("run_index");
+    let summary = run_index(
+        &config,
+        backend.clone(),
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .expect("run_index");
 
     assert!(summary.outputs_written);
     assert!(
@@ -169,7 +176,13 @@ fn second_run_on_unchanged_fixture_is_byte_identical() {
     let config = base_config(tmp.path());
 
     let backend1 = LenientBackend::new();
-    run_index(&config, backend1, None).unwrap();
+    run_index(
+        &config,
+        backend1,
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
     let first = std::fs::read(config.output_dir.join("components.yaml")).unwrap();
     let first_edges = std::fs::read(config.output_dir.join("related-components.yaml")).unwrap();
     let first_externals =
@@ -179,7 +192,13 @@ fn second_run_on_unchanged_fixture_is_byte_identical() {
     // the new database, so a deterministic-input run makes no fresh
     // backend calls at all.
     let backend2 = LenientBackend::new();
-    let summary2 = run_index(&config, backend2.clone(), None).unwrap();
+    let summary2 = run_index(
+        &config,
+        backend2.clone(),
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
     let second = std::fs::read(config.output_dir.join("components.yaml")).unwrap();
     let second_edges = std::fs::read(config.output_dir.join("related-components.yaml")).unwrap();
     let second_externals =
@@ -212,7 +231,13 @@ fn modifying_a_source_file_invalidates_that_components_surface_cache() {
     let config = base_config(tmp.path());
 
     let backend1 = LenientBackend::new();
-    run_index(&config, backend1, None).unwrap();
+    run_index(
+        &config,
+        backend1,
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
 
     // Touch one file in the library; re-run with a fresh backend.
     // L1's `file_tree_sha` changes for the library's directory only,
@@ -224,7 +249,13 @@ fn modifying_a_source_file_invalidates_that_components_surface_cache() {
     std::fs::write(tmp.path().join("mylib/src/lib.rs"), "// modified\n").unwrap();
 
     let backend2 = LenientBackend::new();
-    run_index(&config, backend2.clone(), None).unwrap();
+    run_index(
+        &config,
+        backend2.clone(),
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
 
     let calls = backend2.calls();
     let surface_calls = calls
@@ -252,7 +283,13 @@ fn dry_run_produces_summary_but_writes_no_files() {
     config.dry_run = true;
     let backend = LenientBackend::new();
 
-    let summary = run_index(&config, backend, None).unwrap();
+    let summary = run_index(
+        &config,
+        backend,
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
 
     assert!(!summary.outputs_written);
     assert!(summary.component_count >= 2);
@@ -279,7 +316,13 @@ fn tiny_budget_triggers_budget_exhausted_and_no_writes() {
         default_token_estimator(),
     ));
 
-    let err = run_index(&config, backend, Some(counter.clone())).unwrap_err();
+    let err = run_index(
+        &config,
+        backend,
+        Some(counter.clone()),
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap_err();
 
     assert!(
         matches!(err, IndexError::BudgetExhausted),
@@ -302,7 +345,13 @@ fn max_depth_zero_still_emits_top_level_components_but_no_subcarve_back_edge() {
     config.max_depth = 0;
     let backend = LenientBackend::new();
 
-    let summary = run_index(&config, backend.clone(), None).unwrap();
+    let summary = run_index(
+        &config,
+        backend.clone(),
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
 
     // With max_depth=0 the policy returns Stop for every kind, so no
     // Subcarve LLM call fires (see subcarve_policy::decide).
@@ -339,7 +388,13 @@ fn overrides_file_never_written_by_pipeline() {
     let before = std::fs::read(&overrides_path).unwrap();
 
     let backend = LenientBackend::new();
-    run_index(&config, backend, None).unwrap();
+    run_index(
+        &config,
+        backend,
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
 
     let after = std::fs::read(&overrides_path).unwrap();
     assert_eq!(
@@ -358,7 +413,13 @@ fn llm_cache_json_is_written_and_read_across_invocations() {
     let config = base_config(tmp.path());
 
     let backend1 = LenientBackend::new();
-    run_index(&config, backend1.clone(), None).unwrap();
+    run_index(
+        &config,
+        backend1.clone(),
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
     let cache_path = config.output_dir.join("llm-cache.json");
     assert!(cache_path.exists(), "cache file must be written on success");
     let cache_bytes = std::fs::read_to_string(&cache_path).unwrap();
@@ -366,6 +427,12 @@ fn llm_cache_json_is_written_and_read_across_invocations() {
 
     // On the next run the backend sees zero requests.
     let backend2 = LenientBackend::new();
-    run_index(&config, backend2.clone(), None).unwrap();
+    run_index(
+        &config,
+        backend2.clone(),
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
     assert_eq!(backend2.call_count(), 0);
 }

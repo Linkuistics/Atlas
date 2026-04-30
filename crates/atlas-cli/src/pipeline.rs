@@ -21,13 +21,13 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use anyhow::{Context, Result};
 use atlas_engine::{
     components_yaml_snapshot_with_prompt_shas, external_components_yaml_snapshot,
     related_components_yaml_snapshot, run_fixedpoint, seed_filesystem, AtlasDatabase,
-    FixedpointConfig,
+    FixedpointConfig, Phase, ProgressEvent, ProgressSink,
 };
 use atlas_index::{
     load_or_default_components, load_or_default_externals, load_or_default_overrides,
@@ -114,9 +114,17 @@ pub fn run_index(
     config: &IndexConfig,
     backend: Arc<dyn LlmBackend>,
     counter: Option<Arc<TokenCounter>>,
+    reporter: Arc<crate::progress::Reporter>,
 ) -> Result<IndexSummary, IndexError> {
     let sentinel = BudgetSentinel::new(backend);
     let backend: Arc<dyn LlmBackend> = sentinel.clone();
+
+    let started_at = Instant::now();
+    reporter.on_event(ProgressEvent::Started {
+        root: config.root.clone(),
+    });
+    reporter.on_event(ProgressEvent::Phase(Phase::Seed));
+
     // ---- load prior outputs ---------------------------------------
     let prior_components_path = config.output_dir.join("components.yaml");
     let prior_externals_path = config.output_dir.join("external-components.yaml");
@@ -157,8 +165,11 @@ pub fn run_index(
     db.set_components_overrides(overrides);
 
     // ---- fixedpoint -----------------------------------------------
+    reporter.on_event(ProgressEvent::Phase(Phase::Fixedpoint));
+    let sink: Arc<dyn atlas_engine::ProgressSink> = reporter.clone();
     let fp_config = FixedpointConfig {
         max_depth: config.max_depth,
+        progress: Some(sink.clone()),
         ..FixedpointConfig::default()
     };
     let fp_result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -178,10 +189,12 @@ pub fn run_index(
     }
 
     // ---- demand L9 projections ------------------------------------
+    reporter.on_event(ProgressEvent::Phase(Phase::Project));
     let prompt_shas = config.prompt_shas.clone().unwrap_or_default();
     let mut components_file =
         (*components_yaml_snapshot_with_prompt_shas(&db, prompt_shas)).clone();
     let externals_file = (*external_components_yaml_snapshot(&db)).clone();
+    reporter.on_event(ProgressEvent::Phase(Phase::Edges));
     let related_file = (*related_components_yaml_snapshot(&db)).clone();
 
     // Preserve generated_at for byte-identity on no-op re-runs: if
@@ -208,6 +221,15 @@ pub fn run_index(
         fixedpoint_iterations: fp_result.iterations,
         outputs_written: !config.dry_run,
     };
+
+    reporter.on_event(ProgressEvent::Finished {
+        components: summary.component_count as u64,
+        llm_calls: summary.llm_calls,
+        tokens_used: summary.tokens_used,
+        token_budget: summary.token_budget,
+        elapsed: started_at.elapsed(),
+        breakdown: reporter.breakdown_snapshot(),
+    });
 
     if config.dry_run {
         return Ok(summary);
