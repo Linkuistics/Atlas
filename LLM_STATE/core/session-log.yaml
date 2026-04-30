@@ -215,3 +215,20 @@ sessions:
     - What didn't: no failures; changes are minimal and mechanical.
     - What this suggests trying next: backlog has two remaining tasks around eval golden authoring and v1 success-criteria sign-off; version management is now stable.
     - Key learnings: using `version.workspace = true` rather than per-crate pinning is standard Cargo workspace practice — it eliminates version drift across crates on future releases.
+- id: session-19
+  timestamp: 2026-04-30T07:34:36Z
+  phase: work
+  body: |
+    ### Session 19 (2026-04-30T07:34:36Z) — Add progress diagnostics to atlas index
+
+    - Implemented `ProgressBackend` decorator and `ProgressReporter` in `crates/atlas-cli/src/progress.rs`. The decorator wraps the existing LLM backend chain and emits a running per-call tally (prompt counts + token usage) to stderr — in-place via `\r` on TTY, line-by-line otherwise.
+    - Added `--progress` (force-on) and `--no-progress` (suppress) flags to `atlas index` in `main.rs`. Default: auto-on when stderr is a TTY.
+    - A start banner (`[atlas] indexing <root>`) is printed before the first LLM call; `finish()` cleans up the in-place line before the stdout summary.
+    - 11 unit tests in `progress::tests` cover counter accumulation, line rendering, TTY vs. non-TTY, and end-to-end forwarding.
+    - Side fix: pre-existing `io_other_error` clippy warning in `cache_io.rs:115` resolved (`io::Error::new(io::ErrorKind::Other, e)` → `io::Error::other(e)`).
+
+    What worked: decorator pattern fits cleanly over the existing `BudgetedBackend`/`BudgetSentinel` chain with no engine-side changes. The wrapper only sees un-cached calls, so a fully-cached re-run is correctly silent.
+
+    What's deferred: phase markers (e.g., "L3 classification: 47/120 dirs") require engine-side hooks in `run_fixedpoint`; throttling for non-TTY output is not implemented. Neither was needed for the v1 verification run.
+
+    What this suggests next: `verify-atlas-v1-success-criteria-end-to-end` is now better-positioned — the progress tally gives live feedback during long indexing runs. If absolute per-phase progress is needed, thread a `ProgressEvent` callback through `run_fixedpoint`.

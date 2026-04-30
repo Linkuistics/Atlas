@@ -4,10 +4,12 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use atlas_cli::progress::{make_stderr_reporter, ProgressBackend, ProgressMode};
 use atlas_cli::{run_index, IndexConfig, IndexError};
-use atlas_llm::claude_code::resolve_default_model_id;
+use atlas_llm::{claude_code::resolve_default_model_id, LlmBackend};
 use clap::{Parser, Subcommand};
 
 /// Version string baked in at compile time by `build.rs`. Shape:
@@ -83,6 +85,17 @@ struct IndexArgs {
     /// standalone project that has no `.git` directory.
     #[arg(long)]
     no_gitignore: bool,
+
+    /// Force the per-call progress tally on stderr even when stderr
+    /// is not a TTY (e.g., piped to a file). Default behaviour is to
+    /// auto-enable when stderr is a TTY.
+    #[arg(long, conflicts_with = "no_progress")]
+    progress: bool,
+
+    /// Suppress the per-call progress tally even when stderr is a
+    /// TTY. The final summary line on stdout is unaffected.
+    #[arg(long)]
+    no_progress: bool,
 }
 
 fn main() -> ExitCode {
@@ -132,7 +145,27 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
         .context("failed to build LLM backend")?;
     config.fingerprint_override = Some(handles.fingerprint.clone());
 
-    let outcome = run_index(&config, handles.backend.clone(), handles.counter.clone());
+    let progress_mode = if args.no_progress {
+        ProgressMode::Never
+    } else if args.progress {
+        ProgressMode::Always
+    } else {
+        ProgressMode::Auto
+    };
+    let reporter = make_stderr_reporter(progress_mode, handles.counter.clone());
+    let backend: Arc<dyn LlmBackend> = match reporter.as_ref() {
+        Some(r) => {
+            r.announce_start(&config.root);
+            ProgressBackend::new(handles.backend.clone(), Arc::clone(r))
+                as Arc<dyn LlmBackend>
+        }
+        None => Arc::clone(&handles.backend),
+    };
+
+    let outcome = run_index(&config, backend, handles.counter.clone());
+    if let Some(r) = reporter.as_ref() {
+        r.finish();
+    }
     match outcome {
         Ok(summary) => {
             println!("{}", atlas_cli::pipeline::format_summary(&summary));

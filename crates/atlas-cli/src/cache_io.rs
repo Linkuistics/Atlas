@@ -111,8 +111,7 @@ pub fn save_from(path: &Path, source: &LlmResponseCache) -> io::Result<()> {
         schema_version: CACHE_SCHEMA_VERSION,
         entries,
     };
-    let bytes = serde_json::to_vec_pretty(&file)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let bytes = serde_json::to_vec_pretty(&file).map_err(io::Error::other)?;
 
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "cache path has no parent")
