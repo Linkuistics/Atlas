@@ -10,9 +10,24 @@ use atlas_cli::{run_index, IndexConfig, IndexError};
 use atlas_llm::claude_code::resolve_default_model_id;
 use clap::{Parser, Subcommand};
 
+/// Version string baked in at compile time by `build.rs`. Shape:
+/// `0.1.0 (v0.1.0-2-g15c2c8c-dirty, built 2026-04-21T06:42:18Z)`.
+/// When no tag or no git data is available, the describe slot falls
+/// back to the short SHA or literal `unknown`; the timestamp slot
+/// falls back to `unknown` only if `date` is unavailable on the
+/// build host.
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("GIT_DESCRIBE"),
+    ", built ",
+    env!("BUILD_TIMESTAMP"),
+    ")"
+);
+
 /// Atlas — design recovery for large codebases.
 #[derive(Debug, Parser)]
-#[command(name = "atlas", version, about, long_about = None)]
+#[command(name = "atlas", version = VERSION, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

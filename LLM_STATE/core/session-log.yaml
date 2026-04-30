@@ -193,3 +193,14 @@ sessions:
     - What didn't: No actual release was cut; `crates/atlas-cli/Cargo.toml` is at version `0.1.0` with no `v0.1.0` tag, so `release-build.sh` would fail its `require_clean_tagged_tree` guard (expected behaviour — the operator's call).
     - What this suggests trying next: Backlog is now focused on the two remaining eval tasks (`hand-author-second-golden-for-merged-monorepo` → `verify-atlas-v1-success-criteria-end-to-end`). The release pipeline is ready to use once a tag exists.
     - Key learnings: `target/` already covers `target/dist/` in `.gitignore` — no extra ignore rule needed. First publication requires a tap repo (`linkuistics/homebrew-taps`) with at least an empty `Formula/` directory; `release-publish.sh` defaults `$ATLAS_TAP_DIR` to `~/Development/homebrew-taps`.
+- id: session-17
+  timestamp: 2026-04-30T02:11:56Z
+  phase: work
+  body: |
+    ### Session 17 (2026-04-30T02:11:56Z) — Add release infrastructure and expand README for v1
+
+    - Attempted: Wire up rich version output (`atlas --version`) using a `build.rs` build script that bakes `git describe`, build timestamp, and `CARGO_PKG_VERSION` into the binary at compile time. Simultaneously, update README.md to reflect v1 status and document the full release process.
+    - What worked: `build.rs` added to `crates/atlas-cli/` sets three compile-time env vars (`BUILD_TIMESTAMP`, `GIT_DESCRIBE`, `GIT_SHA`) via `cargo:rustc-env=` directives, with graceful fallbacks to "unknown" when git or date are unavailable. `main.rs` picks these up through a `VERSION` constant built with `concat!` and passes it to clap via `version = VERSION`. Workspace version set to `1.0.0` in `Cargo.toml`. README Status section updated from "Pre-development" to a full v1 capability inventory (L0–L9 plus CLI and distribution). Installation, Usage, and Release Process sections added covering the Homebrew bottle workflow (`cargo-release` → push → `release-build.sh` → `release-publish.sh`).
+    - What didn't: No failures; the session was documentation and infrastructure work with no test regressions expected.
+    - What this suggests next: The remaining backlog tasks are `hand-author-second-golden-for-merged-monorepo` and `verify-atlas-v1-success-criteria-end-to-end`. With v1 documented and versioned, end-to-end verification is the natural next focus.
+    - Key learnings: `cargo:rerun-if-changed=../../.git/HEAD` (relative to crate manifest dir) is the right hook for invalidating version metadata when HEAD or tags change in a workspace-level `.git`. The `concat!` macro is the correct way to assemble a `&'static str` from multiple `env!()` calls at compile time; a runtime `format!` would produce `String` and not fit clap's `version = ...` attribute.
