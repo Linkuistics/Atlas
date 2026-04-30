@@ -187,14 +187,6 @@ entries:
     2. **CI:** No CI pipeline exists on `linkuistics/atlas-contracts`. Atlas's own CI catches regressions. If the contracts repo grows, add a minimal `cargo test --workspace` workflow.
 
     3. **Cargo.lock at publish time:** When flipping from path deps to git+rev for publication, run `cargo update -p component-ontology -p atlas-index` to keep the lockfile in sync. During development (path deps), lockfile churn is minimal — only the `source = "git+..."` lines are absent.
-- id: hand-author-second-golden-task-is-blocked
-  title: hand-author-second-golden task is blocked
-  body: |
-    `hand-author-second-golden-for-merged-monorepo` is blocked: the task requires a third-party merged monorepo that is not present in the local environment. Task state is `blocked`, not abandoned.
-- id: v1-criterion-6-unsatisfiable-without-second-golden
-  title: V1 criterion 6 unsatisfiable without second golden
-  body: |
-    V1 success criterion 6 (`verify-atlas-v1-success-criteria-end-to-end`) is structurally unsatisfiable while the second eval golden is blocked. Three triage options: (a) drop criterion 6, (b) substitute a synthetic second target under `~/Development/`, or (c) defer to v2. Triage should resolve this before the criterion can be evaluated.
 - id: m2-migration-is-pure-import-path-swap
   title: M2 migration is pure import-path swap
   body: |
