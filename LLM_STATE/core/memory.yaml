@@ -213,3 +213,7 @@ entries:
   title: concat! assembles &'static str from env!() for clap version
   body: |
     `concat!(env!("FOO"), " ", env!("BAR"))` produces a `&'static str` suitable for clap's `version = ...` attribute. `format!()` produces `String` and cannot be used there. Apply this pattern in `build.rs`-driven version metadata: define a `VERSION` constant via `concat!` over multiple `env!()` calls baked at compile time.
+- id: crate-versions-inherit-from-workspace-root
+  title: Crate versions inherit from workspace root
+  body: |
+    All crate `Cargo.toml` files use `version.workspace = true`; the authoritative version lives only in `[workspace.package]` in the root `Cargo.toml`. Adding a new crate: declare `version.workspace = true`, not a pinned literal.
