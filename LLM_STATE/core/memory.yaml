@@ -205,3 +205,11 @@ entries:
   title: Atlas tap publish requires linkuistics/homebrew-taps Formula/ dir
   body: |
     Atlas `release-publish.sh` requires `linkuistics/homebrew-taps` to exist with at least an empty `Formula/` directory before first publication. The script uses `$ATLAS_TAP_DIR` (default: `~/Development/homebrew-taps`) for the local checkout path.
+- id: build-rs-rerun-if-changed-path-is-relative-to-crate-manifest
+  title: build.rs rerun-if-changed path is relative to crate manifest
+  body: |
+    In a Cargo workspace, `cargo:rerun-if-changed` paths in a sub-crate's `build.rs` are relative to that crate's `Cargo.toml`, not the workspace root. A crate at `crates/atlas-cli/` must use `../../.git/HEAD` to reach the workspace-level `.git/HEAD`. This is the correct hook for invalidating compile-time version metadata when HEAD or tags change.
+- id: concat-assembles-static-str-from-env-for-clap-version
+  title: concat! assembles &'static str from env!() for clap version
+  body: |
+    `concat!(env!("FOO"), " ", env!("BAR"))` produces a `&'static str` suitable for clap's `version = ...` attribute. `format!()` produces `String` and cannot be used there. Apply this pattern in `build.rs`-driven version metadata: define a `VERSION` constant via `concat!` over multiple `env!()` calls baked at compile time.
