@@ -1,6 +1,6 @@
 [package]
 name = "atlas-llm"
-version = "0.1.0"
+version.workspace = true
 description = "LLM backend trait and implementations (claude-code subprocess; test backend) for Atlas."
 edition.workspace = true
 license.workspace = true

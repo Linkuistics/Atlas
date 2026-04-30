@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-engine"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "atlas-index",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-eval"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -156,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-llm"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
