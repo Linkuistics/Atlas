@@ -218,9 +218,15 @@ entries:
   body: |
     Per-phase progress (e.g., "L3 classification: 47/120 dirs") requires a `ProgressEvent` callback threaded through `run_fixedpoint` in `atlas-engine`. The current `ProgressBackend` in `atlas-cli` only observes LLM calls, not fixedpoint iteration boundaries.
 
-    Implementation planned in three independently testable phases (plan: `docs/superpowers/plans/2026-05-01-engine-progress-events.md`, design spec: `docs/superpowers/specs/2026-05-01-engine-progress-events-design.md`):
-    - Tasks 1–6: engine-side `ProgressEvent` enum + `run_fixedpoint` hooks → backlog task `implement-engine-side-progressevent-and-run-fixedpoint-hooks`
+    Implementation in three independently testable phases (plan: `docs/superpowers/plans/2026-05-01-engine-progress-events.md`, design spec: `docs/superpowers/specs/2026-05-01-engine-progress-events-design.md`):
+    - Tasks 1–6: engine-side `ProgressEvent` enum + `run_fixedpoint` hooks → **complete** (backlog task `implement-engine-side-progressevent-and-run-fixedpoint-hooks`)
     - Tasks 7–15: CLI reporter + indicatif multi-region rendering → backlog task `implement-cli-reporter-and-indicatif-rendering`
     - Tasks 16–19: pipeline wiring, decompose L5 demand, byte-identity regression → backlog task `wire-reporter-into-pipeline-decompose-l5-demand-and-add-byte-identity-regression`
-
-    Not yet implemented. Execute tasks 1–6 first.
+- id: dyn-trait-field-in-struct-requires-hand-rolled-debug
+  title: dyn Trait field in struct requires hand-rolled Debug
+  body: |
+    `FixedpointConfig` contains `progress: Option<Arc<dyn ProgressSink>>`. `dyn Trait` objects do not implement `Debug`, so `#[derive(Debug)]` fails. The fix is a hand-rolled `Debug` impl that formats the field as a literal (e.g., `Some(<dyn ProgressSink>)`). Any future struct field holding a `dyn Trait` object will hit the same constraint.
+- id: subcarve-event-emitted-before-subcarve-decision-spec-7-2
+  title: Subcarve event emitted before subcarve_decision (spec §7.2)
+  body: |
+    `ProgressEvent::Subcarve` must be emitted before calling `subcarve_decision` (spec §7.2). The ordering is a runtime invariant: the progress callback fires while the LLM backend call count is still at its pre-decision value. The test `engine_emits_subcarve_event_before_calling_decision` verifies this by reading `call_count()` from inside the sink callback via a shared-state clone of the `RecordingSink`. `RecordingSink` lives in `crates/atlas-engine/src/progress.rs` and is the canonical test helper for progress-event ordering assertions.
