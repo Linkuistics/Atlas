@@ -34,7 +34,11 @@ fn index_requires_budget_flag() {
 #[test]
 fn index_with_nonexistent_root_fails_with_clear_error() {
     atlas()
-        .args(["index", "/definitely/does/not/exist/for/atlas", "--no-budget"])
+        .args([
+            "index",
+            "/definitely/does/not/exist/for/atlas",
+            "--no-budget",
+        ])
         .assert()
         .failure()
         .stderr(str::contains("failed to resolve root path"));

@@ -12,7 +12,9 @@ use std::path::Path;
 
 use component_ontology::{EvidenceGrade, LifecycleScope};
 
-use crate::manifest_parse::{parse_cargo_toml, parse_package_json, CargoTomlShape, PackageJsonShape};
+use crate::manifest_parse::{
+    parse_cargo_toml, parse_package_json, CargoTomlShape, PackageJsonShape,
+};
 use crate::types::{Candidate, Classification, ComponentKind};
 
 /// Contents of any manifest the classifier may want to inspect. The
@@ -36,9 +38,12 @@ pub fn classify_deterministic(
     let package = manifest_contents.package_json.map(parse_package_json);
 
     for rule in RULES {
-        if let Some(classification) =
-            (rule.apply)(candidate, manifest_contents, cargo.as_ref(), package.as_ref())
-        {
+        if let Some(classification) = (rule.apply)(
+            candidate,
+            manifest_contents,
+            cargo.as_ref(),
+            package.as_ref(),
+        ) {
             return Some(classification);
         }
     }
@@ -327,11 +332,13 @@ mod tests {
         // let the LLM take over.
         let mut cand = bare_candidate("/repo");
         cand.rationale_bundle.is_git_root = true;
-        cand.rationale_bundle.doc_headings.push(crate::l1_queries::DocHeading {
-            path: PathBuf::from("/repo/README.md"),
-            level: 1,
-            text: "Repo".into(),
-        });
+        cand.rationale_bundle
+            .doc_headings
+            .push(crate::l1_queries::DocHeading {
+                path: PathBuf::from("/repo/README.md"),
+                level: 1,
+                text: "Repo".into(),
+            });
         let manifests = ManifestContents::default();
         assert!(classify_deterministic(&cand, &manifests).is_none());
     }

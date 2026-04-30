@@ -37,9 +37,8 @@ pub struct ResultFile {
 pub fn write_result_yaml(path: &Path, result: &ResultFile) -> Result<()> {
     let yaml = serde_yaml::to_string(result).context("serialise ResultFile to yaml")?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!("create result parent directory {}", parent.display())
-        })?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create result parent directory {}", parent.display()))?;
     }
     fs::write(path, yaml).with_context(|| format!("write result yaml to {}", path.display()))?;
     Ok(())
@@ -74,8 +73,7 @@ pub fn render_trend_html(results_dir: &Path, output: &Path) -> Result<()> {
     results.sort_by(|a, b| a.1.generated_at.cmp(&b.1.generated_at));
 
     let html = render_html(&results, &skipped);
-    fs::write(output, html)
-        .with_context(|| format!("write trend html to {}", output.display()))?;
+    fs::write(output, html).with_context(|| format!("write trend html to {}", output.display()))?;
     Ok(())
 }
 
@@ -131,7 +129,10 @@ tr.no-golden td.metric { color: #888; font-style: italic; }
         out.push_str(&format!("<td>{}</td>", escape(&result.target)));
         match &result.metrics {
             Some(m) => {
-                out.push_str(&format!("<td class=\"num\">{:.3}</td>", m.component_coverage));
+                out.push_str(&format!(
+                    "<td class=\"num\">{:.3}</td>",
+                    m.component_coverage
+                ));
                 out.push_str(&format!("<td class=\"num\">{:.3}</td>", m.spurious_rate));
                 out.push_str(&format!("<td class=\"num\">{:.3}</td>", m.kind_accuracy));
                 out.push_str(&format!("<td class=\"num\">{:.3}</td>", m.edge_precision));
@@ -160,7 +161,11 @@ tr.no-golden td.metric { color: #888; font-style: italic; }
         out.push_str("<div class=\"footer\">Skipped unparsable YAMLs: ");
         let names: Vec<String> = skipped
             .iter()
-            .map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+            .map(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            })
             .collect();
         out.push_str(&escape(&names.join(", ")));
         out.push_str("</div>\n");
@@ -255,7 +260,10 @@ mod tests {
         let html = std::fs::read_to_string(&out).unwrap();
         assert!(html.contains("Atlas evaluation trend"));
         assert!(html.contains("tiny"));
-        assert!(html.contains("0.910"), "expected coverage metric in html: {html}");
+        assert!(
+            html.contains("0.910"),
+            "expected coverage metric in html: {html}"
+        );
     }
 
     #[test]
@@ -271,7 +279,10 @@ mod tests {
         let out = tmp.path().join("trend.html");
         render_trend_html(&results_dir, &out).unwrap();
         let html = std::fs::read_to_string(&out).unwrap();
-        assert!(html.contains("class=\"fail\""), "failing rows should be flagged: {html}");
+        assert!(
+            html.contains("class=\"fail\""),
+            "failing rows should be flagged: {html}"
+        );
         assert!(html.contains("edge_participant_existence"));
     }
 

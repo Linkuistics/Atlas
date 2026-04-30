@@ -17,6 +17,7 @@ version = "1.0.1"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 ignore = "0.4"
+indicatif = "0.17"
 petgraph = "0.6"
 salsa = "0.26"
 serde = { version = "1", features = ["derive"] }

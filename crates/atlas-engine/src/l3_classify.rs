@@ -80,7 +80,13 @@ pub fn is_component(
     // LLM fallback. Errors propagate as a weak "unknown" classification
     // — the engine intentionally does not panic on an LLM hiccup, so
     // higher-level tooling can surface the rationale.
-    Arc::new(classify_via_llm(db, &root, &candidate_dir, &bundle, &snippets))
+    Arc::new(classify_via_llm(
+        db,
+        &root,
+        &candidate_dir,
+        &bundle,
+        &snippets,
+    ))
 }
 
 fn build_bundle(db: &AtlasDatabase, workspace: Workspace, candidate_dir: &Path) -> RationaleBundle {
@@ -125,10 +131,7 @@ fn load_manifest_snippets(db: &AtlasDatabase, paths: &[PathBuf]) -> BTreeMap<Pat
     out
 }
 
-fn snippet_text<'a>(
-    snippets: &'a BTreeMap<PathBuf, String>,
-    basename: &str,
-) -> Option<&'a str> {
+fn snippet_text<'a>(snippets: &'a BTreeMap<PathBuf, String>, basename: &str) -> Option<&'a str> {
     snippets
         .iter()
         .find(|(path, _)| path.file_name().and_then(|n| n.to_str()) == Some(basename))
@@ -207,10 +210,7 @@ fn pins_to_classification(pins: &BTreeMap<String, PinValue>) -> Classification {
         evidence_grade: EvidenceGrade::Strong,
         evidence_fields: pins.keys().map(|k| format!("pin:{k}")).collect(),
         rationale: "human pin".to_string(),
-        is_boundary: !matches!(
-            pins.get("suppress"),
-            Some(PinValue::Suppress { .. })
-        ),
+        is_boundary: !matches!(pins.get("suppress"), Some(PinValue::Suppress { .. })),
     }
 }
 
@@ -319,23 +319,29 @@ fn parse_llm_response(value: Value) -> Result<Classification, String> {
     // Accept a Classification shape plus a handful of minor
     // deviations the LLM may introduce (missing optional fields,
     // integer-typed levels, etc.).
-    let object = value.as_object().ok_or_else(|| {
-        format!("expected JSON object, got {}", value)
-    })?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("expected JSON object, got {}", value))?;
 
     let kind_str = object
         .get("kind")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "response missing string `kind`".to_string())?;
-    let kind = ComponentKind::parse(kind_str)
-        .ok_or_else(|| format!("unknown kind `{kind_str}`"))?;
+    let kind =
+        ComponentKind::parse(kind_str).ok_or_else(|| format!("unknown kind `{kind_str}`"))?;
 
-    let language = object.get("language").and_then(|v| v.as_str()).map(String::from);
+    let language = object
+        .get("language")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     let build_system = object
         .get("build_system")
         .and_then(|v| v.as_str())
         .map(String::from);
-    let role = object.get("role").and_then(|v| v.as_str()).map(String::from);
+    let role = object
+        .get("role")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     let rationale = object
         .get("rationale")
         .and_then(|v| v.as_str())
@@ -424,12 +430,8 @@ mod tests {
     #[test]
     fn pin_matches_relative_path_key() {
         let overrides = overrides_with_pin("crates/foo", "kind", "spec");
-        let got = pinned_classification(
-            &overrides,
-            Path::new("/ws/crates/foo"),
-            Path::new("/ws"),
-        )
-        .expect("pin should match relative path key");
+        let got = pinned_classification(&overrides, Path::new("/ws/crates/foo"), Path::new("/ws"))
+            .expect("pin should match relative path key");
         assert_eq!(got.kind, ComponentKind::Spec);
         assert_eq!(got.rationale, "human pin");
     }
@@ -439,12 +441,8 @@ mod tests {
         // User-friendly fallback: pin by bare basename when the
         // relative-path form isn't used.
         let overrides = overrides_with_pin("foo", "kind", "spec");
-        let got = pinned_classification(
-            &overrides,
-            Path::new("/ws/crates/foo"),
-            Path::new("/ws"),
-        )
-        .expect("pin should match basename key");
+        let got = pinned_classification(&overrides, Path::new("/ws/crates/foo"), Path::new("/ws"))
+            .expect("pin should match basename key");
         assert_eq!(got.kind, ComponentKind::Spec);
     }
 
@@ -472,12 +470,9 @@ mod tests {
             rationale: "spec".into(),
             deleted: false,
         });
-        let got = pinned_classification(
-            &overrides,
-            Path::new("/ws/specs/my-spec"),
-            Path::new("/ws"),
-        )
-        .expect("pin should match via addition id");
+        let got =
+            pinned_classification(&overrides, Path::new("/ws/specs/my-spec"), Path::new("/ws"))
+                .expect("pin should match via addition id");
         assert_eq!(got.kind, ComponentKind::Spec);
     }
 
@@ -496,12 +491,8 @@ mod tests {
             pins,
             ..OverridesFile::default()
         };
-        let got = pinned_classification(
-            &overrides,
-            Path::new("/ws/foo"),
-            Path::new("/ws"),
-        )
-        .expect("suppress pin should produce a classification");
+        let got = pinned_classification(&overrides, Path::new("/ws/foo"), Path::new("/ws"))
+            .expect("suppress pin should produce a classification");
         assert!(!got.is_boundary);
     }
 

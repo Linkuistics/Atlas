@@ -171,28 +171,18 @@ mod tests {
     #[test]
     fn key_is_stable_across_equal_inputs_regardless_of_field_order() {
         let f = fp("m");
-        let a = LlmCacheKey::from_request(
-            &f,
-            &req(PromptId::Stage1Surface, json!({ "a": 1, "b": 2 })),
-        );
-        let b = LlmCacheKey::from_request(
-            &f,
-            &req(PromptId::Stage1Surface, json!({ "b": 2, "a": 1 })),
-        );
+        let a =
+            LlmCacheKey::from_request(&f, &req(PromptId::Stage1Surface, json!({ "a": 1, "b": 2 })));
+        let b =
+            LlmCacheKey::from_request(&f, &req(PromptId::Stage1Surface, json!({ "b": 2, "a": 1 })));
         assert_eq!(a, b);
     }
 
     #[test]
     fn key_differs_when_prompt_id_differs() {
         let f = fp("m");
-        let a = LlmCacheKey::from_request(
-            &f,
-            &req(PromptId::Stage1Surface, json!({ "id": "A" })),
-        );
-        let b = LlmCacheKey::from_request(
-            &f,
-            &req(PromptId::Stage2Edges, json!({ "id": "A" })),
-        );
+        let a = LlmCacheKey::from_request(&f, &req(PromptId::Stage1Surface, json!({ "id": "A" })));
+        let b = LlmCacheKey::from_request(&f, &req(PromptId::Stage2Edges, json!({ "id": "A" })));
         assert_ne!(a, b);
     }
 
@@ -220,16 +210,26 @@ mod tests {
         let cache = LlmResponseCache::new();
 
         let first = cache
-            .call_cached(&backend, &req(PromptId::Stage1Surface, json!({ "id": "A" })))
+            .call_cached(
+                &backend,
+                &req(PromptId::Stage1Surface, json!({ "id": "A" })),
+            )
             .unwrap();
         assert_eq!(cache.call_count(), 1);
 
         let second = cache
-            .call_cached(&backend, &req(PromptId::Stage1Surface, json!({ "id": "A" })))
+            .call_cached(
+                &backend,
+                &req(PromptId::Stage1Surface, json!({ "id": "A" })),
+            )
             .unwrap();
 
         assert_eq!(*first, *second);
-        assert_eq!(cache.call_count(), 1, "second identical call must hit cache");
+        assert_eq!(
+            cache.call_count(),
+            1,
+            "second identical call must hit cache"
+        );
     }
 
     #[test]
@@ -248,10 +248,16 @@ mod tests {
         let cache = LlmResponseCache::new();
 
         cache
-            .call_cached(&backend, &req(PromptId::Stage1Surface, json!({ "id": "A" })))
+            .call_cached(
+                &backend,
+                &req(PromptId::Stage1Surface, json!({ "id": "A" })),
+            )
             .unwrap();
         cache
-            .call_cached(&backend, &req(PromptId::Stage1Surface, json!({ "id": "B" })))
+            .call_cached(
+                &backend,
+                &req(PromptId::Stage1Surface, json!({ "id": "B" })),
+            )
             .unwrap();
         assert_eq!(cache.call_count(), 2);
     }
@@ -266,7 +272,10 @@ mod tests {
         );
         let cache = LlmResponseCache::new();
         cache
-            .call_cached(&backend, &req(PromptId::Stage1Surface, json!({ "id": "A" })))
+            .call_cached(
+                &backend,
+                &req(PromptId::Stage1Surface, json!({ "id": "A" })),
+            )
             .unwrap();
         assert_eq!(cache.call_count(), 1);
 
@@ -274,7 +283,10 @@ mod tests {
         assert_eq!(cache.call_count(), 0);
 
         cache
-            .call_cached(&backend, &req(PromptId::Stage1Surface, json!({ "id": "A" })))
+            .call_cached(
+                &backend,
+                &req(PromptId::Stage1Surface, json!({ "id": "A" })),
+            )
             .unwrap();
         assert_eq!(cache.call_count(), 1);
     }

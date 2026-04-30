@@ -91,7 +91,10 @@ pub fn path_coverage(file: &ComponentsFile) -> Result<(), InvariantFailure> {
         {
             return Err(fail(
                 "path_coverage",
-                format!("component `{}` has an empty path in path_segments", component.id),
+                format!(
+                    "component `{}` has an empty path in path_segments",
+                    component.id
+                ),
             ));
         }
     }
@@ -103,8 +106,7 @@ pub fn path_coverage(file: &ComponentsFile) -> Result<(), InvariantFailure> {
 /// nesting is allowed — that's the whole point of a component tree.
 pub fn no_path_overlap(file: &ComponentsFile) -> Result<(), InvariantFailure> {
     let parents = parent_index(file);
-    let components: Vec<&ComponentEntry> =
-        file.components.iter().filter(|c| !c.deleted).collect();
+    let components: Vec<&ComponentEntry> = file.components.iter().filter(|c| !c.deleted).collect();
 
     for (i, a) in components.iter().enumerate() {
         for b in &components[i + 1..] {
@@ -316,10 +318,7 @@ fn contains_nested_git(full_segment_root: &Path, segment_rel: &Path) -> bool {
 /// 8 iterations. If the tool exposes an iteration count, assert
 /// `<= limit` (default 8); otherwise the caller passes `None` and the
 /// invariant is skipped.
-pub fn fixedpoint_termination(
-    iterations: Option<u32>,
-    limit: u32,
-) -> Result<(), InvariantFailure> {
+pub fn fixedpoint_termination(iterations: Option<u32>, limit: u32) -> Result<(), InvariantFailure> {
     match iterations {
         None => Ok(()),
         Some(n) if n <= limit => Ok(()),
@@ -417,7 +416,10 @@ mod tests {
 
     #[test]
     fn path_coverage_accepts_valid_components() {
-        let f = file_of(vec![minimal_component("a", "a"), minimal_component("b", "b")]);
+        let f = file_of(vec![
+            minimal_component("a", "a"),
+            minimal_component("b", "b"),
+        ]);
         assert!(path_coverage(&f).is_ok());
     }
 

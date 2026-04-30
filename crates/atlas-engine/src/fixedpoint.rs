@@ -38,7 +38,7 @@ use crate::l8_recurse::subcarve_decision;
 pub const FIXEDPOINT_HARD_CAP: u32 = 8;
 
 /// Configuration for one driver run.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct FixedpointConfig {
     /// Passed through to [`AtlasDatabase::set_max_depth`]. Controls how
     /// deep L8 will recurse regardless of signal strength.
@@ -46,6 +46,19 @@ pub struct FixedpointConfig {
     /// Fail-loud threshold. Overridable for tests that deliberately
     /// provoke divergence; defaults to [`FIXEDPOINT_HARD_CAP`].
     pub hard_cap: u32,
+    /// Optional progress sink. When `None`, the driver runs silently
+    /// (current behaviour — preserved for engine tests and the harness).
+    pub progress: Option<std::sync::Arc<dyn crate::progress::ProgressSink>>,
+}
+
+impl std::fmt::Debug for FixedpointConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FixedpointConfig")
+            .field("max_depth", &self.max_depth)
+            .field("hard_cap", &self.hard_cap)
+            .field("progress", &self.progress.is_some())
+            .finish()
+    }
 }
 
 impl Default for FixedpointConfig {
@@ -53,6 +66,7 @@ impl Default for FixedpointConfig {
         FixedpointConfig {
             max_depth: DEFAULT_MAX_DEPTH,
             hard_cap: FIXEDPOINT_HARD_CAP,
+            progress: None,
         }
     }
 }
@@ -66,10 +80,8 @@ pub struct FixedpointResult {
 
 /// Drive the engine to a fixedpoint on the L8 back-edge. Panics if the
 /// hard cap fires — matching the design's "abort loudly" stance.
-pub fn run_fixedpoint(
-    db: &mut AtlasDatabase,
-    config: FixedpointConfig,
-) -> FixedpointResult {
+pub fn run_fixedpoint(db: &mut AtlasDatabase, config: FixedpointConfig) -> FixedpointResult {
+    let sink = config.progress.clone();
     db.set_max_depth(config.max_depth);
     db.set_fixedpoint_iteration_count(0);
 
@@ -78,16 +90,34 @@ pub fn run_fixedpoint(
 
     let mut iterations = 0u32;
     loop {
+        let iter_started = std::time::Instant::now();
         let components = all_components(db);
-        let live_ids: Vec<String> = components
+        let live: Vec<(String, PathBuf)> = components
             .iter()
             .filter(|c| !c.deleted)
-            .map(|c| c.id.clone())
+            .map(|c| (c.id.clone(), crate::progress::relpath_of(c)))
             .collect();
         drop(components);
 
+        if let Some(s) = sink.as_ref() {
+            s.on_event(crate::progress::ProgressEvent::IterStart {
+                iteration: iterations,
+                live_components: live.len() as u64,
+            });
+        }
+
+        let n = live.len() as u64;
+        let mut added = 0u64;
         let mut changed = false;
-        for id in &live_ids {
+        for (k, (id, relpath)) in live.iter().enumerate() {
+            if let Some(s) = sink.as_ref() {
+                s.on_event(crate::progress::ProgressEvent::Subcarve {
+                    component_id: id.clone(),
+                    relpath: relpath.clone(),
+                    k: (k as u64) + 1,
+                    n,
+                });
+            }
             let decision = subcarve_decision(db, id.clone());
             if !decision.should_subcarve || decision.sub_dirs.is_empty() {
                 continue;
@@ -96,9 +126,18 @@ pub fn run_fixedpoint(
             for sub in decision.sub_dirs {
                 if !entry.iter().any(|existing| existing == &sub) {
                     entry.push(sub);
+                    added += 1;
                     changed = true;
                 }
             }
+        }
+
+        if let Some(s) = sink.as_ref() {
+            s.on_event(crate::progress::ProgressEvent::IterEnd {
+                iteration: iterations,
+                components_added: added,
+                elapsed: iter_started.elapsed(),
+            });
         }
 
         if !changed {
@@ -242,8 +281,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_lib_crate(tmp.path(), "lib");
         let backend: Arc<dyn LlmBackend> = Arc::new(PathologicalBackend::new());
-        let mut db =
-            AtlasDatabase::new(backend, tmp.path().to_path_buf(), fingerprint());
+        let mut db = AtlasDatabase::new(backend, tmp.path().to_path_buf(), fingerprint());
         seed_filesystem(&mut db, tmp.path(), false).unwrap();
 
         let _ = run_fixedpoint(
@@ -251,6 +289,7 @@ mod tests {
             FixedpointConfig {
                 max_depth: 8,
                 hard_cap: 3,
+                ..FixedpointConfig::default()
             },
         );
     }
@@ -264,8 +303,7 @@ mod tests {
         write_lib_crate(tmp.path(), "lib");
         let backend = Arc::new(TestBackend::with_fingerprint(fingerprint()));
         let backend_dyn: Arc<dyn LlmBackend> = backend.clone();
-        let mut db =
-            AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
+        let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
         seed_filesystem(&mut db, tmp.path(), false).unwrap();
 
         // Canning a response for every input shape the driver will
@@ -297,10 +335,8 @@ mod tests {
             cliques_touching: Vec::new(),
             pin_suppressed_children: Vec::new(),
         };
-        let inputs = crate::l8_recurse::build_subcarve_inputs_for_tests(
-            &entry,
-            &signals_first_round,
-        );
+        let inputs =
+            crate::l8_recurse::build_subcarve_inputs_for_tests(&entry, &signals_first_round);
         backend.respond(
             PromptId::Subcarve,
             inputs,
@@ -321,14 +357,144 @@ mod tests {
             FixedpointConfig {
                 max_depth: 4,
                 hard_cap: 8,
+                ..FixedpointConfig::default()
             },
         );
-        assert!(result.iterations >= 1, "expected at least one productive iteration");
+        assert!(
+            result.iterations >= 1,
+            "expected at least one productive iteration"
+        );
         assert!(
             result.back_edge.contains_key(&live_id),
             "library should have a carve plan, got {:?}",
             result.back_edge
         );
         assert_eq!(db.fixedpoint_iteration_count(), result.iterations);
+    }
+
+    #[test]
+    fn engine_emits_iter_start_subcarve_iter_end_in_order() {
+        use crate::progress::{ProgressEvent, RecordingSink};
+
+        let tmp = TempDir::new().unwrap();
+        write_cli_crate(tmp.path(), "cli");
+        let backend = Arc::new(TestBackend::with_fingerprint(fingerprint()));
+        let backend_dyn: Arc<dyn LlmBackend> = backend.clone();
+        let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
+        seed_filesystem(&mut db, tmp.path(), false).unwrap();
+
+        let sink = RecordingSink::new();
+        let cfg = FixedpointConfig {
+            progress: Some(sink.clone() as Arc<dyn crate::progress::ProgressSink>),
+            ..FixedpointConfig::default()
+        };
+        let _ = run_fixedpoint(&mut db, cfg);
+
+        let events = sink.snapshot();
+        // Expect IterStart{0, 1}, Subcarve{_, 1, 1}, IterEnd{0, 0, _}.
+        assert!(matches!(
+            events[0],
+            ProgressEvent::IterStart {
+                iteration: 0,
+                live_components: 1
+            }
+        ));
+        assert!(matches!(
+            events[1],
+            ProgressEvent::Subcarve { k: 1, n: 1, .. }
+        ));
+        assert!(matches!(
+            events[2],
+            ProgressEvent::IterEnd {
+                iteration: 0,
+                components_added: 0,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn engine_emits_subcarve_event_before_calling_decision() {
+        // Proves the spec §7.2 ordering: Subcarve is emitted *before* the
+        // LLM call is in flight, so the bar shows the in-progress target.
+        // The sink records the live cache call_count when the event lands;
+        // because Subcarve precedes the corresponding LLM round-trip, the
+        // counter is unchanged at emission time.
+        use crate::progress::{ProgressEvent, ProgressSink};
+        use std::sync::Mutex;
+
+        struct OrderingSink {
+            observations: Mutex<Vec<(String, u64)>>,
+            cache_calls: Arc<dyn Fn() -> u64 + Send + Sync>,
+        }
+        impl ProgressSink for OrderingSink {
+            fn on_event(&self, event: ProgressEvent) {
+                if let ProgressEvent::Subcarve { component_id, .. } = event {
+                    self.observations
+                        .lock()
+                        .unwrap()
+                        .push((component_id, (self.cache_calls)()));
+                }
+            }
+        }
+
+        let tmp = TempDir::new().unwrap();
+        write_lib_crate(tmp.path(), "lib");
+        let backend = Arc::new(TestBackend::with_fingerprint(fingerprint()));
+        let backend_dyn: Arc<dyn LlmBackend> = backend.clone();
+        let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
+        seed_filesystem(&mut db, tmp.path(), false).unwrap();
+
+        let cache = db.llm_cache().clone();
+        let cache_calls: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(move || cache.call_count());
+        let sink = Arc::new(OrderingSink {
+            observations: Mutex::new(Vec::new()),
+            cache_calls,
+        });
+        let cfg = FixedpointConfig {
+            progress: Some(sink.clone() as Arc<dyn crate::progress::ProgressSink>),
+            ..FixedpointConfig::default()
+        };
+        let _ = run_fixedpoint(&mut db, cfg);
+        let observed = sink.observations.lock().unwrap().clone();
+        assert!(!observed.is_empty(), "expected at least one Subcarve event");
+        assert_eq!(
+            observed[0].1, 0,
+            "Subcarve event must precede subcarve_decision LLM call"
+        );
+    }
+
+    #[test]
+    fn pathological_backend_emits_iter_start_for_each_iteration_until_cap() {
+        use crate::progress::{ProgressEvent, RecordingSink};
+
+        let tmp = TempDir::new().unwrap();
+        write_lib_crate(tmp.path(), "lib");
+        let backend: Arc<dyn LlmBackend> = Arc::new(PathologicalBackend::new());
+        let mut db = AtlasDatabase::new(backend, tmp.path().to_path_buf(), fingerprint());
+        seed_filesystem(&mut db, tmp.path(), false).unwrap();
+
+        let sink = RecordingSink::new();
+        let cfg = FixedpointConfig {
+            max_depth: 8,
+            hard_cap: 3,
+            progress: Some(sink.clone() as Arc<dyn crate::progress::ProgressSink>),
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_fixedpoint(&mut db, cfg)
+        }));
+        assert!(result.is_err(), "expected hard-cap panic");
+
+        let events = sink.snapshot();
+        let iter_starts: Vec<u32> = events
+            .iter()
+            .filter_map(|e| match e {
+                ProgressEvent::IterStart { iteration, .. } => Some(*iteration),
+                _ => None,
+            })
+            .collect();
+        // Hard cap is 3. The driver fires IterStart for iterations 0, 1, 2
+        // (the panic occurs after the third merge step).
+        assert_eq!(iter_starts, vec![0, 1, 2]);
     }
 }

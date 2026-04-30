@@ -139,10 +139,7 @@ fn build_inputs(component: &ComponentEntry, peer_ids: &[String]) -> Value {
 /// TestBackend response against that shape. Kept here rather than in
 /// a shared fixtures module so the real function stays private.
 #[cfg(test)]
-pub(crate) fn build_inputs_for_tests(
-    component: &ComponentEntry,
-    peer_ids: &[String],
-) -> Value {
+pub(crate) fn build_inputs_for_tests(component: &ComponentEntry, peer_ids: &[String]) -> Value {
     build_inputs(component, peer_ids)
 }
 
@@ -182,8 +179,7 @@ fn parse_surface_response(value: &Value) -> Result<SurfaceRecord, String> {
     } else {
         value
     };
-    serde_json::from_value::<SurfaceRecord>(body.clone())
-        .map_err(|e| format!("{e}"))
+    serde_json::from_value::<SurfaceRecord>(body.clone()).map_err(|e| format!("{e}"))
 }
 
 fn value_kind(value: &Value) -> &'static str {
@@ -417,7 +413,10 @@ mod tests {
 
         let record = surface_of(&db, id);
         assert_eq!(record.purpose, "Does the alpha thing.");
-        assert_eq!(record.explicit_cross_component_mentions, vec!["Beta".to_string()]);
+        assert_eq!(
+            record.explicit_cross_component_mentions,
+            vec!["Beta".to_string()]
+        );
         assert_eq!(record.interaction_role_hints.len(), 1);
     }
 
@@ -464,11 +463,7 @@ mod tests {
             .id
             .clone();
         let inputs_before = inputs_for_id(&db, &id);
-        backend.respond(
-            PromptId::Stage1Surface,
-            inputs_before,
-            canned_surface(),
-        );
+        backend.respond(PromptId::Stage1Surface, inputs_before, canned_surface());
 
         let _ = surface_of(&db, id.clone());
         let calls_after_first = db.llm_cache().call_count();

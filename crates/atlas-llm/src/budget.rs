@@ -75,7 +75,9 @@ pub type TokenEstimator = Box<dyn Fn(&LlmRequest, &Value) -> u64 + Send + Sync>;
 /// when the backend doesn't report token usage out-of-band.
 pub fn default_token_estimator() -> TokenEstimator {
     Box::new(|req: &LlmRequest, resp: &Value| {
-        let input = serde_json::to_vec(&req.inputs).map(|v| v.len()).unwrap_or(0);
+        let input = serde_json::to_vec(&req.inputs)
+            .map(|v| v.len())
+            .unwrap_or(0);
         let output = serde_json::to_vec(resp).map(|v| v.len()).unwrap_or(0);
         ((input + output) as u64) / 4
     })
@@ -166,7 +168,10 @@ mod tests {
         let err = counter.charge(30).unwrap_err();
 
         match err {
-            LlmError::BudgetExhausted { requested, remaining } => {
+            LlmError::BudgetExhausted {
+                requested,
+                remaining,
+            } => {
                 assert_eq!(requested, 30);
                 assert_eq!(remaining, 20);
             }
@@ -179,14 +184,15 @@ mod tests {
     #[test]
     fn budgeted_backend_passes_through_under_budget() {
         let inner = Arc::new(TestBackend::new());
-        inner.respond(PromptId::Classify, json!({ "d": "x" }), json!({ "k": "ok" }));
+        inner.respond(
+            PromptId::Classify,
+            json!({ "d": "x" }),
+            json!({ "k": "ok" }),
+        );
 
         let counter = Arc::new(TokenCounter::new(1_000));
-        let backend = BudgetedBackend::new(
-            inner.clone(),
-            counter.clone(),
-            Box::new(|_req, _resp| 7),
-        );
+        let backend =
+            BudgetedBackend::new(inner.clone(), counter.clone(), Box::new(|_req, _resp| 7));
 
         let out = backend.call(&req(json!({ "d": "x" }))).unwrap();
 
@@ -197,14 +203,15 @@ mod tests {
     #[test]
     fn budgeted_backend_rejects_over_budget_call_with_exact_accounting() {
         let inner = Arc::new(TestBackend::new());
-        inner.respond(PromptId::Classify, json!({ "d": "x" }), json!({ "k": "ok" }));
+        inner.respond(
+            PromptId::Classify,
+            json!({ "d": "x" }),
+            json!({ "k": "ok" }),
+        );
 
         let counter = Arc::new(TokenCounter::new(10));
-        let backend = BudgetedBackend::new(
-            inner.clone(),
-            counter.clone(),
-            Box::new(|_req, _resp| 15),
-        );
+        let backend =
+            BudgetedBackend::new(inner.clone(), counter.clone(), Box::new(|_req, _resp| 15));
 
         let err = backend.call(&req(json!({ "d": "x" }))).unwrap_err();
 

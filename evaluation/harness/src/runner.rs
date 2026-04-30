@@ -95,10 +95,8 @@ fn load_triple(dir: &Path) -> Result<LoadedTriple> {
     Ok(LoadedTriple {
         components: atlas_index::load_or_default_components(&dir.join("components.yaml"))
             .with_context(|| format!("load components.yaml from {}", dir.display()))?,
-        externals: atlas_index::load_or_default_externals(
-            &dir.join("external-components.yaml"),
-        )
-        .with_context(|| format!("load external-components.yaml from {}", dir.display()))?,
+        externals: atlas_index::load_or_default_externals(&dir.join("external-components.yaml"))
+            .with_context(|| format!("load external-components.yaml from {}", dir.display()))?,
         related: component_ontology::load_or_default(&dir.join("related-components.yaml"))
             .with_context(|| format!("load related-components.yaml from {}", dir.display()))?,
     })
@@ -109,13 +107,13 @@ fn load_golden_triple(dir: &Path) -> Result<LoadedTriple> {
     // back to the regular names if goldens aren't there, so callers can
     // point the golden_dir at another run's output to do a regression
     // comparison.
-    let components_path = first_existing(
-        dir,
-        &["components.golden.yaml", "components.yaml"],
-    );
+    let components_path = first_existing(dir, &["components.golden.yaml", "components.yaml"]);
     let externals_path = first_existing(
         dir,
-        &["external-components.golden.yaml", "external-components.yaml"],
+        &[
+            "external-components.golden.yaml",
+            "external-components.yaml",
+        ],
     );
     let related_path = first_existing(
         dir,
@@ -149,10 +147,7 @@ fn check_invariants(
 ) -> InvariantReport {
     let mut report = InvariantReport::default();
 
-    report.record(
-        "path_coverage",
-        outcome(path_coverage(&triple.components)),
-    );
+    report.record("path_coverage", outcome(path_coverage(&triple.components)));
     report.record(
         "no_path_overlap",
         outcome(no_path_overlap(&triple.components)),
@@ -223,8 +218,7 @@ mod tests {
     use std::path::PathBuf;
 
     use atlas_index::{
-        CacheFingerprints, ComponentEntry, ComponentsFile, PathSegment,
-        COMPONENTS_SCHEMA_VERSION,
+        CacheFingerprints, ComponentEntry, ComponentsFile, PathSegment, COMPONENTS_SCHEMA_VERSION,
     };
     use component_ontology::{EvidenceGrade, LifecycleScope, RelatedComponentsFile};
     use tempfile::TempDir;
@@ -343,7 +337,9 @@ mod tests {
         )
         .unwrap();
 
-        let metrics = report.metrics.expect("metrics expected when golden present");
+        let metrics = report
+            .metrics
+            .expect("metrics expected when golden present");
         assert!((metrics.component_coverage - 1.0).abs() < 1e-6);
         assert!((metrics.spurious_rate - 0.0).abs() < 1e-6);
     }

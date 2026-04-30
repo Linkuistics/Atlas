@@ -35,7 +35,11 @@ fn civil_from_unix_seconds(secs: u64) -> (i64, u32, u32, u32, u32, u32) {
     // 1970-01-01, but internally shifts to an era anchored at
     // 0000-03-01 (which gives a clean 400-year cycle).
     let z = days + 719_468;
-    let era = if z >= 0 { z / 146_097 } else { (z - 146_096) / 146_097 };
+    let era = if z >= 0 {
+        z / 146_097
+    } else {
+        (z - 146_096) / 146_097
+    };
     let doe = (z - era * 146_097) as u64;
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
     let y = yoe as i64 + era * 400;

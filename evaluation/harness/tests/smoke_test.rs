@@ -22,11 +22,12 @@ use component_ontology::{EvidenceGrade, LifecycleScope, RelatedComponentsFile};
 use tempfile::TempDir;
 
 fn tiny_fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/atlas-cli/tests/fixtures/tiny")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates/atlas-cli/tests/fixtures/tiny")
 }
 
-fn plausible_tiny_output(target_root: &Path) -> (ComponentsFile, ExternalsFile, RelatedComponentsFile) {
+fn plausible_tiny_output(
+    target_root: &Path,
+) -> (ComponentsFile, ExternalsFile, RelatedComponentsFile) {
     // The tiny fixture has two crates: mycli and mylib.
     let components = ComponentsFile {
         schema_version: COMPONENTS_SCHEMA_VERSION,
@@ -82,12 +83,7 @@ fn plausible_tiny_output(target_root: &Path) -> (ComponentsFile, ExternalsFile, 
     (components, externals, related)
 }
 
-fn write_tool_triple(
-    dir: &Path,
-    c: &ComponentsFile,
-    e: &ExternalsFile,
-    r: &RelatedComponentsFile,
-) {
+fn write_tool_triple(dir: &Path, c: &ComponentsFile, e: &ExternalsFile, r: &RelatedComponentsFile) {
     atlas_index::save_components_atomic(&dir.join("components.yaml"), c).unwrap();
     atlas_index::save_externals_atomic(&dir.join("external-components.yaml"), e).unwrap();
     component_ontology::save_atomic(&dir.join("related-components.yaml"), r).unwrap();

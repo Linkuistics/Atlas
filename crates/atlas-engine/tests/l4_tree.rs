@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use atlas_engine::{
-    all_components, component_children, component_parent, component_path_segments,
-    seed_filesystem, try_assemble, AtlasDatabase,
+    all_components, component_children, component_parent, component_path_segments, seed_filesystem,
+    try_assemble, AtlasDatabase,
 };
 use atlas_index::{
     AlwaysTrue, ComponentEntry, ComponentsFile, OverridesFile, PathSegment, PinValue,
@@ -131,11 +131,7 @@ fn workspace_with_members_produces_parent_and_children() {
 fn component_queries_read_from_assembled_tree() {
     let td = TempDir::new().unwrap();
     let root = td.path().to_path_buf();
-    std::fs::write(
-        root.join("Cargo.toml"),
-        cargo_workspace(&["crates/alpha"]),
-    )
-    .unwrap();
+    std::fs::write(root.join("Cargo.toml"), cargo_workspace(&["crates/alpha"])).unwrap();
     std::fs::create_dir_all(root.join("crates/alpha/src")).unwrap();
     std::fs::write(root.join("crates/alpha/Cargo.toml"), cargo_lib("alpha")).unwrap();
     std::fs::write(root.join("crates/alpha/src/lib.rs"), "pub fn a(){}").unwrap();
@@ -272,9 +268,8 @@ fn orphan_prior_component_emitted_as_deleted_tombstone_once() {
             role: None,
             path_segments: vec![PathSegment {
                 path: PathBuf::from("gone"),
-                content_sha:
-                    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-                        .into(),
+                content_sha: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                    .into(),
             }],
             manifests: vec![],
             doc_anchors: vec![],
@@ -361,11 +356,7 @@ fn suppress_pin_removes_component_from_tree() {
     // reaches the tree. This test documents the L3-L4 contract.
     let td = TempDir::new().unwrap();
     let root = td.path().to_path_buf();
-    std::fs::write(
-        root.join("Cargo.toml"),
-        cargo_workspace(&["crates/alpha"]),
-    )
-    .unwrap();
+    std::fs::write(root.join("Cargo.toml"), cargo_workspace(&["crates/alpha"])).unwrap();
     std::fs::create_dir_all(root.join("crates/alpha/src")).unwrap();
     std::fs::write(root.join("crates/alpha/Cargo.toml"), cargo_lib("alpha")).unwrap();
     std::fs::write(root.join("crates/alpha/src/lib.rs"), "pub fn a(){}").unwrap();
@@ -461,10 +452,9 @@ fn suppress_children_pin_removes_specific_child_ids() {
         "workspace itself remains"
     );
     // alpha stays.
-    assert!(
-        tree.iter()
-            .any(|c| c.kind == "rust-library" && c.path_segments[0].path.ends_with("alpha"))
-    );
+    assert!(tree
+        .iter()
+        .any(|c| c.kind == "rust-library" && c.path_segments[0].path.ends_with("alpha")));
 }
 
 // ---------------------------------------------------------------------
@@ -477,11 +467,7 @@ fn assembled_tree_round_trips_through_components_file_yaml() {
     // atlas-index's ComponentsFile save/load without loss.
     let td = TempDir::new().unwrap();
     let root = td.path().to_path_buf();
-    std::fs::write(
-        root.join("Cargo.toml"),
-        cargo_workspace(&["crates/alpha"]),
-    )
-    .unwrap();
+    std::fs::write(root.join("Cargo.toml"), cargo_workspace(&["crates/alpha"])).unwrap();
     std::fs::create_dir_all(root.join("crates/alpha/src")).unwrap();
     std::fs::write(root.join("crates/alpha/Cargo.toml"), cargo_lib("alpha")).unwrap();
     std::fs::write(root.join("crates/alpha/src/lib.rs"), "pub fn a(){}").unwrap();

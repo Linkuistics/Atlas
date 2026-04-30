@@ -141,11 +141,7 @@ pub fn modularity_hint(db: &AtlasDatabase, id: String) -> Option<ModularityHint>
     // Exclude `id` itself: we're partitioning its descendants, not the
     // parent. A hint over `{id, descendants}` would conflate the parent
     // with a proposed sub-child.
-    let mut descendants: Vec<String> = inside
-        .iter()
-        .filter(|n| **n != id)
-        .cloned()
-        .collect();
+    let mut descendants: Vec<String> = inside.iter().filter(|n| **n != id).cloned().collect();
     descendants.sort();
     find_bisection(&descendants, &graph.edges)
 }
@@ -167,7 +163,11 @@ pub fn sccs_of(graph: &EdgeGraph) -> Vec<Scc> {
         if !edge.kind.is_directed() {
             continue;
         }
-        g.add_edge(edge.participants[0].as_str(), edge.participants[1].as_str(), ());
+        g.add_edge(
+            edge.participants[0].as_str(),
+            edge.participants[1].as_str(),
+            (),
+        );
     }
 
     let mut out: Vec<Scc> = Vec::new();
@@ -196,7 +196,12 @@ pub fn cliques_of(graph: &EdgeGraph, min_k: u32) -> Vec<Clique> {
         .filter(|c| c.len() as u32 >= min_k)
         .map(|members| Clique { members })
         .collect();
-    out.sort_by(|a, b| b.members.len().cmp(&a.members.len()).then(a.members.cmp(&b.members)));
+    out.sort_by(|a, b| {
+        b.members
+            .len()
+            .cmp(&a.members.len())
+            .then(a.members.cmp(&b.members))
+    });
     out
 }
 
@@ -361,9 +366,7 @@ fn find_bisection(descendants: &[String], all_edges: &[Edge]) -> Option<Modulari
 }
 
 fn count_cross(mask: u32, descendants: &[String], edges: &[&Edge]) -> usize {
-    let index_of = |id: &String| -> Option<usize> {
-        descendants.iter().position(|n| n == id)
-    };
+    let index_of = |id: &String| -> Option<usize> { descendants.iter().position(|n| n == id) };
     edges
         .iter()
         .filter(|e| {
@@ -441,7 +444,10 @@ mod tests {
             ],
         };
         let out = sccs_of(&graph);
-        assert!(out.is_empty(), "DAG must produce no non-trivial SCC, got {out:?}");
+        assert!(
+            out.is_empty(),
+            "DAG must produce no non-trivial SCC, got {out:?}"
+        );
     }
 
     #[test]

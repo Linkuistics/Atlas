@@ -129,8 +129,7 @@ pub fn run_index(
         load_or_default_externals(&prior_externals_path).map_err(IndexError::Other)?;
     let prior_related =
         load_or_default_related_components(&prior_related_path).map_err(IndexError::Other)?;
-    let overrides =
-        load_or_default_overrides(&overrides_path).map_err(IndexError::Other)?;
+    let overrides = load_or_default_overrides(&overrides_path).map_err(IndexError::Other)?;
 
     // ---- construct database ---------------------------------------
     let fingerprint = config
@@ -196,7 +195,11 @@ pub fn run_index(
     );
 
     let summary = IndexSummary {
-        component_count: components_file.components.iter().filter(|c| !c.deleted).count(),
+        component_count: components_file
+            .components
+            .iter()
+            .filter(|c| !c.deleted)
+            .count(),
         external_count: externals_file.externals.len(),
         edge_count: related_file.edges.len(),
         llm_calls: db.llm_cache().call_count(),
@@ -214,10 +217,8 @@ pub fn run_index(
         .with_context(|| format!("failed to create {}", config.output_dir.display()))
         .map_err(IndexError::Other)?;
 
-    save_components_atomic(&prior_components_path, &components_file)
-        .map_err(IndexError::Other)?;
-    save_externals_atomic(&prior_externals_path, &externals_file)
-        .map_err(IndexError::Other)?;
+    save_components_atomic(&prior_components_path, &components_file).map_err(IndexError::Other)?;
+    save_externals_atomic(&prior_externals_path, &externals_file).map_err(IndexError::Other)?;
     save_related_components_atomic(&prior_related_path, &related_file)
         .map_err(IndexError::Other)?;
 

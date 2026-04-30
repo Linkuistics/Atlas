@@ -41,7 +41,10 @@ impl TestBackend {
     /// other call errors.
     pub fn respond(&self, prompt: PromptId, inputs: Value, response: Value) {
         let key = (prompt, canonical_key(&inputs));
-        self.canned.lock().expect("canned map poisoned").insert(key, response);
+        self.canned
+            .lock()
+            .expect("canned map poisoned")
+            .insert(key, response);
     }
 }
 
@@ -62,8 +65,7 @@ impl LlmBackend for TestBackend {
             .ok_or_else(|| {
                 LlmError::TestBackendMiss(format!(
                     "no canned response for {:?} with inputs {}",
-                    req.prompt_template,
-                    key.1,
+                    req.prompt_template, key.1,
                 ))
             })
     }

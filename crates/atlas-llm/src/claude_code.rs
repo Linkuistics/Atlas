@@ -37,7 +37,10 @@ impl ClaudeCodeBackend {
     /// directory. Runs `claude --version` eagerly so a missing or
     /// broken `claude` binary fails construction, not the first
     /// call.
-    pub fn new(model_id: impl Into<String>, prompts_dir: impl Into<PathBuf>) -> Result<Self, LlmError> {
+    pub fn new(
+        model_id: impl Into<String>,
+        prompts_dir: impl Into<PathBuf>,
+    ) -> Result<Self, LlmError> {
         let model_id = model_id.into();
         let prompts_dir = prompts_dir.into();
         let version = capture_claude_version()?;
@@ -92,11 +95,14 @@ pub(crate) fn prompt_template_filename(id: PromptId) -> &'static str {
 }
 
 fn capture_claude_version() -> Result<String, LlmError> {
-    let output = Command::new("claude").arg("--version").output().map_err(|e| {
-        LlmError::Setup(format!(
-            "`claude` binary not available on PATH (required for ClaudeCodeBackend): {e}"
-        ))
-    })?;
+    let output = Command::new("claude")
+        .arg("--version")
+        .output()
+        .map_err(|e| {
+            LlmError::Setup(format!(
+                "`claude` binary not available on PATH (required for ClaudeCodeBackend): {e}"
+            ))
+        })?;
     if !output.status.success() {
         return Err(LlmError::Setup(format!(
             "`claude --version` exited with status {}",
@@ -355,7 +361,10 @@ mod tests {
         let err = validate_response(&value, &schema).unwrap_err();
 
         let msg = err.to_string();
-        assert!(msg.contains("language"), "expected error to name `language`, got {msg:?}");
+        assert!(
+            msg.contains("language"),
+            "expected error to name `language`, got {msg:?}"
+        );
     }
 
     #[test]
@@ -388,7 +397,12 @@ mod tests {
         let err = check_prompts_dir(empty.path()).unwrap_err();
 
         let msg = err.to_string();
-        for expected in ["classify.md", "subcarve.md", "stage1-surface.md", "stage2-edges.md"] {
+        for expected in [
+            "classify.md",
+            "subcarve.md",
+            "stage1-surface.md",
+            "stage2-edges.md",
+        ] {
             assert!(
                 msg.contains(expected),
                 "expected error to mention missing `{expected}`, got {msg:?}"

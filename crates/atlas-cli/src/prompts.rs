@@ -79,6 +79,9 @@ mod tests {
 
     #[test]
     fn embedded_ontology_yaml_matches_component_ontology_crate() {
-        assert_eq!(EMBEDDED_ONTOLOGY_YAML, component_ontology::EMBEDDED_ONTOLOGY_YAML);
+        assert_eq!(
+            EMBEDDED_ONTOLOGY_YAML,
+            component_ontology::EMBEDDED_ONTOLOGY_YAML
+        );
     }
 }

@@ -9,9 +9,7 @@ use atlas_index::{
     CacheFingerprints, ComponentEntry, ComponentsFile, ExternalEntry, ExternalsFile, PathSegment,
     COMPONENTS_SCHEMA_VERSION, EXTERNALS_SCHEMA_VERSION,
 };
-use component_ontology::{
-    Edge, EdgeKind, EvidenceGrade, LifecycleScope, RelatedComponentsFile,
-};
+use component_ontology::{Edge, EdgeKind, EvidenceGrade, LifecycleScope, RelatedComponentsFile};
 
 fn component(id: &str) -> ComponentEntry {
     ComponentEntry {

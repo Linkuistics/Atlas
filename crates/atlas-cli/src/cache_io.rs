@@ -113,9 +113,9 @@ pub fn save_from(path: &Path, source: &LlmResponseCache) -> io::Result<()> {
     };
     let bytes = serde_json::to_vec_pretty(&file).map_err(io::Error::other)?;
 
-    let parent = path.parent().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "cache path has no parent")
-    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "cache path has no parent"))?;
     fs::create_dir_all(parent)?;
     let name = path
         .file_name()
@@ -212,7 +212,10 @@ mod tests {
 
     #[test]
     fn hex_encode_then_decode_round_trips() {
-        let bytes = [0u8, 1, 2, 254, 255, 128, 42, 100, 200, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210, 220, 230, 240, 250, 5, 6];
+        let bytes = [
+            0u8, 1, 2, 254, 255, 128, 42, 100, 200, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140,
+            150, 160, 170, 180, 190, 200, 210, 220, 230, 240, 250, 5, 6,
+        ];
         let encoded = hex_encode(&bytes);
         let decoded = hex_decode_32(&encoded).unwrap();
         assert_eq!(decoded, bytes);
@@ -270,6 +273,9 @@ mod tests {
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().starts_with('.'))
             .collect();
-        assert!(leftover.is_empty(), "expected no temp file, got {leftover:?}");
+        assert!(
+            leftover.is_empty(),
+            "expected no temp file, got {leftover:?}"
+        );
     }
 }

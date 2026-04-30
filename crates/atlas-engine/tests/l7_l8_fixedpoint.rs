@@ -112,6 +112,7 @@ fn back_edge_adds_subcarve_sub_dirs_to_workspace_carve_back_edge() {
         FixedpointConfig {
             max_depth: 4,
             hard_cap: 8,
+            ..FixedpointConfig::default()
         },
     );
 
@@ -157,6 +158,7 @@ fn max_depth_one_caps_recursion_for_library_children() {
         FixedpointConfig {
             max_depth: 0,
             hard_cap: 4,
+            ..FixedpointConfig::default()
         },
     );
     assert_eq!(result.iterations, 0);
@@ -200,6 +202,7 @@ fn converged_run_stops_growing_back_edge_on_the_stable_iteration() {
         FixedpointConfig {
             max_depth: 4,
             hard_cap: 8,
+            ..FixedpointConfig::default()
         },
     );
     // 1 productive iteration (added sub_dir), then next pass sees no

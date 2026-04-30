@@ -243,3 +243,19 @@ sessions:
     - **What didn't work / what's deferred:** No implementation code was written in this session — the session was purely plan-authoring.
     - **What this suggests next:** Execute `implement-engine-side-progressevent-and-run-fixedpoint-hooks` (plan tasks 1–6), then `implement-cli-reporter-and-indicatif-rendering` (tasks 7–15), then `wire-reporter-into-pipeline-decompose-l5-demand-and-add-byte-identity-regression` (tasks 16–19).
     - **Key learnings:** The plan decomposes the surface into three independently testable work items, each with clear exit criteria and explicit "out of scope" boundaries. The plan contains every code block verbatim to reduce per-session research overhead.
+- id: session-21
+  timestamp: 2026-04-30T15:30:51Z
+  phase: work
+  body: |
+    ### Session 21 (2026-04-30T15:30:51Z) — Add engine-side ProgressEvent and run_fixedpoint hooks
+
+    - Implemented plan tasks T1–T6 from `docs/superpowers/plans/2026-05-01-engine-progress-events.md`
+    - Added `indicatif = "0.17"` to workspace deps and `atlas-cli/Cargo.toml`
+    - Created `crates/atlas-engine/src/progress.rs` with `ProgressSink` trait, `ProgressEvent` enum (Started/Phase/IterStart/Subcarve/IterEnd/Surface/Finished), `Phase` enum (Seed/Fixedpoint/Project/Edges), `PromptBreakdown`, `relpath_of` helper, and `RecordingSink` test helper
+    - Added `progress: Option<Arc<dyn ProgressSink>>` field to `FixedpointConfig`; hand-rolled `Debug` because `dyn ProgressSink` is not `Debug`; updated existing test fixtures to use `..FixedpointConfig::default()` spread
+    - Wired `run_fixedpoint` to emit `IterStart`, `Subcarve` (before decision), and `IterEnd` events gated on `config.progress.is_some()`
+    - Added 6 new tests: 3 unit tests for progress.rs, 3 integration tests for the ordering invariants in fixedpoint.rs
+    - Applied workspace-wide `cargo fmt --all` per user directive; extensive pre-existing rustfmt drift across atlas-engine, atlas-cli, atlas-llm, and eval harness — whitespace-only changes throughout
+    - All suites green; `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --all -- --check` clean
+    - What this suggests next: `implement-cli-reporter-and-indicatif-rendering` (plan T7–T15) — the CLI-side `Reporter`, `MultiProgress` two-bar layout, and rendering logic
+    - Key learning: emitting `Subcarve` *before* calling `subcarve_decision` (spec §7.2) is verifiable as a runtime invariant by reading `call_count()` from inside the sink callback; the test `engine_emits_subcarve_event_before_calling_decision` proves this directly via a shared-state clone of the LLM cache

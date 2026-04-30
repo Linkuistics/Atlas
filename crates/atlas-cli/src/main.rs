@@ -156,8 +156,7 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
     let backend: Arc<dyn LlmBackend> = match reporter.as_ref() {
         Some(r) => {
             r.announce_start(&config.root);
-            ProgressBackend::new(handles.backend.clone(), Arc::clone(r))
-                as Arc<dyn LlmBackend>
+            ProgressBackend::new(handles.backend.clone(), Arc::clone(r)) as Arc<dyn LlmBackend>
         }
         None => Arc::clone(&handles.backend),
     };

@@ -20,9 +20,9 @@ pub fn render(template: &str, tokens: &BTreeMap<String, String>) -> Result<Strin
             continue;
         }
         if let Some(body) = rest.strip_prefix("{{") {
-            let end = body.find("}}").ok_or_else(|| {
-                LlmError::TemplateSyntax("unclosed '{{' in template".to_string())
-            })?;
+            let end = body
+                .find("}}")
+                .ok_or_else(|| LlmError::TemplateSyntax("unclosed '{{' in template".to_string()))?;
             let name = body[..end].trim();
             let value = tokens.get(name).ok_or_else(|| {
                 LlmError::TemplateSyntax(format!("unknown token `{{{{{name}}}}}` in template"))

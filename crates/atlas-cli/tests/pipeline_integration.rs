@@ -12,9 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use atlas_cli::{run_index, IndexConfig, IndexError};
-use atlas_llm::{
-    LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId, TokenCounter,
-};
+use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId, TokenCounter};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
@@ -152,11 +150,17 @@ fn first_run_produces_the_three_generated_yamls() {
     let summary = run_index(&config, backend.clone(), None).expect("run_index");
 
     assert!(summary.outputs_written);
-    assert!(summary.component_count >= 2, "expected lib + cli, got {summary:?}");
+    assert!(
+        summary.component_count >= 2,
+        "expected lib + cli, got {summary:?}"
+    );
     assert!(config.output_dir.join("components.yaml").exists());
     assert!(config.output_dir.join("external-components.yaml").exists());
     assert!(config.output_dir.join("related-components.yaml").exists());
-    assert!(backend.call_count() > 0, "first run must exercise the backend");
+    assert!(
+        backend.call_count() > 0,
+        "first run must exercise the backend"
+    );
 }
 
 #[test]
@@ -168,7 +172,8 @@ fn second_run_on_unchanged_fixture_is_byte_identical() {
     run_index(&config, backend1, None).unwrap();
     let first = std::fs::read(config.output_dir.join("components.yaml")).unwrap();
     let first_edges = std::fs::read(config.output_dir.join("related-components.yaml")).unwrap();
-    let first_externals = std::fs::read(config.output_dir.join("external-components.yaml")).unwrap();
+    let first_externals =
+        std::fs::read(config.output_dir.join("external-components.yaml")).unwrap();
 
     // Second run with a fresh backend — the on-disk LLM cache seeds
     // the new database, so a deterministic-input run makes no fresh
@@ -177,10 +182,17 @@ fn second_run_on_unchanged_fixture_is_byte_identical() {
     let summary2 = run_index(&config, backend2.clone(), None).unwrap();
     let second = std::fs::read(config.output_dir.join("components.yaml")).unwrap();
     let second_edges = std::fs::read(config.output_dir.join("related-components.yaml")).unwrap();
-    let second_externals = std::fs::read(config.output_dir.join("external-components.yaml")).unwrap();
+    let second_externals =
+        std::fs::read(config.output_dir.join("external-components.yaml")).unwrap();
 
-    assert_eq!(first, second, "components.yaml must be byte-identical on re-run");
-    assert_eq!(first_edges, second_edges, "related-components.yaml must be byte-identical on re-run");
+    assert_eq!(
+        first, second,
+        "components.yaml must be byte-identical on re-run"
+    );
+    assert_eq!(
+        first_edges, second_edges,
+        "related-components.yaml must be byte-identical on re-run"
+    );
     assert_eq!(first_externals, second_externals);
     assert_eq!(
         backend2.call_count(),
@@ -188,7 +200,10 @@ fn second_run_on_unchanged_fixture_is_byte_identical() {
         "on-disk cache must satisfy every request on no-op re-run; actual calls: {:?}",
         backend2.calls()
     );
-    assert_eq!(summary2.llm_calls, 0, "summary must report llm_calls=0 on no-op re-run");
+    assert_eq!(
+        summary2.llm_calls, 0,
+        "summary must report llm_calls=0 on no-op re-run"
+    );
 }
 
 #[test]
@@ -212,7 +227,10 @@ fn modifying_a_source_file_invalidates_that_components_surface_cache() {
     run_index(&config, backend2.clone(), None).unwrap();
 
     let calls = backend2.calls();
-    let surface_calls = calls.iter().filter(|p| **p == PromptId::Stage1Surface).count();
+    let surface_calls = calls
+        .iter()
+        .filter(|p| **p == PromptId::Stage1Surface)
+        .count();
     assert!(
         surface_calls >= 1,
         "expected at least one Stage1Surface call after source change, got {calls:?}"
@@ -324,7 +342,10 @@ fn overrides_file_never_written_by_pipeline() {
     run_index(&config, backend, None).unwrap();
 
     let after = std::fs::read(&overrides_path).unwrap();
-    assert_eq!(before, after, "pipeline must never touch components.overrides.yaml");
+    assert_eq!(
+        before, after,
+        "pipeline must never touch components.overrides.yaml"
+    );
 }
 
 // ---------------------------------------------------------------

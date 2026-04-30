@@ -106,7 +106,7 @@ tasks:
 - id: implement-engine-side-progressevent-and-run-fixedpoint-hooks
   title: Implement engine-side ProgressEvent and run_fixedpoint hooks
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     Implement plan tasks 1–6 from
@@ -161,6 +161,46 @@ tasks:
     **Plan reference:** `docs/superpowers/plans/2026-05-01-engine-progress-events.md`,
     sections "Task 1" through "Task 6". The plan contains every code block
     verbatim — execute step-by-step.
+  results: |
+    **Plan tasks 1–6 complete.** Engine now emits structured progress events; the CLI side and pipeline wiring remain in the two follow-up backlog items.
+
+    ## What landed
+
+    - **T1 — `indicatif` workspace dep.** Added `indicatif = "0.17"` to `[workspace.dependencies]` (Cargo.toml) and `indicatif = { workspace = true }` to `crates/atlas-cli/Cargo.toml`. Resolves cleanly; downloaded `indicatif 0.17.11` and transitive deps. Atlas-engine stays clean of the dep — rendering is a CLI-only concern.
+
+    - **T2/T3 — `crates/atlas-engine/src/progress.rs` (new).** `ProgressSink: Send + Sync` trait, `ProgressEvent` enum (Started/Phase/IterStart/Subcarve/IterEnd/Surface/Finished), `Phase` enum (Seed/Fixedpoint/Project/Edges), `PromptBreakdown`, `relpath_of(&ComponentEntry)` helper that returns `path_segments.last().path` (or empty `PathBuf`), and a `RecordingSink` test helper that wraps `Mutex<Vec<ProgressEvent>>`. Re-exported from `lib.rs`. Three unit tests (`recording_sink_captures_events_in_order`, `relpath_of_returns_last_segment_path`, `relpath_of_returns_empty_when_no_segments`) green.
+
+    - **T4 — `progress: Option<Arc<dyn ProgressSink>>` field on `FixedpointConfig`.** Hand-rolled `Debug` impl because `dyn ProgressSink` is not `Debug`; `Default` returns `None`. Existing test fixtures that constructed `FixedpointConfig` literally (`fixedpoint.rs` two sites + `tests/l7_l8_fixedpoint.rs` three sites) updated to spread `..FixedpointConfig::default()`. `pipeline.rs` already used the spread idiom — untouched.
+
+    - **T5 — `run_fixedpoint` emits `IterStart`/`Subcarve`/`IterEnd`.** Conditional on `config.progress.is_some()`. `Subcarve` fires *before* `subcarve_decision` (spec §7.2 — activity bar must show in-flight target while LLM call is in flight). `IterEnd::components_added` counts new (id, sub_dir) pairs merged this iteration; `elapsed` is per-iteration via `Instant::now()` capture. The driver now collects `Vec<(String, PathBuf)>` of (id, relpath) pairs once per iteration so `n` is fixed for the loop and `k/n` denominators stay stable.
+
+    - **T6 — `pathological_backend_emits_iter_start_for_each_iteration_until_cap`.** Added alongside the existing `pathological_backend_panics_at_hard_cap`. Uses `catch_unwind` to suppress the hard-cap panic and asserts `iter_starts == [0, 1, 2]` for `hard_cap = 3`.
+
+    - **Workspace-wide `cargo fmt --all`.** Applied per user directive — pre-existing rustfmt drift across atlas-engine, atlas-cli, atlas-llm, and the eval harness was extensive (~70 files); the user clarified mid-task that "fix all lint/fmt issues wherever we see them" is the correct policy. Whitespace-only changes; no test logic touched. Memory entry `feedback_fix_all_lints.md` updated to reflect that fmt drift is in scope alongside clippy/rustc warnings.
+
+    ## Verification (exit criteria)
+
+    - ✅ `cargo test --workspace` — all suites green, including the 6 new progress-related tests:
+      - `progress::tests::recording_sink_captures_events_in_order`
+      - `progress::tests::relpath_of_returns_last_segment_path`
+      - `progress::tests::relpath_of_returns_empty_when_no_segments`
+      - `fixedpoint::tests::engine_emits_iter_start_subcarve_iter_end_in_order`
+      - `fixedpoint::tests::engine_emits_subcarve_event_before_calling_decision`
+      - `fixedpoint::tests::pathological_backend_emits_iter_start_for_each_iteration_until_cap`
+    - ✅ `cargo check --workspace` clean.
+    - ✅ `cargo clippy --workspace --all-targets -- -D warnings` clean.
+    - ✅ `cargo fmt --all -- --check` clean.
+    - ✅ No behaviour change in `atlas index`: CLI still constructs `FixedpointConfig` via `..FixedpointConfig::default()`, so `progress` defaults to `None` and the new `if let Some(s) = sink.as_ref()` branches are silent.
+
+    ## Subtle correctness points
+
+    - **Sticky-ordering proof.** `engine_emits_subcarve_event_before_calling_decision` clones `db.llm_cache()` (the cache is `Clone` over `Arc<Mutex<Inner>>`, so clones share state) and reads `call_count()` from inside the sink's `on_event`. Because the engine emits `Subcarve` before invoking `subcarve_decision` (which routes through the cache), the counter observed at emission is `0` — proving spec §7.2 ordering as a runtime invariant.
+    - **Stable k/n per iteration.** `Vec<(String, PathBuf)> live` is materialised before the inner loop, so `n` is fixed for that pass. If we sourced from a re-queried `all_components(db)` mid-loop, an interleaving `set_carve_back_edge` (which happens between iterations) could change `n` underfoot.
+
+    ## Out of scope (next backlog items)
+
+    - `implement-cli-reporter-and-indicatif-rendering` (plan T7–T15) — `Reporter`, `MultiProgress` two-bar layout, `render_activity_msg`, `ProgressBackend` retap, sticky-k/n state, non-TTY fallback.
+    - `wire-reporter-into-pipeline-decompose-l5-demand-and-add-byte-identity-regression` (plan T16–T19) — pipeline wiring, per-component `surface_of` demand loop, byte-identity integration test.
 - id: implement-cli-reporter-and-indicatif-rendering
   title: Implement CLI Reporter and indicatif rendering
   category: feature

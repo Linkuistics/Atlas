@@ -155,11 +155,7 @@ mod tests {
 
     #[test]
     fn collision_at_root_falls_back_to_numeric_suffix() {
-        let id = allocate_id(
-            &PathBuf::from("/ws/foo"),
-            None,
-            &existing(&["foo"]),
-        );
+        let id = allocate_id(&PathBuf::from("/ws/foo"), None, &existing(&["foo"]));
         assert_eq!(id, "foo-2");
     }
 
@@ -185,11 +181,7 @@ mod tests {
 
     #[test]
     fn leaf_slug_kebab_cases_non_alphanumeric() {
-        let id = allocate_id(
-            &PathBuf::from("/ws/My Weird Name!"),
-            None,
-            &existing(&[]),
-        );
+        let id = allocate_id(&PathBuf::from("/ws/My Weird Name!"), None, &existing(&[]));
         assert_eq!(id, "my-weird-name");
     }
 

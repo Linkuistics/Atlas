@@ -85,7 +85,10 @@ fn l2_rationale_bundle_scopes_manifests_to_candidate_dir() {
         .iter()
         .find(|c| c.dir == root)
         .expect("outer candidate present");
-    assert_eq!(outer.rationale_bundle.manifests, vec![root.join("Cargo.toml")]);
+    assert_eq!(
+        outer.rationale_bundle.manifests,
+        vec![root.join("Cargo.toml")]
+    );
 
     // Inner candidate's bundle contains only the inner Cargo.toml.
     let inner = candidates
@@ -239,7 +242,11 @@ fn l3_package_json_with_bin_classifies_as_node_cli() {
 fn l3_package_json_with_main_only_classifies_as_node_package() {
     let td = TempDir::new().unwrap();
     let root = td.path().to_path_buf();
-    std::fs::write(root.join("package.json"), "{\"name\":\"a\",\"main\":\"i.js\"}").unwrap();
+    std::fs::write(
+        root.join("package.json"),
+        "{\"name\":\"a\",\"main\":\"i.js\"}",
+    )
+    .unwrap();
 
     let db = db_without_llm(&root);
     let ws = db.workspace();
@@ -361,11 +368,7 @@ fn l3_pin_short_circuits_for_override_addition_without_manifests() {
 fn l3_suppress_pin_sets_is_boundary_false() {
     let td = TempDir::new().unwrap();
     let root = td.path().to_path_buf();
-    std::fs::write(
-        root.join("Cargo.toml"),
-        "[package]\nname=\"x\"\n[lib]\n",
-    )
-    .unwrap();
+    std::fs::write(root.join("Cargo.toml"), "[package]\nname=\"x\"\n[lib]\n").unwrap();
 
     let mut overrides = OverridesFile {
         schema_version: OVERRIDES_SCHEMA_VERSION,

@@ -85,7 +85,11 @@ pub fn spurious_rate(
 }
 
 fn best_overlap(component: &ComponentEntry, other_file: &ComponentsFile) -> f32 {
-    let paths: Vec<PathBuf> = component.path_segments.iter().map(|p| p.path.clone()).collect();
+    let paths: Vec<PathBuf> = component
+        .path_segments
+        .iter()
+        .map(|p| p.path.clone())
+        .collect();
     other_file
         .components
         .iter()
@@ -135,15 +139,21 @@ fn best_matching_component<'a>(
     pool: &'a ComponentsFile,
     threshold: OverlapThreshold,
 ) -> Option<&'a ComponentEntry> {
-    let target_paths: Vec<PathBuf> =
-        target.path_segments.iter().map(|p| p.path.clone()).collect();
+    let target_paths: Vec<PathBuf> = target
+        .path_segments
+        .iter()
+        .map(|p| p.path.clone())
+        .collect();
     let mut best: Option<(f32, &ComponentEntry)> = None;
     for candidate in &pool.components {
         if candidate.deleted {
             continue;
         }
-        let paths: Vec<PathBuf> =
-            candidate.path_segments.iter().map(|p| p.path.clone()).collect();
+        let paths: Vec<PathBuf> = candidate
+            .path_segments
+            .iter()
+            .map(|p| p.path.clone())
+            .collect();
         let overlap = path_set_overlap(&target_paths, &paths);
         if overlap >= threshold.0 {
             match best {
@@ -306,10 +316,12 @@ struct LoadedTriple {
 }
 
 fn load_triple(dir: &Path) -> anyhow::Result<LoadedTriple> {
-    let components =
-        atlas_index::load_or_default_components(&dir.join("components.yaml"))?;
+    let components = atlas_index::load_or_default_components(&dir.join("components.yaml"))?;
     let related = component_ontology::load_or_default(&dir.join("related-components.yaml"))?;
-    Ok(LoadedTriple { components, related })
+    Ok(LoadedTriple {
+        components,
+        related,
+    })
 }
 
 fn diff_triple(baseline: &LoadedTriple, candidate: &LoadedTriple) -> DifferentialReport {
@@ -356,18 +368,10 @@ fn diff_triple(baseline: &LoadedTriple, candidate: &LoadedTriple) -> Differentia
     }
     modified_components.sort_by(|a, b| a.id.cmp(&b.id));
 
-    let baseline_edge_keys: BTreeSet<String> = baseline
-        .related
-        .edges
-        .iter()
-        .map(edge_key)
-        .collect();
-    let candidate_edge_keys: BTreeSet<String> = candidate
-        .related
-        .edges
-        .iter()
-        .map(edge_key)
-        .collect();
+    let baseline_edge_keys: BTreeSet<String> =
+        baseline.related.edges.iter().map(edge_key).collect();
+    let candidate_edge_keys: BTreeSet<String> =
+        candidate.related.edges.iter().map(edge_key).collect();
 
     let mut added_edges: Vec<String> = candidate_edge_keys
         .difference(&baseline_edge_keys)
@@ -429,7 +433,12 @@ fn component_field_delta(a: &ComponentEntry, b: &ComponentEntry) -> Vec<String> 
 
 fn edge_key(edge: &Edge) -> String {
     let (kind, lifecycle, parts) = edge.canonical_key();
-    format!("{}|{}|{}", kind.as_str(), lifecycle.as_str(), parts.join(","))
+    format!(
+        "{}|{}|{}",
+        kind.as_str(),
+        lifecycle.as_str(),
+        parts.join(",")
+    )
 }
 
 fn detect_identifier_changes(
@@ -593,7 +602,11 @@ mod tests {
         tool.add_edge(edge(EdgeKind::DependsOn, LifecycleScope::Build, "a", "c"))
             .unwrap();
         let pr = edge_precision_recall(&golden, &tool, None, None);
-        assert!((pr.precision - 0.5).abs() < 1e-6, "precision={}", pr.precision);
+        assert!(
+            (pr.precision - 0.5).abs() < 1e-6,
+            "precision={}",
+            pr.precision
+        );
         assert!((pr.recall - 1.0).abs() < 1e-6, "recall={}", pr.recall);
     }
 
@@ -610,7 +623,10 @@ mod tests {
         tool.add_edge(edge(EdgeKind::DependsOn, LifecycleScope::Build, "a", "b"))
             .unwrap();
         let pr = edge_precision_recall(&golden, &tool, Some(EdgeKind::Tests), None);
-        assert_eq!(pr.precision, 1.0, "no tool edges of this kind => precision 1");
+        assert_eq!(
+            pr.precision, 1.0,
+            "no tool edges of this kind => precision 1"
+        );
         assert_eq!(pr.recall, 0.0, "one golden edge of this kind, missed");
     }
 
@@ -679,7 +695,9 @@ mod tests {
 
         let report = run_diff(base.path(), candidate.path()).unwrap();
         assert_eq!(report.modified_components.len(), 1);
-        assert!(report.modified_components[0].fields.contains(&"kind".to_string()));
+        assert!(report.modified_components[0]
+            .fields
+            .contains(&"kind".to_string()));
     }
 
     #[test]

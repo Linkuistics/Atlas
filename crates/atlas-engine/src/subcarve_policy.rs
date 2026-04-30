@@ -74,9 +74,7 @@ pub fn decide(signals: &SubcarveSignals) -> PolicyDecision {
         // Libraries: recurse up to LIBRARY_DEFAULT_DEPTH_CAP by
         // default; extend to --max-depth when modularity_hint fires.
         // Below the cap, route to the LLM for sub-dir identification.
-        ComponentKind::RustLibrary
-        | ComponentKind::NodePackage
-        | ComponentKind::PythonPackage => {
+        ComponentKind::RustLibrary | ComponentKind::NodePackage | ComponentKind::PythonPackage => {
             let cap = if signals.modularity_hint.is_some() {
                 signals.max_depth
             } else {
@@ -129,12 +127,18 @@ mod tests {
 
     #[test]
     fn node_cli_stops() {
-        assert_eq!(decide(&signals_for(ComponentKind::NodeCli)), PolicyDecision::Stop);
+        assert_eq!(
+            decide(&signals_for(ComponentKind::NodeCli)),
+            PolicyDecision::Stop
+        );
     }
 
     #[test]
     fn service_stops() {
-        assert_eq!(decide(&signals_for(ComponentKind::Service)), PolicyDecision::Stop);
+        assert_eq!(
+            decide(&signals_for(ComponentKind::Service)),
+            PolicyDecision::Stop
+        );
     }
 
     #[test]
@@ -150,7 +154,10 @@ mod tests {
 
     #[test]
     fn website_stops() {
-        assert_eq!(decide(&signals_for(ComponentKind::Website)), PolicyDecision::Stop);
+        assert_eq!(
+            decide(&signals_for(ComponentKind::Website)),
+            PolicyDecision::Stop
+        );
     }
 
     #[test]

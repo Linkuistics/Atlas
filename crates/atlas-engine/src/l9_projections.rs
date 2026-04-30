@@ -43,7 +43,9 @@ use crate::l6_edges::all_proposed_edges;
 pub fn components_yaml_snapshot(db: &AtlasDatabase) -> Arc<ComponentsFile> {
     let workspace = db.workspace();
     let root = workspace.root(db as &dyn salsa::Database).clone();
-    let fingerprint = workspace.llm_fingerprint(db as &dyn salsa::Database).clone();
+    let fingerprint = workspace
+        .llm_fingerprint(db as &dyn salsa::Database)
+        .clone();
     let cache_fingerprints = CacheFingerprints {
         ontology_sha: hex_encode(&fingerprint.ontology_sha),
         prompt_shas: BTreeMap::new(),
@@ -290,8 +292,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 /// Stable list of the four Atlas prompt ids paired with their id
 /// strings, for drivers that need to iterate every prompt when
 /// computing prompt SHAs.
-pub const PROMPT_ID_STRINGS: &[&str] =
-    &["classify", "subcarve", "stage1-surface", "stage2-edges"];
+pub const PROMPT_ID_STRINGS: &[&str] = &["classify", "subcarve", "stage1-surface", "stage2-edges"];
 
 /// Subset of the component-id set that the CLI considers "present in
 /// output files" — the union of live internal components and the
@@ -378,7 +379,10 @@ mod tests {
         let mut shas: BTreeMap<String, String> = BTreeMap::new();
         shas.insert("classify".into(), "abc".into());
         let file = components_yaml_snapshot_with_prompt_shas(&db, shas);
-        assert_eq!(file.cache_fingerprints.prompt_shas.get("classify").unwrap(), "abc");
+        assert_eq!(
+            file.cache_fingerprints.prompt_shas.get("classify").unwrap(),
+            "abc"
+        );
     }
 
     #[test]
@@ -490,7 +494,10 @@ mod tests {
         // One of the internal ids should also be present; don't pin
         // the exact id because slug allocation depends on directory
         // basename rules.
-        assert!(ids.len() >= 2, "expected at least one internal + one external, got {ids:?}");
+        assert!(
+            ids.len() >= 2,
+            "expected at least one internal + one external, got {ids:?}"
+        );
     }
 
     #[test]

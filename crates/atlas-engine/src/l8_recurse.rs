@@ -38,8 +38,7 @@ use crate::types::ComponentKind;
 const CLIQUES_TOUCHING_MIN_K: u32 = 3;
 
 /// The shipped Atlas sub-carve prompt, embedded at compile time.
-pub const EMBEDDED_SUBCARVE_PROMPT: &str =
-    include_str!("../../../defaults/prompts/subcarve.md");
+pub const EMBEDDED_SUBCARVE_PROMPT: &str = include_str!("../../../defaults/prompts/subcarve.md");
 
 /// The full outcome of an L8 decision: whether to recurse, the
 /// directories to open up as new L2 candidate roots, and the rationale
@@ -127,7 +126,9 @@ fn compute_decision(db: &AtlasDatabase, id: &str) -> SubcarveDecision {
                 rationale: "workspace: members discovered via manifests".to_string(),
             }
         }
-        PolicyDecision::Recurse | PolicyDecision::AskLlm => ask_llm_for_subcarve(db, entry, &signals),
+        PolicyDecision::Recurse | PolicyDecision::AskLlm => {
+            ask_llm_for_subcarve(db, entry, &signals)
+        }
     }
 }
 
@@ -169,9 +170,7 @@ fn pin_suppressed_children_of(db: &AtlasDatabase, id: &str) -> Vec<String> {
         .get(id)
         .and_then(|pins| pins.get("suppress_children"))
         .and_then(|pin| match pin {
-            PinValue::SuppressChildren { suppress_children } => {
-                Some(suppress_children.clone())
-            }
+            PinValue::SuppressChildren { suppress_children } => Some(suppress_children.clone()),
             _ => None,
         })
         .unwrap_or_default()
@@ -189,10 +188,9 @@ fn ask_llm_for_subcarve(
     };
 
     match db.call_llm_cached(&request) {
-        Ok(value) => parse_subcarve_response(&value)
-            .unwrap_or_else(|reason| SubcarveDecision::stopped(&format!(
-                "LLM response parse failed: {reason}"
-            ))),
+        Ok(value) => parse_subcarve_response(&value).unwrap_or_else(|reason| {
+            SubcarveDecision::stopped(&format!("LLM response parse failed: {reason}"))
+        }),
         Err(err) => SubcarveDecision::stopped(&format!("LLM call failed: {err}")),
     }
 }
@@ -303,7 +301,11 @@ fn parse_subcarve_response(value: &Value) -> Result<SubcarveDecision, String> {
 
     // Schema-consistency check: should_subcarve=false but sub_dirs
     // non-empty is contradictory; prefer the boolean (no recursion).
-    let sub_dirs = if should_subcarve { sub_dirs } else { Vec::new() };
+    let sub_dirs = if should_subcarve {
+        sub_dirs
+    } else {
+        Vec::new()
+    };
 
     Ok(SubcarveDecision {
         should_subcarve,
@@ -367,7 +369,9 @@ mod tests {
         std::fs::write(dir.join("src").join("main.rs"), "fn main(){}\n").unwrap();
     }
 
-    fn db_with_single_crate(builder: impl FnOnce(&std::path::Path)) -> (AtlasDatabase, Arc<TestBackend>, TempDir) {
+    fn db_with_single_crate(
+        builder: impl FnOnce(&std::path::Path),
+    ) -> (AtlasDatabase, Arc<TestBackend>, TempDir) {
         let tmp = TempDir::new().unwrap();
         builder(tmp.path());
         let backend = Arc::new(TestBackend::with_fingerprint(fingerprint()));
@@ -460,7 +464,9 @@ mod tests {
 
         let plan = subcarve_plan(&db, id);
         assert_eq!(
-            plan.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+            plan.iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
             vec!["src/auth".to_string(), "src/billing".to_string()]
         );
         assert_eq!(db.llm_cache().call_count(), 1);

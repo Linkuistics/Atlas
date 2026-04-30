@@ -100,8 +100,7 @@ fn build_inputs(surfaces: &[SurfaceWithId]) -> Value {
     // parser validates against.
     let surfaces_yaml = serde_yaml::to_string(&SurfacesWrapper { surfaces })
         .unwrap_or_else(|_| String::from("surfaces: []\n"));
-    let ontology_block =
-        component_ontology::render_embedded_kinds_for_prompt().unwrap_or_default();
+    let ontology_block = component_ontology::render_embedded_kinds_for_prompt().unwrap_or_default();
 
     json!({
         "ONTOLOGY_KINDS": ontology_block,
@@ -127,9 +126,7 @@ fn parse_edges_response(value: &Value) -> Result<Vec<Edge>, String> {
         Value::Array(a) => a,
         Value::Object(o) => {
             let Some(inner) = o.get("edges") else {
-                return Err(
-                    "expected top-level array or object with `edges` key".to_string(),
-                );
+                return Err("expected top-level array or object with `edges` key".to_string());
             };
             inner
                 .as_array()
@@ -168,7 +165,11 @@ fn parse_one_edge(value: &Value) -> Option<Edge> {
     let evidence_fields: Vec<String> = obj
         .get("evidence_fields")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let rationale = obj
         .get("rationale")
@@ -576,7 +577,11 @@ mod tests {
             }
         ]);
         let got = parse_edges_response(&v).unwrap();
-        assert_eq!(got.len(), 1, "malformed entries are dropped, not propagated");
+        assert_eq!(
+            got.len(),
+            1,
+            "malformed entries are dropped, not propagated"
+        );
     }
 
     #[test]

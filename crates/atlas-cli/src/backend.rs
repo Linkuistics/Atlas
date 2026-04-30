@@ -61,9 +61,15 @@ impl BudgetSentinel {
 impl LlmBackend for BudgetSentinel {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         match self.inner.call(req) {
-            Err(LlmError::BudgetExhausted { requested, remaining }) => {
+            Err(LlmError::BudgetExhausted {
+                requested,
+                remaining,
+            }) => {
                 self.exhausted.store(true, Ordering::Release);
-                Err(LlmError::BudgetExhausted { requested, remaining })
+                Err(LlmError::BudgetExhausted {
+                    requested,
+                    remaining,
+                })
             }
             other => other,
         }
@@ -78,10 +84,7 @@ impl LlmBackend for BudgetSentinel {
 /// tempdir, construct `ClaudeCodeBackend` pointed at it, compute the
 /// run-wide fingerprint inputs, and wrap in `BudgetedBackend` when
 /// `budget` is `Some`.
-pub fn build_production_backend(
-    model_id: String,
-    budget: Option<u64>,
-) -> Result<BackendHandles> {
+pub fn build_production_backend(model_id: String, budget: Option<u64>) -> Result<BackendHandles> {
     let prompts_dir = TempDir::new()?;
     crate::prompts::materialise_to(prompts_dir.path())?;
 

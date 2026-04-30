@@ -5,8 +5,7 @@
 use std::path::PathBuf;
 
 fn goldens_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../goldens/dev-workspace")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../goldens/dev-workspace")
 }
 
 #[test]
@@ -42,11 +41,7 @@ fn dev_workspace_related_golden_loads_and_validates() {
     let file = component_ontology::load(&path)
         .expect("dev-workspace related-components.golden.yaml must parse");
     for edge in &file.edges {
-        edge.validate().unwrap_or_else(|e| {
-            panic!(
-                "edge {:?} failed validation: {e:#}",
-                edge.participants
-            )
-        });
+        edge.validate()
+            .unwrap_or_else(|e| panic!("edge {:?} failed validation: {e:#}", edge.participants));
     }
 }

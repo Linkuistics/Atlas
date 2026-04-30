@@ -70,8 +70,12 @@ pub fn all_components(db: &AtlasDatabase) -> Arc<Vec<ComponentEntry>> {
 pub fn try_assemble(db: &AtlasDatabase) -> Result<Arc<Vec<ComponentEntry>>, TreeAssemblyError> {
     let workspace = db.workspace();
     let root = workspace.root(db as &dyn salsa::Database).clone();
-    let overrides = workspace.components_overrides(db as &dyn salsa::Database).clone();
-    let prior = workspace.prior_components(db as &dyn salsa::Database).clone();
+    let overrides = workspace
+        .components_overrides(db as &dyn salsa::Database)
+        .clone();
+    let prior = workspace
+        .prior_components(db as &dyn salsa::Database)
+        .clone();
 
     let live = gather_live_components(db, workspace, &root, &overrides);
     let finalised = resolve_ids_and_tombstones(&prior, &overrides, live);
@@ -142,7 +146,8 @@ fn gather_live_components(
     root: &Path,
     overrides: &OverridesFile,
 ) -> Vec<LiveComponent> {
-    let candidates = candidate_components_at(db as &dyn salsa::Database, workspace, root.to_path_buf());
+    let candidates =
+        candidate_components_at(db as &dyn salsa::Database, workspace, root.to_path_buf());
 
     // Confirmed candidates, keyed by dir for quick parent lookup.
     let mut confirmed_dirs: BTreeSet<PathBuf> = BTreeSet::new();
@@ -161,18 +166,15 @@ fn gather_live_components(
             .iter()
             .map(|p| relative_to_root(p, root))
             .collect();
-        let doc_anchors: Vec<DocAnchor> = doc_headings(
-            db as &dyn salsa::Database,
-            workspace,
-            candidate.dir.clone(),
-        )
-        .iter()
-        .filter(|h| h.level == 1)
-        .map(|h| DocAnchor {
-            path: relative_to_root(&h.path, root),
-            heading: h.text.clone(),
-        })
-        .collect();
+        let doc_anchors: Vec<DocAnchor> =
+            doc_headings(db as &dyn salsa::Database, workspace, candidate.dir.clone())
+                .iter()
+                .filter(|h| h.level == 1)
+                .map(|h| DocAnchor {
+                    path: relative_to_root(&h.path, root),
+                    heading: h.text.clone(),
+                })
+                .collect();
 
         confirmed_dirs.insert(candidate.dir.clone());
         by_dir.insert(
@@ -195,11 +197,7 @@ fn gather_live_components(
             .remove(dir)
             .expect("confirmed_dirs is populated from by_dir");
         let parent_dir = nearest_confirmed_ancestor(dir, &confirmed_dirs);
-        let tree_sha = file_tree_sha(
-            db as &dyn salsa::Database,
-            workspace,
-            dir.clone(),
-        );
+        let tree_sha = file_tree_sha(db as &dyn salsa::Database, workspace, dir.clone());
         let path_segments = vec![PathSegment {
             path: relative_to_root(dir, root),
             content_sha: hex_encode(&tree_sha),
@@ -399,7 +397,9 @@ fn collect_suppressed_children(
 ) -> HashSet<String> {
     let mut out: HashSet<String> = HashSet::new();
     for (key, pins) in &overrides.pins {
-        if let Some(PinValue::SuppressChildren { suppress_children }) = pins.get("suppress_children") {
+        if let Some(PinValue::SuppressChildren { suppress_children }) =
+            pins.get("suppress_children")
+        {
             // The pin key is a component id; we simply collect its
             // suppress_children list. The list values are child ids.
             if components.iter().any(|c| &c.id == key) {
@@ -452,7 +452,9 @@ fn enforce_acyclicity(components: &[ComponentEntry]) -> Result<(), TreeAssemblyE
         let mut cursor: Option<&str> = Some(entry.id.as_str());
         while let Some(id) = cursor {
             if !seen.insert(id) {
-                return Err(TreeAssemblyError::Cycle { id: entry.id.clone() });
+                return Err(TreeAssemblyError::Cycle {
+                    id: entry.id.clone(),
+                });
             }
             cursor = match parent_by_id.get(id) {
                 Some(Some(parent)) => Some(parent),
@@ -548,4 +550,3 @@ mod tests {
         assert!(enforce_acyclicity(&entries).is_err());
     }
 }
-
