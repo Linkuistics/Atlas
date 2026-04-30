@@ -214,14 +214,11 @@ entries:
   body: |
     `ProgressBackend` is inserted between `BudgetSentinel` and `LlmResponseCache` in the backend chain. It only observes calls that escape the cache (cache misses). A fully-cached re-run produces no progress output. Inserting it inside the cache would count cache hits as live calls, which is incorrect.
 - id: phase-level-progress-needs-engine-side-hooks-in-run-fixedpoint
-  title: Phase-level progress needs engine-side hooks in run_fixedpoint
+  title: Reporter wiring into FixedpointConfig is the remaining progress task
   body: |
-    Per-phase progress (e.g., "L3 classification: 47/120 dirs") requires a `ProgressEvent` callback threaded through `run_fixedpoint` in `atlas-engine`. The current `ProgressBackend` in `atlas-cli` only observes LLM calls, not fixedpoint iteration boundaries.
+    `ProgressEvent` enum and `run_fixedpoint` hooks (tasks 1–6) and the CLI `Reporter` with indicatif rendering (tasks 7–15) are complete. The remaining work is pipeline wiring: passing `Arc<Reporter>` into `FixedpointConfig` and adding a byte-identity regression (tasks 16–19, backlog task `wire-reporter-into-pipeline-decompose-l5-demand-and-add-byte-identity-regression`).
 
-    Implementation in three independently testable phases (plan: `docs/superpowers/plans/2026-05-01-engine-progress-events.md`, design spec: `docs/superpowers/specs/2026-05-01-engine-progress-events-design.md`):
-    - Tasks 1–6: engine-side `ProgressEvent` enum + `run_fixedpoint` hooks → **complete** (backlog task `implement-engine-side-progressevent-and-run-fixedpoint-hooks`)
-    - Tasks 7–15: CLI reporter + indicatif multi-region rendering → backlog task `implement-cli-reporter-and-indicatif-rendering`
-    - Tasks 16–19: pipeline wiring, decompose L5 demand, byte-identity regression → backlog task `wire-reporter-into-pipeline-decompose-l5-demand-and-add-byte-identity-regression`
+    Implementation references: plan at `docs/superpowers/plans/2026-05-01-engine-progress-events.md`, design spec at `docs/superpowers/specs/2026-05-01-engine-progress-events-design.md`.
 - id: dyn-trait-field-in-struct-requires-hand-rolled-debug
   title: dyn Trait field in struct requires hand-rolled Debug
   body: |
@@ -230,3 +227,11 @@ entries:
   title: Subcarve event emitted before subcarve_decision (spec §7.2)
   body: |
     `ProgressEvent::Subcarve` must be emitted before calling `subcarve_decision` (spec §7.2). The ordering is a runtime invariant: the progress callback fires while the LLM backend call count is still at its pre-decision value. The test `engine_emits_subcarve_event_before_calling_decision` verifies this by reading `call_count()` from inside the sink callback via a shared-state clone of the `RecordingSink`. `RecordingSink` lives in `crates/atlas-engine/src/progress.rs` and is the canonical test helper for progress-event ordering assertions.
+- id: subcarve-surface-events-set-authoritative-k-n-over-llm-tap
+  title: Subcarve/Surface events set authoritative k/n over LLM-tap
+  body: |
+    `Reporter::on_llm_call` increments `PromptBreakdown` counters but defers k/n values to engine-set events. `ProgressEvent::Subcarve` and `ProgressEvent::Surface` carry authoritative k/n counts; these take priority over any k/n derived from the LLM-tap side-channel (spec §6.3). Implementations that update k/n from both sources must apply this priority.
+- id: token-gauge-bar-hides-itself-when-budget-is-zero
+  title: Token gauge bar hides itself when budget is zero
+  body: |
+    `Reporter` hides the token gauge `ProgressBar` when the configured token budget is 0 (the `--no-budget` case). This prevents a degenerate "0/0 tokens" bar from appearing. Future Reporter extensions that add gauge regions should apply the same hide-on-zero pattern.
