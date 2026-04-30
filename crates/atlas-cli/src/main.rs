@@ -156,7 +156,12 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
     let backend: Arc<dyn LlmBackend> =
         ProgressBackend::new(handles.backend.clone(), Arc::clone(&reporter)) as Arc<dyn LlmBackend>;
 
-    let outcome = run_index(&config, backend, handles.counter.clone());
+    let outcome = run_index(
+        &config,
+        backend,
+        handles.counter.clone(),
+        Arc::clone(&reporter),
+    );
     reporter.finish();
     match outcome {
         Ok(summary) => {
