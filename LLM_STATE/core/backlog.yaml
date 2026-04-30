@@ -2,7 +2,7 @@ tasks:
 - id: implement-cli-reporter-and-indicatif-rendering
   title: Implement CLI Reporter and indicatif rendering
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     Implement plan tasks 7–15 from
@@ -71,6 +71,101 @@ tasks:
     **Plan reference:** `docs/superpowers/plans/2026-05-01-engine-progress-events.md`,
     sections "Task 7" through "Task 15". The plan contains every code
     block verbatim — execute step-by-step.
+  results: |
+    Implemented plan tasks 7–15 from
+    `docs/superpowers/plans/2026-05-01-engine-progress-events.md` —
+    the new CLI-side `Reporter` and indicatif rendering. Pipeline wiring
+    plus L5 demand decomposition remain in the next backlog item.
+
+    ## What changed
+
+    - **`crates/atlas-cli/src/progress.rs`** rewritten end-to-end. Replaced
+      the single-line tally `ProgressReporter` with the spec's `Reporter`:
+      - Owns a `MultiProgress` with two `ProgressBar`s (activity + token
+        gauge); state lives behind a `Mutex<ReporterState>` so Salsa can
+        drive callbacks from any thread.
+      - Implements `atlas_engine::ProgressSink::on_event` for every variant
+        of `ProgressEvent` (T9–T12). Each handler refreshes the token gauge
+        first, then mutates state under the lock, drops it, then touches
+        indicatif (no re-entrant locking).
+      - Emits the per-iteration scrollback line via `MultiProgress::println`
+        on `IterEnd` (T10), and the final `[atlas] done · …` summary line on
+        `Finished` (T12 — `multi.println` when drawing, `eprintln!` when
+        hidden, per spec §6.4).
+      - `Reporter::on_llm_call` (T13): increments `breakdown` counters and
+        refreshes the activity msg with the call target only when no
+        engine-set k/n is sticky. Engine-driven `Subcarve`/`Surface`
+        denominators always win, matching spec §6.3.
+      - `refresh_token_gauge` (T14) hides the gauge entirely when budget==0
+        (the `--no-budget` case) and otherwise mirrors `TokenCounter::used()`
+        against `budget()` on every event.
+      - `make_stderr_reporter` now always returns `Arc<Reporter>`; the
+        "drawing" decision flips the underlying `ProgressDrawTarget`
+        instead of returning `Option`.
+      - `breakdown_snapshot()` is public so the upcoming pipeline-side
+        `Finished` event can read counters without touching internals.
+      - Pure helpers added: `MsgInput` enum + `render_activity_msg` cover
+        every spec §6.1 message; `format_iter_end_line`, `format_finished_line`,
+        `abbreviate` for scrollback/summary formatting.
+      - `ProgressBackend` retained as a side-channel decorator; its `record`
+        call is replaced by a `reporter.on_llm_call(prompt, target)` tap
+        that pulls the relpath from `req.inputs["relpath"]` when present.
+      - `#[cfg(test)] pub(crate)` accessors expose `current_msg`,
+        `breakdown`, `iter_history`, `summary`, `activity_length`,
+        `activity_position`, `tokens_length`, `tokens_position`, `drawing`
+        — consumed by the new tests and reserved for the next item's
+        pipeline tests.
+    - **`crates/atlas-cli/src/main.rs`**: minimum-viable patch (T7 step 4)
+      removes the legacy `Option<...>` branching, the `r.announce_start(...)`
+      call, and the `if let Some(r) = ...` finish guard. `Reporter` is now
+      always constructed, always wraps the backend, and `reporter.finish()`
+      runs unconditionally.
+
+    ## Tests
+
+    - 24 new `progress::tests::*` tests covering every plan task 7–15
+      exit criterion (spec sections 5, 6.1, 6.2, 6.3, 6.4, 10). All pass
+      (`cargo test -p atlas-cli progress::tests` → 24 passed).
+    - Full `atlas-cli` suite: 56 passed (44 unit + 4 cli_binary +
+      8 pipeline_integration), no regressions.
+    - Full workspace: `cargo test --workspace` green.
+    - `cargo clippy --workspace --all-targets` clean under
+      workspace-deny `warnings = "deny"`.
+    - `cargo fmt --all` applied; tree formatted.
+    - `cargo run -p atlas-cli -- --version` succeeds (binary still builds
+      and links the new `Reporter`).
+
+    ## Out of scope (next backlog item)
+
+    - Anything in `pipeline.rs`. `run_index` does not yet take a
+      `reporter` parameter, so the engine `ProgressEvent`s and the L5
+      per-component `Surface` events are not yet emitted in production —
+      the rewritten reporter is presently exercised only by unit tests
+      and (silently, with no events) by the live binary path.
+    - L5 demand decomposition into a per-component loop (T17).
+    - Byte-identity regression test (T19).
+    - Removal of the deferred `phase-level-progress-needs-engine-side-hooks-in-run-fixedpoint`
+      memory note (still partially deferred until the integration item lands).
+
+    ## Suggested follow-up
+
+    - Pick up `wire-reporter-into-pipeline-decompose-l5-demand-and-add-byte-identity-regression`
+      (the next backlog item) to take this from "compiles + tests" to
+      "live progress visible during `atlas index`".
+    - Once the integration item lands, retire the memory note above.
+
+    ## Notes
+
+    - The plan's draft `on_llm_call` body computes an `iteration` value
+      in both branches even though only the no-sticky branch consumes it.
+      Implemented as a single `sticky_active: bool` and an unconditional
+      `iteration: None` for the LlmTap path — matches the test contract
+      (`on_llm_call_without_sticky_kn_falls_through_to_llm_msg` expects
+      no `iter N · ` prefix, since `last_iteration` defaults to 0 before
+      any `IterStart` fires) and keeps the lock scope tight.
+    - Format-string literals from the plan (with embedded captures like
+      `{mins:02}` and named args like `{c}`) compile clean under
+      workspace-deny lints; no `clippy::uninlined_format_args` triggers.
 - id: wire-reporter-into-pipeline-decompose-l5-demand-and-add-byte-identity-regression
   title: Wire Reporter into pipeline, decompose L5 demand, and add byte-identity regression
   category: feature

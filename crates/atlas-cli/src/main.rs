@@ -153,18 +153,11 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
         ProgressMode::Auto
     };
     let reporter = make_stderr_reporter(progress_mode, handles.counter.clone());
-    let backend: Arc<dyn LlmBackend> = match reporter.as_ref() {
-        Some(r) => {
-            r.announce_start(&config.root);
-            ProgressBackend::new(handles.backend.clone(), Arc::clone(r)) as Arc<dyn LlmBackend>
-        }
-        None => Arc::clone(&handles.backend),
-    };
+    let backend: Arc<dyn LlmBackend> =
+        ProgressBackend::new(handles.backend.clone(), Arc::clone(&reporter)) as Arc<dyn LlmBackend>;
 
     let outcome = run_index(&config, backend, handles.counter.clone());
-    if let Some(r) = reporter.as_ref() {
-        r.finish();
-    }
+    reporter.finish();
     match outcome {
         Ok(summary) => {
             println!("{}", atlas_cli::pipeline::format_summary(&summary));

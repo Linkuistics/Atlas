@@ -1,26 +1,23 @@
 //! Progress reporting for `atlas index`.
 //!
-//! [`ProgressBackend`] is a thin decorator around any [`LlmBackend`].
-//! After each forwarded call it taps a shared [`ProgressReporter`],
-//! which writes a one-line running tally to a sink (stderr, in
-//! production). The reporter sees only un-cached calls, because
-//! `AtlasDatabase::call_llm_cached` consults the in-memory cache
-//! before reaching the backend — so the tally reflects real work
-//! rather than memo hits, and a fully-cached re-run is silent.
-//!
-//! When the sink is a TTY the line is rewritten in place via `\r`;
-//! when it is not (CI logs, file redirection), each update is appended
-//! as its own line so the output remains grep-friendly.
+//! `Reporter` owns an indicatif `MultiProgress` with two bars
+//! (activity + token gauge) and implements `ProgressSink` so the engine
+//! can drive it directly. The CLI fires `Started`/`Phase`/`Surface`/
+//! `Finished` markers itself; the engine fires the inner
+//! `IterStart`/`Subcarve`/`IterEnd` triplet. `ProgressBackend` taps the
+//! same `Reporter` via a side-channel `on_llm_call` method (spec §6.3).
+//! See `docs/superpowers/specs/2026-05-01-engine-progress-events-design.md`.
 
-use std::io::{IsTerminal, Write};
-use std::path::Path;
+use std::io::IsTerminal;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use atlas_engine::{Phase, ProgressEvent, ProgressSink, PromptBreakdown};
 use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId, TokenCounter};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use serde_json::Value;
 
-/// Triple-state mapped from `--progress` / `--no-progress` /
-/// (neither): `Auto` enables progress when stderr is a TTY.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgressMode {
     Auto,
@@ -28,159 +25,433 @@ pub enum ProgressMode {
     Never,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-struct Counts {
-    classify: u64,
-    surface: u64,
-    edges: u64,
-    subcarve: u64,
-}
-
-impl Counts {
-    fn record(&mut self, id: PromptId) {
-        match id {
-            PromptId::Classify => self.classify += 1,
-            PromptId::Stage1Surface => self.surface += 1,
-            PromptId::Stage2Edges => self.edges += 1,
-            PromptId::Subcarve => self.subcarve += 1,
-        }
-    }
-
-    fn total(&self) -> u64 {
-        self.classify + self.surface + self.edges + self.subcarve
-    }
-}
-
+#[derive(Default, Debug, Clone)]
 struct ReporterState {
-    counts: Counts,
-    sink: Box<dyn Write + Send>,
-    inline: bool,
-    counter: Option<Arc<TokenCounter>>,
-    last_line_len: usize,
+    breakdown: PromptBreakdown,
+    last_msg: String,
+    iter_history: Vec<String>,
+    summary: Option<String>,
+    /// k/n set by the most recent engine-level Subcarve/Surface event.
+    /// LLM-call taps must not clobber this — they may only refresh the
+    /// target relpath, so the denominator from the engine wins.
+    sticky_kn: Option<(u64, u64, &'static str)>,
+    last_llm_target: Option<PathBuf>,
+    /// `live_components` from the most recent `IterStart`. Used to
+    /// build the scrollback line on `IterEnd`.
+    iter_live: u64,
+    last_iteration: u32,
 }
 
-/// Shared state behind a mutex so the [`LlmBackend`] (which is
-/// `Send + Sync`) can call `record` from any thread Salsa decides
-/// to evaluate on.
-pub struct ProgressReporter {
+pub struct Reporter {
+    multi: MultiProgress,
+    activity: ProgressBar,
+    tokens: ProgressBar,
     state: Mutex<ReporterState>,
+    counter: Option<Arc<TokenCounter>>,
+    drawing: bool,
 }
 
-impl ProgressReporter {
-    pub fn new(
-        sink: Box<dyn Write + Send>,
-        inline: bool,
-        counter: Option<Arc<TokenCounter>>,
-    ) -> Self {
-        Self {
-            state: Mutex::new(ReporterState {
-                counts: Counts::default(),
-                sink,
-                inline,
-                counter,
-                last_line_len: 0,
-            }),
-        }
-    }
-
-    /// Print a one-time start line so the user sees something the
-    /// moment indexing begins, before the first LLM call lands.
-    pub fn announce_start(&self, root: &Path) {
-        let mut s = self.lock();
-        let _ = writeln!(s.sink, "[atlas] indexing {}", root.display());
-        let _ = s.sink.flush();
-    }
-
-    /// Increment counters for `id` and emit an updated tally. Called
-    /// by [`ProgressBackend`] after the inner backend returns.
-    pub fn record(&self, id: PromptId) {
-        let mut s = self.lock();
-        s.counts.record(id);
-        let line = render_line(&s.counts, s.counter.as_deref());
-        if s.inline {
-            // Pad with spaces to overwrite a longer previous line, then
-            // park the cursor at column 0 so the next overwrite starts
-            // cleanly.
-            let pad = s.last_line_len.saturating_sub(line.len());
-            let _ = write!(s.sink, "\r{line}{:pad$}", "", pad = pad);
-            s.last_line_len = line.len();
+impl Reporter {
+    pub fn new(mode: ProgressMode, counter: Option<Arc<TokenCounter>>) -> Arc<Self> {
+        let stderr_is_tty = std::io::stderr().is_terminal();
+        let drawing = match mode {
+            ProgressMode::Auto => stderr_is_tty,
+            ProgressMode::Always => true,
+            ProgressMode::Never => false,
+        };
+        let multi = if drawing {
+            MultiProgress::with_draw_target(ProgressDrawTarget::stderr())
         } else {
-            let _ = writeln!(s.sink, "{line}");
+            MultiProgress::with_draw_target(ProgressDrawTarget::hidden())
+        };
+        let activity = multi.add(ProgressBar::new(0));
+        activity.set_style(
+            ProgressStyle::with_template("  {spinner} {msg}  {elapsed_precise}")
+                .expect("static template"),
+        );
+        if drawing {
+            activity.enable_steady_tick(Duration::from_millis(120));
         }
-        let _ = s.sink.flush();
+        let tokens = multi.add(ProgressBar::new(0));
+        tokens.set_style(
+            ProgressStyle::with_template("    tokens {msg}  {bar:50}  {percent:>3}%")
+                .expect("static template"),
+        );
+
+        Arc::new(Self {
+            multi,
+            activity,
+            tokens,
+            state: Mutex::new(ReporterState::default()),
+            counter,
+            drawing,
+        })
     }
 
-    /// Terminate any in-place line so subsequent stderr output starts
-    /// on a fresh line. Safe to call when nothing was reported.
+    /// Tear down the live bars. Idempotent. Called on the success path
+    /// after `Finished` and on the error path during pipeline drop.
     pub fn finish(&self) {
-        let mut s = self.lock();
-        if s.inline && s.counts.total() > 0 {
-            let _ = writeln!(s.sink);
+        let _ = self.multi.clear();
+    }
+
+    /// Snapshot of the current per-prompt counters. Consumed by the
+    /// pipeline when constructing the `Finished` event.
+    pub fn breakdown_snapshot(&self) -> PromptBreakdown {
+        self.lock().breakdown.clone()
+    }
+
+    /// Side-channel called by `ProgressBackend` when an LLM call lands.
+    /// Increments the per-prompt counter and, when no engine-set k/n
+    /// is sticky, refreshes the activity message with the call target
+    /// (spec §6.3).
+    pub fn on_llm_call(&self, prompt: PromptId, target: Option<PathBuf>) {
+        self.refresh_token_gauge();
+        let sticky_active;
+        {
+            let mut s = self.lock();
+            match prompt {
+                PromptId::Classify => s.breakdown.classify += 1,
+                PromptId::Stage1Surface => s.breakdown.surface += 1,
+                PromptId::Stage2Edges => s.breakdown.edges += 1,
+                PromptId::Subcarve => s.breakdown.subcarve += 1,
+            }
+            s.last_llm_target = target.clone();
+            sticky_active = s.sticky_kn.is_some();
         }
-        let _ = s.sink.flush();
+        if !sticky_active {
+            self.set_msg(MsgInput::LlmTap {
+                iteration: None,
+                prompt,
+                target,
+            });
+        }
+    }
+
+    fn set_msg(&self, input: MsgInput) {
+        let rendered = render_activity_msg(&input);
+        {
+            let mut s = self.lock();
+            s.last_msg = rendered.clone();
+        }
+        self.activity.set_message(rendered);
+    }
+
+    fn refresh_token_gauge(&self) {
+        let Some(c) = self.counter.as_ref() else {
+            return;
+        };
+        if c.budget() == 0 {
+            self.tokens.set_draw_target(ProgressDrawTarget::hidden());
+            return;
+        }
+        self.tokens.set_length(c.budget());
+        self.tokens.set_position(c.used());
+        self.tokens.set_message(format!(
+            "{}/{}",
+            abbreviate(c.used()),
+            abbreviate(c.budget())
+        ));
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, ReporterState> {
-        // A poisoned mutex means an earlier panic mid-write — recover
-        // and keep going; progress is best-effort.
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+
+    // --- test-only accessors ---
+    #[cfg(test)]
+    pub(crate) fn current_msg(&self) -> String {
+        self.lock().last_msg.clone()
+    }
+    #[cfg(test)]
+    pub(crate) fn breakdown(&self) -> PromptBreakdown {
+        self.lock().breakdown.clone()
+    }
+    #[cfg(test)]
+    pub(crate) fn iter_history(&self) -> Vec<String> {
+        self.lock().iter_history.clone()
+    }
+    #[cfg(test)]
+    pub(crate) fn summary(&self) -> Option<String> {
+        self.lock().summary.clone()
+    }
+    #[cfg(test)]
+    pub(crate) fn activity_length(&self) -> Option<u64> {
+        self.activity.length()
+    }
+    #[cfg(test)]
+    pub(crate) fn activity_position(&self) -> u64 {
+        self.activity.position()
+    }
+    #[cfg(test)]
+    pub(crate) fn tokens_length(&self) -> Option<u64> {
+        self.tokens.length()
+    }
+    #[cfg(test)]
+    pub(crate) fn tokens_position(&self) -> u64 {
+        self.tokens.position()
+    }
+    #[cfg(test)]
+    pub(crate) fn drawing(&self) -> bool {
+        self.drawing
+    }
 }
 
-/// Build a reporter for stderr based on `mode`. Returns `None` when
-/// progress should be disabled (`Never`, or `Auto` with non-TTY
-/// stderr); the caller skips wrapping the backend in that case.
+impl ProgressSink for Reporter {
+    fn on_event(&self, event: ProgressEvent) {
+        self.refresh_token_gauge();
+        match event {
+            ProgressEvent::Started { .. } => {
+                self.set_msg(MsgInput::Started);
+            }
+            ProgressEvent::Phase(p) => {
+                self.set_msg(MsgInput::Phase(p));
+            }
+            ProgressEvent::IterStart {
+                iteration,
+                live_components,
+            } => {
+                {
+                    let mut s = self.lock();
+                    s.iter_live = live_components;
+                    s.last_iteration = iteration;
+                }
+                // Suppress ETA outside k/n phases by zeroing length.
+                self.activity.set_length(0);
+                self.set_msg(MsgInput::IterStart {
+                    iteration,
+                    live: live_components,
+                });
+            }
+            ProgressEvent::IterEnd {
+                iteration,
+                components_added,
+                elapsed,
+            } => {
+                let live = self.lock().iter_live;
+                let line = format_iter_end_line(iteration, live, components_added, elapsed);
+                let _ = self.multi.println(&line);
+                self.lock().iter_history.push(line);
+            }
+            ProgressEvent::Subcarve {
+                component_id: _,
+                relpath,
+                k,
+                n,
+            } => {
+                let iteration = {
+                    let mut s = self.lock();
+                    s.sticky_kn = Some((k, n, "subcarve"));
+                    s.last_iteration
+                };
+                self.activity.set_length(n);
+                self.activity.set_position(k);
+                self.set_msg(MsgInput::Subcarve {
+                    iteration,
+                    k,
+                    n,
+                    target: relpath,
+                });
+            }
+            ProgressEvent::Surface {
+                component_id: _,
+                relpath,
+                k,
+                n,
+            } => {
+                {
+                    let mut s = self.lock();
+                    s.sticky_kn = Some((k, n, "surface"));
+                }
+                self.activity.set_length(n);
+                self.activity.set_position(k);
+                self.set_msg(MsgInput::Surface {
+                    k,
+                    n,
+                    target: relpath,
+                });
+            }
+            ProgressEvent::Finished {
+                components,
+                llm_calls,
+                tokens_used,
+                token_budget,
+                elapsed,
+                breakdown,
+            } => {
+                let line = format_finished_line(
+                    components,
+                    llm_calls,
+                    tokens_used,
+                    token_budget,
+                    elapsed,
+                    &breakdown,
+                );
+                if self.drawing {
+                    let _ = self.multi.println(&line);
+                } else {
+                    eprintln!("{line}");
+                }
+                let mut s = self.lock();
+                s.summary = Some(line);
+                s.breakdown = breakdown;
+            }
+        }
+    }
+}
+
+/// Build a reporter wired to stderr. Always returns a Reporter; when
+/// `mode` resolves to disabled, the underlying draw target is hidden,
+/// but the reporter still receives events and updates `breakdown` so
+/// the final summary can be printed via plain `eprintln!` (spec §6.4).
 pub fn make_stderr_reporter(
     mode: ProgressMode,
     counter: Option<Arc<TokenCounter>>,
-) -> Option<Arc<ProgressReporter>> {
-    let stderr = std::io::stderr();
-    let stderr_is_tty = stderr.is_terminal();
-    let enabled = match mode {
-        ProgressMode::Auto => stderr_is_tty,
-        ProgressMode::Always => true,
-        ProgressMode::Never => false,
-    };
-    if !enabled {
-        return None;
-    }
-    let sink: Box<dyn Write + Send> = Box::new(stderr);
-    Some(Arc::new(ProgressReporter::new(
-        sink,
-        stderr_is_tty,
-        counter,
-    )))
+) -> Arc<Reporter> {
+    Reporter::new(mode, counter)
 }
 
-fn render_line(counts: &Counts, counter: Option<&TokenCounter>) -> String {
-    let mut parts: Vec<String> = Vec::with_capacity(4);
-    if counts.classify > 0 {
-        parts.push(format!("classify={}", counts.classify));
+/// Decorator backend: forwards every call to `inner`, then taps the
+/// reporter's side-channel.
+pub struct ProgressBackend {
+    inner: Arc<dyn LlmBackend>,
+    reporter: Arc<Reporter>,
+}
+
+impl ProgressBackend {
+    pub fn new(inner: Arc<dyn LlmBackend>, reporter: Arc<Reporter>) -> Arc<Self> {
+        Arc::new(Self { inner, reporter })
     }
-    if counts.surface > 0 {
-        parts.push(format!("surface={}", counts.surface));
-    }
-    if counts.edges > 0 {
-        parts.push(format!("edges={}", counts.edges));
-    }
-    if counts.subcarve > 0 {
-        parts.push(format!("subcarve={}", counts.subcarve));
-    }
-    if parts.is_empty() {
-        parts.push("starting".to_string());
+}
+
+impl LlmBackend for ProgressBackend {
+    fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        let result = self.inner.call(req);
+        let target = relpath_from_inputs(&req.inputs);
+        self.reporter.on_llm_call(req.prompt_template, target);
+        result
     }
 
-    let tokens = match counter {
-        Some(c) => format!(
-            " | tokens={}/{}",
-            abbreviate(c.used()),
-            abbreviate(c.budget())
-        ),
-        None => String::new(),
+    fn fingerprint(&self) -> LlmFingerprint {
+        self.inner.fingerprint()
+    }
+}
+
+fn relpath_from_inputs(inputs: &Value) -> Option<PathBuf> {
+    inputs
+        .get("relpath")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum MsgInput {
+    Started,
+    Phase(Phase),
+    IterStart {
+        iteration: u32,
+        live: u64,
+    },
+    Subcarve {
+        iteration: u32,
+        k: u64,
+        n: u64,
+        target: PathBuf,
+    },
+    Surface {
+        k: u64,
+        n: u64,
+        target: PathBuf,
+    },
+    LlmTap {
+        iteration: Option<u32>,
+        prompt: PromptId,
+        target: Option<PathBuf>,
+    },
+}
+
+pub(crate) fn render_activity_msg(input: &MsgInput) -> String {
+    match input {
+        MsgInput::Started => "seed".to_string(),
+        MsgInput::Phase(Phase::Seed) => "seed".to_string(),
+        MsgInput::Phase(Phase::Fixedpoint) => "fixedpoint".to_string(),
+        MsgInput::Phase(Phase::Project) => "project".to_string(),
+        MsgInput::Phase(Phase::Edges) => "project · edges (batch)".to_string(),
+        MsgInput::IterStart { iteration, live } => {
+            format!("iter {iteration} · scanning {live} components")
+        }
+        MsgInput::Subcarve {
+            iteration,
+            k,
+            n,
+            target,
+        } => {
+            if target.as_os_str().is_empty() {
+                format!("iter {iteration} · subcarve  {k}/{n}")
+            } else {
+                format!(
+                    "iter {iteration} · subcarve  {k}/{n} ({})",
+                    target.display()
+                )
+            }
+        }
+        MsgInput::Surface { k, n, target } => {
+            if target.as_os_str().is_empty() {
+                format!("project · surface  {k}/{n}")
+            } else {
+                format!("project · surface  {k}/{n} ({})", target.display())
+            }
+        }
+        MsgInput::LlmTap {
+            iteration,
+            prompt,
+            target,
+        } => {
+            let label = match prompt {
+                PromptId::Classify => "classify",
+                PromptId::Stage1Surface => "surface",
+                PromptId::Stage2Edges => "edges",
+                PromptId::Subcarve => "subcarve",
+            };
+            let prefix = iteration
+                .map(|i| format!("iter {i} · "))
+                .unwrap_or_default();
+            match target {
+                Some(t) => format!("{prefix}{label} ({})", t.display()),
+                None => format!("{prefix}{label}"),
+            }
+        }
+    }
+}
+
+fn format_iter_end_line(iteration: u32, live: u64, added: u64, elapsed: Duration) -> String {
+    let mins = elapsed.as_secs() / 60;
+    let secs = elapsed.as_secs() % 60;
+    format!("✓ iter {iteration} · {live} components · +{added} sub-dirs · {mins:02}:{secs:02}")
+}
+
+fn format_finished_line(
+    components: u64,
+    llm_calls: u64,
+    tokens_used: u64,
+    budget: Option<u64>,
+    elapsed: Duration,
+    bd: &PromptBreakdown,
+) -> String {
+    let mins = elapsed.as_secs() / 60;
+    let secs = elapsed.as_secs() % 60;
+    let tokens = match budget {
+        Some(b) => format!("{}/{} tokens", abbreviate(tokens_used), abbreviate(b)),
+        None => format!("{} tokens (no budget)", abbreviate(tokens_used)),
     };
-    format!("[atlas] {}{}", parts.join(" "), tokens)
+    format!(
+        "[atlas] done · {components} components · {llm_calls} LLM calls · {tokens} · {mins:02}:{secs:02}\n        classify={c}  surface={s}  edges={e}  subcarve={sc}",
+        c = bd.classify,
+        s = bd.surface,
+        e = bd.edges,
+        sc = bd.subcarve,
+    )
 }
 
 fn abbreviate(n: u64) -> String {
@@ -193,188 +464,301 @@ fn abbreviate(n: u64) -> String {
     }
 }
 
-/// Decorator backend: forwards every call to `inner`, then taps the
-/// reporter. Recording happens after the inner call returns so the
-/// `TokenCounter` already reflects this call's cost (the budget
-/// wrapper charges post-return).
-pub struct ProgressBackend {
-    inner: Arc<dyn LlmBackend>,
-    reporter: Arc<ProgressReporter>,
-}
-
-impl ProgressBackend {
-    pub fn new(inner: Arc<dyn LlmBackend>, reporter: Arc<ProgressReporter>) -> Arc<Self> {
-        Arc::new(Self { inner, reporter })
-    }
-}
-
-impl LlmBackend for ProgressBackend {
-    fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        let result = self.inner.call(req);
-        // Record on attempt, not just success — a failed call still
-        // represents work the user is waiting through.
-        self.reporter.record(req.prompt_template);
-        result
-    }
-
-    fn fingerprint(&self) -> LlmFingerprint {
-        self.inner.fingerprint()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use atlas_llm::{ResponseSchema, TestBackend};
+    use std::path::PathBuf;
 
-    /// `Vec<u8>` writer wrapped so a clone of the Arc lets the test
-    /// inspect what was written without consuming the sink.
-    struct SharedSink(Arc<Mutex<Vec<u8>>>);
+    // --- Task 7: skeleton smoke tests ---
 
-    impl Write for SharedSink {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    fn fresh_sink() -> (Arc<Mutex<Vec<u8>>>, Box<dyn Write + Send>) {
-        let buf = Arc::new(Mutex::new(Vec::new()));
-        let sink = SharedSink(Arc::clone(&buf));
-        (buf, Box::new(sink))
-    }
-
-    fn dump(buf: &Arc<Mutex<Vec<u8>>>) -> String {
-        String::from_utf8(buf.lock().unwrap().clone()).unwrap()
+    #[test]
+    fn make_stderr_reporter_returns_reporter_in_never_mode() {
+        let r = make_stderr_reporter(ProgressMode::Never, None);
+        assert!(!r.drawing);
     }
 
     #[test]
-    fn abbreviate_uses_thousands_above_threshold() {
-        assert_eq!(abbreviate(0), "0");
-        assert_eq!(abbreviate(9_999), "9999");
-        assert_eq!(abbreviate(10_000), "10.0k");
-        assert_eq!(abbreviate(18_400), "18.4k");
-        assert_eq!(abbreviate(2_500_000), "2.50M");
+    fn finish_is_idempotent() {
+        let r = make_stderr_reporter(ProgressMode::Never, None);
+        r.finish();
+        r.finish();
+    }
+
+    // --- Task 8: render_activity_msg coverage ---
+
+    #[test]
+    fn render_activity_msg_started() {
+        assert_eq!(render_activity_msg(&MsgInput::Started), "seed");
     }
 
     #[test]
-    fn render_line_omits_zero_counters() {
-        let counts = Counts {
-            classify: 47,
-            surface: 12,
-            ..Counts::default()
+    fn render_activity_msg_iter_start_shows_scanning_count() {
+        let m = MsgInput::IterStart {
+            iteration: 1,
+            live: 47,
         };
-        let line = render_line(&counts, None);
-        assert_eq!(line, "[atlas] classify=47 surface=12");
-        assert!(!line.contains("subcarve"));
-        assert!(!line.contains("edges"));
+        assert_eq!(render_activity_msg(&m), "iter 1 · scanning 47 components");
     }
 
     #[test]
-    fn render_line_shows_starting_when_no_calls_yet() {
-        let line = render_line(&Counts::default(), None);
-        assert_eq!(line, "[atlas] starting");
-    }
-
-    #[test]
-    fn render_line_includes_tokens_when_counter_present() {
-        let counter = Arc::new(TokenCounter::new(200_000));
-        // `used()` is what the reporter reads; `charge` updates it
-        // and succeeds while under budget.
-        counter.charge(18_400).unwrap();
-        let counts = Counts {
-            classify: 47,
-            ..Counts::default()
+    fn render_activity_msg_subcarve_shows_kn_and_relpath() {
+        let m = MsgInput::Subcarve {
+            iteration: 1,
+            k: 47,
+            n: 120,
+            target: PathBuf::from("crates/atlas-engine"),
         };
-        let line = render_line(&counts, Some(&counter));
-        assert_eq!(line, "[atlas] classify=47 | tokens=18.4k/200.0k");
-    }
-
-    #[test]
-    fn line_based_reporter_appends_newline_per_record() {
-        let (buf, sink) = fresh_sink();
-        let reporter = ProgressReporter::new(sink, false, None);
-        reporter.record(PromptId::Classify);
-        reporter.record(PromptId::Classify);
-        reporter.record(PromptId::Stage1Surface);
-        let out = dump(&buf);
-        let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], "[atlas] classify=1");
-        assert_eq!(lines[1], "[atlas] classify=2");
-        assert_eq!(lines[2], "[atlas] classify=2 surface=1");
-    }
-
-    #[test]
-    fn inline_reporter_uses_carriage_return_and_pads_for_shrink() {
-        let (buf, sink) = fresh_sink();
-        let reporter = ProgressReporter::new(sink, true, None);
-        reporter.record(PromptId::Classify); // "[atlas] classify=1" len=18
-        reporter.record(PromptId::Stage1Surface); // "[atlas] classify=1 surface=1" len=28
-        let out = dump(&buf);
-        // Both writes must be \r-prefixed; second must not start a new line.
-        assert!(out.starts_with('\r'));
-        assert!(!out.contains('\n'));
-        assert!(out.contains("classify=1 surface=1"));
-    }
-
-    #[test]
-    fn finish_terminates_inline_line_with_newline() {
-        let (buf, sink) = fresh_sink();
-        let reporter = ProgressReporter::new(sink, true, None);
-        reporter.record(PromptId::Classify);
-        reporter.finish();
-        let out = dump(&buf);
-        assert!(out.ends_with('\n'));
-    }
-
-    #[test]
-    fn finish_is_silent_when_nothing_was_recorded() {
-        let (buf, sink) = fresh_sink();
-        let reporter = ProgressReporter::new(sink, true, None);
-        reporter.finish();
-        assert!(dump(&buf).is_empty());
-    }
-
-    #[test]
-    fn announce_start_writes_root_path() {
-        let (buf, sink) = fresh_sink();
-        let reporter = ProgressReporter::new(sink, true, None);
-        reporter.announce_start(Path::new("/tmp/example"));
-        let out = dump(&buf);
-        assert!(out.contains("[atlas] indexing /tmp/example"));
-        assert!(out.ends_with('\n'));
-    }
-
-    #[test]
-    fn progress_backend_records_after_forwarding_call() {
-        let (buf, sink) = fresh_sink();
-        let reporter = Arc::new(ProgressReporter::new(sink, false, None));
-        let test_backend = TestBackend::new();
-        test_backend.respond(
-            PromptId::Classify,
-            serde_json::json!({"k": "v"}),
-            serde_json::json!({"ok": true}),
+        assert_eq!(
+            render_activity_msg(&m),
+            "iter 1 · subcarve  47/120 (crates/atlas-engine)"
         );
-        let inner: Arc<dyn LlmBackend> = Arc::new(test_backend);
-        let backend = ProgressBackend::new(inner, Arc::clone(&reporter));
-        let resp = backend
-            .call(&LlmRequest {
-                prompt_template: PromptId::Classify,
-                inputs: serde_json::json!({"k": "v"}),
-                schema: ResponseSchema::accept_any(),
-            })
-            .unwrap();
-        assert_eq!(resp, serde_json::json!({"ok": true}));
-        let out = dump(&buf);
-        assert!(out.contains("classify=1"));
     }
 
     #[test]
-    fn make_stderr_reporter_returns_none_for_never_mode() {
-        assert!(make_stderr_reporter(ProgressMode::Never, None).is_none());
+    fn render_activity_msg_subcarve_handles_empty_target() {
+        let m = MsgInput::Subcarve {
+            iteration: 1,
+            k: 47,
+            n: 120,
+            target: PathBuf::new(),
+        };
+        assert_eq!(render_activity_msg(&m), "iter 1 · subcarve  47/120");
+    }
+
+    #[test]
+    fn render_activity_msg_phase_project() {
+        assert_eq!(
+            render_activity_msg(&MsgInput::Phase(Phase::Project)),
+            "project"
+        );
+    }
+
+    #[test]
+    fn render_activity_msg_phase_edges() {
+        assert_eq!(
+            render_activity_msg(&MsgInput::Phase(Phase::Edges)),
+            "project · edges (batch)"
+        );
+    }
+
+    #[test]
+    fn render_activity_msg_surface_shows_kn_and_relpath() {
+        let m = MsgInput::Surface {
+            k: 12,
+            n: 53,
+            target: PathBuf::from("crates/atlas-cli"),
+        };
+        assert_eq!(
+            render_activity_msg(&m),
+            "project · surface  12/53 (crates/atlas-cli)"
+        );
+    }
+
+    #[test]
+    fn render_activity_msg_llm_tap_classify() {
+        let m = MsgInput::LlmTap {
+            iteration: Some(1),
+            prompt: PromptId::Classify,
+            target: Some(PathBuf::from("crates/foo")),
+        };
+        assert_eq!(render_activity_msg(&m), "iter 1 · classify (crates/foo)");
+    }
+
+    // --- Task 9: Started / Phase ---
+
+    #[test]
+    fn reporter_started_event_sets_seed_msg() {
+        let r = make_stderr_reporter(ProgressMode::Never, None);
+        r.on_event(ProgressEvent::Started {
+            root: PathBuf::from("/tmp/x"),
+        });
+        assert_eq!(r.current_msg(), "seed");
+    }
+
+    #[test]
+    fn reporter_phase_event_updates_msg() {
+        let r = make_stderr_reporter(ProgressMode::Never, None);
+        r.on_event(ProgressEvent::Phase(Phase::Project));
+        assert_eq!(r.current_msg(), "project");
+    }
+
+    // --- Task 10: IterStart / IterEnd + scrollback ---
+
+    #[test]
+    fn reporter_iter_start_sets_scanning_msg_and_resets_length() {
+        let r = make_stderr_reporter(ProgressMode::Never, None);
+        r.on_event(ProgressEvent::IterStart {
+            iteration: 1,
+            live_components: 47,
+        });
+        assert_eq!(r.current_msg(), "iter 1 · scanning 47 components");
+    }
+
+    #[test]
+    fn reporter_iter_end_appends_scrollback_line() {
+        let r = make_stderr_reporter(ProgressMode::Never, None);
+        r.on_event(ProgressEvent::IterStart {
+            iteration: 1,
+            live_components: 1247,
+        });
+        r.on_event(ProgressEvent::IterEnd {
+            iteration: 1,
+            components_added: 18,
+            elapsed: Duration::from_secs(872),
+        });
+        let history = r.iter_history();
+        assert_eq!(history.len(), 1);
+        assert!(history[0].contains("iter 1"));
+        assert!(history[0].contains("1247 components"));
+        assert!(history[0].contains("+18 sub-dirs"));
+        assert!(history[0].contains("14:32"));
+    }
+
+    // --- Task 11: Subcarve / Surface (sticky k/n) ---
+
+    #[test]
+    fn reporter_subcarve_sets_kn_msg_and_progress_length() {
+        let r = make_stderr_reporter(ProgressMode::Never, None);
+        r.on_event(ProgressEvent::IterStart {
+            iteration: 1,
+            live_components: 120,
+        });
+        r.on_event(ProgressEvent::Subcarve {
+            component_id: "c".into(),
+            relpath: PathBuf::from("crates/atlas-engine"),
+            k: 47,
+            n: 120,
+        });
+        assert_eq!(
+            r.current_msg(),
+            "iter 1 · subcarve  47/120 (crates/atlas-engine)"
+        );
+        assert_eq!(r.activity_length(), Some(120));
+        assert_eq!(r.activity_position(), 47);
+    }
+
+    #[test]
+    fn reporter_surface_sets_kn_under_project_phase() {
+        let r = make_stderr_reporter(ProgressMode::Never, None);
+        r.on_event(ProgressEvent::Phase(Phase::Project));
+        r.on_event(ProgressEvent::Surface {
+            component_id: "c".into(),
+            relpath: PathBuf::from("crates/atlas-cli"),
+            k: 12,
+            n: 53,
+        });
+        assert_eq!(
+            r.current_msg(),
+            "project · surface  12/53 (crates/atlas-cli)"
+        );
+    }
+
+    // --- Task 12: Finished ---
+
+    #[test]
+    fn reporter_finished_records_summary_and_breakdown() {
+        let r = make_stderr_reporter(ProgressMode::Never, None);
+        r.on_event(ProgressEvent::Finished {
+            components: 1268,
+            llm_calls: 3892,
+            tokens_used: 184_000,
+            token_budget: Some(200_000),
+            elapsed: Duration::from_secs(22 * 60 + 15),
+            breakdown: PromptBreakdown {
+                classify: 2715,
+                surface: 1268,
+                edges: 1,
+                subcarve: 908,
+            },
+        });
+        let summary = r.summary().expect("summary set after Finished");
+        assert!(summary.contains("done"));
+        assert!(summary.contains("1268 components"));
+        assert!(summary.contains("3892 LLM calls"));
+        assert!(summary.contains("184.0k/200.0k tokens"));
+        assert!(summary.contains("22:15"));
+        assert!(summary.contains("classify=2715"));
+        assert!(summary.contains("subcarve=908"));
+    }
+
+    // --- Task 13: on_llm_call sticky priority ---
+
+    #[test]
+    fn on_llm_call_increments_breakdown_and_does_not_clobber_sticky_kn() {
+        let r = make_stderr_reporter(ProgressMode::Never, None);
+        r.on_event(ProgressEvent::IterStart {
+            iteration: 1,
+            live_components: 120,
+        });
+        r.on_event(ProgressEvent::Subcarve {
+            component_id: "c".into(),
+            relpath: PathBuf::from("crates/atlas-engine"),
+            k: 47,
+            n: 120,
+        });
+        r.on_llm_call(PromptId::Classify, Some(PathBuf::from("crates/foo")));
+        assert_eq!(r.breakdown().classify, 1);
+        assert_eq!(
+            r.current_msg(),
+            "iter 1 · subcarve  47/120 (crates/atlas-engine)"
+        );
+    }
+
+    #[test]
+    fn on_llm_call_without_sticky_kn_falls_through_to_llm_msg() {
+        let r = make_stderr_reporter(ProgressMode::Never, None);
+        r.on_event(ProgressEvent::Phase(Phase::Seed));
+        r.on_llm_call(PromptId::Classify, Some(PathBuf::from("crates/foo")));
+        assert_eq!(r.current_msg(), "classify (crates/foo)");
+    }
+
+    // --- Task 14: token gauge ---
+
+    #[test]
+    fn token_gauge_updates_from_counter_on_each_event() {
+        let counter = Arc::new(TokenCounter::new(200_000));
+        counter.charge(18_400).unwrap();
+        let r = make_stderr_reporter(ProgressMode::Never, Some(counter.clone()));
+        r.on_event(ProgressEvent::Phase(Phase::Fixedpoint));
+        assert_eq!(r.tokens_length(), Some(200_000));
+        assert_eq!(r.tokens_position(), 18_400);
+        counter.charge(1_600).unwrap();
+        r.on_event(ProgressEvent::Phase(Phase::Project));
+        assert_eq!(r.tokens_position(), 20_000);
+    }
+
+    #[test]
+    fn token_gauge_hidden_when_no_counter() {
+        let r = make_stderr_reporter(ProgressMode::Never, None);
+        r.on_event(ProgressEvent::Phase(Phase::Fixedpoint));
+        assert_eq!(r.tokens_length(), Some(0));
+    }
+
+    // --- Task 15: ProgressMode mapping + finish lifecycle ---
+
+    #[test]
+    fn progress_mode_never_yields_hidden_draw_target() {
+        let r = make_stderr_reporter(ProgressMode::Never, None);
+        assert!(!r.drawing());
+    }
+
+    #[test]
+    fn progress_mode_always_yields_visible_draw_target() {
+        let r = make_stderr_reporter(ProgressMode::Always, None);
+        assert!(r.drawing);
+    }
+
+    #[test]
+    fn finish_after_finished_event_is_safe() {
+        let r = make_stderr_reporter(ProgressMode::Always, None);
+        r.on_event(ProgressEvent::Finished {
+            components: 1,
+            llm_calls: 0,
+            tokens_used: 0,
+            token_budget: None,
+            elapsed: Duration::from_secs(1),
+            breakdown: PromptBreakdown::default(),
+        });
+        r.finish();
     }
 }

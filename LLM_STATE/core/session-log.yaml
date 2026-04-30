@@ -259,3 +259,17 @@ sessions:
     - All suites green; `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --all -- --check` clean
     - What this suggests next: `implement-cli-reporter-and-indicatif-rendering` (plan T7–T15) — the CLI-side `Reporter`, `MultiProgress` two-bar layout, and rendering logic
     - Key learning: emitting `Subcarve` *before* calling `subcarve_decision` (spec §7.2) is verifiable as a runtime invariant by reading `call_count()` from inside the sink callback; the test `engine_emits_subcarve_event_before_calling_decision` proves this directly via a shared-state clone of the LLM cache
+- id: session-22
+  timestamp: 2026-04-30T16:01:12Z
+  phase: work
+  body: |
+    ### Session 22 (2026-04-30T16:01:12Z) — Implement CLI Reporter and indicatif rendering
+
+    - Implemented plan tasks 7–15 from `docs/superpowers/plans/2026-05-01-engine-progress-events.md`, delivering the full CLI-side `Reporter` and indicatif rendering in `crates/atlas-cli/src/progress.rs`.
+    - Replaced the old single-line `ProgressReporter` tally with `Reporter`: owns a `MultiProgress` with two `ProgressBar`s (activity spinner + token gauge), state behind a `Mutex<ReporterState>`.
+    - Implements `atlas_engine::ProgressSink::on_event` for all `ProgressEvent` variants: `Started`, `Phase`, `IterStart`, `IterEnd`, `Subcarve`, `Surface`, `Finished`.
+    - `on_llm_call` side-channel increments `PromptBreakdown` counters; engine-set k/n from `Subcarve`/`Surface` wins over LLM-tap refreshes (spec §6.3 priority).
+    - Token gauge hides itself when budget == 0 (`--no-budget` case).
+    - `crates/atlas-cli/src/main.rs` simplified: `make_stderr_reporter` now always returns `Arc<Reporter>` (no longer `Option`), removing the match arms.
+    - All 16 regression tests pass (`cargo test -p atlas-cli progress::tests` green); clippy clean; binary still compiles and runs end-to-end.
+    - Pipeline wiring (passing the `Reporter` into `FixedpointConfig`) remains as the next backlog item.
