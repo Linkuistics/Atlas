@@ -1,0 +1,36 @@
+class Atlas < Formula
+  desc "Design recovery and architectural pattern extraction for large codebases"
+  homepage "https://github.com/linkuistics/Atlas"
+  version "@VERSION@"
+  license "Apache-2.0"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/linkuistics/Atlas/releases/download/v@VERSION@/atlas-v@VERSION@-aarch64-apple-darwin.tar.xz"
+      sha256 "@SHA_AARCH64_APPLE_DARWIN@"
+    end
+    on_intel do
+      url "https://github.com/linkuistics/Atlas/releases/download/v@VERSION@/atlas-v@VERSION@-x86_64-apple-darwin.tar.xz"
+      sha256 "@SHA_X86_64_APPLE_DARWIN@"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "https://github.com/linkuistics/Atlas/releases/download/v@VERSION@/atlas-v@VERSION@-aarch64-unknown-linux-gnu.tar.xz"
+      sha256 "@SHA_AARCH64_UNKNOWN_LINUX_GNU@"
+    end
+    on_intel do
+      url "https://github.com/linkuistics/Atlas/releases/download/v@VERSION@/atlas-v@VERSION@-x86_64-unknown-linux-gnu.tar.xz"
+      sha256 "@SHA_X86_64_UNKNOWN_LINUX_GNU@"
+    end
+  end
+
+  def install
+    bin.install "atlas"
+  end
+
+  test do
+    assert_match "atlas", shell_output("#{bin}/atlas --version")
+  end
+end
