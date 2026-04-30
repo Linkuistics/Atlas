@@ -1,16 +1,17 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/atlas-engine",
-    "crates/atlas-llm",
-    "crates/atlas-cli",
-    "evaluation/harness",
+  "crates/atlas-engine",
+  "crates/atlas-llm",
+  "crates/atlas-cli",
+  "evaluation/harness",
 ]
 
 [workspace.package]
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/linkuistics/Atlas"
+version = "1.0.0"
 
 [workspace.dependencies]
 anyhow = "1"
