@@ -216,4 +216,11 @@ entries:
 - id: phase-level-progress-needs-engine-side-hooks-in-run-fixedpoint
   title: Phase-level progress needs engine-side hooks in run_fixedpoint
   body: |
-    Per-phase progress (e.g., "L3 classification: 47/120 dirs") requires a `ProgressEvent` callback threaded through `run_fixedpoint` in `atlas-engine`. The current `ProgressBackend` in `atlas-cli` only observes LLM calls, not fixedpoint iteration boundaries. Deferred from the v1 progress implementation.
+    Per-phase progress (e.g., "L3 classification: 47/120 dirs") requires a `ProgressEvent` callback threaded through `run_fixedpoint` in `atlas-engine`. The current `ProgressBackend` in `atlas-cli` only observes LLM calls, not fixedpoint iteration boundaries.
+
+    Implementation planned in three independently testable phases (plan: `docs/superpowers/plans/2026-05-01-engine-progress-events.md`, design spec: `docs/superpowers/specs/2026-05-01-engine-progress-events-design.md`):
+    - Tasks 1–6: engine-side `ProgressEvent` enum + `run_fixedpoint` hooks → backlog task `implement-engine-side-progressevent-and-run-fixedpoint-hooks`
+    - Tasks 7–15: CLI reporter + indicatif multi-region rendering → backlog task `implement-cli-reporter-and-indicatif-rendering`
+    - Tasks 16–19: pipeline wiring, decompose L5 demand, byte-identity regression → backlog task `wire-reporter-into-pipeline-decompose-l5-demand-and-add-byte-identity-regression`
+
+    Not yet implemented. Execute tasks 1–6 first.
