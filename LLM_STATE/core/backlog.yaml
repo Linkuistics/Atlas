@@ -1,212 +1,9 @@
 tasks:
-- id: hand-author-second-golden-for-merged-monorepo
-  title: Hand-author synthetic second golden for cross-target validation
-  category: eval
-  status: not_started
-  dependencies: []
-  description: |
-    **Priority: MEDIUM.** Required for success criterion 6 (cross-target generalisation).
-
-    **Context:** The merged monorepo target originally specified for this task is third-party and unavailable. Repurposed to use a synthetic second target from `~/Development/` — a multi-crate Cargo workspace structurally different from the dev-workspace root, sufficient to exercise cross-target stability.
-
-    ## Target selection
-
-    Pick a sibling repo under `~/Development/` that:
-    - Is a multi-crate Cargo workspace (sub-carves differently from the top-level dev-workspace)
-    - Has ≥ 10 components when Atlas sub-carves it
-    - Is not the dev-workspace root itself (must exercise a different sub-carve path)
-
-    Good candidates: any larger workspace-organised repo already present under `~/Development/` (e.g. Ravel, or another multi-crate workspace). Document the selection rationale in `notes.md`.
-
-    ## Scope
-
-    ### Golden
-
-    - Hand-author `evaluation/goldens/<target-name>/components.golden.yaml` for the selected target.
-    - Approximate size: tens of components (need not be hundreds — enough to stress the cross-target gap assertion).
-    - `notes.md` documents: target selected, why it was chosen, and any boundary decisions that differ from what Atlas naturally produces.
-
-    ### Cross-target validation
-
-    - Run the tool against the synthetic target root; produce `evaluation/results/<date>-<target-name>.yaml`.
-    - Compare metrics between the two goldens (dev-workspace and synthetic target):
-      - Component coverage: both ≥ 0.9?
-      - Spurious rate: both ≤ 0.1?
-      - Kind accuracy: both ≥ 0.85?
-      - Edge precision: both ≥ 0.8?
-    - Gap between targets ≤ 5 percentage points on each axis (criterion 6).
-
-    ### Iteration loop (if gap > 5pp)
-
-    If the gap exceeds the bar, iterate on prompts, heuristics, or thresholds and re-run. Document changes in `evaluation/results/notes/<date>-iteration.md`.
-
-    ## Out of scope
-
-    - Ravel-Lite migration (separate tasks).
-    - Performance optimisation.
-
-    ## Exit criteria
-
-    - Target selected and documented in `notes.md`.
-    - Golden exists and passes all invariants.
-    - Both goldens' metrics meet their individual targets AND cross-target gap ≤ 5pp.
-    - Report HTML shows both targets with trend lines.
-  results: |
-    Repurposed in triage (2026-04-25): merged monorepo target is third-party and unavailable. Task pivoted to synthetic second target from `~/Development/` per option 2 in the blocked-cycle recommendation. Prior blocked-cycle context: `component-ontology` at `linkuistics/atlas-contracts` SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` matches Ravel-Lite's ontology surface 1:1; M2 migration is a pure import-path swap once Ravel-Lite is quiescent.
-- id: verify-atlas-v1-success-criteria-end-to-end
-  title: Verify Atlas v1 success criteria end-to-end
-  category: eval
-  status: not_started
-  dependencies:
-  - hand-author-second-golden-for-merged-monorepo
-  description: |
-    **Priority: HIGH.** Signs off v1.
-
-    **Design reference:** §10.3 success criteria 1–6.
-
-    ## Scope
-
-    Execute each of the six v1 success criteria from §10.3 in order, document results in `evaluation/results/v1-signoff-<date>.md`:
-
-    1. Run `atlas index /Users/antony/Development/` on a clean checkout. Assert coverage ≥ 0.9, spurious ≤ 0.1 against the golden.
-    2. Re-run with no file changes. Assert 0 LLM calls (check the CLI's summary output) and byte-identical `components.yaml`.
-    3. Touch one source file in one component. Re-run. Assert LLM call count equals exactly the affected component's `surface_of` plus its edge-neighbour count for edges. Log the numbers for future reference.
-    4. Add a pin to `components.overrides.yaml` for one component (e.g., pin `role: my-custom-role`). Delete `components.yaml`. Re-run. Assert the pin appears in the regenerated `components.yaml` without human intervention.
-    5. Run Ravel-Lite's `related-components` workflow against Atlas-produced YAMLs. Assert it runs to completion without schema errors.
-    6. Run against the synthetic second target selected and evaluated in `hand-author-second-golden-for-merged-monorepo`. Assert coverage/spurious/kind/edge metrics are within 5 percentage points of the `~/Development/` run on each axis.
-
-    ### Cross-plan dependency
-
-    Criterion 5 cannot run until **Ravel-Lite's M5 migration** (`Migration M5: consume Atlas via atlas-index` in Ravel-Lite's backlog, formerly `ravel-lite-migration-m5-consume-atlas-via-atlas-index` in Atlas's) is complete. M5 lives in Ravel-Lite's plan, not Atlas's, so it cannot be expressed as a structural dependency here. Before starting this task, confirm M5 is `done` in Ravel-Lite by running:
-
-    ```
-    ravel-lite state backlog list /Users/antony/Development/Ravel-Lite/LLM_STATE/core --category migration
-    ```
-
-    If M5 is not done, criterion 5 must be skipped and recorded as "blocked on Ravel-Lite M5" in the sign-off report; the other five criteria can still proceed.
-
-    ### Report
-
-    - `evaluation/results/v1-signoff-<date>.md` contains each criterion, the commands run, the measured values, and pass/fail.
-    - On any failure, the criterion lists the specific gap and what next steps would close it.
-
-    ### Follow-up backlog
-
-    - If any criterion fails by a wide margin, open a new backlog task to investigate. Do not silently move on.
-
-    ## Out of scope
-
-    - Everything in §10.2 (deferred).
-
-    ## Exit criteria
-
-    - All six criteria pass or have documented follow-up tasks (criterion 5 may be deferred pending Ravel-Lite M5).
-    - Sign-off report committed to the Atlas repo.
-    - An announcement-ready short summary written (optional) as `README-v1.md` documenting what Atlas v1 does and does not do.
-- id: implement-engine-side-progressevent-and-run-fixedpoint-hooks
-  title: Implement engine-side ProgressEvent and run_fixedpoint hooks
-  category: feature
-  status: done
-  dependencies: []
-  description: |
-    Implement plan tasks 1–6 from
-    `docs/superpowers/plans/2026-05-01-engine-progress-events.md`. This is the
-    engine-side half of the design: the CLI side and pipeline wiring land in
-    follow-up backlog items.
-
-    **Scope (plan task numbers in parens):**
-
-    1. Add `indicatif = "0.17"` to `[workspace.dependencies]` and to
-       `crates/atlas-cli/Cargo.toml` (T1). The dep is consumed by atlas-cli
-       later; declaring it now keeps T1 a clean prep step.
-    2. Create `crates/atlas-engine/src/progress.rs` with `ProgressSink`
-       trait, `ProgressEvent` enum, `Phase` enum, `PromptBreakdown`, and a
-       `RecordingSink` test helper (T2). Re-export from `lib.rs`.
-    3. Add `relpath_of(&ComponentEntry) -> PathBuf` helper in the same
-       module; re-export (T3).
-    4. Add `progress: Option<Arc<dyn ProgressSink>>` field to
-       `FixedpointConfig`; hand-roll `Debug` because `dyn ProgressSink` is
-       not `Debug` (T4).
-    5. Modify `run_fixedpoint` to emit `IterStart` / `Subcarve` / `IterEnd`
-       events, with `Subcarve` fired *before* the `subcarve_decision` call
-       (spec §7.2 — the activity bar must show the in-flight target while
-       the LLM call is in flight) (T5).
-    6. Extend the existing `PathologicalBackend` test with a parallel
-       assertion that `IterStart{n}` fires for each iteration up to the
-       hard cap (T6).
-
-    **Exit criteria:**
-
-    - `cargo test -p atlas-engine` is green, including the new
-      `recording_sink_captures_events_in_order`,
-      `relpath_of_*`, `engine_emits_iter_start_subcarve_iter_end_in_order`,
-      `engine_emits_subcarve_event_before_calling_decision`, and
-      `pathological_backend_emits_iter_start_for_each_iteration_until_cap`
-      tests.
-    - `cargo check --workspace` is clean — `atlas-cli/pipeline.rs` and the
-      evaluation harness still compile because they construct
-      `FixedpointConfig` via `..FixedpointConfig::default()`, absorbing the
-      new field.
-    - No behavioural change observable from `atlas index`: the CLI does not
-      yet install a sink, so `config.progress = None` and the new branches
-      are silent.
-
-    **Out of scope (handled in follow-up items):**
-
-    - Anything inside `crates/atlas-cli/src/progress.rs` beyond the new
-      indicatif dep.
-    - Pipeline wiring of a `Reporter`.
-    - L5 demand decomposition.
-
-    **Plan reference:** `docs/superpowers/plans/2026-05-01-engine-progress-events.md`,
-    sections "Task 1" through "Task 6". The plan contains every code block
-    verbatim — execute step-by-step.
-  results: |
-    **Plan tasks 1–6 complete.** Engine now emits structured progress events; the CLI side and pipeline wiring remain in the two follow-up backlog items.
-
-    ## What landed
-
-    - **T1 — `indicatif` workspace dep.** Added `indicatif = "0.17"` to `[workspace.dependencies]` (Cargo.toml) and `indicatif = { workspace = true }` to `crates/atlas-cli/Cargo.toml`. Resolves cleanly; downloaded `indicatif 0.17.11` and transitive deps. Atlas-engine stays clean of the dep — rendering is a CLI-only concern.
-
-    - **T2/T3 — `crates/atlas-engine/src/progress.rs` (new).** `ProgressSink: Send + Sync` trait, `ProgressEvent` enum (Started/Phase/IterStart/Subcarve/IterEnd/Surface/Finished), `Phase` enum (Seed/Fixedpoint/Project/Edges), `PromptBreakdown`, `relpath_of(&ComponentEntry)` helper that returns `path_segments.last().path` (or empty `PathBuf`), and a `RecordingSink` test helper that wraps `Mutex<Vec<ProgressEvent>>`. Re-exported from `lib.rs`. Three unit tests (`recording_sink_captures_events_in_order`, `relpath_of_returns_last_segment_path`, `relpath_of_returns_empty_when_no_segments`) green.
-
-    - **T4 — `progress: Option<Arc<dyn ProgressSink>>` field on `FixedpointConfig`.** Hand-rolled `Debug` impl because `dyn ProgressSink` is not `Debug`; `Default` returns `None`. Existing test fixtures that constructed `FixedpointConfig` literally (`fixedpoint.rs` two sites + `tests/l7_l8_fixedpoint.rs` three sites) updated to spread `..FixedpointConfig::default()`. `pipeline.rs` already used the spread idiom — untouched.
-
-    - **T5 — `run_fixedpoint` emits `IterStart`/`Subcarve`/`IterEnd`.** Conditional on `config.progress.is_some()`. `Subcarve` fires *before* `subcarve_decision` (spec §7.2 — activity bar must show in-flight target while LLM call is in flight). `IterEnd::components_added` counts new (id, sub_dir) pairs merged this iteration; `elapsed` is per-iteration via `Instant::now()` capture. The driver now collects `Vec<(String, PathBuf)>` of (id, relpath) pairs once per iteration so `n` is fixed for the loop and `k/n` denominators stay stable.
-
-    - **T6 — `pathological_backend_emits_iter_start_for_each_iteration_until_cap`.** Added alongside the existing `pathological_backend_panics_at_hard_cap`. Uses `catch_unwind` to suppress the hard-cap panic and asserts `iter_starts == [0, 1, 2]` for `hard_cap = 3`.
-
-    - **Workspace-wide `cargo fmt --all`.** Applied per user directive — pre-existing rustfmt drift across atlas-engine, atlas-cli, atlas-llm, and the eval harness was extensive (~70 files); the user clarified mid-task that "fix all lint/fmt issues wherever we see them" is the correct policy. Whitespace-only changes; no test logic touched. Memory entry `feedback_fix_all_lints.md` updated to reflect that fmt drift is in scope alongside clippy/rustc warnings.
-
-    ## Verification (exit criteria)
-
-    - ✅ `cargo test --workspace` — all suites green, including the 6 new progress-related tests:
-      - `progress::tests::recording_sink_captures_events_in_order`
-      - `progress::tests::relpath_of_returns_last_segment_path`
-      - `progress::tests::relpath_of_returns_empty_when_no_segments`
-      - `fixedpoint::tests::engine_emits_iter_start_subcarve_iter_end_in_order`
-      - `fixedpoint::tests::engine_emits_subcarve_event_before_calling_decision`
-      - `fixedpoint::tests::pathological_backend_emits_iter_start_for_each_iteration_until_cap`
-    - ✅ `cargo check --workspace` clean.
-    - ✅ `cargo clippy --workspace --all-targets -- -D warnings` clean.
-    - ✅ `cargo fmt --all -- --check` clean.
-    - ✅ No behaviour change in `atlas index`: CLI still constructs `FixedpointConfig` via `..FixedpointConfig::default()`, so `progress` defaults to `None` and the new `if let Some(s) = sink.as_ref()` branches are silent.
-
-    ## Subtle correctness points
-
-    - **Sticky-ordering proof.** `engine_emits_subcarve_event_before_calling_decision` clones `db.llm_cache()` (the cache is `Clone` over `Arc<Mutex<Inner>>`, so clones share state) and reads `call_count()` from inside the sink's `on_event`. Because the engine emits `Subcarve` before invoking `subcarve_decision` (which routes through the cache), the counter observed at emission is `0` — proving spec §7.2 ordering as a runtime invariant.
-    - **Stable k/n per iteration.** `Vec<(String, PathBuf)> live` is materialised before the inner loop, so `n` is fixed for that pass. If we sourced from a re-queried `all_components(db)` mid-loop, an interleaving `set_carve_back_edge` (which happens between iterations) could change `n` underfoot.
-
-    ## Out of scope (next backlog items)
-
-    - `implement-cli-reporter-and-indicatif-rendering` (plan T7–T15) — `Reporter`, `MultiProgress` two-bar layout, `render_activity_msg`, `ProgressBackend` retap, sticky-k/n state, non-TTY fallback.
-    - `wire-reporter-into-pipeline-decompose-l5-demand-and-add-byte-identity-regression` (plan T16–T19) — pipeline wiring, per-component `surface_of` demand loop, byte-identity integration test.
 - id: implement-cli-reporter-and-indicatif-rendering
   title: Implement CLI Reporter and indicatif rendering
   category: feature
   status: not_started
-  dependencies:
-  - implement-engine-side-progressevent-and-run-fixedpoint-hooks
+  dependencies: []
   description: |
     Implement plan tasks 7–15 from
     `docs/superpowers/plans/2026-05-01-engine-progress-events.md`. This
@@ -341,3 +138,107 @@ tasks:
     **Plan reference:** `docs/superpowers/plans/2026-05-01-engine-progress-events.md`,
     sections "Task 16" through "Task 19" plus the "Final verification"
     section.
+- id: hand-author-second-golden-for-merged-monorepo
+  title: Hand-author synthetic second golden for cross-target validation
+  category: eval
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** Required for success criterion 6 (cross-target generalisation).
+
+    **Context:** The merged monorepo target originally specified for this task is third-party and unavailable. Repurposed to use a synthetic second target from `~/Development/` — a multi-crate Cargo workspace structurally different from the dev-workspace root, sufficient to exercise cross-target stability.
+
+    ## Target selection
+
+    Pick a sibling repo under `~/Development/` that:
+    - Is a multi-crate Cargo workspace (sub-carves differently from the top-level dev-workspace)
+    - Has ≥ 10 components when Atlas sub-carves it
+    - Is not the dev-workspace root itself (must exercise a different sub-carve path)
+
+    Good candidates: any larger workspace-organised repo already present under `~/Development/` (e.g. Ravel, or another multi-crate workspace). Document the selection rationale in `notes.md`.
+
+    ## Scope
+
+    ### Golden
+
+    - Hand-author `evaluation/goldens/<target-name>/components.golden.yaml` for the selected target.
+    - Approximate size: tens of components (need not be hundreds — enough to stress the cross-target gap assertion).
+    - `notes.md` documents: target selected, why it was chosen, and any boundary decisions that differ from what Atlas naturally produces.
+
+    ### Cross-target validation
+
+    - Run the tool against the synthetic target root; produce `evaluation/results/<date>-<target-name>.yaml`.
+    - Compare metrics between the two goldens (dev-workspace and synthetic target):
+      - Component coverage: both ≥ 0.9?
+      - Spurious rate: both ≤ 0.1?
+      - Kind accuracy: both ≥ 0.85?
+      - Edge precision: both ≥ 0.8?
+    - Gap between targets ≤ 5 percentage points on each axis (criterion 6).
+
+    ### Iteration loop (if gap > 5pp)
+
+    If the gap exceeds the bar, iterate on prompts, heuristics, or thresholds and re-run. Document changes in `evaluation/results/notes/<date>-iteration.md`.
+
+    ## Out of scope
+
+    - Ravel-Lite migration (separate tasks).
+    - Performance optimisation.
+
+    ## Exit criteria
+
+    - Target selected and documented in `notes.md`.
+    - Golden exists and passes all invariants.
+    - Both goldens' metrics meet their individual targets AND cross-target gap ≤ 5pp.
+    - Report HTML shows both targets with trend lines.
+  results: |
+    Repurposed in triage (2026-04-25): merged monorepo target is third-party and unavailable. Task pivoted to synthetic second target from `~/Development/` per option 2 in the blocked-cycle recommendation. Prior blocked-cycle context: `component-ontology` at `linkuistics/atlas-contracts` SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` matches Ravel-Lite's ontology surface 1:1; M2 migration is a pure import-path swap once Ravel-Lite is quiescent.
+- id: verify-atlas-v1-success-criteria-end-to-end
+  title: Verify Atlas v1 success criteria end-to-end
+  category: eval
+  status: not_started
+  dependencies:
+  - hand-author-second-golden-for-merged-monorepo
+  description: |
+    **Priority: HIGH.** Signs off v1.
+
+    **Design reference:** §10.3 success criteria 1–6.
+
+    ## Scope
+
+    Execute each of the six v1 success criteria from §10.3 in order, document results in `evaluation/results/v1-signoff-<date>.md`:
+
+    1. Run `atlas index /Users/antony/Development/` on a clean checkout. Assert coverage ≥ 0.9, spurious ≤ 0.1 against the golden.
+    2. Re-run with no file changes. Assert 0 LLM calls (check the CLI's summary output) and byte-identical `components.yaml`.
+    3. Touch one source file in one component. Re-run. Assert LLM call count equals exactly the affected component's `surface_of` plus its edge-neighbour count for edges. Log the numbers for future reference.
+    4. Add a pin to `components.overrides.yaml` for one component (e.g., pin `role: my-custom-role`). Delete `components.yaml`. Re-run. Assert the pin appears in the regenerated `components.yaml` without human intervention.
+    5. Run Ravel-Lite's `related-components` workflow against Atlas-produced YAMLs. Assert it runs to completion without schema errors.
+    6. Run against the synthetic second target selected and evaluated in `hand-author-second-golden-for-merged-monorepo`. Assert coverage/spurious/kind/edge metrics are within 5 percentage points of the `~/Development/` run on each axis.
+
+    ### Cross-plan dependency
+
+    Criterion 5 cannot run until **Ravel-Lite's M5 migration** (`Migration M5: consume Atlas via atlas-index` in Ravel-Lite's backlog, formerly `ravel-lite-migration-m5-consume-atlas-via-atlas-index` in Atlas's) is complete. M5 lives in Ravel-Lite's plan, not Atlas's, so it cannot be expressed as a structural dependency here. Before starting this task, confirm M5 is `done` in Ravel-Lite by running:
+
+    ```
+    ravel-lite state backlog list /Users/antony/Development/Ravel-Lite/LLM_STATE/core --category migration
+    ```
+
+    If M5 is not done, criterion 5 must be skipped and recorded as "blocked on Ravel-Lite M5" in the sign-off report; the other five criteria can still proceed.
+
+    ### Report
+
+    - `evaluation/results/v1-signoff-<date>.md` contains each criterion, the commands run, the measured values, and pass/fail.
+    - On any failure, the criterion lists the specific gap and what next steps would close it.
+
+    ### Follow-up backlog
+
+    - If any criterion fails by a wide margin, open a new backlog task to investigate. Do not silently move on.
+
+    ## Out of scope
+
+    - Everything in §10.2 (deferred).
+
+    ## Exit criteria
+
+    - All six criteria pass or have documented follow-up tasks (criterion 5 may be deferred pending Ravel-Lite M5).
+    - Sign-off report committed to the Atlas repo.
+    - An announcement-ready short summary written (optional) as `README-v1.md` documenting what Atlas v1 does and does not do.
