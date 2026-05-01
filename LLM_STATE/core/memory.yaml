@@ -16,7 +16,7 @@ entries:
 - id: serde-untagged-enum-variants-need-unique-field-names
   title: Serde untagged enum variants need unique field names
   body: |
-    Serde untagged enums require each variant's distinguishing field name to be unique across variants. Field name collisions between variants cause ambiguous deserialisation. This constraint is load-bearing for `PinValue` in atlas-index.
+    Serde untagged enums require each variant's distinguishing field name to be unique across variants. Field name collisions between variants cause ambiguous deserialisation. When variants cannot be distinguished by field names (e.g., bool vs. seq vs. map shapes), replace `#[serde(untagged)]` with a `deserialize_any` Visitor.
 - id: componentkind-enum-deferred-to-atlas-engine
   title: ComponentKind enum lives in atlas-engine not atlas-index
   body: |
@@ -372,3 +372,9 @@ entries:
   title: validate_participant_namespace lives in component-ontology, may migrate post-Phase-3
   body: |
     `validate_participant_namespace` lives in `component-ontology` because edge participants are vocabulary the crate owns. If no second caller materialises after Phase 3 wires the cross-namespace check, the function is a candidate to migrate to `atlas-cli`. Revisit once Phase 3 is complete.
+- id: pinvalue-deserializer-dispatches-on-value-shape-via-visitor
+  title: PinValue deserializer dispatches on value shape via Visitor
+  body: |
+    `PinValue` uses a hand-rolled `Serialize` + `Deserialize` pair with a `deserialize_any` Visitor that dispatches on value shape: bool → `Suppress`, seq → `SuppressChildren`, map → `Value` (or legacy doubly-nested compat). Replaces `#[serde(untagged)]`, which cannot distinguish variants by value type. Legacy doubly-nested form accepted silently for backward compatibility.
+
+    Cross-ref: `pinvalue-suppress-uses-alwaystrue-to-ban-suppress-false`.
