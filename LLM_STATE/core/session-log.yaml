@@ -312,3 +312,16 @@ sessions:
     - Two backlog tasks created: `design-agent-progress-feedback-feature-write-spec` (now `done`) and `implement-agent-progress-feedback-live-tool-call-sub-line-during-long-llm-calls` (`not_started`, depends on the design task).
     - No code changes this session; all changes are plan-state and the spec doc.
     - Suggests next: pick up the implementation task, invoke `superpowers:writing-plans` against the spec to produce a step-by-step plan, then drive build with `superpowers:executing-plans` or subagent-driven-development. Pre-implementation prep: capture real `claude -p --output-format stream-json --verbose` JSONL transcripts and check them in as test fixtures.
+- id: session-26
+  timestamp: 2026-05-01T03:05:35Z
+  phase: work
+  body: |
+    ### Session 26 (2026-05-01T00:00:00Z) — Capture stream-json JSONL test fixtures
+
+    - Ran `claude -p --output-format stream-json --verbose` against three crafted prompts using `claude-haiku-4-5` to minimise cost, capturing real event streams.
+    - Committed four files under `crates/atlas-llm/tests/fixtures/stream/`: `simple-classify.jsonl` (9 events, no tools), `subcarve-with-tools.jsonl` (12 events, one Read-tool call), `error-max-turns.jsonl` (12 events, `error_max_budget_usd` terminal), and `README.md` with capture/redaction/re-capture instructions.
+    - `--settings '{"maxTurns": 1}'` had no effect in `--print` mode; substituted `--max-budget-usd 0.001` to force a non-success terminal event.
+    - Redaction was applied before commit: `system/hook_response.output`/`.stdout` replaced with placeholder; username substituted to `USER` throughout.
+    - `cargo check -p atlas-llm --tests` passes with the new `tests/fixtures/` tree.
+    - Three parser-quirk findings documented as handoff for the implementation task: (1) `tool_result.is_error` absent on success (not `false`), (2) assistant `content[]` emits `thinking`/`tool_use`/`text` block types mixed under one event, (3) terminal `result.result` is markdown-fenced JSON not bare JSON — `serde_json::from_str` will fail without a fence stripper.
+    - Suggests next: pick up `implement-agent-progress-feedback-live-tool-call-sub-line-during-long-llm-calls`, apply `superpowers:writing-plans` against the spec, then drive build with `superpowers:executing-plans`.
