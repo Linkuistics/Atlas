@@ -260,3 +260,11 @@ entries:
     - Use **ancestry** (`merge-base --is-ancestor HEAD origin/main`), not SHA equality. SHA equality false-positives if someone else lands on origin/main between local push and build.
     - **No `--prune` / `--prune-tags`** on the fetch — release scripts must not impose tag-pruning side effects on the operator's working tree.
     - Helper is **duplicated** in both scripts rather than sourced from `scripts/lib/`. Extract `lib/release-checks.sh` if the scripts grow more shared helpers.
+- id: agent-progress-sub-line-is-a-third-indicatif-line-on-callstart-callend
+  title: Agent progress sub-line is a third indicatif line on CallStart/CallEnd
+  body: |
+    Third indicatif sub-line mounted on `CallStart`, unmounted on `CallEnd`. Activation gate: `Reporter::drawing()`. Side-channel routes `ClaudeCodeBackend → Reporter` directly (not through a shared event bus). Surface content: most recent tool call name + running counter during long LLM pauses. Spec: `docs/superpowers/specs/2026-05-01-agent-progress-feedback-design.md`.
+- id: agent-progress-backend-uses-stream-json-verbose-legacy-path-removed
+  title: Agent progress backend uses stream-json --verbose; legacy path removed
+  body: |
+    `ClaudeCodeBackend` runs `claude -p --output-format stream-json --verbose` for all calls; the legacy non-streaming JSON path is removed. Pre-implementation: capture real JSONL transcripts as test fixtures before building the stream parser.
