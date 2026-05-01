@@ -106,7 +106,7 @@ tasks:
 - id: fix-parse-stream-to-map-error-max-budget-usd-to-llmerror-budgetexhausted
   title: Fix parse_stream to map error_max_budget_usd to LlmError::BudgetExhausted
   category: bug
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: LOW.** `parse_stream` in `atlas-llm` currently maps `error_max_budget_usd` terminal events to `LlmError::Invocation` (generic string error) rather than `LlmError::BudgetExhausted`. This means `BudgetSentinel` does not intercept `--max-budget-usd`-triggered exhaustion from the stream-json path.
@@ -126,6 +126,33 @@ tasks:
     - `parse_stream` returns `LlmError::BudgetExhausted` for `error_max_budget_usd` terminals.
     - `BudgetSentinel` correctly intercepts this error.
     - All `atlas-llm` tests pass; clippy clean.
+  results: |
+    ## What was done
+
+    Added a special-case branch in `parse_stream` (`crates/atlas-llm/src/stream_parse.rs`) that maps the stream-json terminal subtype `error_max_budget_usd` to `LlmError::BudgetExhausted { requested: 0, remaining: 0 }` instead of `LlmError::Invocation`. The branch sits before the generic non-success block so all other non-success subtypes (e.g. `error_during_execution`) continue to surface as `Invocation` with the original `errors[0]` detail.
+
+    `requested`/`remaining` are 0/0 because the stream-json terminal frame carries `total_cost_usd` but no token figures. `BudgetSentinel` matches on the variant, not the fields, so the typed signal still propagates correctly; `BudgetedBackend` remains the source of truth for accurate token accounting.
+
+    ## Tests
+
+    TDD: tests updated first to fail against the old behaviour, then the implementation flipped them green.
+
+    - Renamed `parse_stream_terminal_subtype_not_success_returns_invocation_error` → `parse_stream_generic_non_success_subtype_returns_invocation_error` and changed the subtype to `error_during_execution` so the catch-all branch is still under test.
+    - Renamed `fixture_error_max_turns_returns_invocation_error` → `fixture_error_max_budget_usd_returns_budget_exhausted` and updated it to assert the new variant against the existing `error-max-turns.jsonl` fixture.
+    - Added `parse_stream_error_max_budget_usd_subtype_returns_budget_exhausted` as a direct, fixture-free assertion of the new mapping.
+
+    All 65 atlas-llm unit tests pass; full workspace test run is green (24 test suites, all `ok`); `cargo clippy --workspace --all-targets -- -D warnings` is clean; `cargo fmt --all -- --check` reports no drift.
+
+    ## Docs / fixture metadata
+
+    `crates/atlas-llm/tests/fixtures/stream/README.md` updated: the `error-max-turns.jsonl` line now documents the `error_max_budget_usd` → `LlmError::BudgetExhausted` mapping (was `LlmError::Invocation`).
+
+    ## What this enables / suggests next
+
+    - The release-readiness goal stated in the user's instruction is satisfied: the only `bug`-category backlog task is now closed, and the workspace is clean.
+    - Distilled memory `stream-json-error-max-budget-usd-maps-to-invocation-not-budgetexhausted` is now **stale** — the gap it documents has been closed. Recommend removing it (or rewriting it as a "this is the mapping" note) during the next memory-distillation pass.
+    - The cross-referenced memory `budgetsentinel-is-only-reliable-budget-exhaustion-detection-path` is still accurate (it talks about *interception*, not *parser-side mapping*), but is now stronger: BudgetSentinel will trip for either the BudgetedBackend token path **or** the CLI's `--max-budget-usd` exhaustion, whereas previously only the former was reliable.
+    - The agent-progress e2e integration test (`run-agent-progress-e2e-integration-test-against-real-claude-binary`) remains a low-priority follow-up; running it once would now also exercise the corrected error mapping under a real `--max-budget-usd` scenario, but is not required for release.
 - id: run-agent-progress-e2e-integration-test-against-real-claude-binary
   title: Run agent-progress e2e integration test against real claude binary
   category: eval

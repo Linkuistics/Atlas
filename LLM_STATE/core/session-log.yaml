@@ -358,3 +358,15 @@ sessions:
       - Truncation width is hard-coded at 120; a future polish could query `console::Term::stderr().size()` at reporter construction.
       - `error-max-budget-usd` surfaces as a generic `Invocation` error; worth wiring into `BudgetSentinel` for a dedicated exit code.
     - **Key learnings**: Five memory entries written covering the streaming-only backend path, observer side-channel topology, parse_stream forward-compat contract, stderr drainer requirement, and the `is_hidden()` / UFCS pitfalls.
+- id: session-29
+  timestamp: 2026-05-01T05:53:34Z
+  phase: work
+  body: |
+    ### Session 29 (2026-05-01T05:53:34Z) — Fix parse_stream error_max_budget_usd mapping
+
+    - Implemented the `error_max_budget_usd` → `LlmError::BudgetExhausted` mapping in `parse_stream` (`crates/atlas-llm/src/stream_parse.rs`). Added a special-case branch before the generic non-success block; all other non-success subtypes (e.g. `error_during_execution`) continue to surface as `LlmError::Invocation`.
+    - `requested`/`remaining` are 0/0 — the terminal frame carries `total_cost_usd` not token figures; `BudgetSentinel` matches on the variant, not the fields, so the typed signal propagates correctly.
+    - Three test changes: renamed `parse_stream_terminal_subtype_not_success_returns_invocation_error` to `parse_stream_generic_non_success_subtype_returns_invocation_error` (updated subtype to `error_during_execution` to keep catch-all covered); renamed and updated `fixture_error_max_turns_returns_invocation_error` → `fixture_error_max_budget_usd_returns_budget_exhausted`; added new inline test `parse_stream_error_max_budget_usd_subtype_returns_budget_exhausted`.
+    - Updated `crates/atlas-llm/tests/fixtures/stream/README.md` to document the new mapping for `error-max-turns.jsonl`.
+    - All 65 atlas-llm unit tests pass; full workspace green (24 suites); clippy and fmt clean.
+    - This closes the only `bug`-category backlog task; workspace is release-clean.

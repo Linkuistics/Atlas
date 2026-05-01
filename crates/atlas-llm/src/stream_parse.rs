@@ -151,6 +151,19 @@ pub(crate) fn parse_stream<R: Read>(
         .and_then(|v| v.as_str())
         .unwrap_or("");
     if subtype != "success" {
+        // The CLI reports `--max-budget-usd` exhaustion via the
+        // `error_max_budget_usd` subtype. Surface it as the typed
+        // BudgetExhausted variant so BudgetSentinel intercepts it
+        // alongside token-counter exhaustion from BudgetedBackend.
+        // The terminal frame carries `total_cost_usd`, not token
+        // counts, so requested/remaining are 0 — BudgetSentinel
+        // matches on the variant, not the fields.
+        if subtype == "error_max_budget_usd" {
+            return Err(LlmError::BudgetExhausted {
+                requested: 0,
+                remaining: 0,
+            });
+        }
         let detail = terminal
             .get("errors")
             .and_then(|v| v.as_array())
@@ -390,7 +403,29 @@ mod tests {
     }
 
     #[test]
-    fn parse_stream_terminal_subtype_not_success_returns_invocation_error() {
+    fn parse_stream_generic_non_success_subtype_returns_invocation_error() {
+        let observer = RecordingObserver::new();
+        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let events = jsonl_bytes(&[json!({
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": true
+        })]);
+
+        let err = parse_stream(Cursor::new(events), Some(&observer_dyn), PromptId::Subcarve)
+            .expect_err("non-success subtype must error");
+
+        match err {
+            crate::LlmError::Invocation(msg) => {
+                assert!(msg.contains("error_during_execution"), "got: {msg}");
+            }
+            other => panic!("expected Invocation, got {other:?}"),
+        }
+        assert!(observer.names().iter().any(|n| n == "CallEnd"));
+    }
+
+    #[test]
+    fn parse_stream_error_max_budget_usd_subtype_returns_budget_exhausted() {
         let observer = RecordingObserver::new();
         let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
         let events = jsonl_bytes(&[json!({
@@ -400,14 +435,12 @@ mod tests {
         })]);
 
         let err = parse_stream(Cursor::new(events), Some(&observer_dyn), PromptId::Subcarve)
-            .expect_err("non-success subtype must error");
+            .expect_err("error_max_budget_usd must error");
 
-        match err {
-            crate::LlmError::Invocation(msg) => {
-                assert!(msg.contains("error_max_budget_usd"), "got: {msg}");
-            }
-            other => panic!("expected Invocation, got {other:?}"),
-        }
+        assert!(
+            matches!(err, crate::LlmError::BudgetExhausted { .. }),
+            "expected BudgetExhausted, got {err:?}"
+        );
         assert!(observer.names().iter().any(|n| n == "CallEnd"));
     }
 
@@ -541,22 +574,17 @@ mod tests {
     }
 
     #[test]
-    fn fixture_error_max_turns_returns_invocation_error() {
+    fn fixture_error_max_budget_usd_returns_budget_exhausted() {
         let observer = RecordingObserver::new();
         let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
 
         let err = parse_fixture("error-max-turns.jsonl", &observer_dyn, PromptId::Subcarve)
             .expect_err("non-success terminal must error");
 
-        match err {
-            crate::LlmError::Invocation(msg) => {
-                assert!(
-                    msg.contains("error_max_budget_usd"),
-                    "expected subtype in message; got {msg}"
-                );
-            }
-            other => panic!("expected Invocation, got {other:?}"),
-        }
+        assert!(
+            matches!(err, crate::LlmError::BudgetExhausted { .. }),
+            "expected BudgetExhausted, got {err:?}"
+        );
         assert!(observer.names().iter().any(|n| n == "CallEnd"));
     }
 }
