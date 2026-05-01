@@ -229,3 +229,16 @@ entries:
   title: Finished event fires after save_*_atomic per spec §6.2
   body: |
     `Finished` must be emitted after `save_*_atomic` completes (spec §6.2: "done line is final"). The pipeline `Started`/`Phase`/`Finished` event sequence in `run_index` enforces this: `reporter.finish()` is called only after all atomic file writes succeed.
+- id: llmresponsecache-call-count-increments-on-cache-misses-only
+  title: LlmResponseCache::call_count increments on cache misses only
+  body: |
+    LlmResponseCache::call_count increments only on successful cache misses — errors short-circuit before the increment. A test that asserts `call_count() == 0` may still have triggered real backend traffic if those calls errored out. When using TestBackend in tests that need to verify "zero live LLM calls", an erroring backend can show `call_count=0` while logically having fired. Use a wrapping `CountingBackend` (counts every `.call()` invocation, including errors) when the assertion is about traffic rather than successful responses.
+- id: testbackend-json-matches-only-literal-empty-object-not-wildcard
+  title: TestBackend json!({}) matches only literal empty-object, not wildcard
+  body: |
+    `TestBackend::respond` keys on the full serialised `LlmRequest`. `json!({})` matches **only** the literal empty-object input — it is not a wildcard. Tests that need to drive a real L5 or L6 path must either:
+
+    1. Compute exact inputs via `build_inputs_for_tests` (currently `pub(crate)` in `atlas-engine`) and register a canned response against the real input, or
+    2. Wrap with a `CountingBackend` that counts invocations without depending on canned-response success.
+
+    Corollary: a test using `json!({})` as a catch-all canned response and expecting successful L5 surfacing will see a cache miss on every real L5 call, causing unexpected LLM traffic or test failures.
