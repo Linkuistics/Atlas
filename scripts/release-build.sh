@@ -38,6 +38,20 @@ require_clean_tagged_tree() {
     || die "HEAD is not a tagged commit; run 'cargo release <level> --execute' first"
 }
 
+require_pushed_to_origin() {
+  local version="$1"
+  local tag="v${version}"
+
+  git -C "$REPO_ROOT" fetch --quiet --tags origin \
+    || die "could not fetch from origin (network or auth issue)"
+
+  git -C "$REPO_ROOT" merge-base --is-ancestor HEAD origin/main \
+    || die "HEAD is not reachable from origin/main; run 'git push origin main --follow-tags' first"
+
+  git -C "$REPO_ROOT" ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1 \
+    || die "tag ${tag} is not on origin; run 'git push origin ${tag}' (or 'git push --follow-tags')"
+}
+
 read_version() {
   git -C "$REPO_ROOT" describe --tags --abbrev=0 | sed 's/^v//'
 }
@@ -93,6 +107,7 @@ main() {
   require_clean_tagged_tree
   local version
   version="$(read_version)"
+  require_pushed_to_origin "$version"
   echo "release-build: building atlas v${version}"
 
   rm -rf "$DIST_DIR"
