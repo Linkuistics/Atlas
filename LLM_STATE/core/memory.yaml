@@ -284,3 +284,9 @@ entries:
   title: max-budget-usd 0.001 forces error terminal in print mode
   body: |
     `--settings '{"maxTurns": 1}'` has no effect in `--print` mode. Use `--max-budget-usd 0.001` to force a non-success terminal event (`error_max_budget_usd`) when capturing stream-json JSONL test fixtures.
+- id: claude-p-json-schema-may-emit-bare-json-skipping-markdown-fence
+  title: claude -p --json-schema may emit bare JSON skipping markdown fence
+  body: |
+    `claude -p` accepts a `--json-schema <schema>` flag (visible in `--help`). When passed, the CLI may emit raw JSON in `result.result` without the markdown code fence that normally wraps the output. Worth probing as part of implementing the stream-json parser — if it works, it eliminates the need for a markdown-fence stripper.
+
+    Related memory: `stream-json-result-result-is-markdown-fenced-json` (the problem this might solve).
