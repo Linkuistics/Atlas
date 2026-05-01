@@ -80,33 +80,37 @@ impl LlmBackend for BudgetSentinel {
     }
 }
 
-/// Construct the production backend stack: materialise prompts to a
-/// tempdir, construct `ClaudeCodeBackend` pointed at it, compute the
-/// run-wide fingerprint inputs, and wrap in `BudgetedBackend` when
-/// `budget` is `Some`.
-pub fn build_production_backend(model_id: String, budget: Option<u64>) -> Result<BackendHandles> {
+/// Construct the production backend stack with a caller-supplied token
+/// counter and optional `AgentObserver`. The counter is pulled into the
+/// caller so it can be shared with the `Reporter` (which doubles as the
+/// observer); without that sharing, the reporter's gauge and the
+/// budgeted-backend's actuals would drift apart.
+pub fn build_production_backend_with_counter(
+    model_id: String,
+    counter: Option<Arc<TokenCounter>>,
+    observer: Option<Arc<dyn atlas_llm::AgentObserver>>,
+) -> Result<BackendHandles> {
     let prompts_dir = TempDir::new()?;
     crate::prompts::materialise_to(prompts_dir.path())?;
 
     let template_sha = compute_template_sha();
     let ontology_sha = compute_ontology_sha();
 
-    let inner = ClaudeCodeBackend::new(model_id.clone(), prompts_dir.path())?
+    let mut inner = ClaudeCodeBackend::new(model_id.clone(), prompts_dir.path())?
         .with_fingerprint_inputs(template_sha, ontology_sha);
+    if let Some(o) = observer {
+        inner = inner.with_observer(o);
+    }
     let version_fingerprint = inner.fingerprint();
     let inner_arc: Arc<dyn LlmBackend> = Arc::new(inner);
 
-    let (backend_after_budget, counter) = match budget {
-        Some(ceiling) => {
-            let counter = Arc::new(TokenCounter::new(ceiling));
-            let backend: Arc<dyn LlmBackend> = Arc::new(BudgetedBackend::new(
-                inner_arc,
-                counter.clone(),
-                default_token_estimator(),
-            ));
-            (backend, Some(counter))
-        }
-        None => (inner_arc, None),
+    let backend_after_budget: Arc<dyn LlmBackend> = match counter.as_ref() {
+        Some(c) => Arc::new(BudgetedBackend::new(
+            inner_arc,
+            c.clone(),
+            default_token_estimator(),
+        )),
+        None => inner_arc,
     };
     let sentinel = BudgetSentinel::new(backend_after_budget);
     let backend: Arc<dyn LlmBackend> = sentinel.clone();
@@ -118,6 +122,15 @@ pub fn build_production_backend(model_id: String, budget: Option<u64>) -> Result
         fingerprint: version_fingerprint,
         prompts_dir,
     })
+}
+
+/// Convenience overload preserving the prior API. The CLI has migrated
+/// to `build_production_backend_with_counter` so it can share a single
+/// `TokenCounter` with the reporter; this shim keeps legacy callers
+/// (notably tests) compiling.
+pub fn build_production_backend(model_id: String, budget: Option<u64>) -> Result<BackendHandles> {
+    let counter = budget.map(|b| Arc::new(TokenCounter::new(b)));
+    build_production_backend_with_counter(model_id, counter, None)
 }
 
 /// SHA-256 over the concatenation of the embedded prompt bodies in

@@ -290,3 +290,27 @@ entries:
     `claude -p` accepts a `--json-schema <schema>` flag (visible in `--help`). When passed, the CLI may emit raw JSON in `result.result` without the markdown code fence that normally wraps the output. Worth probing as part of implementing the stream-json parser — if it works, it eliminates the need for a markdown-fence stripper.
 
     Related memory: `stream-json-result-result-is-markdown-fenced-json` (the problem this might solve).
+- id: claudecodebackend-always-uses-output-format-stream-json-verbose
+  title: ClaudeCodeBackend always uses --output-format stream-json --verbose
+  body: |
+    ClaudeCodeBackend spawns `claude -p --output-format stream-json --verbose` for every call; the legacy non-streaming `--output-format json` path was removed in the agent-progress-feedback work. Single mental model, single test surface, no flag plumbing. Spec §4.2.
+- id: agentobserver-is-a-side-channel-parallel-to-reporter-on-llm-call
+  title: AgentObserver is a side-channel parallel to Reporter::on_llm_call
+  body: |
+    AgentObserver events flow ClaudeCodeBackend -> Reporter directly, bypassing BudgetSentinel and LlmResponseCache. A cached re-run produces zero AgentEvent instances; budget exhaustion is still signalled via BudgetSentinel. Spec §4.1.
+- id: stream-json-result-event-is-the-only-load-bearing-parser-path
+  title: stream-json result event is the only load-bearing parser path
+  body: |
+    parse_stream skips unknown event types and non-JSON lines without erroring; only the terminal `result` event extraction is required. This is the explicit forward-compat goal so future CLI schema additions do not break the parser. Spec §7.4.
+- id: claude-stderr-must-be-piped-and-drained-when-using-command-spawn
+  title: claude stderr must be piped and drained when using Command::spawn
+  body: |
+    ClaudeCodeBackend pipes stderr via Stdio::piped() and drains it on a worker thread. Without the drainer, large stderr output (e.g. setup warnings, deprecation banners) fills the pipe buffer and the child blocks waiting for the parent to consume it, deadlocking the run. Spec §7.7.
+- id: reporter-agent-mounted-is-tracked-in-state-not-derived-from-indicatif
+  title: Reporter agent_mounted is tracked in state, not derived from indicatif
+  body: |
+    indicatif 0.17 `ProgressBar::is_hidden()` returns true both for `ProgressDrawTarget::hidden()` AND when stderr is not a TTY (CI / test runs). To distinguish "we mounted the agent sub-line" from "we are running headless", track `agent_mounted: bool` in `ReporterState`. Without this, agent-bar visibility tests pass under TTY but fail in CI, and feature-presence detection (e.g. tests asserting we mounted the bar) is unreliable.
+- id: two-traits-with-same-named-on-event-method-on-reporter-requires-ufcs
+  title: Two traits with same-named on_event method on Reporter requires UFCS
+  body: |
+    Reporter implements both `ProgressSink::on_event(&self, ProgressEvent)` and `AgentObserver::on_event(&self, AgentEvent)`. Even though argument types disambiguate, Rust requires UFCS in test code: `ProgressSink::on_event(&*r, ev)` rather than `r.on_event(ev)`. Method resolution looks at receiver, not arg types. Production callsites that go via `&dyn ProgressSink` or `&dyn AgentObserver` are unaffected.

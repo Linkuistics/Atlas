@@ -30,11 +30,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod agent_observer;
 pub mod budget;
 pub mod claude_code;
 pub mod prompt;
+pub(crate) mod stream_parse;
 pub mod test_backend;
 
+pub use agent_observer::{AgentEvent, AgentObserver};
 pub use budget::{default_token_estimator, BudgetedBackend, TokenCounter, TokenEstimator};
 pub use claude_code::{ClaudeCodeBackend, DEFAULT_MODEL_ID, MODEL_ID_ENV};
 pub use test_backend::TestBackend;

@@ -10,9 +10,11 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use serde_json::Value;
 
+use crate::agent_observer::AgentObserver;
 use crate::{prompt, LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId, ResponseSchema};
 
 /// Environment variable consulted as the default for the `--model`
@@ -30,6 +32,7 @@ pub struct ClaudeCodeBackend {
     version: String,
     template_sha: [u8; 32],
     ontology_sha: [u8; 32],
+    observer: Option<Arc<dyn AgentObserver>>,
 }
 
 impl ClaudeCodeBackend {
@@ -50,6 +53,7 @@ impl ClaudeCodeBackend {
             version,
             template_sha: [0u8; 32],
             ontology_sha: [0u8; 32],
+            observer: None,
         })
     }
 
@@ -64,6 +68,14 @@ impl ClaudeCodeBackend {
     ) -> Self {
         self.template_sha = template_sha;
         self.ontology_sha = ontology_sha;
+        self
+    }
+
+    /// Attach a side-channel observer that receives `AgentEvent`s while
+    /// the streaming subprocess is running. When `None` (the default),
+    /// stream events are parsed and discarded. Spec §5.2.
+    pub fn with_observer(mut self, observer: Arc<dyn AgentObserver>) -> Self {
+        self.observer = Some(observer);
         self
     }
 
@@ -203,33 +215,62 @@ fn type_name(value: &Value) -> &'static str {
 impl LlmBackend for ClaudeCodeBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         let rendered_prompt = self.render_request(req)?;
-        let output = Command::new("claude")
+        let mut child = Command::new("claude")
             .arg("-p")
             .arg(&rendered_prompt)
             .arg("--output-format")
-            .arg("json")
+            .arg("stream-json")
+            .arg("--verbose")
             .arg("--model")
             .arg(&self.model_id)
-            .output()
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
             .map_err(|e| {
                 LlmError::Invocation(format!(
                     "failed to spawn `claude`: {e} (is it still on PATH?)"
                 ))
             })?;
-        if !output.status.success() {
-            return Err(LlmError::Invocation(format!(
-                "`claude` exited with status {}: stderr={}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let value: Value = serde_json::from_str(&stdout).map_err(|e| {
-            LlmError::Parse(format!(
-                "`claude` stdout was not valid JSON: {e} (first 200 bytes: {:?})",
-                stdout.chars().take(200).collect::<String>()
-            ))
-        })?;
+
+        // Drain stderr in a worker thread so the child does not block
+        // on a full stderr pipe buffer while we read stdout.
+        let stderr_pipe = child.stderr.take().expect("stderr piped");
+        let stderr_handle = std::thread::spawn(move || -> Vec<u8> {
+            use std::io::Read;
+            let mut buf = Vec::new();
+            let mut reader = stderr_pipe;
+            let _ = reader.read_to_end(&mut buf);
+            buf
+        });
+
+        let stdout_pipe = child.stdout.take().expect("stdout piped");
+        let parsed = crate::stream_parse::parse_stream(
+            stdout_pipe,
+            self.observer.as_ref(),
+            req.prompt_template,
+        );
+
+        let status = child
+            .wait()
+            .map_err(|e| LlmError::Invocation(format!("failed to wait on `claude`: {e}")))?;
+        let stderr_bytes = stderr_handle
+            .join()
+            .unwrap_or_else(|_| b"<stderr drainer panicked>".to_vec());
+
+        let value = match parsed {
+            Ok(v) => v,
+            Err(LlmError::Parse(msg)) if !status.success() => {
+                let stderr_snippet = String::from_utf8_lossy(&stderr_bytes);
+                return Err(LlmError::Invocation(format!(
+                    "`claude` exited with status {} before emitting a terminal event: {msg}; stderr={}",
+                    status,
+                    stderr_snippet.trim()
+                )));
+            }
+            Err(e) => return Err(e),
+        };
+
         validate_response(&value, &req.schema)?;
         Ok(value)
     }

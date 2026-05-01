@@ -141,9 +141,6 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
     config.prompt_shas = Some(atlas_cli::backend::compute_prompt_shas());
 
     let model_id = args.model.unwrap_or_else(resolve_default_model_id);
-    let handles = atlas_cli::backend::build_production_backend(model_id, args.budget)
-        .context("failed to build LLM backend")?;
-    config.fingerprint_override = Some(handles.fingerprint.clone());
 
     let progress_mode = if args.no_progress {
         ProgressMode::Never
@@ -152,7 +149,29 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
     } else {
         ProgressMode::Auto
     };
-    let reporter = make_stderr_reporter(progress_mode, handles.counter.clone());
+
+    // Build the token counter up here so the reporter and the backend
+    // share a single instance — otherwise the gauge and the budgeted
+    // accounting can diverge.
+    let counter = args
+        .budget
+        .map(|b| Arc::new(atlas_llm::TokenCounter::new(b)));
+    let reporter = make_stderr_reporter(progress_mode, counter.clone());
+
+    let observer = if reporter.drawing() {
+        Some(Arc::clone(&reporter) as Arc<dyn atlas_llm::AgentObserver>)
+    } else {
+        None
+    };
+
+    let handles = atlas_cli::backend::build_production_backend_with_counter(
+        model_id,
+        counter.clone(),
+        observer,
+    )
+    .context("failed to build LLM backend")?;
+    config.fingerprint_override = Some(handles.fingerprint.clone());
+
     let backend: Arc<dyn LlmBackend> =
         ProgressBackend::new(handles.backend.clone(), Arc::clone(&reporter)) as Arc<dyn LlmBackend>;
 

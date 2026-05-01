@@ -14,7 +14,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use atlas_engine::{Phase, ProgressEvent, ProgressSink, PromptBreakdown};
-use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId, TokenCounter};
+use atlas_llm::{
+    AgentEvent, AgentObserver, LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId,
+    TokenCounter,
+};
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use serde_json::Value;
 
@@ -26,7 +29,7 @@ pub enum ProgressMode {
 }
 
 #[derive(Default, Debug, Clone)]
-struct ReporterState {
+pub(crate) struct ReporterState {
     breakdown: PromptBreakdown,
     last_msg: String,
     iter_history: Vec<String>,
@@ -40,11 +43,26 @@ struct ReporterState {
     /// build the scrollback line on `IterEnd`.
     iter_live: u64,
     last_iteration: u32,
+    /// Counter incremented per `AgentEvent::ToolUse`, reset on
+    /// `AgentEvent::CallStart`.
+    agent_tools: u64,
+    /// `(name, summary)` of the most recent `AgentEvent::ToolUse`.
+    agent_last_tool: Option<(String, String)>,
+    /// Sticky flag set by `AgentEvent::ToolResult { ok: false }`.
+    /// Cleared by the next `AgentEvent::ToolUse` so the `(✗)` marker
+    /// only persists until the agent moves on.
+    agent_last_failed: bool,
+    /// Whether the agent bar is currently mounted (between `CallStart`
+    /// and `CallEnd`). Tracked explicitly because indicatif's
+    /// `is_hidden()` also returns true when stderr is not a TTY, which
+    /// is true in test runs even after we attach a stderr draw target.
+    agent_mounted: bool,
 }
 
 pub struct Reporter {
     multi: MultiProgress,
     activity: ProgressBar,
+    agent: ProgressBar,
     tokens: ProgressBar,
     state: Mutex<ReporterState>,
     counter: Option<Arc<TokenCounter>>,
@@ -72,6 +90,10 @@ impl Reporter {
         if drawing {
             activity.enable_steady_tick(Duration::from_millis(120));
         }
+        let agent = multi.add(ProgressBar::new(0));
+        agent.set_style(ProgressStyle::with_template("      {msg}").expect("static template"));
+        agent.set_draw_target(ProgressDrawTarget::hidden());
+
         let tokens = multi.add(ProgressBar::new(0));
         tokens.set_style(
             ProgressStyle::with_template("    tokens {msg}  {bar:50}  {percent:>3}%")
@@ -81,6 +103,7 @@ impl Reporter {
         Arc::new(Self {
             multi,
             activity,
+            agent,
             tokens,
             state: Mutex::new(ReporterState::default()),
             counter,
@@ -192,9 +215,20 @@ impl Reporter {
     pub(crate) fn tokens_position(&self) -> u64 {
         self.tokens.position()
     }
-    #[cfg(test)]
-    pub(crate) fn drawing(&self) -> bool {
+    pub fn drawing(&self) -> bool {
         self.drawing
+    }
+    #[cfg(test)]
+    pub(crate) fn agent_visible(&self) -> bool {
+        self.lock().agent_mounted
+    }
+    #[cfg(test)]
+    pub(crate) fn agent_tools(&self) -> u64 {
+        self.lock().agent_tools
+    }
+    #[cfg(test)]
+    pub(crate) fn agent_msg(&self) -> String {
+        self.agent.message().to_string()
     }
 }
 
@@ -299,6 +333,93 @@ impl ProgressSink for Reporter {
             }
         }
     }
+}
+
+impl AgentObserver for Reporter {
+    fn on_event(&self, event: AgentEvent) {
+        match event {
+            AgentEvent::CallStart { prompt } => {
+                {
+                    let mut s = self.lock();
+                    s.agent_tools = 0;
+                    s.agent_last_tool = None;
+                    s.agent_last_failed = false;
+                    s.agent_mounted = self.drawing;
+                }
+                self.agent.set_draw_target(if self.drawing {
+                    ProgressDrawTarget::stderr()
+                } else {
+                    ProgressDrawTarget::hidden()
+                });
+                self.agent
+                    .set_message(format!("↳ starting {}", prompt_label(prompt)));
+            }
+            AgentEvent::ToolUse { name, summary } => {
+                let line = {
+                    let mut s = self.lock();
+                    s.agent_tools = s.agent_tools.saturating_add(1);
+                    s.agent_last_tool = Some((name, summary));
+                    s.agent_last_failed = false;
+                    render_agent_line(&s)
+                };
+                self.agent.set_message(line);
+            }
+            AgentEvent::ToolResult { ok } => {
+                if !ok {
+                    let line = {
+                        let mut s = self.lock();
+                        s.agent_last_failed = true;
+                        render_agent_line(&s)
+                    };
+                    self.agent.set_message(line);
+                }
+            }
+            AgentEvent::CallEnd => {
+                self.lock().agent_mounted = false;
+                self.agent.set_draw_target(ProgressDrawTarget::hidden());
+            }
+        }
+    }
+}
+
+fn prompt_label(prompt: PromptId) -> &'static str {
+    match prompt {
+        PromptId::Classify => "classify",
+        PromptId::Subcarve => "subcarve",
+        PromptId::Stage1Surface => "surface",
+        PromptId::Stage2Edges => "edges",
+    }
+}
+
+const AGENT_LINE_DEFAULT_WIDTH: usize = 120;
+
+pub(crate) fn render_agent_line(state: &ReporterState) -> String {
+    render_agent_line_with_width(state, AGENT_LINE_DEFAULT_WIDTH)
+}
+
+/// Render the agent sub-line within `max_width` characters. The summary
+/// (the tool argument) is the only part shortened with a trailing
+/// ellipsis; the tool name, counter, and any `(✗)` marker are always
+/// preserved (spec §3).
+pub(crate) fn render_agent_line_with_width(state: &ReporterState, max_width: usize) -> String {
+    let (name, summary) = state.agent_last_tool.clone().unwrap_or_default();
+    let suffix = if state.agent_last_failed {
+        " (✗)"
+    } else {
+        ""
+    };
+    let counter_part = format!(" · {} tools{}", state.agent_tools, suffix);
+    let prefix_no_summary = format!("↳ {name}");
+    if summary.is_empty() {
+        return format!("{prefix_no_summary}{counter_part}");
+    }
+    let fixed_len = prefix_no_summary.chars().count() + 1 + counter_part.chars().count();
+    if fixed_len + summary.chars().count() <= max_width {
+        return format!("{prefix_no_summary} {summary}{counter_part}");
+    }
+    let budget = max_width.saturating_sub(fixed_len + 1);
+    let kept: String = summary.chars().take(budget).collect();
+    format!("{prefix_no_summary} {kept}…{counter_part}")
 }
 
 /// Build a reporter wired to stderr. Always returns a Reporter; when
@@ -569,16 +690,19 @@ mod tests {
     #[test]
     fn reporter_started_event_sets_seed_msg() {
         let r = make_stderr_reporter(ProgressMode::Never, None);
-        r.on_event(ProgressEvent::Started {
-            root: PathBuf::from("/tmp/x"),
-        });
+        ProgressSink::on_event(
+            &*r,
+            ProgressEvent::Started {
+                root: PathBuf::from("/tmp/x"),
+            },
+        );
         assert_eq!(r.current_msg(), "seed");
     }
 
     #[test]
     fn reporter_phase_event_updates_msg() {
         let r = make_stderr_reporter(ProgressMode::Never, None);
-        r.on_event(ProgressEvent::Phase(Phase::Project));
+        ProgressSink::on_event(&*r, ProgressEvent::Phase(Phase::Project));
         assert_eq!(r.current_msg(), "project");
     }
 
@@ -587,25 +711,34 @@ mod tests {
     #[test]
     fn reporter_iter_start_sets_scanning_msg_and_resets_length() {
         let r = make_stderr_reporter(ProgressMode::Never, None);
-        r.on_event(ProgressEvent::IterStart {
-            iteration: 1,
-            live_components: 47,
-        });
+        ProgressSink::on_event(
+            &*r,
+            ProgressEvent::IterStart {
+                iteration: 1,
+                live_components: 47,
+            },
+        );
         assert_eq!(r.current_msg(), "iter 1 · scanning 47 components");
     }
 
     #[test]
     fn reporter_iter_end_appends_scrollback_line() {
         let r = make_stderr_reporter(ProgressMode::Never, None);
-        r.on_event(ProgressEvent::IterStart {
-            iteration: 1,
-            live_components: 1247,
-        });
-        r.on_event(ProgressEvent::IterEnd {
-            iteration: 1,
-            components_added: 18,
-            elapsed: Duration::from_secs(872),
-        });
+        ProgressSink::on_event(
+            &*r,
+            ProgressEvent::IterStart {
+                iteration: 1,
+                live_components: 1247,
+            },
+        );
+        ProgressSink::on_event(
+            &*r,
+            ProgressEvent::IterEnd {
+                iteration: 1,
+                components_added: 18,
+                elapsed: Duration::from_secs(872),
+            },
+        );
         let history = r.iter_history();
         assert_eq!(history.len(), 1);
         assert!(history[0].contains("iter 1"));
@@ -619,16 +752,22 @@ mod tests {
     #[test]
     fn reporter_subcarve_sets_kn_msg_and_progress_length() {
         let r = make_stderr_reporter(ProgressMode::Never, None);
-        r.on_event(ProgressEvent::IterStart {
-            iteration: 1,
-            live_components: 120,
-        });
-        r.on_event(ProgressEvent::Subcarve {
-            component_id: "c".into(),
-            relpath: PathBuf::from("crates/atlas-engine"),
-            k: 47,
-            n: 120,
-        });
+        ProgressSink::on_event(
+            &*r,
+            ProgressEvent::IterStart {
+                iteration: 1,
+                live_components: 120,
+            },
+        );
+        ProgressSink::on_event(
+            &*r,
+            ProgressEvent::Subcarve {
+                component_id: "c".into(),
+                relpath: PathBuf::from("crates/atlas-engine"),
+                k: 47,
+                n: 120,
+            },
+        );
         assert_eq!(
             r.current_msg(),
             "iter 1 · subcarve  47/120 (crates/atlas-engine)"
@@ -640,13 +779,16 @@ mod tests {
     #[test]
     fn reporter_surface_sets_kn_under_project_phase() {
         let r = make_stderr_reporter(ProgressMode::Never, None);
-        r.on_event(ProgressEvent::Phase(Phase::Project));
-        r.on_event(ProgressEvent::Surface {
-            component_id: "c".into(),
-            relpath: PathBuf::from("crates/atlas-cli"),
-            k: 12,
-            n: 53,
-        });
+        ProgressSink::on_event(&*r, ProgressEvent::Phase(Phase::Project));
+        ProgressSink::on_event(
+            &*r,
+            ProgressEvent::Surface {
+                component_id: "c".into(),
+                relpath: PathBuf::from("crates/atlas-cli"),
+                k: 12,
+                n: 53,
+            },
+        );
         assert_eq!(
             r.current_msg(),
             "project · surface  12/53 (crates/atlas-cli)"
@@ -658,19 +800,22 @@ mod tests {
     #[test]
     fn reporter_finished_records_summary_and_breakdown() {
         let r = make_stderr_reporter(ProgressMode::Never, None);
-        r.on_event(ProgressEvent::Finished {
-            components: 1268,
-            llm_calls: 3892,
-            tokens_used: 184_000,
-            token_budget: Some(200_000),
-            elapsed: Duration::from_secs(22 * 60 + 15),
-            breakdown: PromptBreakdown {
-                classify: 2715,
-                surface: 1268,
-                edges: 1,
-                subcarve: 908,
+        ProgressSink::on_event(
+            &*r,
+            ProgressEvent::Finished {
+                components: 1268,
+                llm_calls: 3892,
+                tokens_used: 184_000,
+                token_budget: Some(200_000),
+                elapsed: Duration::from_secs(22 * 60 + 15),
+                breakdown: PromptBreakdown {
+                    classify: 2715,
+                    surface: 1268,
+                    edges: 1,
+                    subcarve: 908,
+                },
             },
-        });
+        );
         let summary = r.summary().expect("summary set after Finished");
         assert!(summary.contains("done"));
         assert!(summary.contains("1268 components"));
@@ -686,16 +831,22 @@ mod tests {
     #[test]
     fn on_llm_call_increments_breakdown_and_does_not_clobber_sticky_kn() {
         let r = make_stderr_reporter(ProgressMode::Never, None);
-        r.on_event(ProgressEvent::IterStart {
-            iteration: 1,
-            live_components: 120,
-        });
-        r.on_event(ProgressEvent::Subcarve {
-            component_id: "c".into(),
-            relpath: PathBuf::from("crates/atlas-engine"),
-            k: 47,
-            n: 120,
-        });
+        ProgressSink::on_event(
+            &*r,
+            ProgressEvent::IterStart {
+                iteration: 1,
+                live_components: 120,
+            },
+        );
+        ProgressSink::on_event(
+            &*r,
+            ProgressEvent::Subcarve {
+                component_id: "c".into(),
+                relpath: PathBuf::from("crates/atlas-engine"),
+                k: 47,
+                n: 120,
+            },
+        );
         r.on_llm_call(PromptId::Classify, Some(PathBuf::from("crates/foo")));
         assert_eq!(r.breakdown().classify, 1);
         assert_eq!(
@@ -707,7 +858,7 @@ mod tests {
     #[test]
     fn on_llm_call_without_sticky_kn_falls_through_to_llm_msg() {
         let r = make_stderr_reporter(ProgressMode::Never, None);
-        r.on_event(ProgressEvent::Phase(Phase::Seed));
+        ProgressSink::on_event(&*r, ProgressEvent::Phase(Phase::Seed));
         r.on_llm_call(PromptId::Classify, Some(PathBuf::from("crates/foo")));
         assert_eq!(r.current_msg(), "classify (crates/foo)");
     }
@@ -719,18 +870,18 @@ mod tests {
         let counter = Arc::new(TokenCounter::new(200_000));
         counter.charge(18_400).unwrap();
         let r = make_stderr_reporter(ProgressMode::Never, Some(counter.clone()));
-        r.on_event(ProgressEvent::Phase(Phase::Fixedpoint));
+        ProgressSink::on_event(&*r, ProgressEvent::Phase(Phase::Fixedpoint));
         assert_eq!(r.tokens_length(), Some(200_000));
         assert_eq!(r.tokens_position(), 18_400);
         counter.charge(1_600).unwrap();
-        r.on_event(ProgressEvent::Phase(Phase::Project));
+        ProgressSink::on_event(&*r, ProgressEvent::Phase(Phase::Project));
         assert_eq!(r.tokens_position(), 20_000);
     }
 
     #[test]
     fn token_gauge_hidden_when_no_counter() {
         let r = make_stderr_reporter(ProgressMode::Never, None);
-        r.on_event(ProgressEvent::Phase(Phase::Fixedpoint));
+        ProgressSink::on_event(&*r, ProgressEvent::Phase(Phase::Fixedpoint));
         assert_eq!(r.tokens_length(), Some(0));
     }
 
@@ -751,14 +902,209 @@ mod tests {
     #[test]
     fn finish_after_finished_event_is_safe() {
         let r = make_stderr_reporter(ProgressMode::Always, None);
-        r.on_event(ProgressEvent::Finished {
-            components: 1,
-            llm_calls: 0,
-            tokens_used: 0,
-            token_budget: None,
-            elapsed: Duration::from_secs(1),
-            breakdown: PromptBreakdown::default(),
-        });
+        ProgressSink::on_event(
+            &*r,
+            ProgressEvent::Finished {
+                components: 1,
+                llm_calls: 0,
+                tokens_used: 0,
+                token_budget: None,
+                elapsed: Duration::from_secs(1),
+                breakdown: PromptBreakdown::default(),
+            },
+        );
         r.finish();
+    }
+
+    // --- Task 8: agent bar starts hidden ---
+
+    #[test]
+    fn reporter_starts_with_agent_bar_hidden_and_zero_tools() {
+        let r = make_stderr_reporter(ProgressMode::Always, None);
+        assert!(!r.agent_visible());
+        assert_eq!(r.agent_tools(), 0);
+    }
+
+    // --- Task 9: AgentObserver impl on Reporter ---
+
+    #[test]
+    fn reporter_call_start_makes_agent_bar_visible_and_resets_counters() {
+        let r = make_stderr_reporter(ProgressMode::Always, None);
+        {
+            let mut s = r.lock();
+            s.agent_tools = 5;
+            s.agent_last_tool = Some(("Read".into(), "/x".into()));
+            s.agent_last_failed = true;
+        }
+        AgentObserver::on_event(
+            r.as_ref(),
+            AgentEvent::CallStart {
+                prompt: PromptId::Subcarve,
+            },
+        );
+        assert!(r.agent_visible());
+        assert_eq!(r.agent_tools(), 0);
+        let s = r.lock();
+        assert!(s.agent_last_tool.is_none());
+        assert!(!s.agent_last_failed);
+    }
+
+    #[test]
+    fn reporter_tool_use_increments_counter_and_renders_line() {
+        let r = make_stderr_reporter(ProgressMode::Always, None);
+        AgentObserver::on_event(
+            r.as_ref(),
+            AgentEvent::CallStart {
+                prompt: PromptId::Subcarve,
+            },
+        );
+        AgentObserver::on_event(
+            r.as_ref(),
+            AgentEvent::ToolUse {
+                name: "Read".into(),
+                summary: "crates/atlas-engine/src/l8_recurse.rs".into(),
+            },
+        );
+        assert_eq!(r.agent_tools(), 1);
+        assert_eq!(
+            r.agent_msg(),
+            "↳ Read crates/atlas-engine/src/l8_recurse.rs · 1 tools"
+        );
+    }
+
+    #[test]
+    fn reporter_tool_result_failure_marks_line_with_cross() {
+        let r = make_stderr_reporter(ProgressMode::Always, None);
+        AgentObserver::on_event(
+            r.as_ref(),
+            AgentEvent::CallStart {
+                prompt: PromptId::Subcarve,
+            },
+        );
+        AgentObserver::on_event(
+            r.as_ref(),
+            AgentEvent::ToolUse {
+                name: "Read".into(),
+                summary: "/tmp/x".into(),
+            },
+        );
+        AgentObserver::on_event(r.as_ref(), AgentEvent::ToolResult { ok: false });
+        assert!(
+            r.agent_msg().ends_with("(✗)"),
+            "expected (✗) marker; got {:?}",
+            r.agent_msg()
+        );
+    }
+
+    #[test]
+    fn reporter_tool_result_success_does_not_change_line() {
+        let r = make_stderr_reporter(ProgressMode::Always, None);
+        AgentObserver::on_event(
+            r.as_ref(),
+            AgentEvent::CallStart {
+                prompt: PromptId::Subcarve,
+            },
+        );
+        AgentObserver::on_event(
+            r.as_ref(),
+            AgentEvent::ToolUse {
+                name: "Read".into(),
+                summary: "/tmp/x".into(),
+            },
+        );
+        let before = r.agent_msg();
+        AgentObserver::on_event(r.as_ref(), AgentEvent::ToolResult { ok: true });
+        assert_eq!(r.agent_msg(), before);
+    }
+
+    #[test]
+    fn reporter_subsequent_tool_use_clears_failure_marker() {
+        let r = make_stderr_reporter(ProgressMode::Always, None);
+        AgentObserver::on_event(
+            r.as_ref(),
+            AgentEvent::CallStart {
+                prompt: PromptId::Subcarve,
+            },
+        );
+        AgentObserver::on_event(
+            r.as_ref(),
+            AgentEvent::ToolUse {
+                name: "Read".into(),
+                summary: "/x".into(),
+            },
+        );
+        AgentObserver::on_event(r.as_ref(), AgentEvent::ToolResult { ok: false });
+        AgentObserver::on_event(
+            r.as_ref(),
+            AgentEvent::ToolUse {
+                name: "Grep".into(),
+                summary: "foo".into(),
+            },
+        );
+        assert!(!r.agent_msg().contains("(✗)"));
+    }
+
+    #[test]
+    fn reporter_call_end_hides_agent_bar() {
+        let r = make_stderr_reporter(ProgressMode::Always, None);
+        AgentObserver::on_event(
+            r.as_ref(),
+            AgentEvent::CallStart {
+                prompt: PromptId::Subcarve,
+            },
+        );
+        AgentObserver::on_event(r.as_ref(), AgentEvent::CallEnd);
+        assert!(!r.agent_visible());
+    }
+
+    // --- Task 10: render_agent_line_with_width truncation ---
+
+    #[test]
+    fn render_agent_line_truncates_long_summary_with_ellipsis() {
+        let s = ReporterState {
+            agent_tools: 23,
+            agent_last_tool: Some((
+                "Read".into(),
+                "crates/atlas-engine/src/very/deep/path/that/keeps/going/and/going/l8_recurse.rs"
+                    .into(),
+            )),
+            ..ReporterState::default()
+        };
+        let out = render_agent_line_with_width(&s, 60);
+        assert!(out.starts_with("↳ Read "), "tool name preserved: {out:?}");
+        assert!(out.ends_with("· 23 tools"), "counter preserved: {out:?}");
+        assert!(out.contains('…'), "summary ellipsised: {out:?}");
+        assert!(
+            out.chars().count() <= 60,
+            "line within budget: {} > 60",
+            out.chars().count()
+        );
+    }
+
+    #[test]
+    fn render_agent_line_does_not_truncate_short_summary() {
+        let s = ReporterState {
+            agent_tools: 1,
+            agent_last_tool: Some(("Read".into(), "/x.rs".into())),
+            ..ReporterState::default()
+        };
+        let out = render_agent_line_with_width(&s, 120);
+        assert_eq!(out, "↳ Read /x.rs · 1 tools");
+    }
+
+    #[test]
+    fn render_agent_line_truncation_keeps_failure_marker() {
+        let s = ReporterState {
+            agent_tools: 5,
+            agent_last_tool: Some((
+                "Read".into(),
+                "very/long/path/that/will/get/truncated/aaaaaaaaaaaaaaaaaaaaaa.rs".into(),
+            )),
+            agent_last_failed: true,
+            ..ReporterState::default()
+        };
+        let out = render_agent_line_with_width(&s, 50);
+        assert!(out.ends_with("(✗)"), "failure marker preserved: {out:?}");
+        assert!(out.contains('…'), "summary ellipsised: {out:?}");
     }
 }

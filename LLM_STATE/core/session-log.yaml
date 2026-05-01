@@ -336,3 +336,25 @@ sessions:
     - Handoff block added to the `implement-agent-progress-feedback-live-tool-call-sub-line-during-long-llm-calls` backlog task, instructing the next session to skip writing-plans and go straight to `superpowers:subagent-driven-development` or `superpowers:executing-plans`.
     - No code was written; the plan is the sole deliverable. All 13 tasks remain `not_started`.
     - Next: pick up the backlog task, read the plan, then execute via subagent-driven-development (recommended) or inline executing-plans.
+- id: session-28
+  timestamp: 2026-05-01T05:17:19Z
+  phase: work
+  body: |
+    ### Session 28 (2026-05-01T05:17:19Z) — Agent progress sub-line: streaming pipeline and Reporter integration
+
+    - **Attempted**: All 13 plan tasks for the agent-progress-feedback feature — new `AgentObserver` trait + `AgentEvent` enum in `atlas-llm`, rewrite of `ClaudeCodeBackend::call` to use `--output-format stream-json --verbose`, `parse_stream` JSONL parser in `stream_parse.rs`, `Reporter` third sub-line with mount/unmount lifecycle, `render_agent_line_with_width` truncation logic, `ObserverGuard` RAII, and tests covering parser fixtures, reporter rendering, and truncation.
+    - **What worked**:
+      - Single-shot rewrite of `ClaudeCodeBackend::call`: spawn → drain stderr in worker thread → `parse_stream` over stdout → wait child → validate response. All 64 atlas-llm tests pass.
+      - Three real `claude -p` JSONL fixtures (`simple-classify`, `subcarve-with-tools`, `error-max-turns`) drive end-to-end coverage of the parser without spawning the actual binary.
+      - `ObserverGuard` RAII ensures `CallEnd` fires on every termination path (success, error, panic); two dedicated tests pin this behaviour.
+      - Truncation: `render_agent_line_with_width` reserves prefix + suffix before computing summary budget — tool name, counter, and `(✗)` marker are never lost; three tests cover long/short/failure cases.
+      - Counter ownership refactor: `build_production_backend_with_counter` lifts `TokenCounter` construction to `main.rs` so reporter gauge and budgeted-backend actuals share one instance.
+    - **What didn't work (and how it was fixed)**:
+      - `indicatif::ProgressBar::is_hidden()` returns true both for `ProgressDrawTarget::hidden()` AND when stderr is not a TTY; the plan assumed it would indicate mount status. Fix: track `agent_mounted: bool` explicitly in `ReporterState`.
+      - `Reporter` implementing both `ProgressSink::on_event` and `AgentObserver::on_event` caused method-call ambiguity (Rust resolves via receiver, not arg type). Fix: rewrote 17 test callsites to UFCS.
+      - `clippy::field_reassign_with_default`: bumped `ReporterState` to `pub(crate)` for truncation tests; clippy then required struct-update syntax.
+    - **What this suggests next**:
+      - Run the e2e test once with `ATLAS_LLM_RUN_CLAUDE_TESTS=1 cargo test -p atlas-cli --test agent_observer_e2e` to close the live-pipeline loop (~$0.05, ~30-90s).
+      - Truncation width is hard-coded at 120; a future polish could query `console::Term::stderr().size()` at reporter construction.
+      - `error-max-budget-usd` surfaces as a generic `Invocation` error; worth wiring into `BudgetSentinel` for a dedicated exit code.
+    - **Key learnings**: Five memory entries written covering the streaming-only backend path, observer side-channel topology, parse_stream forward-compat contract, stderr drainer requirement, and the `is_hidden()` / UFCS pitfalls.
