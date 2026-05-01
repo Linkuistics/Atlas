@@ -402,3 +402,14 @@ sessions:
     - **What worked:** Pattern-mirror approach (every new struct/function parallels an existing counterpart) kept the implementation clean and free of new abstractions. TDD per task produced 15 new tests; all ended green in a single edit-test cycle. Pre-existing rustfmt drift (~76 lines across seven files) was committed as a separate `chore(fmt)` commit before the feature work landed, keeping the Phase 1 commit focused. `cargo test --workspace` ended at 95 tests (up from 83); `cargo fmt --check` and `cargo clippy` both clean.
     - **What this suggests next:** Phase 2 (`subsystem-seeding-phase-2-atlas-engine-integration`) is now unblocked. First step: add `globset` as a direct dep to `atlas-engine`, then add the `Workspace::subsystems_overrides` Salsa input with skip-if-equal guard, then implement `l9_subsystems.rs`.
     - **Key learnings:** `validate_participant_namespace` is currently placed in `component-ontology` because edge participants are vocabulary it owns; if no second caller materialises, the function could migrate to `atlas-cli`. Worth revisiting after Phase 3 wires the cross-namespace check.
+- id: session-33
+  timestamp: 2026-05-01T13:10:14Z
+  phase: work
+  body: |
+    ### Session 33 (2026-05-01T13:10:14Z) — PinValue natural YAML form accepted
+
+    - **Attempted**: Fix the `PinValue` double-nesting UX bug where `suppress_children: [connector-lib/formats]` and `suppress: true` required an extra wrapping key (e.g. `suppress_children: {suppress_children: [...]}`) when used in `components.overrides.yaml`.
+    - **What worked**: Replaced the `#[serde(untagged)]` derive on `PinValue` with a custom `Serialize` + `Deserialize` implementation using a `deserialize_any` Visitor that dispatches on value shape (bool → Suppress, seq → SuppressChildren, map → Value or legacy-compat). Natural form parses and serialises correctly. Legacy doubly-nested form still accepted for backward compatibility. All 55 atlas-index tests pass, workspace tests green in both atlas-contracts and Atlas.
+    - **What didn't**: No failures — the task completed fully. The atlas-contracts repo changes are not committed in that repo; only Atlas LLM_STATE is being committed here.
+    - **What to try next**: A brief release note or docs entry noting that natural-form `suppress: true` / `suppress_children: [...]` is now preferred. Cross-repo: commit atlas-contracts before any publish that flips the local path dep to a git+rev ref.
+    - **Key learnings**: The user's exact failure case (`/Users/antony/Development/dull/.atlas/components.overrides.yaml` writing `suppress_children: [connector-lib/formats]`) was a real-user regression. The Visitor pattern is the correct escape hatch when serde's untagged enum disambiguation cannot be extended via derive alone.
