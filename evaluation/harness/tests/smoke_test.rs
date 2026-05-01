@@ -38,7 +38,7 @@ fn plausible_tiny_output(
             ComponentEntry {
                 id: "mycli".into(),
                 parent: None,
-                kind: "rust-binary".into(),
+                kind: "rust-cli".into(),
                 lifecycle_roles: vec![LifecycleScope::Build, LifecycleScope::Runtime],
                 language: Some("rust".into()),
                 build_system: Some("cargo".into()),

@@ -82,18 +82,17 @@ pub fn allocate_id(
     );
 }
 
-/// Kebab-case slug from the leaf component of a path. Non-alphanumeric
+/// Kebab-case slug from a single path-segment string. Non-alphanumeric
 /// characters collapse to `-`; runs of `-` are compressed; leading and
 /// trailing `-` are stripped. Result is lowercase ASCII.
-fn leaf_slug(candidate_dir: &Path) -> String {
-    let raw = candidate_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
+///
+/// Returns `None` for empty input or for inputs that consist entirely
+/// of non-ASCII-alphanumeric characters (which would otherwise produce
+/// an empty post-trim slug).
+pub(crate) fn slugify_segment(raw: &str) -> Option<String> {
     if raw.is_empty() {
-        return "root".to_string();
+        return None;
     }
-
     let mut out = String::with_capacity(raw.len());
     let mut last_was_dash = false;
     for ch in raw.chars() {
@@ -114,10 +113,36 @@ fn leaf_slug(candidate_dir: &Path) -> String {
     }
     let trimmed = out.trim_matches('-');
     if trimmed.is_empty() {
-        "root".to_string()
+        None
     } else {
-        trimmed.to_string()
+        Some(trimmed.to_string())
     }
+}
+
+/// Kebab-case slug from the leaf component of a path. Empty or
+/// un-slugifiable leaves degrade to `"root"`.
+fn leaf_slug(candidate_dir: &Path) -> String {
+    let raw = candidate_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    slugify_segment(raw).unwrap_or_else(|| "root".to_string())
+}
+
+/// Apply [`slugify_segment`] to each `Normal` component of `path` and
+/// join the surviving slugs with `/`. Skips empty/un-slugifiable
+/// segments. Mirrors the path-derived shape of an id that L4 would
+/// allocate for a chain of nested components, so callers can match a
+/// candidate dir against the id form a user sees in `components.yaml`.
+pub(crate) fn slugify_path(path: &Path) -> String {
+    use std::path::Component;
+    path.components()
+        .filter_map(|c| match c {
+            Component::Normal(name) => name.to_str().and_then(slugify_segment),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn content_hash_suffix(candidate_dir: &Path) -> String {

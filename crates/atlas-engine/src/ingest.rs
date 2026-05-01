@@ -33,7 +33,32 @@ const BINARY_SNIFF_PREFIX: usize = 8192;
 /// inside a `.git` directory, which we explicitly skip because their
 /// contents are not source code) is registered.
 pub fn seed_filesystem(db: &mut AtlasDatabase, root: &Path, respect_gitignore: bool) -> Result<()> {
-    seed_filesystem_with_limit(db, root, respect_gitignore, DEFAULT_BINARY_SIZE_LIMIT)
+    seed_filesystem_inner(db, root, None, respect_gitignore, DEFAULT_BINARY_SIZE_LIMIT)
+}
+
+/// Like [`seed_filesystem`] but additionally prunes any path inside
+/// `excluded_dir` from the walk. The CLI uses this to keep its own
+/// output directory (default `.atlas/`, override via `--output-dir`)
+/// from being ingested as analysis input on a re-run, which would
+/// otherwise feed prior `components.yaml` and `llm-cache.json` back
+/// into L0 even when the target's `.gitignore` does not list it.
+///
+/// When `excluded_dir` does not resolve to a path under `root`, the
+/// pruning is silently skipped — `output_dir` outside the analysis
+/// tree is harmless on its own, since the walker would never reach it.
+pub fn seed_filesystem_excluding(
+    db: &mut AtlasDatabase,
+    root: &Path,
+    excluded_dir: &Path,
+    respect_gitignore: bool,
+) -> Result<()> {
+    seed_filesystem_inner(
+        db,
+        root,
+        Some(excluded_dir),
+        respect_gitignore,
+        DEFAULT_BINARY_SIZE_LIMIT,
+    )
 }
 
 /// Variant of [`seed_filesystem`] that lets the caller override the
@@ -45,17 +70,42 @@ pub fn seed_filesystem_with_limit(
     respect_gitignore: bool,
     binary_size_limit: u64,
 ) -> Result<()> {
+    seed_filesystem_inner(db, root, None, respect_gitignore, binary_size_limit)
+}
+
+fn seed_filesystem_inner(
+    db: &mut AtlasDatabase,
+    root: &Path,
+    excluded_dir: Option<&Path>,
+    respect_gitignore: bool,
+    binary_size_limit: u64,
+) -> Result<()> {
     let mut registered: Vec<File> = Vec::new();
     let mut git_boundary_dirs: Vec<PathBuf> = Vec::new();
 
-    let walker = WalkBuilder::new(root)
+    let mut builder = WalkBuilder::new(root);
+    builder
         .hidden(false)
         .git_ignore(respect_gitignore)
         .git_exclude(respect_gitignore)
         .git_global(respect_gitignore)
         .parents(false)
-        .require_git(false)
-        .build();
+        .require_git(false);
+
+    // When the caller designated an excluded directory inside `root`
+    // (typically Atlas's own output dir), prune descent into it so
+    // prior-run artefacts cannot be re-ingested as L0 inputs.
+    if let Some(excluded) = excluded_dir {
+        if let Some(excluded_rel) = excluded_relative_to(root, excluded) {
+            let root_owned = root.to_path_buf();
+            builder.filter_entry(move |entry| match entry.path().strip_prefix(&root_owned) {
+                Ok(rel) => !rel.starts_with(&excluded_rel),
+                Err(_) => true,
+            });
+        }
+    }
+
+    let walker = builder.build();
 
     for result in walker {
         let entry = match result {
@@ -101,6 +151,30 @@ pub fn seed_filesystem_with_limit(
     db.set_workspace_files(registered);
     db.set_git_boundary_dirs(git_boundary_dirs);
     Ok(())
+}
+
+/// Compute `excluded` as a non-empty relative path under `root`, or
+/// return `None` when no exclusion should apply (e.g., `excluded` lives
+/// outside `root`, or equals `root` — pruning the latter would empty
+/// the walk).
+///
+/// Uses a lexical `strip_prefix` first (no syscalls, sufficient for the
+/// common case where the CLI builds `output_dir = root.join(".atlas")`)
+/// and falls back to canonicalising both paths so symlinked or
+/// `..`-laden paths still resolve.
+fn excluded_relative_to(root: &Path, excluded: &Path) -> Option<PathBuf> {
+    if let Ok(rel) = excluded.strip_prefix(root) {
+        if !rel.as_os_str().is_empty() {
+            return Some(rel.to_path_buf());
+        }
+    }
+    let root_canonical = root.canonicalize().ok()?;
+    let excluded_canonical = excluded.canonicalize().ok()?;
+    let rel = excluded_canonical.strip_prefix(&root_canonical).ok()?;
+    if rel.as_os_str().is_empty() {
+        return None;
+    }
+    Some(rel.to_path_buf())
 }
 
 fn read_file_bounded(path: &Path, binary_size_limit: u64) -> Result<Vec<u8>> {

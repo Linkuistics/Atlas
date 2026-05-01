@@ -5,6 +5,12 @@
 # test in that module asserts bijection. Adding a kind in one place
 # without the other fails the build.
 #
+# A human/LLM-readable companion lives at `defaults/component-kinds.md`
+# — keep it in sync when adding, renaming, or revising a kind. The .md
+# adds analyst-oriented notes (slug-choice instructions, "mappings to
+# avoid") that have no place in the data form, but the slugs and
+# descriptions must match this file.
+#
 # Independent of `defaults/ontology.yaml`: that file describes
 # *relationships* between components (the `related-components.yaml`
 # vocabulary); this file describes *what a component is* (the `kind`
@@ -31,6 +37,13 @@ kinds:
       `src/main.rs` alongside a manifest. Typical lifecycles: build,
       runtime.
 
+  - name: rust-proc-macro
+    description: |
+      A Rust procedural-macro crate. Recognised by `Cargo.toml`
+      with `[lib] proc-macro = true`. Compile-time only; the crate
+      ships no runtime artefact, only a compiler plugin consumed by
+      other crates at build time.
+
   - name: workspace
     description: |
       A multi-crate (or multi-package) workspace root. Recognised by
@@ -38,40 +51,136 @@ kinds:
       similar workspace manifests. The root is a component in its own
       right; its members are child components.
 
-  - name: node-package
+  - name: node-library
     description: |
-      A Node.js package exposing a library interface. Recognised by
-      `package.json` with a `main` or `exports` field and no `bin`
-      field.
+      A Node.js / TypeScript package exposing a library interface.
+      Recognised by `package.json` with a `main` or `exports` field
+      and no `bin` field. Whether the source is JS or TS is recorded
+      in the `language` field, not the kind.
 
   - name: node-cli
     description: |
-      A Node.js package that installs one or more CLI executables.
-      Recognised by `package.json` with a `bin` field.
+      A Node.js / TypeScript package that installs one or more CLI
+      executables. Recognised by `package.json` with a `bin` field.
 
-  - name: python-package
+  - name: react-app
     description: |
-      A Python package. Recognised by `pyproject.toml` or `setup.py`.
-      Further refinement into application / library is deferred until
-      deeper heuristics land.
+      A React-based frontend application — typically a Create React
+      App, Next.js, Remix, or Vite-based React project. Distinguished
+      from `website` by an explicit React-framework manifest or a
+      top-level `react` / `react-dom` runtime dependency. Use
+      `website` for framework-agnostic frontends.
+
+  - name: react-library
+    description: |
+      A library of reusable React components, distributed as an npm
+      package. Recognised by `package.json` declaring `react` as a
+      `peerDependency` plus a library-style entry point.
+
+  - name: python-library
+    description: |
+      A Python library package — recognised by `pyproject.toml` or
+      `setup.py` without a runnable entry point. Typical lifecycles:
+      build, runtime.
+
+  - name: python-app
+    description: |
+      A runnable Python application — typically `pyproject.toml`
+      declaring `[project.scripts]` or `[tool.poetry.scripts]`, or a
+      top-level `__main__.py`. Distinguished from `python-library`
+      by a clear executable entry point.
+
+  - name: dart-library
+    description: |
+      A Dart package exposing a library interface. Recognised by a
+      `pubspec.yaml` whose `lib/` tree is the public surface, with
+      no top-level `bin/` directory.
+
+  - name: dart-app
+    description: |
+      A non-Flutter Dart application — `pubspec.yaml` plus a `bin/`
+      directory containing the entry point. Use `flutter-app` when
+      the manifest depends on the Flutter SDK.
+
+  - name: flutter-app
+    description: |
+      A Flutter application targeting iOS, Android, web, or desktop.
+      Recognised by `pubspec.yaml` declaring `flutter:` as a
+      top-level key and depending on the `flutter` SDK. Distinct
+      from `dart-app` because Flutter has its own build/deploy chain.
+
+  - name: dotnet-library
+    description: |
+      A .NET class library — recognised by a `.csproj` / `.fsproj` /
+      `.vbproj` whose `<OutputType>` is `Library` (the default) and
+      which has no `Main` entry point.
+
+  - name: dotnet-service
+    description: |
+      A .NET long-running service — recognised by a project file
+      whose `<OutputType>` is `Exe` and which uses a service host
+      (e.g., `Microsoft.AspNetCore.App` framework reference, or a
+      `Program.cs` calling `IHostBuilder`).
 
   - name: website
     description: |
-      A static or server-rendered web frontend. Recognised by a
-      combination of a frontend framework manifest (Next.js, SvelteKit,
-      Vite) and a build output directory.
+      A framework-agnostic static or server-rendered web frontend
+      (e.g., a docs site, a Hugo / Jekyll / Astro project) that does
+      not declare itself as a React app. Use `react-app` for React
+      frontends.
 
   - name: service
     description: |
-      A long-running server process — HTTP, gRPC, message-queue
-      consumer, or similar. Typically identified by a Dockerfile plus
-      a main-module manifest, or by a declared deployment target.
+      A long-running server process whose internal language is
+      either unknown or not yet captured by a more specific
+      `<lang>-service` kind — typically a Dockerised opaque binary
+      or a polyglot server.
+
+  - name: docker-image
+    description: |
+      A directory rooted at a single `Dockerfile` that builds one
+      container image. The image's contents may themselves be a
+      separate component (e.g., a `node-cli` packaged into the
+      image); this kind describes the packaging artefact.
+
+  - name: docker-compose-bundle
+    description: |
+      A directory whose primary artefact is a `docker-compose.yml`
+      (or `compose.yaml`) declaring a multi-image deployment. Used
+      for grouping a set of related services into one component.
+
+  - name: installer
+    description: |
+      A directory whose purpose is producing an end-user installer
+      package — e.g., a WiX MSI definition, a `.dmg` build script,
+      a Debian `.deb` packaging tree, or an RPM spec. Distinct from
+      `docker-image` because installers target host installation
+      rather than container runtime.
+
+  - name: shell-scripts
+    description: |
+      A directory of standalone shell scripts (bash, zsh, sh)
+      treated as one component. Plural by convention because a
+      single shell file is not itself a component.
+
+  - name: sql-scripts
+    description: |
+      A directory of standalone SQL scripts — typically migrations
+      or seed data — treated as one component. Plural by the same
+      convention as `shell-scripts`.
+
+  - name: codegen-tool
+    description: |
+      A code-generation tool whose output is consumed by other
+      components — e.g., a schema compiler, a scaffolding generator,
+      or a template processor. The tool's implementation language
+      lives in the `language` field.
 
   - name: config-repo
     description: |
       A repository that exists primarily to hold configuration
-      (dotfiles, infrastructure-as-code, declarative deployment specs)
-      rather than code.
+      (dotfiles, infrastructure-as-code, declarative deployment
+      specs) rather than code.
 
   - name: docs-repo
     description: |

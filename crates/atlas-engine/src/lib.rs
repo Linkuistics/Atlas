@@ -42,7 +42,10 @@ pub use defaults::{
     EMBEDDED_COMPONENT_KINDS_YAML,
 };
 pub use fixedpoint::{run_fixedpoint, FixedpointConfig, FixedpointResult, FIXEDPOINT_HARD_CAP};
-pub use ingest::{seed_filesystem, seed_filesystem_with_limit, DEFAULT_BINARY_SIZE_LIMIT};
+pub use ingest::{
+    seed_filesystem, seed_filesystem_excluding, seed_filesystem_with_limit,
+    DEFAULT_BINARY_SIZE_LIMIT,
+};
 pub use l1_queries::{
     doc_headings, file_content, file_tree_sha, git_boundaries, manifests_in, shebangs, DocHeading,
     ShebangEntry,

@@ -143,9 +143,14 @@ fn snippet_text<'a>(snippets: &'a BTreeMap<PathBuf, String>, basename: &str) -> 
 ///
 /// Keys tried, in order:
 /// 1. The candidate's dir-path relative to the workspace root (e.g.
-///    `crates/foo`).
-/// 2. The candidate dir's leaf basename (e.g. `foo`).
-/// 3. The `id` of any `overrides.additions` entry whose first
+///    `crates/Atlas-Engine`).
+/// 2. The candidate dir's leaf basename (e.g. `Atlas-Engine`).
+/// 3. The slugified relative path (e.g. `crates/atlas-engine`) — the
+///    id shape a user sees in `components.yaml`, which diverges from
+///    the raw path when the directory contains uppercase letters,
+///    spaces, or other non-kebab characters.
+/// 4. The slugified basename (e.g. `atlas-engine`).
+/// 5. The `id` of any `overrides.additions` entry whose first
 ///    `path_segment` points at this dir — so an authored addition +
 ///    pin pair both key off the addition's explicit id.
 fn pinned_classification(
@@ -164,11 +169,17 @@ fn pinned_classification(
         .to_string();
 
     let mut keys_tried: Vec<String> = Vec::new();
-    if !rel_str.is_empty() {
-        keys_tried.push(rel_str);
-    }
-    if !basename.is_empty() {
-        keys_tried.push(basename);
+    let push_unique = |keys: &mut Vec<String>, key: String| {
+        if !key.is_empty() && !keys.contains(&key) {
+            keys.push(key);
+        }
+    };
+
+    push_unique(&mut keys_tried, rel_str.clone());
+    push_unique(&mut keys_tried, basename.clone());
+    push_unique(&mut keys_tried, crate::identifiers::slugify_path(rel));
+    if let Some(slug) = crate::identifiers::slugify_segment(&basename) {
+        push_unique(&mut keys_tried, slug);
     }
     for addition in &overrides.additions {
         if let Some(first_seg) = addition.path_segments.first() {
@@ -178,7 +189,7 @@ fn pinned_classification(
                 workspace_root.join(&first_seg.path)
             };
             if abs_path == candidate_dir {
-                keys_tried.push(addition.id.clone());
+                push_unique(&mut keys_tried, addition.id.clone());
             }
         }
     }
@@ -444,6 +455,34 @@ mod tests {
         let got = pinned_classification(&overrides, Path::new("/ws/crates/foo"), Path::new("/ws"))
             .expect("pin should match basename key");
         assert_eq!(got.kind, ComponentKind::Spec);
+    }
+
+    #[test]
+    fn pin_matches_slugified_relative_path_for_mixed_case_dir() {
+        // A user reading `id: crates/atlas-engine` from components.yaml
+        // and pinning that id should match a directory named
+        // `crates/Atlas-Engine` — the slugified id form is what they see
+        // in the generated YAML.
+        let overrides = overrides_with_pin("crates/atlas-engine", "kind", "rust-library");
+        let got = pinned_classification(
+            &overrides,
+            Path::new("/ws/crates/Atlas-Engine"),
+            Path::new("/ws"),
+        )
+        .expect("pin should match slugified relative path");
+        assert_eq!(got.kind, ComponentKind::RustLibrary);
+    }
+
+    #[test]
+    fn pin_matches_slugified_basename_for_mixed_case_dir() {
+        let overrides = overrides_with_pin("atlas-engine", "kind", "rust-library");
+        let got = pinned_classification(
+            &overrides,
+            Path::new("/ws/crates/Atlas-Engine"),
+            Path::new("/ws"),
+        )
+        .expect("pin should match slugified basename");
+        assert_eq!(got.kind, ComponentKind::RustLibrary);
     }
 
     #[test]

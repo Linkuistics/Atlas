@@ -370,3 +370,14 @@ sessions:
     - Updated `crates/atlas-llm/tests/fixtures/stream/README.md` to document the new mapping for `error-max-turns.jsonl`.
     - All 65 atlas-llm unit tests pass; full workspace green (24 suites); clippy and fmt clean.
     - This closes the only `bug`-category backlog task; workspace is release-clean.
+- id: session-30
+  timestamp: 2026-05-01T08:08:25Z
+  phase: work
+  body: |
+    ### Session 30 (2026-05-01T08:08:25Z) — Expand component-kind vocabulary and add overrides validation
+
+    - Attempted: Expand the `ComponentKind` enum to cover a wider real-world vocabulary (Dart, Flutter, .NET, React, proc macros, Docker, installers, shell/SQL scripts, codegen tools); rename `NodePackage`→`NodeLibrary` and `PythonPackage`→`PythonLibrary` to follow the library/app split convention; add a `validate-overrides` CLI command and pipeline early-fail on unknown kind values; fix the filesystem seeder to exclude the output directory from re-ingestion; fix pin lookup to match slugified directory names for mixed-case paths.
+    - What worked: All changes compiled. `ComponentKind` gained 13 new variants with matching `as_str`/`parse`/`all` entries and YAML descriptions; `defaults/component-kinds.md` was authored as an analyst/LLM prompt-fragment companion. `validate-overrides` subcommand and integrated pipeline validation are in place; pipeline now fails early on unknown kind values before any LLM work. `seed_filesystem_excluding` prevents prior-run `.atlas/` artefacts from being ingested as L0 input on re-runs. Pin lookup now tries both the raw relative path and its slugified form, so a user writing `crates/atlas-engine` in overrides correctly matches the directory `crates/Atlas-Engine`. Three new backlog tasks added for future work: subsystem seeding, L3 HTTP backend spike, and map/reduce LLM architecture epic.
+    - What didn't: No tasks were completed from the pre-existing backlog; this session was infrastructure/vocabulary work that was implicitly required before the remaining eval tasks become meaningful.
+    - What this suggests next: The `run-agent-progress-e2e-integration-test-against-real-claude-binary` task is unblocked (progress-bar fix was already committed). The L3 HTTP spike (`l3-prototype-map-style-classify-via-plain-anthropic-http-backend`) is the highest-priority new task — it directly de-risks the large-monorepo analysis bottleneck.
+    - Key learnings: The `library`/`app` distinction was missing from the kind vocabulary for every non-Rust language; unifying the pattern across all languages clarifies the subcarve policy (apps and services are leaves; libraries may recurse). Output directory contamination of L0 is a real correctness issue on re-runs when `.atlas/` is not in `.gitignore`.

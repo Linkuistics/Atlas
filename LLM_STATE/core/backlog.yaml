@@ -126,3 +126,227 @@ tasks:
 
     - Test passes under `ATLAS_LLM_RUN_CLAUDE_TESTS=1`.
     - No regressions in other `atlas-cli` tests.
+- id: first-class-subsystem-seeding-in-overrides-yaml
+  title: First-class subsystem seeding in overrides.yaml
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** Forward-looking; not on the v1 critical path. Surfaced when a user asked whether well-known component/subsystem roots could pre-seed analysis (2026-05-01).
+
+    ## Context
+
+    `components.overrides.yaml` already covers component-granularity seeding: `pins` overrides classifications for dirs L2 already proposes, `additions` injects components L2 would never find, and `suppress_children: true` makes a component a black box. But all of these operate at the *component* level. There is no first-class concept of a **subsystem** — a named group of components with hand-drawn boundaries — even though "system level" and "module level" abstractions are listed in the README's Planned Capabilities and are explicitly the next layer to build on top of v1's flat component graph.
+
+    A user who knows their codebase ("auth is everything under `services/auth/*` plus `libs/identity`; storage is …") cannot express that today. The closest is per-component pinning, which is verbose, doesn't capture the grouping intent, and isn't queryable downstream as a unit.
+
+    ## Goal
+
+    Let users hand-author subsystem boundaries that:
+    1. Name a subsystem and list its member components (by id or path glob).
+    2. Carry their own metadata (role, rationale, evidence_grade) parallel to `ComponentEntry`.
+    3. Are surfaced in `components.yaml` (or a new `subsystems.yaml`) so downstream consumers can query "what subsystems exist? what components belong to subsystem X?".
+
+    ## Sketch (open for design)
+
+    Either extend `components.overrides.yaml` with a new top-level `subsystems:` section:
+
+    ```yaml
+    subsystems:
+      auth:
+        role: identity-and-authorisation
+        members:
+          - services/auth/*
+          - libs/identity
+        rationale: "owns all session/token/identity surfaces"
+      storage:
+        members: [services/blob, services/metadata]
+    ```
+
+    Or a separate `subsystems.overrides.yaml` with the same shape — separation matches the design principle that override surfaces are decomplected.
+
+    ## Open questions
+
+    - **Discovery vs. hand-author only.** v1 scope is hand-author only; a later layer can propose subsystems from clique/SCC analysis (L7 already computes the structural inputs).
+    - **Nesting.** Should subsystems nest (a subsystem contains other subsystems)? Probably yes for the eventual "system → module → component" hierarchy, but v1 of this feature can be flat.
+    - **Glob vs. id membership.** Globs are ergonomic but couple boundaries to current paths; id-based membership is rename-stable. Allow both.
+    - **Engine integration.** New L4-adjacent layer that materialises subsystems from overrides + the resolved component tree, OR a pure projection step inside L9. Probably L9 — subsystems are an output, not a signal feeding back into classification.
+    - **Edge participation.** Can `related-components.yaml` edges name a subsystem as a participant? Ontology stance is opaque-string, so probably yes.
+
+    ## Out of scope
+
+    - Automatic subsystem discovery from graph structure (separate, larger task).
+    - Higher levels of abstraction beyond subsystem (module, system) — those come after this lands.
+    - Cross-component refactoring driven by subsystem boundaries (Uplift territory).
+
+    ## Exit criteria
+
+    - Schema for subsystem overrides decided and documented.
+    - L9 (or new layer) emits subsystems into output YAML.
+    - A fixture-based integration test asserts: subsystem hand-author → output reflects membership and metadata, with at least one rename-stability case.
+    - README's Usage section gains a "Pre-seeding subsystems" subsection with a worked example.
+- id: l3-prototype-map-style-classify-via-plain-anthropic-http-backend
+  title: 'L3 prototype: map-style classify via plain Anthropic HTTP backend'
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: HIGH.** Direct path to unblocking large-monorepo analysis (currently a single L8 subcarve takes >15 min, agent-progress shows context-rotted exploratory reads). Validates the architectural shift in the companion epic before we commit to the full conversion.
+
+    ## Context
+
+    Atlas's current LLM runs go through `ClaudeCodeBackend`, which spawns a `claude -p --output-format stream-json --verbose` subprocess for every call. The agent has full tool access (Read, Grep, Glob, Bash) and a persistent conversation. For small classification queries — e.g. "is `crates/foo` a `rust-library`?" — this is structurally pessimised: each call has multi-second subprocess startup, the agent reads many files before answering, and context grows monotonically (rot risk).
+
+    The cheapest, most-targeted prompt to convert is **L3 `is_component`**: it's already per-candidate, the inputs are bounded (manifest + doc headings + shebangs), and the output schema is a single JSON object. If a plain HTTP API call produces equivalent classifications in a fraction of the time, the case for converting L8 subcarve next is settled.
+
+    ## Goal
+
+    Prove that L3 classification can be served by a plain Anthropic HTTP API call with:
+
+    - **Wall-time improvement: ≥5× median speedup** per call vs `ClaudeCodeBackend`.
+    - **Accuracy preserved: kind-accuracy on the dev-workspace golden unchanged within 2 percentage points.**
+
+    ## Scope
+
+    ### Implementation
+
+    - Add a minimal `AnthropicHttpBackend` in `crates/atlas-llm/src/`. Uses the Anthropic Rust SDK (or raw `reqwest`) — no Claude Code subprocess, no tool use.
+    - Build the request from the existing L3 inputs (`build_llm_inputs` in `l3_classify.rs`): system prompt + ontology + manifest snippets, then the candidate-specific user prompt.
+    - Output parses against the existing classify response schema (`crates/atlas-cli/src/prompts.rs` JSON-schema enforcement stays).
+    - Wire it as an opt-in alternative: a new `--l3-backend http|claude-code` CLI flag, default `claude-code` so the spike is non-disruptive.
+    - Read `ANTHROPIC_API_KEY` from env; fail-loud if missing when `--l3-backend http` is selected.
+
+    ### Benchmark
+
+    - Run `atlas index ~/Development/dev-workspace --budget <N> --l3-backend http` and record wall-time per L3 call from `latest-session.yaml`.
+    - Run with `--l3-backend claude-code` for the same fixture as a baseline.
+    - Compute median per-call wall-time for each backend.
+    - Run `atlas-eval` against both result sets; compare `kind_accuracy` against the golden.
+    - Record numbers in `evaluation/results/<date>-l3-http-spike.yaml`.
+
+    ### Decision
+
+    Spike succeeds (and unblocks the epic) when:
+
+    - Median per-call wall-time drops by ≥5× under `--l3-backend http`.
+    - `kind_accuracy` is within 2pp of the `claude-code` baseline.
+    - LLM cache behaviour is unchanged (a re-run with no source changes is still byte-identical for the L3 outputs).
+
+    If accuracy regresses materially, the spike's secondary deliverable is a list of L3 cases that needed the agentic backend's exploration — input for whether to keep an agentic L3 fallback or rework the prompt.
+
+    ## Out of scope
+
+    - L8 subcarve conversion (separate epic — this spike is what de-risks it).
+    - L5 surface, L6 edges — those keep the agentic backend.
+    - Prompt caching (the epic adds it; spike is "does the simple form work?").
+    - Concurrency / parallelism (one call at a time is enough to measure speedup).
+    - Extracting a router abstraction (the `--l3-backend` flag is good enough for the spike; the epic generalises).
+
+    ## Exit criteria
+
+    - `AnthropicHttpBackend` exists in atlas-llm and is selected via `--l3-backend http`.
+    - Benchmark numbers recorded in `evaluation/results/`.
+    - Brief notes in `docs/superpowers/specs/<date>-l3-http-spike-findings.md` with the verdict and any prompt-quality observations.
+    - The follow-on epic (`map-reduce-llm-architecture`) either gets the green light, or gets concrete pivot guidance based on what didn't work.
+- id: map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis
+  title: Map/reduce LLM architecture with backend routing for context-light analysis
+  category: feature
+  status: not_started
+  dependencies:
+  - l3-prototype-map-style-classify-via-plain-anthropic-http-backend
+  description: |
+    **Priority: MEDIUM (HIGH once spike unblocks).** Foundational architectural shift for Atlas's LLM strategy. Replaces the per-component agentic-Claude-Code model with a routed two-backend design: plain Anthropic HTTP for fixed-shape classification queries, agentic Claude Code only for genuinely exploratory work. Combines this with map/reduce for L8 subcarve so a component with N immediate sub-directories costs N small parallel calls instead of one long-context-rotted agent run.
+
+    ## Context
+
+    Atlas's current LLM strategy:
+
+    - Every L3, L5, and L8 prompt runs through `ClaudeCodeBackend`, which spawns a Claude Code subprocess with full tool access for each call.
+    - One agent call covers the entire scope of the prompt (one component for L5, one whole subcarve decision for L8).
+    - A single L8 subcarve on a real monorepo takes >15 min in observed practice (agent-progress sub-line shows extensive exploratory reads).
+
+    Three structural problems:
+
+    1. **Context rot.** As the agent reads files within one call, its context grows monotonically; attention smears, decisions degrade, latency climbs.
+    2. **No reuse across components.** Two Rust crates with near-identical evidence each pay full agent-call cost. There is no caching across components because the per-call prompt is so large that no two prompts are byte-equal.
+    3. **No parallelism.** Per-iteration loops are serial: `iter 0 · subcarve 1/74` runs to completion before 2/74 starts.
+
+    The diagnostic lever is the agent-progress sub-line shipped in v1.2.0: when it shows the agent reading hundreds of files for one decision, the call is doing work that small fixed-shape prompts could each answer in seconds.
+
+    ## Goal
+
+    Re-architect Atlas's LLM dispatch with the right scope per prompt — narrow where the question is genuinely local, broad where it is genuinely cross-cutting:
+
+    - **Per-candidate / per-component classification prompts** (L3 `is_component`, L8 per-subdir verdict): run on a plain Anthropic HTTP backend with prompt caching and structured JSON output. No subprocess, no tool use, sub-second per call.
+    - **Per-component surface extraction** (L5 `Stage1Surface`): keep agentic — extracting an API surface needs to read source files, but the scope is bounded to one component's tree.
+    - **Cross-component edge synthesis** (L6 `Stage2Edges`): **stays cross-component, agentic, and broadly contextual.** This is where Atlas earns its keep on tech-debt-heavy codebases — components are linked through protocols, schemas, formats, APIs, communication patterns, and endpoints, none of which are visible in any single component's surface alone. Narrowing this prompt would defeat Atlas's core value. Map/reduce simplification applies *only* to prompts whose answer is a property of one candidate; L6 synthesises a relation across many.
+    - **L8 subcarve becomes map/reduce:** one HTTP call per immediate subdirectory of the component being carved (the "map"); deterministic Rust assembles per-subdir verdicts into the subcarve plan (the "reduce"). Map calls run in parallel under a bounded concurrency limit.
+
+    Target: a 74-subcarve first-iteration on a real monorepo completes in **≤ 5 min** (current state: >>15 min), without sacrificing edge-detection quality at L6.
+
+    ## Scope
+
+    ### Backend routing
+
+    - `LlmBackend` trait gains routing semantics — either a `BackendRouter` decorator that dispatches by `PromptId`, or a per-`PromptId` policy table consulted by the engine before calling.
+    - Default routing reflects the prompt's *scope*, not just its model:
+      - `Classify` (per-candidate, local) → HTTP backend.
+      - `Subcarve` (per-subdir, local) → HTTP backend with map/reduce.
+      - `Stage1Surface` (per-component, bounded local) → Claude Code backend, scoped to one component tree.
+      - `Stage2Edges` (cross-component, global) → Claude Code backend, full multi-component context. This is the layer that finds protocol/schema/API links and must see surfaces across components together.
+    - Configurable via CLI / env for testing, but the defaults encode the design.
+
+    ### Plain HTTP backend
+
+    - New `AnthropicHttpBackend` in `crates/atlas-llm/`. Uses the Anthropic Rust SDK (or raw `reqwest` + `serde_json`). Reads `ANTHROPIC_API_KEY`.
+    - **Prompt caching enabled** — system prompt + ontology + component-kinds vocabulary become a `cache_control` block, so the static prefix is paid once per ~5 minutes across all calls.
+    - **Structured JSON output** validated against the existing per-prompt JSON schemas in `crates/atlas-cli/src/prompts.rs`.
+
+    ### L8 subcarve map/reduce
+
+    - Replace today's "one agent call asks 'what are the sub-components of X'" with:
+      - Map: for each immediate sub-directory of X, build a prompt containing only that subdir's name, listing of top-level entries, and primary manifest snippet (~500 tokens). Fire one HTTP call. Output: `{ is_component, kind, role, evidence }`.
+      - Reduce: deterministic — collect verdicts, build the `SubcarvePlan`. No second LLM call.
+    - Bounded concurrency executor (start with 8-16 in flight; tune empirically) so 74 map calls parallelise safely.
+
+    ### Cache compatibility
+
+    - Existing `llm-cache.json` is content-addressed — small map prompts produce small, deterministic cache keys, which is what we want. Verify the cache fingerprint includes the *post-truncation* prompt body so behaviour is reproducible.
+    - A monorepo with N nearly-identical Rust crates should see most of those N L3 calls collapse to **one cache entry on first run** because the sanitised prompt is byte-equal. Quantify the hit-rate change.
+
+    ### Per-call context budget
+
+    - Each map call has a hard input cap (e.g., 4 KB pre-prompt content). Request builder enforces it deterministically (top-N entries by lexicographic sort, then "this is a sample" suffix). Keeps prompts cheap and reproducible.
+
+    ### Execution / concurrency
+
+    - Add a Tokio runtime in atlas-cli (or use the existing one if Claude Code's backend already drives one) and a bounded `mpsc` / `Semaphore` to gate concurrent HTTP calls.
+    - Errors per map-call are isolated: one failure marks one subdir's verdict as `unknown` rather than poisoning the whole subcarve. Plan-assembly degrades gracefully.
+
+    ### Goldens / eval
+
+    - Re-run dev-workspace and the synthetic-second target through the new pipeline. Update goldens only where structural divergence is intentional (e.g., the map-step is more granular than the agent-step would have been).
+    - Record before/after wall-time and accuracy in `evaluation/results/`.
+
+    ## Risks and unknowns
+
+    - **Cross-cutting reasoning loss within map calls.** A map-step subagent looking at `crates/foo/src/io/` doesn't see `crates/foo/src/db/`. For L8 per-subdir verdicts this is the right shape; for L3 verify the existing prompt doesn't lean on cross-file context the new shape can't supply. Spike feedback feeds this.
+    - **L6 edge-synthesis quality must not regress.** The architectural change narrows L3 and L8 specifically because their answer is local; L6 has to remain *broader*, not narrower. A regression here would mean Atlas misses the cross-component links (shared protocols, schemas, REST endpoints, message-bus topics) that motivate the project. Track L6's `edge_precision` and `edge_recall` against the goldens through the conversion and treat any drop ≥ 2pp as a blocker.
+    - **API rate limits.** 74 concurrent calls × multiple iterations could hit per-minute limits on the Anthropic API. Bounded concurrency is the lever; calibrate against published limits.
+    - **`llm-cache.json` byte-identity.** With map/reduce the cache file shape may change (smaller entries, more of them). Verify `--dry-run` re-runs are still byte-identical post-conversion.
+    - **Mixed-backend `LlmFingerprint`.** Today the fingerprint encodes one backend per run. The router needs to merge two backends' fingerprints into a stable composite, or each `Classification` records the backend used.
+
+    ## Out of scope
+
+    - L5 surface and L6 edges conversion — keep agentic, address in a follow-on if/when needed.
+    - Replacing Claude Code itself; `ClaudeCodeBackend` stays for the genuinely exploratory prompts.
+    - A user-pluggable backend system (Ollama / OpenAI / etc.) — useful but a larger surface.
+
+    ## Exit criteria
+
+    - `AnthropicHttpBackend` lands and is wired as the default for `Classify` and `Subcarve` prompt ids.
+    - L8 subcarve runs in map/reduce mode with bounded concurrency.
+    - Real-monorepo first-iteration L8 wall-time **≤ 5 min** (current >>15 min) on the user's target.
+    - `kind_accuracy` against the dev-workspace golden is within 2pp of the pre-conversion baseline.
+    - `--dry-run` re-run produces byte-identical outputs to the prior run.
+    - Documentation: a section in the design spec (`docs/superpowers/specs/`) describing the routing rules, map/reduce shape, and concurrency model.

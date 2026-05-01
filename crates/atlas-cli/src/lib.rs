@@ -13,5 +13,6 @@ pub mod pipeline;
 pub mod progress;
 pub mod prompts;
 pub mod timestamp;
+pub mod validate;
 
 pub use pipeline::{run_index, IndexConfig, IndexError, IndexSummary, DEFAULT_OUTPUT_SUBDIR};

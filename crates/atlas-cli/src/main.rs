@@ -39,6 +39,11 @@ struct Cli {
 enum Command {
     /// Index a codebase into the four Atlas YAMLs.
     Index(IndexArgs),
+    /// Validate a `components.overrides.yaml` against the canonical
+    /// kind vocabulary. Reports unknown kinds, suspicious typos, and
+    /// unrecognised pin fields without modifying anything. Exits
+    /// non-zero on errors.
+    ValidateOverrides(ValidateOverridesArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -98,6 +103,12 @@ struct IndexArgs {
     no_progress: bool,
 }
 
+#[derive(Debug, clap::Args)]
+struct ValidateOverridesArgs {
+    /// Path to a `components.overrides.yaml` file.
+    path: PathBuf,
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
@@ -112,6 +123,20 @@ fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
     match cli.command {
         Command::Index(args) => run_index_cmd(args),
+        Command::ValidateOverrides(args) => run_validate_overrides_cmd(args),
+    }
+}
+
+fn run_validate_overrides_cmd(args: ValidateOverridesArgs) -> Result<ExitCode> {
+    let overrides = atlas_index::load_or_default_overrides(&args.path)
+        .with_context(|| format!("failed to load {}", args.path.display()))?;
+    let report = atlas_cli::validate::validate_overrides(&overrides);
+    let mut stdout = std::io::stdout().lock();
+    atlas_cli::validate::print_report(&report, &args.path, &mut stdout);
+    if report.has_errors() {
+        Ok(ExitCode::from(1))
+    } else {
+        Ok(ExitCode::SUCCESS)
     }
 }
 

@@ -575,7 +575,7 @@ mod tests {
     fn kind_accuracy_penalises_mismatched_kind() {
         let g = file_of(vec![component("a", "pkg-a")]);
         let mut tool_c = component("a", "pkg-a");
-        tool_c.kind = "rust-binary".into();
+        tool_c.kind = "rust-cli".into();
         let t = file_of(vec![tool_c]);
         assert_eq!(kind_accuracy(&g, &t, OverlapThreshold::default()), 0.0);
     }
@@ -687,7 +687,7 @@ mod tests {
         let candidate = TempDir::new().unwrap();
         let before = file_of(vec![component("a", "pkg-a")]);
         let mut mutated = component("a", "pkg-a");
-        mutated.kind = "rust-binary".into();
+        mutated.kind = "rust-cli".into();
         let after = file_of(vec![mutated]);
         let related = RelatedComponentsFile::default();
         write_triple(base.path(), &before, &related);

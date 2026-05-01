@@ -26,7 +26,7 @@ use std::time::{Instant, SystemTime};
 use anyhow::{Context, Result};
 use atlas_engine::{
     components_yaml_snapshot_with_prompt_shas, external_components_yaml_snapshot,
-    related_components_yaml_snapshot, run_fixedpoint, seed_filesystem, AtlasDatabase,
+    related_components_yaml_snapshot, run_fixedpoint, seed_filesystem_excluding, AtlasDatabase,
     FixedpointConfig, Phase, ProgressEvent, ProgressSink,
 };
 use atlas_index::{
@@ -138,6 +138,17 @@ pub fn run_index(
     let prior_related =
         load_or_default_related_components(&prior_related_path).map_err(IndexError::Other)?;
     let overrides = load_or_default_overrides(&overrides_path).map_err(IndexError::Other)?;
+    let validation = crate::validate::validate_overrides(&overrides);
+    if validation.has_any() {
+        crate::validate::print_report(&validation, &overrides_path, &mut std::io::stderr().lock());
+    }
+    if validation.has_errors() {
+        return Err(IndexError::Other(anyhow::anyhow!(
+            "components.overrides.yaml has validation errors; fix them or run \
+             `atlas validate-overrides {}` for the full report",
+            overrides_path.display()
+        )));
+    }
 
     // ---- construct database ---------------------------------------
     let fingerprint = config
@@ -148,9 +159,14 @@ pub fn run_index(
     let mut db = AtlasDatabase::new(backend.clone(), config.root.clone(), fingerprint.clone());
     let cache_path = config.output_dir.join("llm-cache.json");
     cache_io::load_into(&cache_path, db.llm_cache());
-    seed_filesystem(&mut db, &config.root, config.respect_gitignore)
-        .context("failed to seed filesystem")
-        .map_err(IndexError::Other)?;
+    seed_filesystem_excluding(
+        &mut db,
+        &config.root,
+        &config.output_dir,
+        config.respect_gitignore,
+    )
+    .context("failed to seed filesystem")
+    .map_err(IndexError::Other)?;
 
     if config.recarve {
         // Discard prior components so L4's rename-match does not anchor

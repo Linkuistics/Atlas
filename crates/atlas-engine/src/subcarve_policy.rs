@@ -55,10 +55,26 @@ pub fn decide(signals: &SubcarveSignals) -> PolicyDecision {
 
     match signals.kind {
         // Leaf-like kinds: one component end-to-end, never carve inside.
+        // CLIs, apps, and services own a single entry-point shape;
+        // proc-macros, packaging artefacts (docker, installers), and
+        // script collections likewise have no meaningful internal
+        // call-graph for L8 to discover.
         ComponentKind::RustCli
+        | ComponentKind::RustProcMacro
         | ComponentKind::NodeCli
+        | ComponentKind::ReactApp
+        | ComponentKind::PythonApp
+        | ComponentKind::DartApp
+        | ComponentKind::FlutterApp
+        | ComponentKind::DotnetService
         | ComponentKind::Service
-        | ComponentKind::Website => PolicyDecision::Stop,
+        | ComponentKind::Website
+        | ComponentKind::DockerImage
+        | ComponentKind::DockerComposeBundle
+        | ComponentKind::Installer
+        | ComponentKind::ShellScripts
+        | ComponentKind::SqlScripts
+        | ComponentKind::CodegenTool => PolicyDecision::Stop,
 
         // Documentation and configuration repositories are treated as
         // single components — their internal structure is a directory
@@ -74,7 +90,12 @@ pub fn decide(signals: &SubcarveSignals) -> PolicyDecision {
         // Libraries: recurse up to LIBRARY_DEFAULT_DEPTH_CAP by
         // default; extend to --max-depth when modularity_hint fires.
         // Below the cap, route to the LLM for sub-dir identification.
-        ComponentKind::RustLibrary | ComponentKind::NodePackage | ComponentKind::PythonPackage => {
+        ComponentKind::RustLibrary
+        | ComponentKind::NodeLibrary
+        | ComponentKind::PythonLibrary
+        | ComponentKind::DartLibrary
+        | ComponentKind::DotnetLibrary
+        | ComponentKind::ReactLibrary => {
             let cap = if signals.modularity_hint.is_some() {
                 signals.max_depth
             } else {
@@ -189,8 +210,8 @@ mod tests {
         for kind in [
             ComponentKind::RustLibrary,
             ComponentKind::Workspace,
-            ComponentKind::NodePackage,
-            ComponentKind::PythonPackage,
+            ComponentKind::NodeLibrary,
+            ComponentKind::PythonLibrary,
         ] {
             let mut signals = signals_for(kind);
             signals.max_depth = 0;

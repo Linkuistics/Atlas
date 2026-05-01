@@ -251,7 +251,7 @@ fn l3_package_json_with_main_only_classifies_as_node_package() {
     let db = db_without_llm(&root);
     let ws = db.workspace();
     let c = is_component(&db, ws, root.clone());
-    assert_eq!(c.kind, ComponentKind::NodePackage);
+    assert_eq!(c.kind, ComponentKind::NodeLibrary);
 }
 
 #[test]
@@ -263,7 +263,7 @@ fn l3_pyproject_toml_classifies_as_python_package() {
     let db = db_without_llm(&root);
     let ws = db.workspace();
     let c = is_component(&db, ws, root.clone());
-    assert_eq!(c.kind, ComponentKind::PythonPackage);
+    assert_eq!(c.kind, ComponentKind::PythonLibrary);
 }
 
 #[test]

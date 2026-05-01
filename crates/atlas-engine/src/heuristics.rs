@@ -198,7 +198,7 @@ fn rule_package_json_library(
         return None;
     }
     Some(Classification {
-        kind: ComponentKind::NodePackage,
+        kind: ComponentKind::NodeLibrary,
         language: Some("javascript".into()),
         build_system: Some("npm".into()),
         lifecycle_roles: vec![LifecycleScope::Build, LifecycleScope::Runtime],
@@ -218,7 +218,7 @@ fn rule_pyproject_toml(
 ) -> Option<Classification> {
     manifests.pyproject_toml?;
     Some(Classification {
-        kind: ComponentKind::PythonPackage,
+        kind: ComponentKind::PythonLibrary,
         language: Some("python".into()),
         build_system: Some("pyproject".into()),
         lifecycle_roles: vec![LifecycleScope::Build, LifecycleScope::Runtime],

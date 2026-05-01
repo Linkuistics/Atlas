@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use atlas_engine::{
     doc_headings, file_content, file_tree_sha, git_boundaries, manifests_in, seed_filesystem,
-    shebangs, AtlasDatabase, DocHeading,
+    seed_filesystem_excluding, shebangs, AtlasDatabase, DocHeading,
 };
 use atlas_llm::{LlmFingerprint, TestBackend};
 
@@ -272,6 +272,57 @@ fn seed_filesystem_respects_gitignore_when_enabled() {
     // acceptable — the test asserts only that the non-ignored file
     // survives.
     let _ = db.file_by_path(&root.join("ignored.txt"));
+}
+
+#[test]
+fn seed_filesystem_excluding_skips_output_dir_under_root() {
+    // Re-running atlas index over a tree whose .gitignore does not list
+    // `.atlas/` would otherwise feed the prior run's components.yaml
+    // and llm-cache.json back into L0 as analysis input. The
+    // `seed_filesystem_excluding` entry point prunes a designated
+    // output directory regardless of gitignore status.
+    let td = tempfile::tempdir().unwrap();
+    let root = td.path().to_path_buf();
+    let output_dir = root.join(".atlas");
+    std::fs::create_dir(&output_dir).unwrap();
+    std::fs::write(output_dir.join("components.yaml"), "schema_version: 1\n").unwrap();
+    std::fs::write(output_dir.join("llm-cache.json"), "{}").unwrap();
+    std::fs::write(root.join("src.rs"), "fn main() {}").unwrap();
+    std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+
+    let backend = Arc::new(TestBackend::new());
+    let mut db = AtlasDatabase::new(backend, root.clone(), default_fingerprint());
+    seed_filesystem_excluding(&mut db, &root, &output_dir, false).unwrap();
+
+    assert!(db.file_by_path(&root.join("src.rs")).is_some());
+    assert!(db.file_by_path(&root.join("Cargo.toml")).is_some());
+    assert!(
+        db.file_by_path(&output_dir.join("components.yaml"))
+            .is_none(),
+        "prior components.yaml must not be re-ingested as L0 input"
+    );
+    assert!(
+        db.file_by_path(&output_dir.join("llm-cache.json"))
+            .is_none(),
+        "prior llm-cache.json must not be re-ingested as L0 input"
+    );
+}
+
+#[test]
+fn seed_filesystem_excluding_keeps_walk_when_excluded_outside_root() {
+    // When --output-dir resolves outside the analysis root, exclusion
+    // is a no-op (the walker would never reach the output anyway).
+    let td_root = tempfile::tempdir().unwrap();
+    let td_out = tempfile::tempdir().unwrap();
+    let root = td_root.path().to_path_buf();
+    let output_dir = td_out.path().to_path_buf();
+    std::fs::write(root.join("src.rs"), "fn main() {}").unwrap();
+
+    let backend = Arc::new(TestBackend::new());
+    let mut db = AtlasDatabase::new(backend, root.clone(), default_fingerprint());
+    seed_filesystem_excluding(&mut db, &root, &output_dir, false).unwrap();
+
+    assert!(db.file_by_path(&root.join("src.rs")).is_some());
 }
 
 #[test]
