@@ -1,16 +1,11 @@
-id: session-23
-timestamp: 2026-05-01T00:34:57Z
+id: session-24
+timestamp: 2026-05-01T01:26:44Z
 phase: work
 body: |
-  ### Session 23 (2026-05-01T00:34:57Z) — Wire Reporter through pipeline, decompose L5 demand, add byte-identity regression
+  ### Session 24 (2026-05-01T01:26:44Z) — Add push-state guard to release scripts and ship v1.1.0
 
-  - Implemented Tasks 16–19 of `docs/superpowers/plans/2026-05-01-engine-progress-events.md` in six commits on `main`.
-  - `run_index` in `crates/atlas-cli/src/pipeline.rs` gained a fourth `reporter: Arc<Reporter>` parameter; fires `Started`/`Phase(Seed/Fixedpoint/Project/Edges)`/`Finished` at pipeline boundaries and passes `Some(reporter.clone())` as `FixedpointConfig::progress`.
-  - The L5 projection block now pre-walks `all_components(&db)` (non-deleted) and emits one `ProgressEvent::Surface { k, n, … }` per component before calling `surface_of` — warming the cache so the terminal `components_yaml_snapshot_with_prompt_shas` hits it.
-  - `main.rs` simplified: constructs `Reporter` via `make_stderr_reporter`, passes it through `run_index`, calls `reporter.finish()` after. Removed legacy `announce_start`/`Option<Reporter>` handling left from T7.
-  - New `crates/atlas-cli/tests/byte_identity_l5_demand.rs`: runs pipeline twice on a `TestBackend` fixture, asserts byte-equal `components.yaml` across runs AND that the per-component demand loop issued at least one `Stage1Surface` backend call (via a `CountingBackend` wrapper).
-  - Two code-quality fixes from dual subagent review: `Finished` emission moved past `save_*_atomic` block (spec §6.2 "done line is final"); test causality strengthened with `PromptId::Stage1Surface` filter to ensure the counter proves the L5 loop fired, not just any backend call.
-  - All 329 tests pass; clippy and fmt clean.
-  - The progress feature is now end-to-end: engine fires `IterStart`/`Subcarve`/`IterEnd`, CLI fires `Started`/`Phase`/`Surface`/`Finished`, Reporter renders both into a `MultiProgress`.
-
-  What's next: `verify-atlas-v1-success-criteria-end-to-end` is now materially closer (criterion 4 — operator UX during long runs — is addressed). Criterion 5 still blocked on Ravel-Lite M5 migration.
+  - **Attempted:** Add `require_pushed_to_origin` guard to `scripts/release-build.sh` and `scripts/release-publish.sh` so that a forgotten `git push --follow-tags` between `cargo release --execute` and the build step is caught early, before the cold zigbuild runs or a GitHub Release is created with an absent commit.
+  - **What worked:** Both scripts received the shared-shape helper (duplicated rather than extracted to `scripts/lib/` since a single 10-line helper doesn't justify a new `lib/` layer). The guard calls `git fetch --quiet --tags origin`, then `merge-base --is-ancestor HEAD origin/main`, then `ls-remote --exit-code --tags origin refs/tags/v<version>`. The version was simultaneously bumped to 1.1.0 via `cargo release minor --execute` (Cargo.toml and Cargo.lock updated across four crates: atlas-cli, atlas-engine, atlas-eval, atlas-llm). The v1.1.0 release was successfully cut, published, and verified: four tarballs built, GitHub Release at v1.1.0 created, formula pushed to homebrew-taps, and `brew reinstall` confirmed `atlas 1.1.0` clean.
+  - **What didn't work:** Nothing — the fix was straightforward and end-to-end verified on the real release run.
+  - **What this suggests trying next:** If the release scripts grow more shared helpers, extract `scripts/lib/release-checks.sh` and source from both. A similar push-state guard could be wired into `cargo release` itself via `pre-release-hook` in `release.toml` to catch the failure earlier (at the release step rather than at build time) — surface in triage if the failure mode recurs.
+  - **Key learnings:** Using ancestry (`merge-base --is-ancestor HEAD origin/main`) rather than SHA equality avoids false positives when someone else lands a commit on origin/main between push and build.
