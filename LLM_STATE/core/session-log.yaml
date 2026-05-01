@@ -300,3 +300,15 @@ sessions:
     - **What didn't work:** Nothing — the fix was straightforward and end-to-end verified on the real release run.
     - **What this suggests trying next:** If the release scripts grow more shared helpers, extract `scripts/lib/release-checks.sh` and source from both. A similar push-state guard could be wired into `cargo release` itself via `pre-release-hook` in `release.toml` to catch the failure earlier (at the release step rather than at build time) — surface in triage if the failure mode recurs.
     - **Key learnings:** Using ancestry (`merge-base --is-ancestor HEAD origin/main`) rather than SHA equality avoids false positives when someone else lands a commit on origin/main between push and build.
+- id: session-25
+  timestamp: 2026-05-01T02:45:41Z
+  phase: work
+  body: |
+    ### Session 25 (2026-05-01T02:45:41Z) — Design agent progress feedback feature and write spec
+
+    - Ran `superpowers:brainstorming` flow with the user to scope and decide the architecture for live agent progress feedback (a third refreshed sub-line under the activity bar showing the most recent tool call and a running counter during long LLM calls).
+    - All five key design decisions settled interactively: surface content (tool call + counter), layout (indicatif third sub-line mounted on `CallStart`/unmounted on `CallEnd`), activation gate (`Reporter::drawing()`), architecture (Approach A — streaming `claude -p --output-format stream-json --verbose`, legacy JSON path removed), and side-channel routing (`ClaudeCodeBackend → Reporter` directly).
+    - Spec drafted and self-reviewed at `docs/superpowers/specs/2026-05-01-agent-progress-feedback-design.md` with three inline corrections applied during review.
+    - Two backlog tasks created: `design-agent-progress-feedback-feature-write-spec` (now `done`) and `implement-agent-progress-feedback-live-tool-call-sub-line-during-long-llm-calls` (`not_started`, depends on the design task).
+    - No code changes this session; all changes are plan-state and the spec doc.
+    - Suggests next: pick up the implementation task, invoke `superpowers:writing-plans` against the spec to produce a step-by-step plan, then drive build with `superpowers:executing-plans` or subagent-driven-development. Pre-implementation prep: capture real `claude -p --output-format stream-json --verbose` JSONL transcripts and check them in as test fixtures.
