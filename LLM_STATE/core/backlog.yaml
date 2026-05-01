@@ -133,3 +133,28 @@ tasks:
     - Streaming partial assistant text.
 
     See spec §2 (non-goals) and §9 (open questions).
+  handoff: |
+    **Plan ready — skip writing-plans, go straight to execution.**
+
+    The implementation plan is committed at:
+    - `docs/superpowers/plans/2026-05-01-agent-progress-feedback.md`
+
+    It is fully reified (13 tasks, ~880 lines, no placeholders) and was generated via `superpowers:writing-plans` against the design spec referenced in this task's description. The task description's "How to start" section is now superseded by this handoff.
+
+    **Next session — start here:**
+
+    1. Read the plan file end-to-end before touching code.
+    2. Pick an execution mode:
+       - **Subagent-Driven (recommended)** — invoke `superpowers:subagent-driven-development`. Dispatches a fresh subagent per task with two-stage review between tasks. Best for this plan's 13 sequential commits.
+       - **Inline Execution** — invoke `superpowers:executing-plans`. Same plan, batched in this session with checkpoints. Cheaper but main context fills as work progresses.
+    3. The plan's File Structure table at the top names every file to create or modify. The Self-Review section at the bottom maps each spec section (§3, §4.1, §5.1, etc.) to the task that covers it — useful for spot-checking.
+
+    **Key facts the executing session needs:**
+
+    - Three real `claude -p` JSONL fixtures are already committed at `crates/atlas-llm/tests/fixtures/stream/{simple-classify,subcarve-with-tools,error-max-turns}.jsonl`. Tasks 5 and 12 reference them by path; do not regenerate.
+    - Workspace lints set `warnings = "deny"`. Every commit must be clippy-clean (`cargo clippy --tests -- -D warnings`).
+    - Tasks 6 + 7 commit together (combined to avoid a transient `dead_code` warning on the new `observer` field while it's not yet read).
+    - Task 12's e2e test is gated behind `ATLAS_LLM_RUN_CLAUDE_TESTS=1`; the unopted-in default skips silently.
+    - Task 13 writes four memory entries via `ravel-lite state memory add`; those land in `LLM_STATE/core/` and are committed by the analyse-work phase, not by Task 13 itself.
+
+    When all 13 tasks are committed and tests are green, set this task's status to `done` and write a Results block summarising what shipped. The release follow-up (Atlas v1 sign-off) lives on the existing `verify-atlas-v1-success-criteria-end-to-end` task.
