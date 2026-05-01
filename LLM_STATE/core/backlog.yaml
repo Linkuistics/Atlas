@@ -1,81 +1,4 @@
 tasks:
-- id: implement-agent-progress-feedback-live-tool-call-sub-line-during-long-llm-calls
-  title: Implement agent progress feedback (live tool-call sub-line during long LLM calls)
-  category: feature
-  status: done
-  dependencies: []
-  description: |
-    **Priority: MEDIUM.** Long subcarve calls (10+ minutes against `claude -p`) currently show no intermediate signal; users cannot distinguish a stuck process from a working one.
-
-    **Design spec:** `docs/superpowers/specs/2026-05-01-agent-progress-feedback-design.md` (committed in the same change-set that added this backlog item).
-
-    ## What ships
-
-    - New `AgentObserver` trait + `AgentEvent { CallStart, ToolUse, ToolResult, CallEnd }` in `atlas-llm`.
-    - `ClaudeCodeBackend::call` rewritten to invoke `claude -p --output-format stream-json --verbose` and stream events to an optional observer. Non-streaming `--output-format json` path removed (Approach A from the spec).
-    - `Reporter` (in `atlas-cli/src/progress.rs`) gains a third indicatif sub-line that mounts on `CallStart`, shows `↳ <Tool> <summary> · N tools` (truncated to terminal width), and unmounts on `CallEnd`. Auto-enabled when `Reporter::drawing() == true`.
-    - `ObserverGuard` (Drop-based) ensures `CallEnd` always fires.
-    - Stderr piped + drained in a small thread to avoid pipe-buffer deadlock.
-    - Tests: stream-parser unit tests with three recorded JSONL fixtures (`simple-classify`, `subcarve-with-tools`, `error-max-turns`); Reporter rendering tests via direct `on_event` calls; one end-to-end integration test gated behind `ATLAS_LLM_RUN_CLAUDE_TESTS=1`.
-
-    ## How to start
-
-    The implementation work-phase that picks this up should begin by invoking the `superpowers:writing-plans` skill against the spec to produce a step-by-step implementation plan, then `superpowers:executing-plans` (or subagent-driven-development for parallel sub-tasks) to drive the build.
-
-    ## Out of scope (deferred)
-
-    - Recursing into Task subagent activity.
-    - Parallel-call rendering (single-bar design).
-    - Streaming partial assistant text.
-
-    See spec §2 (non-goals) and §9 (open questions).
-  results: |
-    All 13 plan tasks shipped. The agent-progress sub-line is now live: `claude -p` now runs with `--output-format stream-json --verbose` for every call, and the streaming JSONL is parsed in `atlas-llm` while emitting `AgentEvent`s through an `AgentObserver` side-channel. `Reporter` (in `atlas-cli`) mounts a third indicatif sub-line on `CallStart`, refreshes it on each `ToolUse`, marks it with `(✗)` on a failed `ToolResult`, and unmounts on `CallEnd`. Truncation fits long summaries into a 120-char nominal width with a trailing ellipsis while preserving the tool name, counter, and failure marker.
-
-    ## What worked
-
-    - **Single-shot rewrite of `ClaudeCodeBackend::call`**: replaced the legacy `--output-format json` path with a streaming pipeline (spawn → drain stderr in a worker thread → run `parse_stream` over stdout → wait child → validate response). All 64 atlas-llm tests pass; the three real `claude -p` JSONL fixtures (`simple-classify`, `subcarve-with-tools`, `error-max-turns`) drive end-to-end coverage of the parser without spawning the actual binary.
-    - **`ObserverGuard` RAII**: ensures `CallEnd` fires on every termination path (success, error, panic). Two dedicated tests pin this behaviour.
-    - **Truncation contract**: `render_agent_line_with_width` reserves the prefix (`↳ Tool`) and suffix (`· N tools (✗)`) before computing the summary budget, so name + counter + marker are never lost. Three tests cover the long/short/failure cases.
-    - **Counter ownership refactor**: `build_production_backend_with_counter` lifts the `TokenCounter` construction to `main.rs` so the same counter feeds both the `Reporter` gauge and the `BudgetedBackend` actuals — without that sharing, the gauge would silently drift from real usage.
-
-    ## What didn't work (and how it was fixed)
-
-    - **`indicatif::ProgressBar::is_hidden()` is double-meaning**: it returns `true` for both `ProgressDrawTarget::hidden()` AND for any TTY-bound target when stderr isn't a TTY. The plan assumed `is_hidden()` would tell us whether we *had mounted* the bar; in test environments (no TTY) it always returned `true` even after `set_draw_target(stderr())`. Fix: track `agent_mounted: bool` explicitly in `ReporterState`. Memory entry written: `reporter-agent-mounted-is-tracked-in-state-not-derived-from-indicatif`.
-    - **Trait-method ambiguity**: `Reporter` now implements both `ProgressSink::on_event(&self, ProgressEvent)` and `AgentObserver::on_event(&self, AgentEvent)`. Even though the argument types disambiguate, Rust's method-call resolution looks at the receiver, not the args, so existing `r.on_event(ProgressEvent::…)` test calls became ambiguous. Fix: rewrote 17 test callsites to UFCS (`ProgressSink::on_event(&*r, …)` / `AgentObserver::on_event(r.as_ref(), …)`). Memory entry written: `two-traits-with-same-named-on-event-method-on-reporter-requires-ufcs`.
-    - **Clippy `field_reassign_with_default`**: bumped `ReporterState` to `pub(crate)` so the truncation tests could construct it; clippy then required the struct-update form (`ReporterState { agent_tools: 23, ..ReporterState::default() }`) instead of mut-and-assign.
-
-    ## What this suggests next
-
-    - **Verify the e2e test on real `claude` once budget allows**: `cargo test -p atlas-cli --test agent_observer_e2e` skips silently by default. Running it once (`ATLAS_LLM_RUN_CLAUDE_TESTS=1 …`) on a one-file fixture would close the loop — costs ~$0.05 and ~30-90s. Until then, the agent sub-line is verified by parser-level fixture tests + Reporter rendering tests, but the full pipeline integration isn't demonstrated.
-    - **Truncation width is hard-coded at 120**: works for any 80-200 column terminal (indicatif handles wrap below that), but a future polish would query `console::Term::stderr().size()` once at reporter construction. Not urgent.
-    - **`error-max-budget-usd` surfaces as `Invocation` error**: matches the parser's contract, but it is also the path the e2e test would exercise if `--max-budget-usd 0.001` is passed. Worth a follow-up that wires this into the existing `BudgetSentinel` so the CLI can fail with a dedicated exit code (today it's a generic invocation error).
-    - **Plan covered §1–§10 of the spec**; §6.1 (concurrency) and §8.4 (TestBackend invariance) are accepted as-is rather than implemented — single in-flight call assumption is preserved by the single-bar `Reporter`, and the streaming rewrite is transparent to TestBackend.
-  handoff: |
-    **Plan ready — skip writing-plans, go straight to execution.**
-
-    The implementation plan is committed at:
-    - `docs/superpowers/plans/2026-05-01-agent-progress-feedback.md`
-
-    It is fully reified (13 tasks, ~880 lines, no placeholders) and was generated via `superpowers:writing-plans` against the design spec referenced in this task's description. The task description's "How to start" section is now superseded by this handoff.
-
-    **Next session — start here:**
-
-    1. Read the plan file end-to-end before touching code.
-    2. Pick an execution mode:
-       - **Subagent-Driven (recommended)** — invoke `superpowers:subagent-driven-development`. Dispatches a fresh subagent per task with two-stage review between tasks. Best for this plan's 13 sequential commits.
-       - **Inline Execution** — invoke `superpowers:executing-plans`. Same plan, batched in this session with checkpoints. Cheaper but main context fills as work progresses.
-    3. The plan's File Structure table at the top names every file to create or modify. The Self-Review section at the bottom maps each spec section (§3, §4.1, §5.1, etc.) to the task that covers it — useful for spot-checking.
-
-    **Key facts the executing session needs:**
-
-    - Three real `claude -p` JSONL fixtures are already committed at `crates/atlas-llm/tests/fixtures/stream/{simple-classify,subcarve-with-tools,error-max-turns}.jsonl`. Tasks 5 and 12 reference them by path; do not regenerate.
-    - Workspace lints set `warnings = "deny"`. Every commit must be clippy-clean (`cargo clippy --tests -- -D warnings`).
-    - Tasks 6 + 7 commit together (combined to avoid a transient `dead_code` warning on the new `observer` field while it's not yet read).
-    - Task 12's e2e test is gated behind `ATLAS_LLM_RUN_CLAUDE_TESTS=1`; the unopted-in default skips silently.
-    - Task 13 writes four memory entries via `ravel-lite state memory add`; those land in `LLM_STATE/core/` and are committed by the analyse-work phase, not by Task 13 itself.
-
-    When all 13 tasks are committed and tests are green, set this task's status to `done` and write a Results block summarising what shipped. The release follow-up (Atlas v1 sign-off) lives on the existing `verify-atlas-v1-success-criteria-end-to-end` task.
 - id: hand-author-second-golden-for-merged-monorepo
   title: Hand-author synthetic second golden for cross-target validation
   category: eval
@@ -180,3 +103,49 @@ tasks:
     - All six criteria pass or have documented follow-up tasks (criterion 5 may be deferred pending Ravel-Lite M5).
     - Sign-off report committed to the Atlas repo.
     - An announcement-ready short summary written (optional) as `README-v1.md` documenting what Atlas v1 does and does not do.
+- id: fix-parse-stream-to-map-error-max-budget-usd-to-llmerror-budgetexhausted
+  title: Fix parse_stream to map error_max_budget_usd to LlmError::BudgetExhausted
+  category: bug
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: LOW.** `parse_stream` in `atlas-llm` currently maps `error_max_budget_usd` terminal events to `LlmError::Invocation` (generic string error) rather than `LlmError::BudgetExhausted`. This means `BudgetSentinel` does not intercept `--max-budget-usd`-triggered exhaustion from the stream-json path.
+
+    ## What to change
+
+    In the stream parser in `crates/atlas-llm/src/`, add an `error_max_budget_usd` branch in `parse_stream` that returns `LlmError::BudgetExhausted` rather than `LlmError::Invocation`.
+
+    ## Cross-reference
+
+    - Memory entry `stream-json-error-max-budget-usd-maps-to-invocation-not-budgetexhausted` documents this gap.
+    - Memory entry `budgetsentinel-is-only-reliable-budget-exhaustion-detection-path` explains why BudgetSentinel is the correct interception point.
+    - The `error-max-turns.jsonl` fixture exercises the terminal error path; a new fixture or updated fixture may be needed for `error_max_budget_usd` specifically.
+
+    ## Exit criteria
+
+    - `parse_stream` returns `LlmError::BudgetExhausted` for `error_max_budget_usd` terminals.
+    - `BudgetSentinel` correctly intercepts this error.
+    - All `atlas-llm` tests pass; clippy clean.
+- id: run-agent-progress-e2e-integration-test-against-real-claude-binary
+  title: Run agent-progress e2e integration test against real claude binary
+  category: eval
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: LOW.** The agent-progress e2e integration test (`cargo test -p atlas-cli --test agent_observer_e2e`) skips silently by default. Running it once with `ATLAS_LLM_RUN_CLAUDE_TESTS=1` would close the loop on the full streaming pipeline: `ClaudeCodeBackend` → `parse_stream` → `AgentObserver` → `Reporter` agent sub-line.
+
+    ## What to do
+
+    1. Run: `ATLAS_LLM_RUN_CLAUDE_TESTS=1 cargo test -p atlas-cli --test agent_observer_e2e -- --nocapture`
+    2. Verify the test passes end-to-end.
+    3. If it fails, investigate and fix before marking done.
+    4. Estimated cost: ~$0.05 USD, ~30–90 s.
+
+    ## Context
+
+    The agent sub-line feature (shipped in the prior cycle) is verified only by parser-level fixture tests and `Reporter` rendering unit tests. The full integration path (real `claude -p --output-format stream-json --verbose` invocation → JSONL parse → `AgentEvent` emission → `Reporter` sub-line mount/refresh/unmount) has not been exercised end-to-end since implementation.
+
+    ## Exit criteria
+
+    - Test passes under `ATLAS_LLM_RUN_CLAUDE_TESTS=1`.
+    - No regressions in other `atlas-cli` tests.
