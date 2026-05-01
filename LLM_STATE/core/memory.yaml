@@ -253,10 +253,10 @@ entries:
 
     `release-build.sh` runs the check after `require_clean_tagged_tree` (fail-fast before the cold zigbuild). `release-publish.sh` runs it after `verify_tag_matches_artifacts` for defense in depth.
 
-    **Why it exists:** v1.1.0 was cut from a state where local main was 33 commits ahead of origin/main. Without this check, `cargo release --execute` + skipping `git push --follow-tags` would let `release-publish.sh` create a GitHub Release whose underlying commit was absent from `origin/main` (gh release create silently auto-creates a remote tag). The check turns that desync into a fail-fast error pointing at the exact `git push` to run.
+    Without this check, `release-publish.sh` can create a GitHub Release whose underlying commit is absent from `origin/main` — `gh release create` silently auto-creates a remote tag even when the commit is not pushed.
 
-    **Implementation invariants to preserve:**
+    **Implementation invariants:**
 
-    - Use **ancestry** (`merge-base --is-ancestor HEAD origin/main`), not SHA equality. Equality false-positives if someone else lands on origin/main between local push and build.
-    - **No `--prune` / `--prune-tags`** on the fetch — release scripts shouldn't impose tag-pruning side effects on the operator's working tree.
-    - Helper is **duplicated** in both scripts rather than sourced from a shared `scripts/lib/`. If the scripts grow more shared helpers, extracting a `lib/release-checks.sh` and `source`-ing from both is the right next step; not worth it for one helper.
+    - Use **ancestry** (`merge-base --is-ancestor HEAD origin/main`), not SHA equality. SHA equality false-positives if someone else lands on origin/main between local push and build.
+    - **No `--prune` / `--prune-tags`** on the fetch — release scripts must not impose tag-pruning side effects on the operator's working tree.
+    - Helper is **duplicated** in both scripts rather than sourced from `scripts/lib/`. Extract `lib/release-checks.sh` if the scripts grow more shared helpers.
