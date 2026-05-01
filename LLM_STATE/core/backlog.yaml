@@ -2,7 +2,7 @@ tasks:
 - id: wire-reporter-into-pipeline-decompose-l5-demand-and-add-byte-identity-regression
   title: Wire Reporter into pipeline, decompose L5 demand, and add byte-identity regression
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     Implement plan tasks 16–19 from
@@ -65,6 +65,43 @@ tasks:
     **Plan reference:** `docs/superpowers/plans/2026-05-01-engine-progress-events.md`,
     sections "Task 16" through "Task 19" plus the "Final verification"
     section.
+  results: |
+    Completed Tasks 16-19 of `docs/superpowers/plans/2026-05-01-engine-progress-events.md` (wire `Reporter` through pipeline, decompose L5 demand into per-component `Surface` events, add byte-identity regression test). Two follow-up fixes also landed from a code-quality review.
+
+    ## What was done
+
+    Six commits total, on `main`:
+
+    1. `894771f` feat(cli): pipeline owns Reporter and fires Phase markers — `run_index` gains a fourth `reporter: Arc<Reporter>` parameter; fires `Started`/`Phase(Seed/Fixedpoint/Project/Edges)`/`Finished` at the boundaries of each pipeline phase; passes `Some(reporter.clone())` as the engine `ProgressSink` in `FixedpointConfig`. Eight call sites of `run_index` in `pipeline_integration.rs` updated to pass `make_stderr_reporter(ProgressMode::Never, None)`.
+    2. `af02e35` feat(cli): decompose L5 demand into per-component Surface events — pre-loop walks `all_components(&db).iter().filter(!deleted)` and emits one `ProgressEvent::Surface { k, n, … }` per component before calling `surface_of` to warm the cache. The terminal `components_yaml_snapshot_with_prompt_shas` then hits the warmed cache.
+    3. `8df1daa` feat(cli): main passes Reporter through run_index — single-line wiring fix at the call site.
+    4. `6d6b899` test(cli): byte-identity regression for decomposed L5 demand — new `crates/atlas-cli/tests/byte_identity_l5_demand.rs` runs the pipeline twice with `TestBackend` and asserts `components.yaml` is byte-identical between runs.
+    5. `b6f0ee5` fix(cli): fire Finished event after writes complete — moves the `Finished` emission past the `save_*_atomic` block. Spec §6.2 shows `[atlas] done · …` as the *final* scrollback line; the original placement (per the plan, "before the `if config.dry_run` early return") fired before files actually landed on disk. Dry-run still gets `Finished` because both branches now fall through to the same emission site.
+    6. `4f6754f` test(cli): assert demand loop issues backend calls — adds a `CountingBackend` wrapper that counts every `.call()` invocation by `PromptId`, asserts the per-component demand loop fired at least one `Stage1Surface` call. The `PromptId::Stage1Surface` filter is load-bearing — verified by reverting the L5 loop in pipeline.rs: with the filter, the test fails (`stage1=0`); without the filter, an unfiltered `>= 1` would have masked the regression because the fixedpoint's `Subcarve` call would still satisfy a generic counter.
+
+    ## Verification
+
+    - `cargo test --workspace` — all green (~329 tests, 0 failed, 2 ignored).
+    - `cargo clippy --workspace --all-targets` — exit 0, no warnings (workspace `warnings = "deny"`).
+    - `cargo fmt --all -- --check` — clean.
+    - `cargo test -p atlas-cli --test byte_identity_l5_demand` — passes.
+    - Dual subagent review: ✅ spec-compliant (all six emission sites + ordering verified), code-quality review identified two Important issues (Finished ordering, test causality), both fixed in commits 5-6.
+    - Smoke test against the live Claude backend: skipped (would burn real tokens). The 8 existing integration tests in `pipeline_integration.rs` plus the new byte-identity test give equivalent coverage of the wired pipeline.
+
+    ## What this unlocked / what's next
+
+    - The progress feature is now end-to-end: engine fires `IterStart`/`Subcarve`/`IterEnd` on every fixedpoint iteration, CLI fires `Started`/`Phase`/`Surface`/`Finished` around the orchestration boundaries, and the Reporter renders both into a `MultiProgress` (activity bar + token gauge). The `--progress`/`--no-progress` flag still maps onto `ProgressMode::{Always, Auto, Never}`.
+    - Remaining backlog: the eval task `verify-atlas-v1-success-criteria-end-to-end` is now closer to ready — its criterion 4 (operator UX during long runs) is materially improved by this work. Criterion 5 is still gated on Ravel-Lite's M5 migration (per the `m2-migration-is-pure-import-path-swap` memory).
+
+    ## Limitations of the byte-identity test (documented in the test docstring)
+
+    The test asserts byte-identity of `components.yaml` across two runs **and** that the per-component demand loop issued at least one `Stage1Surface` backend call. It does **not** prove the "zero LLM calls on no-op re-run" caching contract — that requires real canned responses keyed off the actual L5 inputs (which include content shas), and `TestBackend`'s wildcard `json!({})` matcher never matches. The cache-hit contract is covered by the `byte_identical_yaml` tests in `pipeline_integration.rs` (which use `LenientBackend` and exact-input matching).
+
+    ## Memory candidates surfaced (defer to triage)
+
+    - `ProgressEvent::Finished` should fire after writes, not before — implies the spec §6.2 "done line is final" rule for any future event-vocabulary additions.
+    - `LlmResponseCache::call_count` only increments on **successful** backend cache misses (errors short-circuit before the increment). Useful for understanding why TestBackend-driven tests can show "0 LLM calls" while still firing real backend traffic.
+    - `TestBackend::respond` keys on canonical-JSON inputs — `json!({})` matches **only** the literal empty-object input, never wildcards. Tests that need to drive a real L5 path must compute exact inputs (via `build_inputs_for_tests`, currently `pub(crate)`) or wrap with a counting backend that doesn't depend on canned-response success.
 - id: hand-author-second-golden-for-merged-monorepo
   title: Hand-author synthetic second golden for cross-target validation
   category: eval

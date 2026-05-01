@@ -1,14 +1,16 @@
-id: session-22
-timestamp: 2026-04-30T16:01:12Z
+id: session-23
+timestamp: 2026-05-01T00:34:57Z
 phase: work
 body: |
-  ### Session 22 (2026-04-30T16:01:12Z) — Implement CLI Reporter and indicatif rendering
+  ### Session 23 (2026-05-01T00:34:57Z) — Wire Reporter through pipeline, decompose L5 demand, add byte-identity regression
 
-  - Implemented plan tasks 7–15 from `docs/superpowers/plans/2026-05-01-engine-progress-events.md`, delivering the full CLI-side `Reporter` and indicatif rendering in `crates/atlas-cli/src/progress.rs`.
-  - Replaced the old single-line `ProgressReporter` tally with `Reporter`: owns a `MultiProgress` with two `ProgressBar`s (activity spinner + token gauge), state behind a `Mutex<ReporterState>`.
-  - Implements `atlas_engine::ProgressSink::on_event` for all `ProgressEvent` variants: `Started`, `Phase`, `IterStart`, `IterEnd`, `Subcarve`, `Surface`, `Finished`.
-  - `on_llm_call` side-channel increments `PromptBreakdown` counters; engine-set k/n from `Subcarve`/`Surface` wins over LLM-tap refreshes (spec §6.3 priority).
-  - Token gauge hides itself when budget == 0 (`--no-budget` case).
-  - `crates/atlas-cli/src/main.rs` simplified: `make_stderr_reporter` now always returns `Arc<Reporter>` (no longer `Option`), removing the match arms.
-  - All 16 regression tests pass (`cargo test -p atlas-cli progress::tests` green); clippy clean; binary still compiles and runs end-to-end.
-  - Pipeline wiring (passing the `Reporter` into `FixedpointConfig`) remains as the next backlog item.
+  - Implemented Tasks 16–19 of `docs/superpowers/plans/2026-05-01-engine-progress-events.md` in six commits on `main`.
+  - `run_index` in `crates/atlas-cli/src/pipeline.rs` gained a fourth `reporter: Arc<Reporter>` parameter; fires `Started`/`Phase(Seed/Fixedpoint/Project/Edges)`/`Finished` at pipeline boundaries and passes `Some(reporter.clone())` as `FixedpointConfig::progress`.
+  - The L5 projection block now pre-walks `all_components(&db)` (non-deleted) and emits one `ProgressEvent::Surface { k, n, … }` per component before calling `surface_of` — warming the cache so the terminal `components_yaml_snapshot_with_prompt_shas` hits it.
+  - `main.rs` simplified: constructs `Reporter` via `make_stderr_reporter`, passes it through `run_index`, calls `reporter.finish()` after. Removed legacy `announce_start`/`Option<Reporter>` handling left from T7.
+  - New `crates/atlas-cli/tests/byte_identity_l5_demand.rs`: runs pipeline twice on a `TestBackend` fixture, asserts byte-equal `components.yaml` across runs AND that the per-component demand loop issued at least one `Stage1Surface` backend call (via a `CountingBackend` wrapper).
+  - Two code-quality fixes from dual subagent review: `Finished` emission moved past `save_*_atomic` block (spec §6.2 "done line is final"); test causality strengthened with `PromptId::Stage1Surface` filter to ensure the counter proves the L5 loop fired, not just any backend call.
+  - All 329 tests pass; clippy and fmt clean.
+  - The progress feature is now end-to-end: engine fires `IterStart`/`Subcarve`/`IterEnd`, CLI fires `Started`/`Phase`/`Surface`/`Finished`, Reporter renders both into a `MultiProgress`.
+
+  What's next: `verify-atlas-v1-success-criteria-end-to-end` is now materially closer (criterion 4 — operator UX during long runs — is addressed). Criterion 5 still blocked on Ravel-Lite M5 migration.
