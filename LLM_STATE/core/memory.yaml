@@ -24,7 +24,16 @@ entries:
 - id: pinvalue-suppress-uses-alwaystrue-to-ban-suppress-false
   title: PinValue::Suppress uses AlwaysTrue to ban suppress:false
   body: |
-    `PinValue::Suppress` carries an `AlwaysTrue` marker field so that `suppress: false` is a parse error rather than a silent no-op. Omitting `suppress: true` entirely is the intended representation of "no suppression".
+    `PinValue::Suppress` carries an `AlwaysTrue` marker field so that the legacy doubly-nested form (`suppress: false`) is a parse error rather than a silent no-op. Omitting `suppress: true` entirely is the intended representation of "no suppression".
+
+    **Two rejection paths now exist** (as of the natural-form deserialiser shipped in the PinValue serde rewrite):
+
+    1. **Natural bool path** — `PinValueVisitor::visit_bool` returns an error directly when it sees `false` (before `AlwaysTrue` is consulted).
+    2. **Legacy map path** — `{suppress: false}` still hits `AlwaysTrue::deserialize` which rejects non-true booleans.
+
+    Both paths produce an error; the outcome is identical. `AlwaysTrue` is still active for backward-compat with the legacy doubly-nested form.
+
+    Cross-ref: `pinvalue-deserializer-dispatches-on-value-shape-via-visitor`.
 - id: docs-overrides-migration-md-is-a-ghost-reference-until-v2-schema-ships
   title: docs/overrides-migration.md is a ghost path
   body: |

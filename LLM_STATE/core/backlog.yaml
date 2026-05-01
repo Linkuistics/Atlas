@@ -1,4 +1,34 @@
 tasks:
+- id: commit-atlas-contracts-pinvalue-schema-changes
+  title: Commit atlas-contracts PinValue schema changes
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: HIGH.** The atlas-contracts PinValue schema rewrite (custom `Serialize`/`Deserialize` via `deserialize_any` Visitor, replacing `#[serde(untagged)]`) was implemented in `/Users/antony/Development/atlas-contracts` but left uncommitted. The Atlas-side state update was committed separately; the atlas-contracts diff is the only outstanding piece.
+
+    ## Context
+
+    The PinValue serde rewrite spans two repos:
+    - **atlas-contracts** (`/Users/antony/Development/atlas-contracts`) — three files changed: `crates/atlas-index/src/schema.rs`, `crates/atlas-index/src/yaml_io.rs`, `crates/atlas-index/tests/snapshots/components.overrides.yaml`.
+    - **Atlas** — no source changes (only backlog state).
+
+    The atlas-contracts diff is not yet committed. Until it is, the work is at risk of loss and any future `cargo update` or git+rev flip in Atlas will not include the fix.
+
+    ## What to do
+
+    1. `cd /Users/antony/Development/atlas-contracts`
+    2. Verify the expected three files are dirty: `git status`
+    3. Run `cargo test --workspace` to confirm all 55 tests pass.
+    4. Run `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` — both should be clean.
+    5. Commit with a message describing the PinValue natural-form deserialiser.
+    6. Push to origin.
+
+    ## Exit criteria
+
+    - `git status` in atlas-contracts is clean.
+    - Commit is on origin.
+    - `cargo test --workspace` still passes post-commit.
 - id: l3-prototype-map-style-classify-via-plain-anthropic-http-backend
   title: 'L3 prototype: map-style classify via plain Anthropic HTTP backend'
   category: feature
@@ -424,151 +454,3 @@ tasks:
     - `README.md` has a "Pre-seeding subsystems" subsection under Usage.
     - The subsection includes a minimal worked YAML example.
     - Commit in Atlas.
-- id: pinvalue-accepts-natural-single-nested-suppress-suppress-children-forms
-  title: PinValue accepts natural single-nested suppress/suppress_children forms
-  category: bug
-  status: done
-  dependencies: []
-  description: |
-    The `PinValue` untagged enum requires a doubly-nested YAML form for the
-    `Suppress` and `SuppressChildren` variants:
-
-    ```yaml
-    pins:
-      connector-lib:
-        suppress_children:
-          suppress_children: [connector-lib/formats]   # field name repeated
-        suppress:
-          suppress: true                                # field name repeated
-    ```
-
-    This trips real users (reported case: `/Users/antony/Development/dull/.atlas/components.overrides.yaml`,
-    which wrote `suppress_children: [connector-lib/formats]` and got a generic
-    "data did not match any variant of untagged enum PinValue" error).
-
-    The repetition is an accidental consequence of two design choices colliding:
-    the inner-map key is the "field name being pinned", and `PinValue` is an
-    untagged enum disambiguated by struct field names. For `Value` pins the
-    two are different (`kind: { value: ... }` reads naturally), but for
-    `suppress` / `suppress_children` they are identical.
-
-    **Goal**: accept the natural single-nested form
-
-    ```yaml
-    pins:
-      connector-lib:
-        suppress: true
-        suppress_children: [connector-lib/formats]
-        kind: { value: rust-library, reason: "..." }
-    ```
-
-    while continuing to accept the legacy doubly-nested form for backward
-    compatibility (existing test snapshots use it; users may have written it
-    following a now-obsolete example).
-
-    **Scope**:
-
-    1. Custom `Deserialize` for `PinValue` in
-       `atlas-contracts/crates/atlas-index/src/schema.rs` — dispatch on the
-       value's shape (bool / seq / map) via `deserialize_any` + a Visitor.
-       - `true` → `Suppress`; `false` → existing rejection error.
-       - sequence of strings → `SuppressChildren`.
-       - map with `value` (and optional `reason`) → `Value`.
-       - map with single `suppress` or `suppress_children` field → legacy
-         form, accepted.
-    2. Custom `Serialize` for `PinValue` — emit the natural form on output:
-       bool for `Suppress`, sequence for `SuppressChildren`, struct for
-       `Value`.
-    3. Update `atlas-contracts/crates/atlas-index/tests/snapshots/components.overrides.yaml`
-       to use the new natural form so it remains the canonical example.
-    4. Add deserialise tests covering both the new and legacy forms, plus
-       the `false` rejection paths in both forms.
-
-    **Out of scope** (separate follow-up): improving the generic "data did
-    not match any variant" error message into a hint that names the
-    expected forms. Once the natural form is accepted, the error surface
-    shrinks substantially on its own.
-  results: |
-    **Outcome**: `PinValue` now accepts the natural single-nested YAML form for
-    `Suppress` (`true`) and `SuppressChildren` (a sequence of child ids) on
-    input, and emits only the natural form on output. The legacy doubly-nested
-    form (`{suppress: true}`, `{suppress_children: [...]}`) still parses for
-    backward compatibility with any user files written against the prior
-    schema.
-
-    The user's reported failure case parses cleanly:
-
-    ```yaml
-    pins:
-      connector-lib:
-        kind: { value: rust-library, reason: "..." }
-        language: { value: rust }
-        role: { value: connector-core }
-        suppress_children: [connector-lib/formats]
-    ```
-
-    **Cross-repo scope**:
-
-    The change spans **two repos** because Atlas consumes `atlas-index` as a
-    local path dep (memory: `component-ontology-targets-linkuistics-extraction-for-oss`):
-
-    - **atlas-contracts** (`/Users/antony/Development/atlas-contracts`) — three files dirty:
-      - `crates/atlas-index/src/schema.rs` — replaced the `#[serde(untagged)]`
-        derive on `PinValue` with custom `Serialize` + `Deserialize` (Visitor
-        pattern dispatching on value shape via `deserialize_any`). Added 9
-        new tests covering both forms, the user's exact failing pattern, and
-        `false`-rejection in both forms.
-      - `crates/atlas-index/src/yaml_io.rs` — added `overrides_load_accepts_natural_inline_suppress_children_form`
-        end-to-end regression test that loads the user's exact YAML shape
-        through `load_overrides`.
-      - `crates/atlas-index/tests/snapshots/components.overrides.yaml` —
-        regenerated to the natural form (golden snapshot now shows `deleted: true`
-        and bare `suppress_children: [...]` sequences instead of the doubly-nested
-        legacy form).
-    - **Atlas** (this repo) — no source changes; only `LLM_STATE/core/backlog.yaml`
-      is dirty (the new task entry + status). Atlas's downstream consumers
-      (`l4_tree.rs`, `l8_recurse.rs`, `validate.rs`, the engine tests that
-      construct `PinValue` directly) all keep working as-is because the
-      enum's Rust API is unchanged — only its (de)serialise wire format moved.
-
-    **What works**:
-    - `cargo test -p atlas-index`: 52 lib tests + 3 golden snapshots = 55, all pass.
-    - `cargo test --workspace` (atlas-contracts): all green.
-    - `cargo test --workspace` (Atlas): all green — engine, CLI, LLM, eval suites
-      unchanged. The user-facing failure mode is gone.
-    - `cargo clippy --workspace --all-targets -- -D warnings` clean in both repos.
-    - `cargo fmt --check` clean in both repos.
-
-    **What didn't / what to watch**:
-    - The change to `atlas-contracts` is uncommitted in that repo. The
-      analyse-work phase that follows only inspects Atlas's git status, so
-      the atlas-contracts edit will need its own commit/push before any
-      follow-up Atlas release that bumps the path-dep to git+rev mode.
-    - Two memory entries are now partly out of date (work for analyse-work
-      to consider):
-      - `serde-untagged-enum-variants-need-unique-field-names` — still
-        factually true about untagged enums, but the claim that this is
-        "load-bearing for `PinValue`" is no longer accurate; `PinValue`
-        isn't an untagged enum any more.
-      - `pinvalue-suppress-uses-alwaystrue-to-ban-suppress-false` — the
-        `AlwaysTrue` marker still exists and still rejects `false` in the
-        legacy doubly-nested map path, but the natural-form bool path
-        handles `false` directly in `PinValueVisitor::visit_bool` rather
-        than via `AlwaysTrue`. Worth a small edit so future readers know
-        rejection has two paths now.
-    - The companion follow-up surfaced in the original triage — improving
-      the generic "data did not match any variant" error message — is now
-      largely moot for the new natural form (errors come from a custom
-      Visitor with specific messages). It would still help anyone who
-      mistypes a `Value` field name; consider whether to file a separate
-      task or drop it.
-
-    **Suggests next**:
-    - A short release note / docs entry recording that natural-form
-      `suppress: true` and `suppress_children: [...]` are now preferred
-      over the doubly-nested form (the old form is accepted but deprecated
-      in spirit). Not blocking; v1 README does not yet document the
-      override schema in detail.
-    - Cross-repo commit hygiene: atlas-contracts changes need a commit
-      before this is fully landed; Atlas analyse-work will commit only the
-      Atlas-side state change.
