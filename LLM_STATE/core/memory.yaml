@@ -20,7 +20,7 @@ entries:
 - id: componentkind-enum-deferred-to-atlas-engine
   title: ComponentKind enum lives in atlas-engine not atlas-index
   body: |
-    `ComponentKind` is defined in `atlas-engine`, not `atlas-index`. `ComponentEntry::kind` in atlas-index remains `String` to avoid churning downstream consumers when the vocabulary expands. The enum is the authoritative classification vocabulary and currently has 13 variants enumerated in `defaults/component-kinds.yaml`.
+    `ComponentKind` is defined in `atlas-engine`, not `atlas-index`. `ComponentEntry::kind` in atlas-index remains `String` to avoid churning downstream consumers when the vocabulary expands. The enum is the authoritative classification vocabulary and covers common language ecosystems using a library/app split for every language (not just Rust) — apps and services are leaves; libraries may recurse. `defaults/component-kinds.yaml` enumerates variants with YAML descriptions; `defaults/component-kinds.md` is a companion prompt-fragment for analysts and LLMs.
 - id: pinvalue-suppress-uses-alwaystrue-to-ban-suppress-false
   title: PinValue::Suppress uses AlwaysTrue to ban suppress:false
   body: |
@@ -80,7 +80,7 @@ entries:
 - id: pin-lookup-accepts-relative-path-basename-or-additions-id
   title: Pin lookup accepts relative path, basename, or additions id
   body: |
-    Pin lookup in L3 accepts three key forms: relative path, basename, and additions entry id. L4 has not yet allocated final component ids, so permissive matching lets users write pins naturally before canonical ids are known.
+    Pin lookup in L3 accepts three key forms: relative path (both raw and slugified), basename, and additions entry id. L4 has not yet allocated final component ids, so permissive matching lets users write pins naturally before canonical ids are known. Slugified matching handles mixed-case path segments (e.g. `crates/atlas-engine` in overrides matches directory `crates/Atlas-Engine`).
 - id: lifecycle-roles-uses-vec-lifecyclescope-from-component-ontology
   title: lifecycle_roles uses Vec<LifecycleScope> from component-ontology
   body: |
@@ -318,3 +318,11 @@ entries:
     `BudgetExhausted { requested: 0, remaining: 0 }` — the terminal frame carries `total_cost_usd`, not token counts; `BudgetSentinel` matches on variant, not fields.
 
     Cross-ref: `budgetsentinel-is-only-reliable-budget-exhaustion-detection-path`.
+- id: seed-filesystem-excluding-excludes-output-dir-from-l0
+  title: seed_filesystem_excluding excludes output dir from L0
+  body: |
+    `seed_filesystem_excluding` takes an exclusion predicate that filters the `.atlas/` output directory from L0 file ingestion. Without the exclusion, prior-run artefacts are re-ingested as source files on subsequent runs, corrupting L0 input. The exclusion is required whenever `.atlas/` is absent from `.gitignore`.
+- id: validate-overrides-fails-on-unknown-kind-before-llm
+  title: validate-overrides fails on unknown kind before LLM
+  body: |
+    The `validate-overrides` CLI subcommand and the integrated pipeline early-fail path both reject unknown `ComponentKind` values before any LLM calls start. Unknown kind → hard error, not a warning. This prevents bad overrides from silently influencing classification and avoids wasting token budget on unrecoverable input errors.
