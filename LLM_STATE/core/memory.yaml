@@ -8,7 +8,7 @@ entries:
 - id: lib-crate-public-items-do-not-trigger-dead-code-lint
   title: Lib crate public items do not trigger dead-code lint
   body: |
-    When a crate is a library (not a binary), the Rust compiler does not fire the dead-code lint for `pub` items, because they are considered part of a public API. Binary-host crates required `#[allow(dead_code)]` on the same items; migrating to a lib crate removes that need.
+    Lib crates suppress dead-code lint for `pub` items — the compiler treats them as part of a potential public API. Binary-only crates need `#[allow(dead_code)]` on the same items; migrating to a lib crate removes that need.
 - id: rename-detection-uses-greedy-bipartite-matching-on-content-sha
   title: Rename detection uses greedy bipartite matching on content-SHA
   body: |
@@ -287,9 +287,9 @@ entries:
 - id: claude-p-json-schema-may-emit-bare-json-skipping-markdown-fence
   title: claude -p --json-schema may emit bare JSON skipping markdown fence
   body: |
-    `parse_stream` strips markdown fences from `result.result` (e.g., ` ```json\n...\n``` `) before calling `serde_json::from_str`. The `--json-schema <schema>` flag (visible in `claude --help`) may cause the CLI to emit bare JSON, bypassing the fence — this would eliminate the need for fence-stripping — but it is untested in the stream-json path.
+    `--json-schema <schema>` (visible in `claude --help`) may cause the CLI to emit bare JSON in `result.result`, bypassing the markdown fence — untested in the stream-json path. If confirmed, it would eliminate the need for `parse_stream`'s fence-stripping step.
 
-    Related: `stream-json-result-result-is-markdown-fenced-json`.
+    Cross-ref: `stream-json-result-result-is-markdown-fenced-json`.
 - id: agentobserver-is-a-side-channel-parallel-to-reporter-on-llm-call
   title: AgentObserver is a side-channel parallel to Reporter::on_llm_call
   body: |
@@ -329,16 +329,12 @@ entries:
 - id: subsystems-are-a-pure-l9-projection-no-l1-l8-changes-required
   title: Subsystems are a pure L9 projection; no L1–L8 changes required
   body: |
-    Subsystems are a pure L9 projection; no L1–L8 changes required.
-
     `subsystems.yaml` is produced entirely at L9 by projecting the resolved subsystem membership onto the final component tree. Subsystems carry no `kind`, lifecycle, or classification-level semantics — they are grouping metadata only. This design deliberately avoids adding lifecycle propagation or kind-inheritance logic to L1–L8 classification layers.
 
     **Implementation shape:** separate `subsystems.overrides.yaml` input file (not mixed into `components.overrides.yaml`); separate `subsystems.yaml` output file alongside `components.yaml`.
 - id: subsystem-overrides-use-two-stage-validation-shape-pre-llm-namespace-post-l4
   title: 'Subsystem overrides use two-stage validation: shape pre-LLM, namespace post-L4'
   body: |
-    Two-stage validation for subsystem overrides: shape pre-LLM, namespace post-L4.
-
     Stage 1 (shape, pre-LLM): validates YAML schema structure and rejects unknown ids with a hard error — these represent authoring mistakes that must fail fast before spending token budget.
 
     Stage 2 (namespace/resolution, post-L4): validates glob matches and cross-component namespace uniqueness. An empty glob match may legitimately represent forward-looking authorship (the targeted directory does not yet exist); soft warnings are appropriate here, not hard errors.
@@ -347,15 +343,13 @@ entries:
 - id: subsystem-participants-share-the-component-namespace-uniqueness-is-validated
   title: Subsystem participants share the component namespace; uniqueness is validated
   body: |
-    Subsystem participants share a namespace with components; uniqueness is validated.
-
     Subsystem members are declared via globs (path patterns) and explicit ids. Both globs and ids resolve against the existing component namespace. A component id that appears in more than one subsystem at the same level is a validation error — the shared namespace enforces mutual exclusivity at each grouping level.
 
     **CLI surface:** `atlas validate-overrides` is extended to cover subsystem overrides rather than adding a new subcommand. Membership validation (glob resolution, id existence) runs as part of the existing validate-overrides pipeline.
 - id: subsystem-seeding-design-decisions-2026-05-01
-  title: Subsystem seeding design decisions (2026-05-01)
+  title: Subsystem seeding design decisions
   body: |
-    Design decisions locked during brainstorming for the subsystem seeding feature (2026-05-01). Implementation plan: `docs/superpowers/plans/2026-05-01-subsystem-seeding.md`. Spec: `docs/superpowers/specs/2026-05-01-subsystem-seeding-design.md`.
+    Implementation plan: `docs/superpowers/plans/2026-05-01-subsystem-seeding.md`. Spec: `docs/superpowers/specs/2026-05-01-subsystem-seeding-design.md`.
 
     | Question | Decision |
     |---|---|
