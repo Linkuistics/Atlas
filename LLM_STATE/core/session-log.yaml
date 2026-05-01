@@ -392,3 +392,13 @@ sessions:
     - What didn't: Implementation not started — by design. The feature spans cross-repo schema changes (atlas-contracts) and Atlas engine/CLI/test changes; the design phase deliberately exits before code to keep each work phase reviewable end-to-end.
     - What this suggests next: Phase 1 of the implementation plan — schema additions in `atlas-contracts/crates/atlas-index` (Subsystem, SubsystemMember, SubsystemsInput types) and the `validate_participant_namespace` helper in `component-ontology`. Self-contained: ends with a commit + push to atlas-contracts before Atlas itself is touched.
     - Key learnings: Keeping subsystems as a pure projection at L9 avoids the complexity of lifecycle propagation or kind inheritance that would require changes to L1–L8 classification logic. Two-stage validation (shape vs. namespace) is necessary because early resolution errors (unknown id) should fail fast, while late resolution issues (empty glob match) may legitimately represent forward-looking authorship.
+- id: session-32
+  timestamp: 2026-05-01T11:15:51Z
+  phase: work
+  body: |
+    ### Session 32 (2026-05-01T11:15:51Z) — Subsystem seeding Phase 1: atlas-contracts schemas
+
+    - **What was attempted:** Implement Tasks 1–4 of the subsystem seeding plan in `~/Development/atlas-contracts/`: new schema types (`SubsystemOverride`, `SubsystemsOverridesFile`, `MemberEvidence`, `SubsystemEntry`, `SubsystemsFile`), six new `yaml_io` functions, and the `validate_participant_namespace` helper.
+    - **What worked:** Pattern-mirror approach (every new struct/function parallels an existing counterpart) kept the implementation clean and free of new abstractions. TDD per task produced 15 new tests; all ended green in a single edit-test cycle. Pre-existing rustfmt drift (~76 lines across seven files) was committed as a separate `chore(fmt)` commit before the feature work landed, keeping the Phase 1 commit focused. `cargo test --workspace` ended at 95 tests (up from 83); `cargo fmt --check` and `cargo clippy` both clean.
+    - **What this suggests next:** Phase 2 (`subsystem-seeding-phase-2-atlas-engine-integration`) is now unblocked. First step: add `globset` as a direct dep to `atlas-engine`, then add the `Workspace::subsystems_overrides` Salsa input with skip-if-equal guard, then implement `l9_subsystems.rs`.
+    - **Key learnings:** `validate_participant_namespace` is currently placed in `component-ontology` because edge participants are vocabulary it owns; if no second caller materialises, the function could migrate to `atlas-cli`. Worth revisiting after Phase 3 wires the cross-namespace check.
