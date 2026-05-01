@@ -267,4 +267,20 @@ entries:
 - id: agent-progress-backend-uses-stream-json-verbose-legacy-path-removed
   title: Agent progress backend uses stream-json --verbose; legacy path removed
   body: |
-    `ClaudeCodeBackend` runs `claude -p --output-format stream-json --verbose` for all calls; the legacy non-streaming JSON path is removed. Pre-implementation: capture real JSONL transcripts as test fixtures before building the stream parser.
+    `ClaudeCodeBackend` runs `claude -p --output-format stream-json --verbose` for all calls; the legacy non-streaming JSON path is removed. Real JSONL fixtures are committed under `crates/atlas-llm/tests/fixtures/stream/`: `simple-classify.jsonl` (no tools), `subcarve-with-tools.jsonl` (one Read-tool call), `error-max-turns.jsonl` (budget-exhausted terminal). See `README.md` in that directory for capture/redaction instructions.
+- id: stream-json-tool-result-is-error-absent-on-success
+  title: stream-json tool_result.is_error absent on success
+  body: |
+    In claude stream-json JSONL, `tool_result.is_error` is absent when there is no error, not set to `false`. The parser must treat field absence as success, not as a missing required field.
+- id: stream-json-content-mixes-thinking-tool-use-text-per-event
+  title: stream-json content[] mixes thinking/tool_use/text per event
+  body: |
+    A single assistant `content[]` array in claude stream-json JSONL can contain `thinking`, `tool_use`, and `text` block types interleaved in one event. The parser must handle all three block types in a single pass rather than assuming one type per event.
+- id: stream-json-result-result-is-markdown-fenced-json
+  title: stream-json result.result is markdown-fenced JSON
+  body: |
+    The terminal `result.result` field in claude stream-json JSONL is markdown-fenced JSON (e.g., ` ```json\n...\n``` `), not bare JSON. `serde_json::from_str` fails without stripping the fence markers first.
+- id: max-budget-usd-0-001-forces-error-terminal-in-print-mode
+  title: max-budget-usd 0.001 forces error terminal in print mode
+  body: |
+    `--settings '{"maxTurns": 1}'` has no effect in `--print` mode. Use `--max-budget-usd 0.001` to force a non-success terminal event (`error_max_budget_usd`) when capturing stream-json JSONL test fixtures.
