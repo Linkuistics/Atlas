@@ -90,9 +90,14 @@ impl Reporter {
         if drawing {
             activity.enable_steady_tick(Duration::from_millis(120));
         }
-        let agent = multi.add(ProgressBar::new(0));
+        // The agent sub-line is mounted into `multi` only between
+        // `AgentEvent::CallStart` and `AgentEvent::CallEnd` (see the
+        // `AgentObserver` impl). Mutating an individual bar's draw_target
+        // after `multi.add` detaches it from the multi's line-count
+        // accounting and lets sibling bars overwrite it; use
+        // `insert_after`/`remove` instead.
+        let agent = ProgressBar::new(0);
         agent.set_style(ProgressStyle::with_template("      {msg}").expect("static template"));
-        agent.set_draw_target(ProgressDrawTarget::hidden());
 
         let tokens = multi.add(ProgressBar::new(0));
         tokens.set_style(
@@ -339,18 +344,18 @@ impl AgentObserver for Reporter {
     fn on_event(&self, event: AgentEvent) {
         match event {
             AgentEvent::CallStart { prompt } => {
-                {
+                let needs_mount = {
                     let mut s = self.lock();
                     s.agent_tools = 0;
                     s.agent_last_tool = None;
                     s.agent_last_failed = false;
+                    let was_mounted = s.agent_mounted;
                     s.agent_mounted = self.drawing;
+                    self.drawing && !was_mounted
+                };
+                if needs_mount {
+                    self.multi.insert_after(&self.activity, self.agent.clone());
                 }
-                self.agent.set_draw_target(if self.drawing {
-                    ProgressDrawTarget::stderr()
-                } else {
-                    ProgressDrawTarget::hidden()
-                });
                 self.agent
                     .set_message(format!("↳ starting {}", prompt_label(prompt)));
             }
@@ -375,8 +380,15 @@ impl AgentObserver for Reporter {
                 }
             }
             AgentEvent::CallEnd => {
-                self.lock().agent_mounted = false;
-                self.agent.set_draw_target(ProgressDrawTarget::hidden());
+                let was_mounted = {
+                    let mut s = self.lock();
+                    let prev = s.agent_mounted;
+                    s.agent_mounted = false;
+                    prev
+                };
+                if was_mounted {
+                    self.multi.remove(&self.agent);
+                }
             }
         }
     }
