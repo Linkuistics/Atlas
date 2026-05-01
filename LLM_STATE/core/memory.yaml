@@ -374,3 +374,7 @@ entries:
     **Why two-stage validation:** Catches two different user errors separately — an empty input (likely a typo, fast-fail hard error) vs. an empty resolution after L4 (legitimate forward-looking author, soft warning).
 
     **Cross-repo note:** Phase 1 (Tasks 1–4) operates in `atlas-contracts`; Phases 2–5 operate in `Atlas`. The repos are connected by existing path deps — no Cargo.lock bump needed during development.
+- id: validate-participant-namespace-lives-in-component-ontology-may-migrate-post-phase-3
+  title: validate_participant_namespace lives in component-ontology, may migrate post-Phase-3
+  body: |
+    `validate_participant_namespace` lives in `component-ontology` because edge participants are vocabulary the crate owns. If no second caller materialises after Phase 3 wires the cross-namespace check, the function is a candidate to migrate to `atlas-cli`. Revisit once Phase 3 is complete.
