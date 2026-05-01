@@ -287,13 +287,9 @@ entries:
 - id: claude-p-json-schema-may-emit-bare-json-skipping-markdown-fence
   title: claude -p --json-schema may emit bare JSON skipping markdown fence
   body: |
-    `claude -p` accepts a `--json-schema <schema>` flag (visible in `--help`). When passed, the CLI may emit raw JSON in `result.result` without the markdown code fence that normally wraps the output. Worth probing as part of implementing the stream-json parser — if it works, it eliminates the need for a markdown-fence stripper.
+    `parse_stream` strips markdown fences from `result.result` (e.g., ` ```json\n...\n``` `) before calling `serde_json::from_str`. The `--json-schema <schema>` flag (visible in `claude --help`) may cause the CLI to emit bare JSON, bypassing the fence — this would eliminate the need for fence-stripping — but it is untested in the stream-json path.
 
-    Related memory: `stream-json-result-result-is-markdown-fenced-json` (the problem this might solve).
-- id: claudecodebackend-always-uses-output-format-stream-json-verbose
-  title: ClaudeCodeBackend always uses --output-format stream-json --verbose
-  body: |
-    ClaudeCodeBackend spawns `claude -p --output-format stream-json --verbose` for every call; the legacy non-streaming `--output-format json` path was removed in the agent-progress-feedback work. Single mental model, single test surface, no flag plumbing. Spec §4.2.
+    Related: `stream-json-result-result-is-markdown-fenced-json`.
 - id: agentobserver-is-a-side-channel-parallel-to-reporter-on-llm-call
   title: AgentObserver is a side-channel parallel to Reporter::on_llm_call
   body: |
@@ -314,3 +310,9 @@ entries:
   title: Two traits with same-named on_event method on Reporter requires UFCS
   body: |
     Reporter implements both `ProgressSink::on_event(&self, ProgressEvent)` and `AgentObserver::on_event(&self, AgentEvent)`. Even though argument types disambiguate, Rust requires UFCS in test code: `ProgressSink::on_event(&*r, ev)` rather than `r.on_event(ev)`. Method resolution looks at receiver, not arg types. Production callsites that go via `&dyn ProgressSink` or `&dyn AgentObserver` are unaffected.
+- id: stream-json-error-max-budget-usd-maps-to-invocation-not-budgetexhausted
+  title: stream-json error_max_budget_usd maps to Invocation not BudgetExhausted
+  body: |
+    stream-json `error_max_budget_usd` terminal events are currently parsed into `LlmError::Invocation` (generic string error), not `LlmError::BudgetExhausted`. `BudgetSentinel` therefore does not intercept `--max-budget-usd`-triggered exhaustion; it only catches exhaustion that reaches `call_llm_cached` as a typed error. Fix: add an `error_max_budget_usd` branch in `parse_stream` returning `LlmError::BudgetExhausted`.
+
+    Cross-ref: `budgetsentinel-is-only-reliable-budget-exhaustion-detection-path`.
