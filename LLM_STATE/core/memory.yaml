@@ -352,3 +352,25 @@ entries:
     Subsystem members are declared via globs (path patterns) and explicit ids. Both globs and ids resolve against the existing component namespace. A component id that appears in more than one subsystem at the same level is a validation error — the shared namespace enforces mutual exclusivity at each grouping level.
 
     **CLI surface:** `atlas validate-overrides` is extended to cover subsystem overrides rather than adding a new subcommand. Membership validation (glob resolution, id existence) runs as part of the existing validate-overrides pipeline.
+- id: subsystem-seeding-design-decisions-2026-05-01
+  title: Subsystem seeding design decisions (2026-05-01)
+  body: |
+    Design decisions locked during brainstorming for the subsystem seeding feature (2026-05-01). Implementation plan: `docs/superpowers/plans/2026-05-01-subsystem-seeding.md`. Spec: `docs/superpowers/specs/2026-05-01-subsystem-seeding-design.md`.
+
+    | Question | Decision |
+    |---|---|
+    | Engine integration | L9-only projection; no influence on L1–L8 classification |
+    | Input file | Separate `subsystems.overrides.yaml` (decomplected from `components.overrides.yaml`) |
+    | Output file | Separate `subsystems.yaml` (decomplected from `components.yaml`) |
+    | Membership form | Globs AND ids, autodetected: entry with `/` or `*` → glob match on path; otherwise id match |
+    | Validation strictness | Hard error on unknown id; warning on empty glob. Two-stage: shape pre-LLM, namespace/resolution post-L4 |
+    | Edge participation | Shared id namespace across components and subsystems; uniqueness validated at post-L4 stage |
+    | Subsystem fields | id, members, role?, lifecycle_roles, rationale, evidence_grade, evidence_fields. No `kind`, no `parent` |
+    | CLI | `atlas validate-overrides` extended; no new subcommand |
+    | `validate_participant_namespace` | Added to `component-ontology` but NOT wired into edge validation in v1 (reserved for follow-up) |
+
+    **Why L9-only:** Subsystems are an output projection, not a signal feeding back into classification. Lifecycle propagation, kind inheritance, and similar effects were considered and rejected for v1 to keep the change as a pure read-only projection.
+
+    **Why two-stage validation:** Catches two different user errors separately — an empty input (likely a typo, fast-fail hard error) vs. an empty resolution after L4 (legitimate forward-looking author, soft warning).
+
+    **Cross-repo note:** Phase 1 (Tasks 1–4) operates in `atlas-contracts`; Phases 2–5 operate in `Atlas`. The repos are connected by existing path deps — no Cargo.lock bump needed during development.

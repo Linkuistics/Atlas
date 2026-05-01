@@ -1,4 +1,67 @@
 tasks:
+- id: l3-prototype-map-style-classify-via-plain-anthropic-http-backend
+  title: 'L3 prototype: map-style classify via plain Anthropic HTTP backend'
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: HIGH.** Direct path to unblocking large-monorepo analysis (currently a single L8 subcarve takes >15 min, agent-progress shows context-rotted exploratory reads). Validates the architectural shift in the companion epic before we commit to the full conversion.
+
+    ## Context
+
+    Atlas's current LLM runs go through `ClaudeCodeBackend`, which spawns a `claude -p --output-format stream-json --verbose` subprocess for every call. The agent has full tool access (Read, Grep, Glob, Bash) and a persistent conversation. For small classification queries — e.g. "is `crates/foo` a `rust-library`?" — this is structurally pessimised: each call has multi-second subprocess startup, the agent reads many files before answering, and context grows monotonically (rot risk).
+
+    The cheapest, most-targeted prompt to convert is **L3 `is_component`**: it's already per-candidate, the inputs are bounded (manifest + doc headings + shebangs), and the output schema is a single JSON object. If a plain HTTP API call produces equivalent classifications in a fraction of the time, the case for converting L8 subcarve next is settled.
+
+    ## Goal
+
+    Prove that L3 classification can be served by a plain Anthropic HTTP API call with:
+
+    - **Wall-time improvement: ≥5× median speedup** per call vs `ClaudeCodeBackend`.
+    - **Accuracy preserved: kind-accuracy on the dev-workspace golden unchanged within 2 percentage points.**
+
+    ## Scope
+
+    ### Implementation
+
+    - Add a minimal `AnthropicHttpBackend` in `crates/atlas-llm/src/`. Uses the Anthropic Rust SDK (or raw `reqwest`) — no Claude Code subprocess, no tool use.
+    - Build the request from the existing L3 inputs (`build_llm_inputs` in `l3_classify.rs`): system prompt + ontology + manifest snippets, then the candidate-specific user prompt.
+    - Output parses against the existing classify response schema (`crates/atlas-cli/src/prompts.rs` JSON-schema enforcement stays).
+    - Wire it as an opt-in alternative: a new `--l3-backend http|claude-code` CLI flag, default `claude-code` so the spike is non-disruptive.
+    - Read `ANTHROPIC_API_KEY` from env; fail-loud if missing when `--l3-backend http` is selected.
+
+    ### Benchmark
+
+    - Run `atlas index ~/Development/dev-workspace --budget <N> --l3-backend http` and record wall-time per L3 call from `latest-session.yaml`.
+    - Run with `--l3-backend claude-code` for the same fixture as a baseline.
+    - Compute median per-call wall-time for each backend.
+    - Run `atlas-eval` against both result sets; compare `kind_accuracy` against the golden.
+    - Record numbers in `evaluation/results/<date>-l3-http-spike.yaml`.
+
+    ### Decision
+
+    Spike succeeds (and unblocks the epic) when:
+
+    - Median per-call wall-time drops by ≥5× under `--l3-backend http`.
+    - `kind_accuracy` is within 2pp of the `claude-code` baseline.
+    - LLM cache behaviour is unchanged (a re-run with no source changes is still byte-identical for the L3 outputs).
+
+    If accuracy regresses materially, the spike's secondary deliverable is a list of L3 cases that needed the agentic backend's exploration — input for whether to keep an agentic L3 fallback or rework the prompt.
+
+    ## Out of scope
+
+    - L8 subcarve conversion (separate epic — this spike is what de-risks it).
+    - L5 surface, L6 edges — those keep the agentic backend.
+    - Prompt caching (the epic adds it; spike is "does the simple form work?").
+    - Concurrency / parallelism (one call at a time is enough to measure speedup).
+    - Extracting a router abstraction (the `--l3-backend` flag is good enough for the spike; the epic generalises).
+
+    ## Exit criteria
+
+    - `AnthropicHttpBackend` exists in atlas-llm and is selected via `--l3-backend http`.
+    - Benchmark numbers recorded in `evaluation/results/`.
+    - Brief notes in `docs/superpowers/specs/<date>-l3-http-spike-findings.md` with the verdict and any prompt-quality observations.
+    - The follow-on epic (`map-reduce-llm-architecture`) either gets the green light, or gets concrete pivot guidance based on what didn't work.
 - id: hand-author-second-golden-for-merged-monorepo
   title: Hand-author synthetic second golden for cross-target validation
   category: eval
@@ -103,69 +166,6 @@ tasks:
     - All six criteria pass or have documented follow-up tasks (criterion 5 may be deferred pending Ravel-Lite M5).
     - Sign-off report committed to the Atlas repo.
     - An announcement-ready short summary written (optional) as `README-v1.md` documenting what Atlas v1 does and does not do.
-- id: l3-prototype-map-style-classify-via-plain-anthropic-http-backend
-  title: 'L3 prototype: map-style classify via plain Anthropic HTTP backend'
-  category: feature
-  status: not_started
-  dependencies: []
-  description: |
-    **Priority: HIGH.** Direct path to unblocking large-monorepo analysis (currently a single L8 subcarve takes >15 min, agent-progress shows context-rotted exploratory reads). Validates the architectural shift in the companion epic before we commit to the full conversion.
-
-    ## Context
-
-    Atlas's current LLM runs go through `ClaudeCodeBackend`, which spawns a `claude -p --output-format stream-json --verbose` subprocess for every call. The agent has full tool access (Read, Grep, Glob, Bash) and a persistent conversation. For small classification queries — e.g. "is `crates/foo` a `rust-library`?" — this is structurally pessimised: each call has multi-second subprocess startup, the agent reads many files before answering, and context grows monotonically (rot risk).
-
-    The cheapest, most-targeted prompt to convert is **L3 `is_component`**: it's already per-candidate, the inputs are bounded (manifest + doc headings + shebangs), and the output schema is a single JSON object. If a plain HTTP API call produces equivalent classifications in a fraction of the time, the case for converting L8 subcarve next is settled.
-
-    ## Goal
-
-    Prove that L3 classification can be served by a plain Anthropic HTTP API call with:
-
-    - **Wall-time improvement: ≥5× median speedup** per call vs `ClaudeCodeBackend`.
-    - **Accuracy preserved: kind-accuracy on the dev-workspace golden unchanged within 2 percentage points.**
-
-    ## Scope
-
-    ### Implementation
-
-    - Add a minimal `AnthropicHttpBackend` in `crates/atlas-llm/src/`. Uses the Anthropic Rust SDK (or raw `reqwest`) — no Claude Code subprocess, no tool use.
-    - Build the request from the existing L3 inputs (`build_llm_inputs` in `l3_classify.rs`): system prompt + ontology + manifest snippets, then the candidate-specific user prompt.
-    - Output parses against the existing classify response schema (`crates/atlas-cli/src/prompts.rs` JSON-schema enforcement stays).
-    - Wire it as an opt-in alternative: a new `--l3-backend http|claude-code` CLI flag, default `claude-code` so the spike is non-disruptive.
-    - Read `ANTHROPIC_API_KEY` from env; fail-loud if missing when `--l3-backend http` is selected.
-
-    ### Benchmark
-
-    - Run `atlas index ~/Development/dev-workspace --budget <N> --l3-backend http` and record wall-time per L3 call from `latest-session.yaml`.
-    - Run with `--l3-backend claude-code` for the same fixture as a baseline.
-    - Compute median per-call wall-time for each backend.
-    - Run `atlas-eval` against both result sets; compare `kind_accuracy` against the golden.
-    - Record numbers in `evaluation/results/<date>-l3-http-spike.yaml`.
-
-    ### Decision
-
-    Spike succeeds (and unblocks the epic) when:
-
-    - Median per-call wall-time drops by ≥5× under `--l3-backend http`.
-    - `kind_accuracy` is within 2pp of the `claude-code` baseline.
-    - LLM cache behaviour is unchanged (a re-run with no source changes is still byte-identical for the L3 outputs).
-
-    If accuracy regresses materially, the spike's secondary deliverable is a list of L3 cases that needed the agentic backend's exploration — input for whether to keep an agentic L3 fallback or rework the prompt.
-
-    ## Out of scope
-
-    - L8 subcarve conversion (separate epic — this spike is what de-risks it).
-    - L5 surface, L6 edges — those keep the agentic backend.
-    - Prompt caching (the epic adds it; spike is "does the simple form work?").
-    - Concurrency / parallelism (one call at a time is enough to measure speedup).
-    - Extracting a router abstraction (the `--l3-backend` flag is good enough for the spike; the epic generalises).
-
-    ## Exit criteria
-
-    - `AnthropicHttpBackend` exists in atlas-llm and is selected via `--l3-backend http`.
-    - Benchmark numbers recorded in `evaluation/results/`.
-    - Brief notes in `docs/superpowers/specs/<date>-l3-http-spike-findings.md` with the verdict and any prompt-quality observations.
-    - The follow-on epic (`map-reduce-llm-architecture`) either gets the green light, or gets concrete pivot guidance based on what didn't work.
 - id: map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis
   title: Map/reduce LLM architecture with backend routing for context-light analysis
   category: feature
@@ -268,139 +268,6 @@ tasks:
     - `kind_accuracy` against the dev-workspace golden is within 2pp of the pre-conversion baseline.
     - `--dry-run` re-run produces byte-identical outputs to the prior run.
     - Documentation: a section in the design spec (`docs/superpowers/specs/`) describing the routing rules, map/reduce shape, and concurrency model.
-- id: first-class-subsystem-seeding-in-overrides-yaml
-  title: First-class subsystem seeding in overrides.yaml
-  category: feature
-  status: done
-  dependencies: []
-  description: |
-    **Priority: MEDIUM.** Forward-looking; not on the v1 critical path. Surfaced when a user asked whether well-known component/subsystem roots could pre-seed analysis (2026-05-01).
-
-    ## Context
-
-    `components.overrides.yaml` already covers component-granularity seeding: `pins` overrides classifications for dirs L2 already proposes, `additions` injects components L2 would never find, and `suppress_children: true` makes a component a black box. But all of these operate at the *component* level. There is no first-class concept of a **subsystem** — a named group of components with hand-drawn boundaries — even though "system level" and "module level" abstractions are listed in the README's Planned Capabilities and are explicitly the next layer to build on top of v1's flat component graph.
-
-    A user who knows their codebase ("auth is everything under `services/auth/*` plus `libs/identity`; storage is …") cannot express that today. The closest is per-component pinning, which is verbose, doesn't capture the grouping intent, and isn't queryable downstream as a unit.
-
-    ## Goal
-
-    Let users hand-author subsystem boundaries that:
-    1. Name a subsystem and list its member components (by id or path glob).
-    2. Carry their own metadata (role, rationale, evidence_grade) parallel to `ComponentEntry`.
-    3. Are surfaced in `components.yaml` (or a new `subsystems.yaml`) so downstream consumers can query "what subsystems exist? what components belong to subsystem X?".
-
-    ## Sketch (open for design)
-
-    Either extend `components.overrides.yaml` with a new top-level `subsystems:` section:
-
-    ```yaml
-    subsystems:
-      auth:
-        role: identity-and-authorisation
-        members:
-          - services/auth/*
-          - libs/identity
-        rationale: "owns all session/token/identity surfaces"
-      storage:
-        members: [services/blob, services/metadata]
-    ```
-
-    Or a separate `subsystems.overrides.yaml` with the same shape — separation matches the design principle that override surfaces are decomplected.
-
-    ## Open questions
-
-    - **Discovery vs. hand-author only.** v1 scope is hand-author only; a later layer can propose subsystems from clique/SCC analysis (L7 already computes the structural inputs).
-    - **Nesting.** Should subsystems nest (a subsystem contains other subsystems)? Probably yes for the eventual "system → module → component" hierarchy, but v1 of this feature can be flat.
-    - **Glob vs. id membership.** Globs are ergonomic but couple boundaries to current paths; id-based membership is rename-stable. Allow both.
-    - **Engine integration.** New L4-adjacent layer that materialises subsystems from overrides + the resolved component tree, OR a pure projection step inside L9. Probably L9 — subsystems are an output, not a signal feeding back into classification.
-    - **Edge participation.** Can `related-components.yaml` edges name a subsystem as a participant? Ontology stance is opaque-string, so probably yes.
-
-    ## Out of scope
-
-    - Automatic subsystem discovery from graph structure (separate, larger task).
-    - Higher levels of abstraction beyond subsystem (module, system) — those come after this lands.
-    - Cross-component refactoring driven by subsystem boundaries (Uplift territory).
-
-    ## Exit criteria
-
-    - Schema for subsystem overrides decided and documented.
-    - L9 (or new layer) emits subsystems into output YAML.
-    - A fixture-based integration test asserts: subsystem hand-author → output reflects membership and metadata, with at least one rename-stability case.
-    - README's Usage section gains a "Pre-seeding subsystems" subsection with a worked example.
-  results: |
-    ## Status
-
-    **Design + plan phase complete; implementation not started.**
-
-    This work phase produced the design spec and the implementation plan. No
-    code has been written. The task remains `in_progress`; subsequent work
-    phases will execute the plan one phase at a time.
-
-    ## Artifacts
-
-    - **Spec:** `docs/superpowers/specs/2026-05-01-subsystem-seeding-design.md`
-    - **Plan:** `docs/superpowers/plans/2026-05-01-subsystem-seeding.md` (13
-      tasks across 4 phases; Phase 1 lives in the separate `atlas-contracts`
-      repo, Phases 2–4 in Atlas itself).
-
-    ## Decisions locked during brainstorming
-
-    | Question | Decision |
-    |---|---|
-    | Engine integration | Projection + edge participation (no influence on L1–L8). |
-    | Input file | Separate `subsystems.overrides.yaml` (decomplected from `components.overrides.yaml`). |
-    | Output file | Separate `subsystems.yaml` (decomplected from `components.yaml`). |
-    | Membership form | Globs *and* ids, autodetected via `/` or `*` heuristic. |
-    | Validation strictness | Hard error on unknown id; warning on empty glob. Two-stage: shape pre-LLM, namespace/resolution post-L4. |
-    | Edge participation | Shared id namespace across components and subsystems; uniqueness validated. `Edge.participants: Vec<String>` schema unchanged. |
-    | Subsystem fields | id, members, role?, lifecycle_roles, rationale, evidence_grade, evidence_fields. No `kind`, no `parent`. |
-    | CLI | `atlas validate-overrides` extended (no new subcommand). |
-
-    ## Why "design + plan" exits the work phase
-
-    The implementation is large enough (cross-repo, ~13 tasks, ~75 substeps)
-    that executing it inside one work phase would defeat the per-phase
-    review cadence. Splitting it across phases lets each phase be small
-    enough to inspect end-to-end before committing to the next one.
-
-    ## What this suggests for next phases
-
-    - **Next work phase: Phase 1 of the plan** — schema additions in
-      `atlas-contracts/crates/atlas-index` and the
-      `validate_participant_namespace` helper in `component-ontology`. Self-
-      contained: ends with a commit + push to atlas-contracts. Smallest
-      scope, no Atlas-side coupling yet.
-    - **Phase 2:** Atlas engine integration (Salsa input + L9 projection +
-      collision helpers).
-    - **Phase 3:** Atlas CLI integration (validate.rs + pipeline.rs).
-    - **Phase 4:** End-to-end fixtures (rename-stability, collision halt,
-      byte-identity).
-    - **Phase 5 (Task 13):** README "Pre-seeding subsystems" subsection.
-
-    ## Notable design tradeoffs
-
-    - **`validate_participant_namespace` is added but not wired into edge
-      validation in v1.** Wiring it into `related-components.yaml`
-      validation would require an L6 prompt change (allowing subsystems as
-      edge participants), which is explicitly out of v1 scope. The helper
-      exists for the follow-up task that will do that wiring.
-    - **L9-only placement.** Subsystems do not feed back into classification
-      or L4 tree assembly. Lifecycle propagation, kind inheritance, and
-      similar component-level effects were considered and rejected for v1
-      to keep the change as a pure projection rather than a signal.
-    - **Two-stage validation distinguishes empty input (typo, fast-fail)
-      from empty resolution (forward-looking author, soft warning).**
-      Catching both with one rule would force users to either pre-create
-      components or accept zero-member entries silently.
-
-    ## Out-of-task work performed in this phase
-
-    A v1.2.1 → v1.3.0 release was published (out-of-band, not on the
-    backlog) before the design work began. The release included
-    `5d9e565 Expand component-kind vocabulary and add overrides validation`
-    and the run-plan state-management commits accumulated since v1.2.1.
-    Verified via `brew reinstall linkuistics/taps/atlas` →
-    `atlas 1.3.0 (v1.3.0, built 2026-05-01T08:37:48Z)`.
 - id: run-agent-progress-e2e-integration-test-against-real-claude-binary
   title: Run agent-progress e2e integration test against real claude binary
   category: eval
@@ -424,3 +291,170 @@ tasks:
 
     - Test passes under `ATLAS_LLM_RUN_CLAUDE_TESTS=1`.
     - No regressions in other `atlas-cli` tests.
+- id: subsystem-seeding-phase-1-atlas-contracts-schemas
+  title: 'Subsystem seeding Phase 1: atlas-contracts schemas'
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** First implementation phase for the subsystem seeding feature (design spec and plan already complete; see `docs/superpowers/plans/2026-05-01-subsystem-seeding.md`).
+
+    This phase operates entirely in `~/Development/atlas-contracts/` (separate git repo). Changes are visible to Atlas immediately via existing path deps — no Cargo.lock bump needed.
+
+    ## Scope
+
+    Implement Tasks 1–4 from the plan:
+
+    1. **Task 1: Subsystem override input schema** — add `SUBSYSTEMS_OVERRIDES_SCHEMA_VERSION`, `SubsystemOverride`, `SubsystemsOverridesFile` types to `crates/atlas-index/src/schema.rs`. Write failing tests first (TDD).
+
+    2. **Task 2: Subsystem output schema** — add `SUBSYSTEMS_SCHEMA_VERSION`, `MemberEvidence`, `SubsystemEntry`, `SubsystemsFile` types to `crates/atlas-index/src/schema.rs`. Write failing tests first.
+
+    3. **Task 3: YAML I/O functions** — add `load_subsystems_overrides`, `load_or_default_subsystems_overrides`, `save_subsystems_overrides_atomic`, `load_subsystems`, `load_or_default_subsystems`, `save_subsystems_atomic` to `crates/atlas-index/src/yaml_io.rs`. Mirror the existing patterns for `OverridesFile`.
+
+    4. **Task 4: `validate_participant_namespace` helper** — add free function to `crates/component-ontology/src/schema.rs`. Takes a slice of component ids and a slice of subsystem ids; returns `Vec<String>` of duplicate-namespace errors. No wiring into edge validation in v1 (that's the follow-up task).
+
+    Re-export all new types from `crates/atlas-index/src/lib.rs`.
+
+    ## Full task detail
+
+    See `docs/superpowers/plans/2026-05-01-subsystem-seeding.md` Tasks 1–4 for step-by-step instructions including test code.
+
+    ## Exit criteria
+
+    - All four tasks pass their unit tests (`cargo test -p atlas-index && cargo test -p component-ontology`).
+    - `cargo check` in atlas-contracts is clean.
+    - One commit to atlas-contracts covering all four tasks, pushed to origin.
+- id: subsystem-seeding-phase-2-atlas-engine-integration
+  title: 'Subsystem seeding Phase 2: Atlas engine integration'
+  category: feature
+  status: not_started
+  dependencies:
+  - subsystem-seeding-phase-1-atlas-contracts-schemas
+  description: |
+    **Priority: MEDIUM.** Second implementation phase for the subsystem seeding feature. Depends on `subsystem-seeding-phase1-atlas-contracts-schemas`.
+
+    This phase operates entirely in `~/Development/Atlas/`. Extends the Atlas engine with a new Salsa input and the L9 subsystem projection function.
+
+    ## Scope
+
+    Implement Tasks 5–8 from the plan (`docs/superpowers/plans/2026-05-01-subsystem-seeding.md`):
+
+    5. **Task 5: `globset` direct dependency** — add `globset` to `crates/atlas-engine/Cargo.toml` (it is already a transitive dep via `ignore`; make it direct for explicit use in l9_subsystems.rs).
+
+    6. **Task 6: Salsa input on `Workspace`** — add `subsystems_overrides` field and `set_subsystems_overrides` setter (with skip-if-equal guard) to `crates/atlas-engine/src/db.rs`.
+
+    7. **Task 7: `l9_subsystems.rs`** — create `crates/atlas-engine/src/l9_subsystems.rs` with:
+       - `subsystems_yaml_snapshot` Salsa query
+       - `MemberMatch` enum (Glob / Id)
+       - glob/id resolution logic (entries containing `/` or `*` → glob match against component path; otherwise id match)
+       - empty-glob warning emission
+       - cross-namespace collision detection (calls `validate_participant_namespace` from atlas-contracts)
+
+    8. **Task 8: Re-export** — add `mod l9_subsystems;` to `crates/atlas-engine/src/lib.rs` and re-export `subsystems_yaml_snapshot`.
+
+    ## Full task detail
+
+    See `docs/superpowers/plans/2026-05-01-subsystem-seeding.md` Tasks 5–8 for step-by-step instructions.
+
+    ## Exit criteria
+
+    - `cargo check -p atlas-engine` is clean.
+    - `cargo test -p atlas-engine` passes.
+    - Commit in Atlas covering all four tasks.
+- id: subsystem-seeding-phase-3-atlas-cli-integration
+  title: 'Subsystem seeding Phase 3: Atlas CLI integration'
+  category: feature
+  status: not_started
+  dependencies:
+  - subsystem-seeding-phase-2-atlas-engine-integration
+  description: |
+    **Priority: MEDIUM.** Third implementation phase for the subsystem seeding feature. Depends on `subsystem-seeding-phase2-atlas-engine-integration`.
+
+    This phase wires the subsystem engine into the Atlas CLI: validation, pipeline execution, and output saving.
+
+    ## Scope
+
+    Implement Tasks 9–11 from the plan (`docs/superpowers/plans/2026-05-01-subsystem-seeding.md`):
+
+    9. **Task 9: `validate.rs`** — extend `validate_overrides` in `crates/atlas-cli/src/validate.rs` to accept a `&SubsystemsOverridesFile` and produce subsystem-shape issues (unknown-id errors, empty-glob warnings) alongside existing component-shape issues.
+
+    10. **Task 10: `main.rs` validate-overrides subcommand** — modify `crates/atlas-cli/src/main.rs` to load `subsystems.overrides.yaml` (or default to empty) in the `validate-overrides` subcommand handler and pass it to the extended `validate_overrides`.
+
+    11. **Task 11: `pipeline.rs`** — modify `crates/atlas-cli/src/pipeline.rs` to:
+        - Load `subsystems.overrides.yaml` at pipeline start.
+        - `set_subsystems_overrides` on the Salsa `Workspace`.
+        - After L4, run the cross-namespace collision check; halt with error if any collision found.
+        - At L9, call `subsystems_yaml_snapshot` and save result to `subsystems.yaml` using `save_subsystems_atomic`.
+
+    ## Full task detail
+
+    See `docs/superpowers/plans/2026-05-01-subsystem-seeding.md` Tasks 9–11 for step-by-step instructions.
+
+    ## Exit criteria
+
+    - `cargo check -p atlas-cli` is clean.
+    - `atlas validate-overrides` accepts a `subsystems.overrides.yaml` and reports errors/warnings correctly.
+    - `atlas index` produces `subsystems.yaml` alongside `components.yaml`.
+    - Commit in Atlas covering all three tasks.
+- id: subsystem-seeding-phase-4-end-to-end-fixtures
+  title: 'Subsystem seeding Phase 4: end-to-end fixtures'
+  category: feature
+  status: not_started
+  dependencies:
+  - subsystem-seeding-phase-3-atlas-cli-integration
+  description: |
+    **Priority: MEDIUM.** Fourth implementation phase for the subsystem seeding feature. Depends on `subsystem-seeding-phase3-atlas-cli-integration`.
+
+    This phase adds end-to-end fixture tests to confirm the entire subsystem seeding pipeline — from `subsystems.overrides.yaml` through to `subsystems.yaml` — is byte-stable, rename-stable, and halt-on-collision correct.
+
+    ## Scope
+
+    Implement Tasks 12–13 from the plan (`docs/superpowers/plans/2026-05-01-subsystem-seeding.md`):
+
+    12. **Task 12: Extend `pipeline_integration.rs`** — add subsystem fixtures and assertions to `crates/atlas-cli/tests/pipeline_integration.rs`:
+        - A fixture with a `subsystems.overrides.yaml` that uses both glob and id membership forms.
+        - Assert `subsystems.yaml` exists after `atlas index` and contains the expected subsystems.
+        - Assert byte-identity: a second `atlas index` run with no changes produces an identical `subsystems.yaml`.
+        - Assert collision halt: a `subsystems.overrides.yaml` whose subsystem id collides with a component id causes the CLI to exit non-zero with an appropriate error message.
+
+    13. **Task 13: `subsystems_integration.rs`** — create `crates/atlas-cli/tests/subsystems_integration.rs` with dedicated tests:
+        - **Rename-stability:** component under `services/auth/` is renamed to `services/auth-v2/`; glob member `services/auth/*` continues to match; `subsystems.yaml` still lists the subsystem (with the updated component ids).
+        - **Collision halt:** subsystem id equals a component id; `atlas index` exits non-zero.
+
+    ## Full task detail
+
+    See `docs/superpowers/plans/2026-05-01-subsystem-seeding.md` Tasks 12–13 for step-by-step instructions.
+
+    ## Exit criteria
+
+    - `cargo test -p atlas-cli` passes including new fixture tests.
+    - Rename-stability test passes.
+    - Collision halt test passes.
+    - Commit in Atlas covering both tasks.
+- id: subsystem-seeding-phase-5-readme-documentation
+  title: 'Subsystem seeding Phase 5: README documentation'
+  category: feature
+  status: not_started
+  dependencies:
+  - subsystem-seeding-phase-4-end-to-end-fixtures
+  description: |
+    **Priority: LOW.** Final documentation task for the subsystem seeding feature. Depends on `subsystem-seeding-phase4-end-to-end-fixtures`.
+
+    ## Scope
+
+    Implement Task 14 (README) from the plan (`docs/superpowers/plans/2026-05-01-subsystem-seeding.md`):
+
+    - Add a **"Pre-seeding subsystems"** subsection to `README.md` inside the existing Usage section.
+    - The subsection should explain:
+      1. What `subsystems.overrides.yaml` is for (group components into named boundary sets).
+      2. The YAML shape (copy a minimal worked example from the design spec).
+      3. The membership forms (glob vs id; heuristic: `/` or `*` → glob, otherwise id).
+      4. What appears in `subsystems.yaml` after `atlas index`.
+      5. A note on collision detection (subsystem id must not match any component id).
+    - Keep it concise: the worked example is the primary teaching tool.
+
+    ## Exit criteria
+
+    - `README.md` has a "Pre-seeding subsystems" subsection under Usage.
+    - The subsection includes a minimal worked YAML example.
+    - Commit in Atlas.
