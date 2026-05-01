@@ -103,12 +103,38 @@ tasks:
     - All six criteria pass or have documented follow-up tasks (criterion 5 may be deferred pending Ravel-Lite M5).
     - Sign-off report committed to the Atlas repo.
     - An announcement-ready short summary written (optional) as `README-v1.md` documenting what Atlas v1 does and does not do.
+- id: capture-stream-json-jsonl-test-fixtures-for-atlas-llm-stream-parser
+  title: Capture stream-json JSONL test fixtures for atlas-llm stream parser
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** Pre-implementation step for `implement-agent-progress-feedback-live-tool-call-sub-line-during-long-llm-calls`. Unit tests for the stream parser are much easier to write once real JSONL transcripts exist and the event vocabulary is concrete.
+
+    ## Scope
+
+    Run `claude -p --output-format stream-json --verbose` against two or three tiny prompts and capture the raw JSONL output as test fixtures:
+
+    - `crates/atlas-llm/tests/fixtures/stream/simple-classify.jsonl` — a short classify call with no tool use
+    - `crates/atlas-llm/tests/fixtures/stream/subcarve-with-tools.jsonl` — a subcarve call that invokes at least one tool
+    - `crates/atlas-llm/tests/fixtures/stream/error-max-turns.jsonl` — a call that hits max-turns or another error condition (may require a crafted prompt)
+
+    ## Notes
+
+    - Keep the prompts trivially short to minimise token cost.
+    - Redact any sensitive information before committing.
+    - The goal is to document the real event vocabulary (event types, field names, ordering) so the stream parser and its unit tests can be written against real data rather than guesses.
+
+    ## Exit criteria
+
+    - Three fixture files committed to `crates/atlas-llm/tests/fixtures/stream/`.
+    - A `crates/atlas-llm/tests/fixtures/stream/README.md` (one paragraph) describing each fixture and how it was captured.
 - id: implement-agent-progress-feedback-live-tool-call-sub-line-during-long-llm-calls
   title: Implement agent progress feedback (live tool-call sub-line during long LLM calls)
   category: feature
   status: not_started
   dependencies:
-  - design-agent-progress-feedback-feature-write-spec
+  - capture-stream-json-jsonl-test-fixtures-for-atlas-llm-stream-parser
   description: |
     **Priority: MEDIUM.** Long subcarve calls (10+ minutes against `claude -p`) currently show no intermediate signal; users cannot distinguish a stuck process from a working one.
 
@@ -134,57 +160,3 @@ tasks:
     - Streaming partial assistant text.
 
     See spec §2 (non-goals) and §9 (open questions).
-- id: design-agent-progress-feedback-feature-write-spec
-  title: Design agent progress feedback feature (write spec)
-  category: feature
-  status: done
-  dependencies: []
-  description: |
-    **Priority: MEDIUM.** One-shot scoping/design task for the agent-progress-feedback feature. Closed by the design spec; implementation is tracked separately as `implement-agent-progress-feedback-live-tool-call-sub-line-during-long-llm-calls`.
-
-    ## Purpose
-
-    Capture the architectural decisions, component design, data flow, error handling, and testing strategy needed before any code is written for the per-call agent visibility feature.
-
-    ## Deliverable
-
-    `docs/superpowers/specs/2026-05-01-agent-progress-feedback-design.md`.
-
-    ## Context
-
-    User reported that during a long subcarve run, a single 10-minute LLM call produces no intermediate signal beyond the elapsed-time tick. Heartbeat-only signal was rejected as insufficient — the user wants substantive content (recent tool calls + counters) on a third refreshed sub-line under the activity bar. Design was developed via the `superpowers:brainstorming` skill flow with the user picking each architectural option.
-  results: |
-    **What was done.** Worked through the `superpowers:brainstorming` flow with the user to scope, decide, and document the agent-progress-feedback feature. Final spec lives at `docs/superpowers/specs/2026-05-01-agent-progress-feedback-design.md`. The committing of that file is owed to the analyse-work phase that runs immediately after this work phase per the work-phase contract.
-
-    **Key decisions captured in the spec.**
-
-    1. **Surface content** = most recent tool call + running tool counter, on a single refreshed sub-line. Heartbeat-only was rejected by the user as insufficient.
-    2. **Layout** = third indented sub-line in indicatif's `MultiProgress`, mounted on `CallStart`, unmounted on `CallEnd`. Sits between the existing activity bar and token gauge.
-    3. **Activation** = tied to `Reporter::drawing()`. When progress is suppressed (`--progress=never`, non-TTY), no observer is attached but the streaming subprocess invocation still runs.
-    4. **Architecture** = Approach A: `ClaudeCodeBackend` always uses `claude -p --output-format stream-json --verbose`; the legacy `--output-format json` path is removed. New `AgentObserver` trait + `AgentEvent { CallStart, ToolUse, ToolResult, CallEnd }` in `atlas-llm`. `Reporter` (in `atlas-cli`) implements `AgentObserver`.
-    5. **Side-channel design** = agent events flow `ClaudeCodeBackend → Reporter` directly, parallel to the existing `Reporter::on_llm_call` pattern (engine-progress-events spec §6.3). They bypass the rest of the chain because they are transient telemetry; cache and budget logic still operate on the request/response pair.
-
-    **Backlog adjustments.**
-
-    - Added two tasks under category `feature`:
-      - `design-agent-progress-feedback-feature-write-spec` — *this task; now done*.
-      - `implement-agent-progress-feedback-live-tool-call-sub-line-during-long-llm-calls` — depends on the design task; not_started. Implementation work-phase should begin by invoking `superpowers:writing-plans` against the spec.
-
-    **Verification.**
-
-    - Spec self-review pass applied 3 inline fixes:
-      1. Truncation rule clarified — ellipsis applies to the summary segment, not the whole line.
-      2. Removed inaccurate "partial lines on slow links" claim — `BufReader::lines` splits on newlines and never returns partials.
-      3. §6.1 concurrency wording disambiguated — distinguish indicatif draw-serialisation (no torn writes) from shared-state parallelism-safety (single bar = single in-flight call).
-    - No code changes; nothing to compile or test.
-    - `git status` left dirty (spec file untracked) for analyse-work to commit per the work-phase contract.
-
-    **What this suggests next.**
-
-    - Next work-phase task: pick `implement-agent-progress-feedback-live-tool-call-sub-line-during-long-llm-calls`. Begin by invoking `superpowers:writing-plans` against the spec to break the implementation into ordered tasks (parser unit-test scaffolding, `AgentObserver` types, `ClaudeCodeBackend` rewrite, `Reporter` sub-line, driver wiring, integration test). Then drive with `superpowers:executing-plans` or `subagent-driven-development`.
-    - Pre-implementation prep that would help: capture two or three real `claude -p --output-format stream-json --verbose` transcripts against tiny prompts and check the JSONL into `crates/atlas-llm/tests/fixtures/stream/`. The unit tests are easier to write once the fixtures exist and the observed event vocabulary is concrete.
-
-    **Open questions surfaced (deferred to implementation).**
-
-    - Subagent recursion (Task tool) — surfaces as a single opaque tool_use/tool_result pair from the parent stream. Mentioned in spec §9.
-    - Parallel LLM calls — single-bar design is not parallel-safe; spec §6.1 explains why and what would need to change.
