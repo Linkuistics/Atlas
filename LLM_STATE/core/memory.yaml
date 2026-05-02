@@ -484,3 +484,11 @@ entries:
   title: interpolate_env_vars skips hash-in-quoted-scalar silently
   body: |
     `find_yaml_comment_start` does not model quoted YAML strings. A `${VAR}` inside a quoted scalar that also contains ` # ` is incorrectly skipped as a comment and not interpolated. No Atlas template ships such a value; a code comment documents the remediation path.
+- id: post-v1-3-0-surface-is-release-ready-consider-v1-3-1-before-external-monorepo-test
+  title: Post-v1.3.0 surface is release-ready; consider v1.3.1 before external monorepo test
+  body: |
+    Post-v1.3.0 surface (env-var comment-skip fix + L3 token-injection fix + CodexBackend) is coherent enough to cut v1.3.1 (or v1.4.0 if Codex is treated as a feature) ahead of an external monorepo test. Decision is a release-cadence judgement, not blocked by code.
+
+    **Why:** Three paper-cut and correctness fixes landed in the same cycle; first-run UX is now clean. Cutting a minor version before external testing reduces "is this a known bug?" noise in early feedback.
+
+    **How to apply:** When preparing for external monorepo testing, check whether a release tag has been cut since this entry was written. If not, consider whether tagging v1.3.1 first is worthwhile.

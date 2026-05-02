@@ -104,7 +104,7 @@ tasks:
     - Sign-off report committed to the Atlas repo.
     - An announcement-ready short summary written (optional) as `README-v1.md` documenting what Atlas v1 does and does not do.
 - id: map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis
-  title: Map/reduce LLM architecture with backend routing for context-light analysis
+  title: L8 map/reduce redesign and L3 HTTP routing (AnthropicHttpBackend already complete)
   category: feature
   status: not_started
   dependencies: []
@@ -365,70 +365,3 @@ tasks:
     ## Why low priority
 
     The acute bug is fixed. The infrastructure prevents recurrence but doesn't unblock anything. Right work for a quiet hour or as part of the map/reduce task that introduces new prompts (`PromptId::ClassifySubdir` or similar — that work is the natural moment to make this check exist before a new prompt can ship without input-key coverage).
-- id: fix-atlas-init-config-yaml-env-var-interpolation-in-comment-lines
-  title: Fix atlas init config.yaml env-var interpolation in comment lines
-  category: infra
-  status: done
-  dependencies: []
-  description: |
-    **Priority: LOW.** Bug observed in passing during the L3/L8 spike: `atlas init`'s scaffolded `.atlas/config.yaml` fails to load due to `${ENV_VAR}` interpolation matching inside comment lines.
-
-    ## Context
-
-    The config loader resolves `${ENV_VAR}` placeholders at load time. The interpolation regex matches greedily — it also fires on occurrences inside YAML comment lines (lines beginning with `#`). `atlas init` scaffolds a config with inline documentation comments that include `${...}` usage examples. When the user opens this file without first editing it, the loader attempts to resolve the example variable references and fails with a hard error.
-
-    Result: `atlas index` cannot run against a freshly `atlas init`-ed directory until the user manually edits or removes the offending comment lines — a bad out-of-box experience.
-
-    ## Scope
-
-    - Identify the interpolation step in the config loader (likely in `crates/atlas-cli/src/config.rs` or the YAML io path).
-    - Restrict `${ENV_VAR}` expansion to non-comment lines (lines where the `${...}` appears outside a `#`-prefixed portion of the line). The simplest fix: strip comment suffixes before scanning for placeholders, or skip lines whose non-whitespace prefix is `#`.
-    - Verify `atlas init` + immediate `atlas index` works without editing the generated config.
-    - Confirm existing tests still pass.
-
-    ## Why low priority
-
-    The workaround is to edit the config file before running `atlas index`, which most users will do anyway to insert their API key. The bug is a paper cut on the very first run, not a data-loss or correctness issue.
-
-    ## Exit criteria
-
-    - `atlas init` followed immediately by `atlas index` (with the API key env var set) does not fail at the config-load step.
-    - The env-var expansion still works for non-comment lines.
-    - `cargo test -p atlas-cli` green.
-  results: |
-    **Status:** done (2026-05-03).
-
-    ## What was done
-
-    `atlas_llm::config::interpolate_env_vars` is now line-aware. Each input line is split at the first `#` that begins a YAML comment (column-0 `#`, or `#` preceded by ASCII whitespace) and only the active prefix is scanned for `${VAR}` placeholders. The comment suffix is emitted verbatim. The hot-path scanning logic was extracted into a private `interpolate_segment` helper; comment-start detection lives in `find_yaml_comment_start`.
-
-    ### Files touched
-
-    - `crates/atlas-llm/src/config.rs` — refactor + 4 new unit tests:
-      - `placeholder_in_full_comment_line_is_skipped` — `# ${UNSET}` does not error.
-      - `placeholder_in_indented_comment_is_skipped` — indented comment lines are also skipped.
-      - `placeholder_before_trailing_comment_is_expanded_only_in_value` — `key: ${SET} # ${UNSET}` expands the value but leaves the comment untouched.
-      - `hash_inside_value_without_preceding_whitespace_is_not_a_comment` — `foo#${VAR}` (no whitespace before `#`) still expands; `#` here is part of the value (URL fragment etc.), not a comment.
-    - `crates/atlas-cli/tests/init_cmd.rs` — new end-to-end test `freshly_init_config_loads_without_setting_env_vars` that runs the real `atlas init`, then calls `AtlasConfig::load(.atlas/config.yaml)` with no env vars set and asserts success. This is the regression test for the original report.
-
-    ### Verification
-
-    - `cargo test -p atlas-llm`: 109 passed, 0 failed.
-    - `cargo test -p atlas-cli`: full suite green (init_cmd 4/4, plus pipeline / subsystems / cache_io integration suites unchanged).
-    - `cargo fmt --all -- --check`: no drift.
-    - `cargo clippy -p atlas-llm -p atlas-cli --all-targets`: clean.
-
-    ## What worked
-
-    - Line-by-line processing was the right shape: it keeps the existing `${...}` scanner unchanged and just gates *where* it runs. No regex, no YAML parser pull-in, no perf change.
-    - TDD-style: tests for both directions (positive — value still expands; negative — comment skipped) were authored before the fix, and one of them (`hash_inside_value_without_preceding_whitespace_is_not_a_comment`) caught a thinko early — the heuristic must require whitespace before `#`, otherwise `foo#${VAR}` URL fragments would silently stop expanding.
-
-    ## What didn't work / known limitations
-
-    - The heuristic does not model quoted strings. A `${VAR}` inside a quoted YAML scalar that also contains a ` # ` would be treated as if the `#` started a comment, and the placeholder would not be expanded. None of Atlas's templates ship such a value, and a brief code comment notes the limitation. If a real config ever needs `# ` inside a quoted scalar, the fix is to thread a tiny string-state machine through `find_yaml_comment_start`.
-
-    ## What this suggests next
-
-    - The original triage flag (paper-cut on first run after `atlas init`) is closed. External testers can now `atlas init` + immediately `atlas index` without manually editing the scaffolded `config.yaml`.
-    - The post-v1.3.0 surface (this fix + the L3 token-injection fix in `601ce99` + the Codex backend in `fa4b71a`) is now coherent enough to justify cutting **v1.3.1** (or v1.4.0 if Codex is treated as a feature rather than a stub) ahead of an external monorepo test. That remains a release-cadence judgement, not blocked by code.
-    - Adjacent backlog item `verify-atlas-v1-success-criteria-end-to-end` is the natural next eval task — it would catch any first-run breakage of this same shape on a real codebase.
