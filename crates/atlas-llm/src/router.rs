@@ -81,7 +81,14 @@ impl BackendRouter {
                     }
                     Arc::new(b)
                 }
-                "codex" => Arc::new(crate::CodexBackend::new(model_id)),
+                "codex" => {
+                    let mut b = crate::CodexBackend::new(model_id, prompts_dir)?
+                        .with_fingerprint_inputs(template_sha, ontology_sha);
+                    if let Some(obs) = observer.clone() {
+                        b = b.with_observer(obs);
+                    }
+                    Arc::new(b)
+                }
                 other => return Err(LlmError::Setup(format!("unknown provider `{other}`"))),
             };
 

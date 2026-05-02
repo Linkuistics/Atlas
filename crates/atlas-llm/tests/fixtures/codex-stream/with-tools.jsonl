@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"019de89c-de4b-7352-9131-1b2fad9b4cee"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc \"sed -n '1,120p' fixture.toml\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc \"sed -n '1,120p' fixture.toml\"","aggregated_output":"package_name = \"atlas-llm-probe\"\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"{\"package_name\":\"atlas-llm-probe\"}"}}
+{"type":"turn.completed","usage":{"input_tokens":26707,"cached_input_tokens":15616,"output_tokens":127,"reasoning_output_tokens":39}}

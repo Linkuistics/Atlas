@@ -34,6 +34,7 @@ pub mod agent_observer;
 pub mod budget;
 pub mod claude_code;
 pub mod codex;
+pub(crate) mod codex_stream;
 pub mod config;
 pub mod http_anthropic;
 pub mod http_openai;

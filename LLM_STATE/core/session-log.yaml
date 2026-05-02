@@ -512,3 +512,18 @@ sessions:
     - What worked: both tasks completed. README gained a "Pre-seeding subsystems" section covering the YAML shape, glob-vs-id resolution, collision detection, and `atlas validate-overrides`. Codex research produced a full findings document at `docs/superpowers/specs/2026-05-02-codex-backend-research.md`, covering binary identity (`codex-cli 0.125.0`), `codex exec` flags, auth model, JSONL event schema, the subprocess-vs-HTTP-vs-library trade-off (subprocess chosen), and a complete implementation sketch. The `CodexBackend` stub comment in `codex.rs` was updated to point at the research doc. Two new backlog tasks were added: `implement-codexbackend-subprocess-driver` (with full implementation spec inlined) and `add-openrouter-as-an-llm-provider`.
     - What this suggests trying next: pick up `implement-codexbackend-subprocess-driver` — the research doc settles every flag choice and the JSONL event schema; no re-discovery needed
     - Key learnings: Codex version string has prefix `codex-cli`, not `codex`; the `--output-schema` flag enforces response shape at the Codex layer; `codex login status` is the auth precheck command; subprocess approach confirmed as the right choice (no HTTP server, `codex-core` library not recommended for embedding)
+- id: session-41
+  timestamp: 2026-05-02T12:28:54Z
+  phase: work
+  body: |
+    ### Session 41 (2026-05-02T12:28:54Z) — Implement CodexBackend subprocess driver
+
+    - Implemented the full `CodexBackend` in `crates/atlas-llm/src/codex.rs`, replacing the stub with a complete subprocess driver that parallels `ClaudeCodeBackend`.
+    - Added a pure parser module `crates/atlas-llm/src/codex_stream.rs` for parsing Codex's JSON-stream stdout output.
+    - Added three real-capture JSONL fixtures under `crates/atlas-llm/tests/fixtures/codex-stream/` (simple-classify, with-tools, turn-failed) plus a README documenting the capture/redaction process.
+    - Rewired the `codex/` arm in `crates/atlas-llm/src/router.rs` to construct the real backend with fingerprint inputs and observer (mirroring the `claude-code` arm exactly).
+    - 17 codex-specific unit tests pass; 453 total workspace tests pass; `cargo fmt` and `cargo clippy` are clean.
+    - Live construction test against real `codex-cli 0.125.0` binary passes. Live roundtrip test correctly maps HTTP-400 upstream errors into `LlmError::Invocation` — strong end-to-end validation.
+    - Key design decision: skipped `--output-schema` because Atlas's `ResponseSchema::accept_any()` schemas don't conform to OpenAI strict-mode requirements (no `additionalProperties: false`, non-exhaustive `required` lists); existing `validate_response` provides defense in depth. This decision is documented in the module-level doc comment and deferred for revisit when Atlas adopts strict schemas.
+    - Key discovery: `codex` wraps every shell-out in `/bin/zsh -lc "..."` — the `command_execution` summary helper strips this wrapper so agent sub-lines show the inner command. Also: `Stdio::null()` for stdin prevents a `"Reading additional input from stdin..."` message that could hang CI.
+    - What this suggests next: `CodexBackend` is now a peer of `ClaudeCodeBackend`; any `.atlas/config.yaml` selecting `codex/<model>` dispatches live. `--output-schema` support is a deferred follow-up once Atlas adopts strict response schemas as part of the map/reduce architecture shift.
