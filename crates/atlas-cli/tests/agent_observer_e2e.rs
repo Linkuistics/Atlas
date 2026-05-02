@@ -22,6 +22,15 @@ fn atlas_index_emits_agent_sub_line_under_progress_always() {
 
     let tmp = tempfile::TempDir::new().unwrap();
     let root = tmp.path();
+
+    // atlas index requires .atlas/config.yaml since the multi-provider config landed.
+    fs::create_dir_all(root.join(".atlas")).unwrap();
+    fs::write(
+        root.join(".atlas/config.yaml"),
+        "defaults:\n  model: claude-code/claude-sonnet-4-6\n",
+    )
+    .unwrap();
+
     fs::create_dir_all(root.join("src")).unwrap();
     fs::write(
         root.join("Cargo.toml"),

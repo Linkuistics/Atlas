@@ -492,3 +492,13 @@ sessions:
     What worked: the `SimpleBackend` fixture in `subsystems_integration.rs` (lean duplicate of `LenientBackend` without override machinery) was sufficient for subsystem-focused tests without pulling in the full lenient-backend logging infrastructure. The rename-stability test exercises the glob path-based re-matching directly and confirmed the feature works correctly.
 
     What's next: `subsystem-seeding-phase-5-readme-documentation` is now unblocked (depends on Phase 4).
+- id: session-39
+  timestamp: 2026-05-02T11:35:37Z
+  phase: work
+  body: |
+    ### Session 39 (2026-05-02T11:35:37Z) — Add config.yaml integration tests; fix gated e2e breakage
+
+    - Attempted: Add integration tests exercising the `.atlas/config.yaml` load path introduced by the multi-provider config work in the previous cycle.
+    - What worked: Two test changes landed. (1) Fixed `agent_observer_e2e.rs`: the gated test `atlas_index_emits_agent_sub_line_under_progress_always` was silently broken — it invoked `atlas index` without a `.atlas/config.yaml`, which now raises `ConfigError::NotFound` since the multi-provider config landed. Added the minimal config file creation before the CLI call. The breakage was invisible because the test short-circuits when `ATLAS_LLM_RUN_CLAUDE_TESTS=1` is unset. (2) Added `config_yaml_loads_and_pipeline_runs_when_present` to `pipeline_integration.rs`: a non-gated test that writes a valid `.atlas/config.yaml`, calls `AtlasConfig::load`, asserts no error, verifies the model string, then runs `run_index` with `LenientBackend` to confirm the pipeline completes without live LLM calls. All 90 atlas-cli tests pass.
+    - What didn't work: The full `build_production_backend_with_counter` path is not exercised by the non-gated test — it requires the `claude` binary eagerly. `BackendRouter::from_dispatch_table` is `#[cfg(test)]` inside `atlas-llm` and cannot be called from `atlas-cli` integration tests without a cross-crate API change; current structure is sufficient for the exit criteria.
+    - What this suggests next: The `agent_observer_e2e.rs` fix unblocks the `run-agent-progress-e2e-integration-test-against-real-claude-binary` task — the config-absent error that would have blocked it is now resolved. Running `ATLAS_LLM_RUN_CLAUDE_TESTS=1 cargo test -p atlas-cli` would confirm the full e2e path.

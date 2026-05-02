@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use atlas_cli::progress::{make_stderr_reporter, ProgressMode};
 use atlas_cli::{run_index, IndexConfig, IndexError};
-use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId, TokenCounter};
+use atlas_llm::{AtlasConfig, LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId, TokenCounter};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
@@ -623,6 +623,42 @@ fn subsystems_yaml_is_byte_identical_on_no_op_re_run() {
         first, second,
         "subsystems.yaml must be byte-identical on no-op re-run"
     );
+}
+
+// ---------------------------------------------------------------
+// .atlas/config.yaml integration
+// ---------------------------------------------------------------
+
+#[test]
+fn config_yaml_loads_and_pipeline_runs_when_present() {
+    let tmp = materialise_tiny_fixture();
+    let config = base_config(tmp.path());
+    std::fs::create_dir_all(&config.output_dir).unwrap();
+
+    let config_path = config.output_dir.join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "defaults:\n  model: claude-code/claude-sonnet-4-6\n",
+    )
+    .unwrap();
+
+    // Verify the config-absent error path does not fire when the file exists.
+    let atlas_config =
+        AtlasConfig::load(&config_path).expect("AtlasConfig::load must succeed when file exists");
+    assert_eq!(atlas_config.defaults.model, "claude-code/claude-sonnet-4-6");
+
+    // Verify the pipeline runs to completion in a workspace that has a
+    // valid config.yaml present (backend is mocked — no live LLM calls).
+    let summary = run_index(
+        &config,
+        LenientBackend::new(),
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .expect("pipeline must complete when config.yaml is valid");
+
+    assert!(summary.outputs_written);
+    assert!(summary.component_count >= 2);
 }
 
 #[test]
