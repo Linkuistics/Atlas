@@ -378,12 +378,20 @@ entries:
 
     **Cross-repo note:** Phase 1 (Tasks 1–4) operates in `atlas-contracts`; Phases 2–5 operate in `Atlas`. The repos are connected by existing path deps — no Cargo.lock bump needed during development.
 - id: validate-participant-namespace-lives-in-component-ontology-may-migrate-post-phase-3
-  title: validate_participant_namespace lives in component-ontology, may migrate post-Phase-3
+  title: validate_participant_namespace unwired from edge validation in v1
   body: |
-    `validate_participant_namespace` lives in `component-ontology` because edge participants are vocabulary the crate owns. If no second caller materialises after Phase 3 wires the cross-namespace check, the function is a candidate to migrate to `atlas-cli`. Revisit once Phase 3 is complete.
+    `validate_participant_namespace` lives in `component-ontology` because edge participants are vocabulary the crate owns. In v1, it is not wired into edge validation — the cross-namespace check is reserved for a follow-up. If no second caller materialises by v2, the function is a candidate to migrate to `atlas-cli`.
 - id: pinvalue-deserializer-dispatches-on-value-shape-via-visitor
   title: PinValue deserializer dispatches on value shape via Visitor
   body: |
     `PinValue` uses a hand-rolled `Serialize` + `Deserialize` pair with a `deserialize_any` Visitor that dispatches on value shape: bool → `Suppress`, seq → `SuppressChildren`, map → `Value` (or legacy doubly-nested compat). Replaces `#[serde(untagged)]`, which cannot distinguish variants by value type. Legacy doubly-nested form accepted silently for backward compatibility.
 
     Cross-ref: `pinvalue-suppress-uses-alwaystrue-to-ban-suppress-false`.
+- id: pipeline-always-outputs-subsystems-yaml-even-with-no-override-file
+  title: pipeline always outputs subsystems.yaml even with no override file
+  body: |
+    `pipeline.rs` produces a default empty `subsystems.yaml` even when no `subsystems.overrides.yaml` file exists. Absence of the override file is not an error; downstream consumers always find the output file present.
+- id: subsystem-shape-errors-render-under-pins-prefix-not-subsystems
+  title: subsystem shape errors render under pins[] prefix not subsystems[]
+  body: |
+    `print_report` renders subsystem shape errors under the component-overrides path header using `pin_key` to label the subsystem id. The prefix reads `pins[<id>]` rather than `subsystems[<id>]`. The error message body includes the id, so errors are traceable. Follow-up: add a `category` discriminant to `ValidationIssue` so subsystem errors render under their own heading.
