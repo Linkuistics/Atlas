@@ -427,3 +427,7 @@ entries:
   title: atlas init scaffolds config files; skips existing
   body: |
     `atlas init` creates `.atlas/config.yaml`, `components.overrides.yaml`, and `subsystems.overrides.yaml` with inline documentation comments. Files that already exist are silently skipped, making the command idempotent.
+- id: simplebackend-is-the-fixture-for-subsystem-integration-tests
+  title: SimpleBackend is the fixture for subsystem integration tests
+  body: |
+    `SimpleBackend` in `crates/atlas-cli/tests/subsystems_integration.rs` is a lean duplicate of `LenientBackend` without override machinery. Use it for subsystem-focused CLI integration tests that do not need the lenient-backend logging infrastructure.
