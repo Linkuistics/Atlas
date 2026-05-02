@@ -401,3 +401,15 @@ entries:
     `pipeline.rs::load_or_default_subsystems_overrides` maps IO/parse errors to `IndexError::Other(anyhow)` without including the file path in the error message. A malformed `subsystems.overrides.yaml` produces "failed to parse YAML" with no path, making it hard for users to locate the offending file.
 
     Fix: wrap with `.with_context(|| format!("failed to load {}", path))` — the same pattern used by `load_or_default_overrides` calls elsewhere in the codebase. Trivial one-liner; deferred as low-priority polish.
+- id: llm-routing-uses-atlas-config-yaml-per-operation-provider-model-strings
+  title: LLM routing uses .atlas/config.yaml per-operation provider/model strings
+  body: |
+    `.atlas/config.yaml` routes LLM calls per operation via `<provider>/<model>` strings (e.g. `anthropic/claude-sonnet-4-6`). Config-file-driven routing is cleaner than CLI flags and makes backend selection declarative. Implementation plan: `docs/superpowers/plans/2026-05-02-multi-provider-llm-config.md`.
+- id: llm-config-env-var-interpolation-resolves-at-load-time
+  title: LLM config env-var interpolation resolves at load time
+  body: |
+    `${ENV_VAR}` placeholders in `.atlas/config.yaml` are resolved at config-load time, keeping API keys and secrets out of committed files. Unset variables produce a hard error at load time rather than a silent empty string.
+- id: backendrouter-is-inside-the-existing-sentinel-cache-progress-stack
+  title: BackendRouter is inside the existing sentinel/cache/progress stack
+  body: |
+    `BackendRouter` wraps the selected provider backend but sits inside the existing `BudgetSentinel`/`LlmResponseCache`/`ProgressBackend` stack. No call-site changes are required in L5/L6 or any other layer; routing is invisible above the `LlmBackend` trait boundary.
