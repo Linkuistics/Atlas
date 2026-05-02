@@ -395,3 +395,9 @@ entries:
   title: subsystem shape errors render under pins[] prefix not subsystems[]
   body: |
     `print_report` renders subsystem shape errors under the component-overrides path header using `pin_key` to label the subsystem id. The prefix reads `pins[<id>]` rather than `subsystems[<id>]`. The error message body includes the id, so errors are traceable. Follow-up: add a `category` discriminant to `ValidationIssue` so subsystem errors render under their own heading.
+- id: load-or-default-subsystems-overrides-missing-path-context-in-error-messages
+  title: load_or_default_subsystems_overrides missing path context in error messages
+  body: |
+    `pipeline.rs::load_or_default_subsystems_overrides` maps IO/parse errors to `IndexError::Other(anyhow)` without including the file path in the error message. A malformed `subsystems.overrides.yaml` produces "failed to parse YAML" with no path, making it hard for users to locate the offending file.
+
+    Fix: wrap with `.with_context(|| format!("failed to load {}", path))` — the same pattern used by `load_or_default_overrides` calls elsewhere in the codebase. Trivial one-liner; deferred as low-priority polish.
