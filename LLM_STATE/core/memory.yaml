@@ -404,7 +404,9 @@ entries:
 - id: llm-routing-uses-atlas-config-yaml-per-operation-provider-model-strings
   title: LLM routing uses .atlas/config.yaml per-operation provider/model strings
   body: |
-    `.atlas/config.yaml` routes LLM calls per operation via `<provider>/<model>` strings (e.g. `anthropic/claude-sonnet-4-6`). Config-file-driven routing is cleaner than CLI flags and makes backend selection declarative. Implementation plan: `docs/superpowers/plans/2026-05-02-multi-provider-llm-config.md`.
+    `.atlas/config.yaml` routes LLM calls per operation via `<provider>/<model>` strings (e.g. `anthropic/claude-sonnet-4-6`). Config-file-driven routing makes backend selection declarative; loaded from `output_dir/config.yaml` before `atlas index` runs.
+
+    Cross-ref: `llm-config-env-var-interpolation-resolves-at-load-time`.
 - id: llm-config-env-var-interpolation-resolves-at-load-time
   title: LLM config env-var interpolation resolves at load time
   body: |
@@ -413,3 +415,15 @@ entries:
   title: BackendRouter is inside the existing sentinel/cache/progress stack
   body: |
     `BackendRouter` wraps the selected provider backend but sits inside the existing `BudgetSentinel`/`LlmResponseCache`/`ProgressBackend` stack. No call-site changes are required in L5/L6 or any other layer; routing is invisible above the `LlmBackend` trait boundary.
+- id: backendrouter-dispatches-by-promptid-from-dispatch-table-for-tests
+  title: BackendRouter dispatches by PromptId; from_dispatch_table for tests
+  body: |
+    `BackendRouter` selects a provider backend from a `HashMap<PromptId, Box<dyn LlmBackend>>`. Two constructors: `new(&AtlasConfig)` builds `ClaudeCodeBackend` (calls `capture_claude_version()`); `from_dispatch_table` takes a pre-built map and bypasses `ClaudeCodeBackend` construction — use this in tests to avoid capturing the Claude version. BackendRouter computes a composite fingerprint combining all configured backends.
+- id: codexbackend-is-a-stub-returning-llmerror-setup
+  title: CodexBackend is a stub returning LlmError::Setup
+  body: |
+    `CodexBackend` returns `LlmError::Setup` for all calls. Research into the Codex CLI subprocess interface is deferred (`research-codex-cli-subprocess-interface-for-codexbackend` backlog task).
+- id: atlas-init-scaffolds-config-files-skips-existing
+  title: atlas init scaffolds config files; skips existing
+  body: |
+    `atlas init` creates `.atlas/config.yaml`, `components.overrides.yaml`, and `subsystems.overrides.yaml` with inline documentation comments. Files that already exist are silently skipped, making the command idempotent.
