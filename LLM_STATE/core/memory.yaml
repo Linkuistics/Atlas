@@ -426,9 +426,9 @@ entries:
 
     `from_dispatch_table` is `#[cfg(test)]` inside `atlas-llm`. It cannot be called from `atlas-cli` integration tests without a cross-crate API change; current structure is sufficient for `atlas-llm` unit tests only.
 - id: codexbackend-is-a-stub-returning-llmerror-setup
-  title: CodexBackend is a stub returning LlmError::Setup
+  title: CodexBackend is a stub; subprocess implementation spec complete
   body: |
-    `CodexBackend` returns `LlmError::Setup` for all calls. Research into the Codex CLI subprocess interface is deferred (`research-codex-cli-subprocess-interface-for-codexbackend` backlog task).
+    `CodexBackend` returns `LlmError::Setup` for all calls. Research complete; subprocess implementation spec at `docs/superpowers/specs/2026-05-02-codex-backend-research.md`. Backlog task `implement-codexbackend-subprocess-driver` carries the full implementation spec inline.
 - id: atlas-init-scaffolds-config-files-skips-existing
   title: atlas init scaffolds config files; skips existing
   body: |
@@ -437,3 +437,7 @@ entries:
   title: SimpleBackend is the fixture for subsystem integration tests
   body: |
     `SimpleBackend` in `crates/atlas-cli/tests/subsystems_integration.rs` is a lean duplicate of `LenientBackend` without override machinery. Use it for subsystem-focused CLI integration tests that do not need the lenient-backend logging infrastructure.
+- id: codexbackend-subprocess-uses-codex-exec-with-output-schema
+  title: CodexBackend subprocess uses codex exec with --output-schema
+  body: |
+    `CodexBackend` uses `codex exec` as a subprocess (no HTTP server; `codex-core` crate not recommended for embedding). Version string prefix is `codex-cli` (e.g. `codex-cli 0.125.0`), not `codex`. `--output-schema <schema>` enforces JSON response shape at the Codex layer. `codex login status` is the auth-precheck command before any `exec` call.
