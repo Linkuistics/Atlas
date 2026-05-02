@@ -148,6 +148,10 @@ entries:
   title: assert_cmd real-binary tests must be gated behind ATLAS_LLM_RUN_CLAUDE_TESTS=1
   body: |
     Integration tests using assert_cmd that invoke the real atlas-cli binary must be gated behind `ATLAS_LLM_RUN_CLAUDE_TESTS=1`. Without the guard, running the test suite hits the production LLM backend and burns tokens.
+
+    Gated tests short-circuit silently (vacuous pass) when the env var is unset. This makes structural breakage invisible: a prerequisite change (e.g. `atlas index` now requiring `.atlas/config.yaml`) leaves gated tests broken for an extended period with no test-suite signal.
+
+    Apply the same awareness to any new gated infrastructure test — the guard that prevents token burns is the same guard that hides regressions.
 - id: externals-from-manifests-omits-workspace-dependencies-entries
   title: externals_from_manifests omits [workspace.dependencies] entries
   body: |
@@ -404,7 +408,7 @@ entries:
 - id: llm-routing-uses-atlas-config-yaml-per-operation-provider-model-strings
   title: LLM routing uses .atlas/config.yaml per-operation provider/model strings
   body: |
-    `.atlas/config.yaml` routes LLM calls per operation via `<provider>/<model>` strings (e.g. `anthropic/claude-sonnet-4-6`). Config-file-driven routing makes backend selection declarative; loaded from `output_dir/config.yaml` before `atlas index` runs.
+    `.atlas/config.yaml` routes LLM calls per operation via `<provider>/<model>` strings (e.g. `anthropic/claude-sonnet-4-6`). Config-file-driven routing makes backend selection declarative; loaded from `output_dir/config.yaml` before `atlas index` runs. Absence of the file raises `ConfigError::NotFound` — `atlas index` requires the file; it is not optional.
 
     Cross-ref: `llm-config-env-var-interpolation-resolves-at-load-time`.
 - id: llm-config-env-var-interpolation-resolves-at-load-time
@@ -419,6 +423,8 @@ entries:
   title: BackendRouter dispatches by PromptId; from_dispatch_table for tests
   body: |
     `BackendRouter` selects a provider backend from a `HashMap<PromptId, Box<dyn LlmBackend>>`. Two constructors: `new(&AtlasConfig)` builds `ClaudeCodeBackend` (calls `capture_claude_version()`); `from_dispatch_table` takes a pre-built map and bypasses `ClaudeCodeBackend` construction — use this in tests to avoid capturing the Claude version. BackendRouter computes a composite fingerprint combining all configured backends.
+
+    `from_dispatch_table` is `#[cfg(test)]` inside `atlas-llm`. It cannot be called from `atlas-cli` integration tests without a cross-crate API change; current structure is sufficient for `atlas-llm` unit tests only.
 - id: codexbackend-is-a-stub-returning-llmerror-setup
   title: CodexBackend is a stub returning LlmError::Setup
   body: |
