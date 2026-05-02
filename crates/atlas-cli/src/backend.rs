@@ -1,9 +1,8 @@
-//! Build the production `ClaudeCodeBackend` wired through a
-//! `BudgetedBackend`, plus the fingerprint derivations Atlas stamps
-//! into `components.yaml`.
+//! Build the production LLM backend stack driven by `.atlas/config.yaml`,
+//! plus the fingerprint derivations Atlas stamps into `components.yaml`.
 //!
-//! Tests bypass the ClaudeCode path by constructing a `TestBackend`
-//! and passing it to [`crate::run_index`]; they still benefit from the
+//! Tests bypass this path by constructing a `TestBackend` directly and
+//! passing it to [`crate::run_index`]; they still benefit from the
 //! [`BudgetSentinel`] wrapper, which is the only reliable way to
 //! observe budget exhaustion once L5/L6 have collapsed the error into
 //! a "LLM call failed" surface note.
@@ -14,7 +13,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use atlas_engine::sha256_hex;
 use atlas_llm::{
-    default_token_estimator, BudgetedBackend, ClaudeCodeBackend, LlmBackend, LlmError,
+    default_token_estimator, BudgetedBackend, LlmBackend, LlmError,
     LlmFingerprint, LlmRequest, TokenCounter,
 };
 use serde_json::Value;
@@ -24,9 +23,6 @@ use tempfile::TempDir;
 use crate::prompts::{EMBEDDED_ONTOLOGY_YAML, EMBEDDED_PROMPTS};
 
 /// Everything the CLI needs to keep alive for the duration of a run.
-/// The tempdir holds the materialised prompts that `ClaudeCodeBackend`
-/// reads; dropping the handle before `run_index` finishes removes the
-/// prompts from under the backend.
 pub struct BackendHandles {
     pub backend: Arc<dyn LlmBackend>,
     pub counter: Option<Arc<TokenCounter>>,
@@ -37,9 +33,6 @@ pub struct BackendHandles {
 
 /// Sticky-flag wrapper: forwards every call to the inner backend and
 /// records whether any call ever returned [`LlmError::BudgetExhausted`].
-/// The pipeline checks the flag after each stage so a budget-exhausted
-/// run can be failed loudly even though L5/L6 swallow the error into a
-/// default record.
 pub struct BudgetSentinel {
     inner: Arc<dyn LlmBackend>,
     exhausted: AtomicBool,
@@ -80,13 +73,9 @@ impl LlmBackend for BudgetSentinel {
     }
 }
 
-/// Construct the production backend stack with a caller-supplied token
-/// counter and optional `AgentObserver`. The counter is pulled into the
-/// caller so it can be shared with the `Reporter` (which doubles as the
-/// observer); without that sharing, the reporter's gauge and the
-/// budgeted-backend's actuals would drift apart.
+/// Construct the production backend stack from an `AtlasConfig`.
 pub fn build_production_backend_with_counter(
-    model_id: String,
+    config: &atlas_llm::AtlasConfig,
     counter: Option<Arc<TokenCounter>>,
     observer: Option<Arc<dyn atlas_llm::AgentObserver>>,
 ) -> Result<BackendHandles> {
@@ -96,21 +85,24 @@ pub fn build_production_backend_with_counter(
     let template_sha = compute_template_sha();
     let ontology_sha = compute_ontology_sha();
 
-    let mut inner = ClaudeCodeBackend::new(model_id.clone(), prompts_dir.path())?
-        .with_fingerprint_inputs(template_sha, ontology_sha);
-    if let Some(o) = observer {
-        inner = inner.with_observer(o);
-    }
-    let version_fingerprint = inner.fingerprint();
-    let inner_arc: Arc<dyn LlmBackend> = Arc::new(inner);
+    let router = atlas_llm::BackendRouter::new(
+        config,
+        prompts_dir.path(),
+        template_sha,
+        ontology_sha,
+        observer,
+    )
+    .map_err(|e| anyhow::anyhow!("failed to build backend: {e}"))?;
+    let fingerprint = router.fingerprint();
+    let inner: Arc<dyn LlmBackend> = Arc::new(router);
 
     let backend_after_budget: Arc<dyn LlmBackend> = match counter.as_ref() {
         Some(c) => Arc::new(BudgetedBackend::new(
-            inner_arc,
+            inner,
             c.clone(),
             default_token_estimator(),
         )),
-        None => inner_arc,
+        None => inner,
     };
     let sentinel = BudgetSentinel::new(backend_after_budget);
     let backend: Arc<dyn LlmBackend> = sentinel.clone();
@@ -119,24 +111,12 @@ pub fn build_production_backend_with_counter(
         backend,
         counter,
         sentinel,
-        fingerprint: version_fingerprint,
+        fingerprint,
         prompts_dir,
     })
 }
 
-/// Convenience overload preserving the prior API. The CLI has migrated
-/// to `build_production_backend_with_counter` so it can share a single
-/// `TokenCounter` with the reporter; this shim keeps legacy callers
-/// (notably tests) compiling.
-pub fn build_production_backend(model_id: String, budget: Option<u64>) -> Result<BackendHandles> {
-    let counter = budget.map(|b| Arc::new(TokenCounter::new(b)));
-    build_production_backend_with_counter(model_id, counter, None)
-}
-
-/// SHA-256 over the concatenation of the embedded prompt bodies in
-/// `EMBEDDED_PROMPTS` order. Used as the run-wide `template_sha` on
-/// `LlmFingerprint`. Changing any prompt bumps this and invalidates
-/// every cached LLM response, per the engine's memoisation contract.
+/// SHA-256 over the concatenation of the embedded prompt bodies.
 pub fn compute_template_sha() -> [u8; 32] {
     let mut hasher = Sha256::new();
     for (_, name, body) in EMBEDDED_PROMPTS {
@@ -151,8 +131,7 @@ pub fn compute_ontology_sha() -> [u8; 32] {
     Sha256::digest(EMBEDDED_ONTOLOGY_YAML.as_bytes()).into()
 }
 
-/// Per-prompt SHAs (lowercase hex) of the embedded prompt bodies,
-/// keyed by the prompt id string used in `CacheFingerprints::prompt_shas`.
+/// Per-prompt SHAs (lowercase hex) of the embedded prompt bodies.
 pub fn compute_prompt_shas() -> std::collections::BTreeMap<String, String> {
     let mut map = std::collections::BTreeMap::new();
     for (_, name, body) in EMBEDDED_PROMPTS {

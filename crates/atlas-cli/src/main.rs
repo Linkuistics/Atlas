@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use atlas_cli::progress::{make_stderr_reporter, ProgressBackend, ProgressMode};
-use atlas_cli::{run_index, IndexConfig, IndexError};
-use atlas_llm::{claude_code::resolve_default_model_id, LlmBackend};
+use atlas_cli::{run_index, IndexError};
+use atlas_llm::LlmBackend;
 use clap::{Parser, Subcommand};
 
 /// Version string baked in at compile time by `build.rs`. Shape:
@@ -44,6 +44,8 @@ enum Command {
     /// unrecognised pin fields without modifying anything. Exits
     /// non-zero on errors.
     ValidateOverrides(ValidateOverridesArgs),
+    /// Scaffold .atlas/ with commented template files before first run.
+    Init(InitArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -80,11 +82,6 @@ struct IndexArgs {
     #[arg(long)]
     dry_run: bool,
 
-    /// Override the model id passed to `claude -p --model`. Defaults
-    /// to the value of `$ATLAS_LLM_MODEL` or the built-in constant.
-    #[arg(long)]
-    model: Option<String>,
-
     /// Disable `.gitignore`-aware filtering when seeding the
     /// filesystem. Useful for tests and for rooting Atlas at a
     /// standalone project that has no `.git` directory.
@@ -109,6 +106,15 @@ struct ValidateOverridesArgs {
     path: PathBuf,
 }
 
+#[derive(Debug, clap::Args)]
+struct InitArgs {
+    /// Root of the project to initialise. Creates <root>/.atlas/ with
+    /// config.yaml, components.overrides.yaml, and subsystems.overrides.yaml.
+    root: std::path::PathBuf,
+}
+
+mod init;
+
 fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
@@ -124,6 +130,13 @@ fn run() -> Result<ExitCode> {
     match cli.command {
         Command::Index(args) => run_index_cmd(args),
         Command::ValidateOverrides(args) => run_validate_overrides_cmd(args),
+        Command::Init(args) => {
+            let root = args
+                .root
+                .canonicalize()
+                .with_context(|| format!("failed to resolve root path {}", args.root.display()))?;
+            init::run_init_cmd(&root)
+        }
     }
 }
 
@@ -164,15 +177,17 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
         .output_dir
         .unwrap_or_else(|| root.join(atlas_cli::DEFAULT_OUTPUT_SUBDIR));
 
-    let mut config = IndexConfig::new(root);
-    config.output_dir = output_dir;
-    config.max_depth = args.max_depth;
-    config.recarve = args.recarve;
-    config.dry_run = args.dry_run;
-    config.respect_gitignore = !args.no_gitignore;
-    config.prompt_shas = Some(atlas_cli::backend::compute_prompt_shas());
+    let config_path = output_dir.join("config.yaml");
+    let atlas_config = atlas_llm::AtlasConfig::load(&config_path)
+        .with_context(|| format!("failed to load {}", config_path.display()))?;
 
-    let model_id = args.model.unwrap_or_else(resolve_default_model_id);
+    let mut index_config = atlas_cli::IndexConfig::new(root);
+    index_config.output_dir = output_dir;
+    index_config.max_depth = args.max_depth;
+    index_config.recarve = args.recarve;
+    index_config.dry_run = args.dry_run;
+    index_config.respect_gitignore = !args.no_gitignore;
+    index_config.prompt_shas = Some(atlas_cli::backend::compute_prompt_shas());
 
     let progress_mode = if args.no_progress {
         ProgressMode::Never
@@ -197,18 +212,18 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
     };
 
     let handles = atlas_cli::backend::build_production_backend_with_counter(
-        model_id,
+        &atlas_config,
         counter.clone(),
         observer,
     )
     .context("failed to build LLM backend")?;
-    config.fingerprint_override = Some(handles.fingerprint.clone());
+    index_config.fingerprint_override = Some(handles.fingerprint.clone());
 
     let backend: Arc<dyn LlmBackend> =
         ProgressBackend::new(handles.backend.clone(), Arc::clone(&reporter)) as Arc<dyn LlmBackend>;
 
     let outcome = run_index(
-        &config,
+        &index_config,
         backend,
         handles.counter.clone(),
         Arc::clone(&reporter),

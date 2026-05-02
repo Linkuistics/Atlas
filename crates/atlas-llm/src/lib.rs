@@ -33,13 +33,23 @@ use serde_json::Value;
 pub mod agent_observer;
 pub mod budget;
 pub mod claude_code;
+pub mod codex;
+pub mod config;
+pub mod http_anthropic;
+pub mod http_openai;
 pub mod prompt;
+pub mod router;
 pub(crate) mod stream_parse;
 pub mod test_backend;
 
 pub use agent_observer::{AgentEvent, AgentObserver};
 pub use budget::{default_token_estimator, BudgetedBackend, TokenCounter, TokenEstimator};
 pub use claude_code::{ClaudeCodeBackend, DEFAULT_MODEL_ID, MODEL_ID_ENV};
+pub use codex::CodexBackend;
+pub use config::{AtlasConfig, ConfigError, OperationConfig, OperationsConfig, ProviderConfig};
+pub use http_anthropic::AnthropicHttpBackend;
+pub use http_openai::OpenAiHttpBackend;
+pub use router::BackendRouter;
 pub use test_backend::TestBackend;
 
 /// Identifier for one of Atlas's built-in prompt templates. The

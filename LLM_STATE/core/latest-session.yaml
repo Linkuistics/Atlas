@@ -1,11 +1,22 @@
-id: session-36
-timestamp: 2026-05-02T09:26:26Z
+id: session-37
+timestamp: 2026-05-02T10:17:03Z
 phase: work
 body: |
-  ### Session 36 (2026-05-02T09:26:26Z) — Design multi-provider LLM config architecture
+  ### Session 37 (2026-05-02T10:17:03Z) — Implement multi-provider LLM config
 
-  - Attempted: L3 prototype via plain Anthropic HTTP backend (narrow spike to validate per-call speedup for map-style classification).
-  - What worked: Brainstorming pivoted the session productively — rather than implementing a one-off `--l3-backend` flag, the session produced a full multi-provider LLM config architecture that directly answers the spike question ("yes, plain HTTP works") while also laying the right foundation for the broader map-reduce epic.
-  - What didn't: No code was written; this was a design-only session. The implementation plan exists but no Rust was touched.
-  - What this suggests next: The `multi-provider-llm-config-implement-the-plan` task is queued and ready for execution. The 11-task plan includes subagent-parallelisable sections and should proceed with the `dispatching-parallel-agents` skill.
-  - Key learnings: Config-file-driven routing (`.atlas/config.yaml` with per-operation `<provider>/<model>` strings) is cleaner than CLI flags and makes the backend selection declarative; `${ENV_VAR}` interpolation at config-load time keeps secrets out of code; `BackendRouter` wraps inside the existing budget/sentinel/progress stack so no call-site changes are needed.
+  - Implemented all 11 plan tasks for multi-provider LLM configuration architecture.
+  - Added `reqwest` (blocking+json) and `serde_yaml` to workspace and `atlas-llm` Cargo.toml.
+  - Created five new modules in `atlas-llm`: `config.rs` (AtlasConfig, ProviderConfig, OperationConfig, env-var interpolation, load/validation, 12 tests), `http_anthropic.rs` (AnthropicHttpBackend, 4 tests), `http_openai.rs` (OpenAiHttpBackend, 4 tests), `codex.rs` (CodexBackend stub returning LlmError::Setup, 2 tests), `router.rs` (BackendRouter dispatching by PromptId via HashMap, composite fingerprint, 3 tests).
+  - Modified `atlas-cli/src/backend.rs`: `build_production_backend_with_counter` now takes `&AtlasConfig` instead of `model_id: String`; constructs `BackendRouter`; removed legacy `build_production_backend` shim and several stale comments.
+  - Modified `atlas-cli/src/main.rs`: removed `--model` flag from `IndexArgs`; added `atlas init` subcommand; loads `AtlasConfig` from `output_dir/config.yaml` before running index.
+  - Added `atlas-cli/src/init.rs`: `run_init_cmd` scaffolds `.atlas/config.yaml`, `components.overrides.yaml`, `subsystems.overrides.yaml` with heavy comments; skips existing files.
+  - Added `atlas-cli/tests/init_cmd.rs`: 3 integration tests via `assert_cmd`.
+  - `cargo test --workspace` passes: 0 failed.
+  - Added `research-codex-cli-subprocess-interface-for-codexbackend` research task to backlog.
+
+  - Plan structure was self-contained and subagents followed it cleanly.
+  - `pub(crate)` reuse of helper functions across HTTP backends worked well.
+  - `BackendRouter::new` handles `ClaudeCodeBackend` construction (which calls `capture_claude_version()`); tests use `from_dispatch_table` to bypass it.
+
+  - Next: `map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis` is now unblocked. Wire `AnthropicHttpBackend` as default for `Classify` and `Subcarve` prompts, add L8 map/reduce parallelism.
+  - `CodexBackend` stub ready to be replaced once the research task completes.

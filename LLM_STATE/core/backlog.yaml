@@ -2,7 +2,7 @@ tasks:
 - id: multi-provider-llm-config-implement-the-plan
   title: 'Multi-provider LLM config: implement the plan'
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     Implement the multi-provider LLM configuration architecture designed in the
@@ -36,6 +36,37 @@ tasks:
     - `AnthropicHttpBackend` and `OpenAiHttpBackend` unit tests pass (no live calls)
     - `CodexBackend::call` returns `LlmError::Setup` with an informative message
     - `--model` flag is gone from `atlas index --help`
+  results: |
+    All 11 plan tasks implemented. `cargo test --workspace` passes: 0 failed.
+
+    ## What was done
+
+    **atlas-llm crate — new modules:**
+    - `config.rs`: `AtlasConfig`, `ProviderConfig`, `OperationConfig`, `OperationsConfig`, `ConfigError`; `interpolate_env_vars`; `AtlasConfig::load` + validation; `resolve_operation`. 12 tests.
+    - `http_anthropic.rs`: `AnthropicHttpBackend` + `parse_anthropic_response`. 4 tests (no network).
+    - `http_openai.rs`: `OpenAiHttpBackend` + `parse_openai_response`. 4 tests (no network).
+    - `codex.rs`: `CodexBackend` stub returning `LlmError::Setup`. 2 tests.
+    - `router.rs`: `BackendRouter` dispatching by `PromptId` via `HashMap<PromptId, Arc<dyn LlmBackend>>`; composite fingerprint encoding all four operation models. 3 tests.
+
+    **atlas-llm crate — Cargo.toml:** Added `reqwest = { version = "0.12", features = ["blocking", "json"] }` to workspace and to `atlas-llm` deps.
+
+    **atlas-cli crate — modified:**
+    - `backend.rs`: `build_production_backend_with_counter` now takes `&AtlasConfig` instead of `model_id: String`; constructs `BackendRouter`; removed legacy `build_production_backend` shim.
+    - `main.rs`: Removed `--model` flag from `IndexArgs`; added `atlas init` subcommand loading `AtlasConfig` from `output_dir/config.yaml`.
+    - `init.rs` (new): `run_init_cmd` scaffolds `.atlas/config.yaml`, `components.overrides.yaml`, `subsystems.overrides.yaml` with heavy comments; skips existing files.
+    - `tests/init_cmd.rs` (new): 3 integration tests via `assert_cmd`.
+
+    **Backlog:** Added `research-codex-cli-subprocess-interface-for-codexbackend` research task.
+
+    ## What worked
+    - Plan structure was clear and self-contained — subagents followed it exactly.
+    - `pub(crate)` reuse of `extract_tokens`, `prompt_template_filename`, `validate_response`, `strip_json_fence` across HTTP backends worked cleanly.
+    - `ClaudeCodeBackend::new` calls `capture_claude_version()` at construction; router's `new` method handles this for claude-code provider; tests use `from_dispatch_table` to bypass it.
+
+    ## What's next
+    - `map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis` is now unblocked. It wires `AnthropicHttpBackend` as the default for `Classify` and `Subcarve` prompts and adds L8 map/reduce parallelism.
+    - The `CodexBackend` stub is ready to be replaced once the research task is complete.
+    - Integration test coverage for `atlas index` with a real `.atlas/config.yaml` (using a `claude-code` entry) would further harden Task 9.
 - id: map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis
   title: Map/reduce LLM architecture with backend routing for context-light analysis
   category: feature
@@ -358,3 +389,22 @@ tasks:
     - Decision made: HTTP or subprocess approach for `CodexBackend`.
     - `codex.rs` stub comment updated with the chosen path.
     - If a working implementation is straightforward, implement it; if complex, open a follow-up task.
+- id: research-codex-cli-subprocess-interface-for-codexbackend
+  title: Research Codex CLI subprocess interface for CodexBackend
+  category: research
+  status: not_started
+  dependencies: []
+  description: |
+    CodexBackend is currently a stub (returns LlmError::Setup). Before implementing
+    it, determine:
+
+    1. The Codex CLI binary name and invocation form equivalent to:
+       \`claude -p <prompt> --output-format stream-json --verbose --model <id>\`
+    2. The output stream format: same JSONL shape as claude stream-json, or different?
+    3. Whether stream_parse::parse_stream can be reused or a parallel
+       codex_stream_parse.rs is needed.
+    4. How the result payload is encoded (markdown-fenced JSON, bare JSON, or other).
+    5. How to capture version: \`codex --version\` or equivalent.
+
+    Deliverable: update codex.rs with a full implementation following the same
+    pattern as ClaudeCodeBackend.
