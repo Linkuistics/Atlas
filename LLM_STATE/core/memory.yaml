@@ -129,7 +129,9 @@ entries:
 - id: testbackend-requires-byte-identical-llmrequest-inputs-to-match-cache
   title: TestBackend requires byte-identical LlmRequest inputs to match cache
   body: |
-    TestBackend caches canned responses keyed by the full serialised LlmRequest. Any field difference (e.g., `max_depth: 8` in the canned input vs `max_depth: 4` in driver config) produces a cache miss and triggers an unexpected LLM call rather than returning the canned response. All TestBackend fixture inputs must be byte-identical to what the production driver builds.
+    TestBackend caches canned responses keyed by the full serialised LlmRequest. Any field difference produces a cache miss and triggers an unexpected LLM call. All TestBackend fixture inputs must be byte-identical to what the production driver builds.
+
+    Corollary: fixtures that pre-date a `build_llm_inputs` bug contain inputs matching the broken state, causing tests to pass while masking the bug. When fixing `build_llm_inputs`, audit all TestBackend fixture inputs and update them to match the corrected output.
 - id: seam-density-modularity-hint-uninformative-on-fixedpoint-iteration-0
   title: seam_density/modularity_hint uninformative on fixedpoint iteration 0
   body: |
@@ -161,9 +163,14 @@ entries:
   body: |
     `llm-cache.json` co-mingles per-prompt responses with fingerprint metadata in a single flat file. Not urgent — byte-identity on no-op re-runs works. A v2 refactor (one file per prompt type, or content-sha keying) would produce smaller diffs and cheaper cache invalidation on fingerprint-only changes. Surface if the file grows large or diffs are hard to review.
 - id: l5-l6-tests-include-template-token-coverage-check
-  title: L5/L6 tests include template-token coverage check
+  title: Prompt template token coverage tests required for all LLM layers
   body: |
-    L5/L6 prompt tests must collect all `{{TOKEN}}` placeholders from the rendered prompt and assert each maps to a key in `build_inputs`. This catches `TemplateSyntax` panics at test time rather than at the first real LLM call. Implementation: `collect_template_tokens` helper + `assert!(build_inputs.contains_key(token))` loop. Applied in `l5_surface.rs` and `l6_edges.rs`.
+    All LLM-adjacent prompts (L3, L5, L6, and any new layer) require template-token coverage tests: collect all `{{TOKEN}}` placeholders from the rendered prompt and assert each maps to a key in the `build_inputs` result. This catches `TemplateSyntax` panics at test time rather than at the first real LLM call.
+
+    L3: `classify_prompt_renders_with_build_llm_inputs` at `l3_classify.rs:571` — calls `prompt::render` against the real `classify.md` template with real `build_llm_inputs` output.
+    L5/L6: `collect_template_tokens` helper + assert loop in `l5_surface.rs` and `l6_edges.rs`.
+
+    Build-time generalisation to all four prompts is a pending backlog task (`prompt-template-token-coverage-check-build-time`).
 - id: prompt-drift-tests-against-ravel-lite-are-invalid
   title: Prompt drift tests against Ravel-Lite are invalid
   body: |
@@ -448,3 +455,15 @@ entries:
 
     1. `Stdio::null()` for stdin is required — without it, `codex` emits `"Reading additional input from stdin..."` which can hang CI.
     2. `codex` wraps every shell-out in `/bin/zsh -lc "..."`. The `command_execution` summary helper strips this wrapper so agent sub-lines show the inner command, not the zsh invocation.
+- id: l3-build-llm-inputs-must-inject-component-kinds-and-lifecycle-scopes
+  title: L3 build_llm_inputs must inject COMPONENT_KINDS and LIFECYCLE_SCOPES
+  body: |
+    `l3_classify.rs::build_llm_inputs` must inject `COMPONENT_KINDS` and `LIFECYCLE_SCOPES` using `render_kinds_for_prompt` / `render_lifecycle_scopes_for_prompt`. Missing both caused `prompt::render` to silently error; `classify_via_llm` swallowed it; every LLM-fallback candidate returned `is_boundary: false`. Fix at `l3_classify.rs:317`, matching the L5/L6 pattern. Cross-ref: `l5-l6-tests-include-template-token-coverage-check`.
+- id: l3-classify-is-go-for-per-candidate-http-backend-config-only-change
+  title: L3 classify is GO for per-candidate HTTP backend; config-only change
+  body: |
+    `build_llm_inputs` supplies only candidate-scoped context. Switching L3 from `claude-code` to `anthropic` backend is a one-line `.atlas/config.yaml` change. No prompt engineering needed for the per-candidate HTTP switch.
+- id: l8-redesign-uses-per-subdir-l3-classify-plus-deterministic-rust-reduce
+  title: L8 redesign uses per-subdir L3 Classify plus deterministic Rust reduce
+  body: |
+    Current L8 subcarve prompt mixes parent-scoped signals with per-candidate output. Redesign: run L3 `Classify` on each subdir independently, then reduce deterministically in Rust. Five action items documented in `docs/spikes/2026-05-02-l3-l8-prompt-shape-spike.md`. The map/reduce task description must absorb these items before implementation is scheduled.
