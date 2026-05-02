@@ -445,3 +445,14 @@ sessions:
     - **What this suggests next:**
       - Phase 4 (`subsystem-seeding-phase-4-end-to-end-fixtures`) is now unblocked — adds richer golden-style fixture tests including rename-stability and collision-halt scenarios.
       - Two low-priority follow-ups identified: (1) add a `category` discriminant to `ValidationIssue` so subsystem errors render under their own heading; (2) wrap the `load_or_default_subsystems_overrides` error path in `pipeline.rs` with `.with_context()` to include the path in the error message.
+- id: session-36
+  timestamp: 2026-05-02T09:26:26Z
+  phase: work
+  body: |
+    ### Session 36 (2026-05-02T09:26:26Z) — Design multi-provider LLM config architecture
+
+    - Attempted: L3 prototype via plain Anthropic HTTP backend (narrow spike to validate per-call speedup for map-style classification).
+    - What worked: Brainstorming pivoted the session productively — rather than implementing a one-off `--l3-backend` flag, the session produced a full multi-provider LLM config architecture that directly answers the spike question ("yes, plain HTTP works") while also laying the right foundation for the broader map-reduce epic.
+    - What didn't: No code was written; this was a design-only session. The implementation plan exists but no Rust was touched.
+    - What this suggests next: The `multi-provider-llm-config-implement-the-plan` task is queued and ready for execution. The 11-task plan includes subagent-parallelisable sections and should proceed with the `dispatching-parallel-agents` skill.
+    - Key learnings: Config-file-driven routing (`.atlas/config.yaml` with per-operation `<provider>/<model>` strings) is cleaner than CLI flags and makes the backend selection declarative; `${ENV_VAR}` interpolation at config-load time keeps secrets out of code; `BackendRouter` wraps inside the existing budget/sentinel/progress stack so no call-site changes are needed.

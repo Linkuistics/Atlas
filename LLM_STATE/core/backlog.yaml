@@ -2,7 +2,7 @@ tasks:
 - id: l3-prototype-map-style-classify-via-plain-anthropic-http-backend
   title: 'L3 prototype: map-style classify via plain Anthropic HTTP backend'
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: HIGH.** Direct path to unblocking large-monorepo analysis (currently a single L8 subcarve takes >15 min, agent-progress shows context-rotted exploratory reads). Validates the architectural shift in the companion epic before we commit to the full conversion.
@@ -62,6 +62,28 @@ tasks:
     - Benchmark numbers recorded in `evaluation/results/`.
     - Brief notes in `docs/superpowers/specs/<date>-l3-http-spike-findings.md` with the verdict and any prompt-quality observations.
     - The follow-on epic (`map-reduce-llm-architecture`) either gets the green light, or gets concrete pivot guidance based on what didn't work.
+  results: |
+    Pivoted from a narrow L3 HTTP spike to a full multi-provider LLM configuration
+    architecture during brainstorming. The spike question ("does plain HTTP work for
+    L3?") is answered by the design: yes, and the right vehicle is a config-file-
+    driven router rather than a one-off flag.
+
+    **What was produced:**
+
+    - Design spec: `docs/superpowers/specs/2026-05-02-multi-provider-llm-config-design.md`
+    - Implementation plan: `docs/superpowers/plans/2026-05-02-multi-provider-llm-config.md`
+
+    **Key decisions made:**
+    - `.atlas/config.yaml` is required (no in-code defaults); `atlas init <root>` scaffolds it
+    - Per-operation `<provider>/<model>` strings route to `AnthropicHttpBackend`,
+      `OpenAiHttpBackend`, `ClaudeCodeBackend`, or `CodexBackend`
+    - API keys declared in config via `${ENV_VAR}` interpolation, resolved at load time
+    - `CodexBackend` ships as a stub pending a Codex CLI research backlog task
+    - `--model` CLI flag and `ATLAS_LLM_MODEL` env var removed; config is sole source of truth
+    - `BackendRouter` implements `LlmBackend` and wraps inside the existing budget/sentinel/progress stack
+
+    **Follow-on:** new backlog task `multi-provider-llm-config-implementation` covers
+    the 11-task implementation plan with heavy subagent execution.
 - id: hand-author-second-golden-for-merged-monorepo
   title: Hand-author synthetic second golden for cross-target validation
   category: eval
@@ -352,3 +374,40 @@ tasks:
     - `README.md` has a "Pre-seeding subsystems" subsection under Usage.
     - The subsection includes a minimal worked YAML example.
     - Commit in Atlas.
+- id: multi-provider-llm-config-implement-the-plan
+  title: 'Multi-provider LLM config: implement the plan'
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    Implement the multi-provider LLM configuration architecture designed in the
+    previous work phase.
+
+    **Plan:** `docs/superpowers/plans/2026-05-02-multi-provider-llm-config.md`
+    **Spec:** `docs/superpowers/specs/2026-05-02-multi-provider-llm-config-design.md`
+
+    Use **subagent-driven development** (superpowers:subagent-driven-development
+    skill) — one fresh subagent per task, review between tasks.
+
+    ## 11 tasks in order
+
+    1. Add reqwest + serde_yaml to workspace and atlas-llm Cargo.toml
+    2. AtlasConfig types and serde (config.rs)
+    3. Env-var interpolation (`${VAR}` scanner in config.rs)
+    4. AtlasConfig::load + validation
+    5. AnthropicHttpBackend (http_anthropic.rs)
+    6. OpenAiHttpBackend (http_openai.rs)
+    7. CodexBackend stub (codex.rs)
+    8. BackendRouter (router.rs)
+    9. Wire BackendRouter into CLI; remove --model flag
+    10. atlas init subcommand + integration tests
+    11. Add Codex CLI research backlog task
+
+    ## Exit criteria
+
+    - `cargo test --workspace` passes
+    - `atlas init <root>` scaffolds the three .atlas/ files
+    - `atlas index <root>` loads `.atlas/config.yaml` and fails loudly if absent
+    - `AnthropicHttpBackend` and `OpenAiHttpBackend` unit tests pass (no live calls)
+    - `CodexBackend::call` returns `LlmError::Setup` with an informative message
+    - `--model` flag is gone from `atlas index --help`

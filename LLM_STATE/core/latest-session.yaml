@@ -1,19 +1,11 @@
-id: session-35
-timestamp: 2026-05-02T07:41:55Z
+id: session-36
+timestamp: 2026-05-02T09:26:26Z
 phase: work
 body: |
-  ### Session 35 (2026-05-02T07:41:55Z) — Wire subsystem seeding into Atlas CLI (Phase 3)
+  ### Session 36 (2026-05-02T09:26:26Z) — Design multi-provider LLM config architecture
 
-  - **Attempted:** Implement atlas-cli Phase 3 of subsystem seeding: extend `validate_overrides` with subsystem shape checks, update the `validate-overrides` subcommand to load `subsystems.overrides.yaml`, and wire subsystem loading/validation/output into the index pipeline.
-  - **What worked:**
-    - `validate.rs`: Added `validate_overrides_with_subsystems()` that runs component-overrides checks first then appends subsystem shape checks (duplicate ids, empty members). Three unit tests cover all three paths.
-    - `main.rs`: `validate-overrides` subcommand now derives the subsystems path from the parent directory of the overrides path argument and calls the new combined validator.
-    - `pipeline.rs`: Loads `subsystems.overrides.yaml`, installs on the Salsa `Workspace` via `set_subsystems_overrides`, runs shape validation as part of the unified `validate_overrides_with_subsystems` call, runs post-L4 namespace collision check (`check_subsystem_namespace`) and id-member resolution check (`check_subsystem_id_members`) before any writes, projects `subsystems.yaml` via `subsystems_yaml_snapshot`, and saves atomically. A `stable_generated_at_subsystems` helper mirrors the existing `stable_generated_at` pattern so no-op re-runs preserve the timestamp and the byte-identity contract is maintained.
-    - `pipeline_integration.rs`: Two new integration tests — one with a single-subsystem override confirming `subsystems.yaml` lands on disk with the expected id, and one with no override file confirming a default empty `subsystems.yaml` is still produced.
-    - `cargo check`, `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo fmt --check` all clean.
-    - The existing `second_run_on_unchanged_fixture_is_byte_identical` test passes, confirming no-op re-run byte-identity is preserved for the new `subsystems.yaml` output.
-  - **What didn't work / minor quirks:**
-    - `print_report` renders subsystem shape errors under the components-overrides path header using `pin_key` to label the subsystem id. The prefix reads `pins[<id>]` rather than `subsystems[<id>]`. The error message itself includes the id, so users can trace the issue, but it is mildly misleading cosmetically. The plan explicitly accepted this.
-  - **What this suggests next:**
-    - Phase 4 (`subsystem-seeding-phase-4-end-to-end-fixtures`) is now unblocked — adds richer golden-style fixture tests including rename-stability and collision-halt scenarios.
-    - Two low-priority follow-ups identified: (1) add a `category` discriminant to `ValidationIssue` so subsystem errors render under their own heading; (2) wrap the `load_or_default_subsystems_overrides` error path in `pipeline.rs` with `.with_context()` to include the path in the error message.
+  - Attempted: L3 prototype via plain Anthropic HTTP backend (narrow spike to validate per-call speedup for map-style classification).
+  - What worked: Brainstorming pivoted the session productively — rather than implementing a one-off `--l3-backend` flag, the session produced a full multi-provider LLM config architecture that directly answers the spike question ("yes, plain HTTP works") while also laying the right foundation for the broader map-reduce epic.
+  - What didn't: No code was written; this was a design-only session. The implementation plan exists but no Rust was touched.
+  - What this suggests next: The `multi-provider-llm-config-implement-the-plan` task is queued and ready for execution. The 11-task plan includes subagent-parallelisable sections and should proceed with the `dispatching-parallel-agents` skill.
+  - Key learnings: Config-file-driven routing (`.atlas/config.yaml` with per-operation `<provider>/<model>` strings) is cleaner than CLI flags and makes the backend selection declarative; `${ENV_VAR}` interpolation at config-load time keeps secrets out of code; `BackendRouter` wraps inside the existing budget/sentinel/progress stack so no call-site changes are needed.
