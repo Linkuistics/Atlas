@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex};
 
 use atlas_cli::progress::{make_stderr_reporter, ProgressMode};
 use atlas_cli::{run_index, IndexConfig, IndexError};
-use atlas_llm::{AtlasConfig, LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId, TokenCounter};
+use atlas_llm::{
+    AtlasConfig, LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId, TokenCounter,
+};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 

@@ -2,9 +2,22 @@ use serde_json::Value;
 
 use crate::{LlmBackend, LlmError, LlmFingerprint, LlmRequest};
 
-/// Stub backend for OpenAI's Codex CLI tool. Invocation interface
-/// and output format are pending the Codex CLI research backlog task.
-/// `call()` returns `LlmError::Setup` until the research is complete.
+/// Stub backend for OpenAI's Codex CLI tool.
+///
+/// **Status:** research complete; implementation pending.
+///
+/// **Approach:** subprocess driver, structurally parallel to
+/// [`crate::ClaudeCodeBackend`]. Per-call shape is
+/// `codex exec --json --skip-git-repo-check --ephemeral --sandbox read-only
+///  --output-schema <tmp> --model <id> -- <prompt>`; parse JSONL on stdout
+/// and pick the last `item.completed` event whose `item.type ==
+/// "agent_message"` for the final payload.
+///
+/// See `docs/superpowers/specs/2026-05-02-codex-backend-research.md` for the
+/// full findings, the rationale for subprocess-vs-HTTP-vs-`codex-core`, the
+/// JSONL event schema, and the implementation sketch.
+///
+/// `call()` returns [`LlmError::Setup`] until the implementation lands.
 pub struct CodexBackend {
     model_id: String,
 }

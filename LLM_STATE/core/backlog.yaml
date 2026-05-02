@@ -230,7 +230,7 @@ tasks:
 - id: subsystem-seeding-phase-5-readme-documentation
   title: 'Subsystem seeding Phase 5: README documentation'
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: LOW.** Final documentation task for the subsystem seeding feature. Depends on `subsystem-seeding-phase4-end-to-end-fixtures`.
@@ -253,10 +253,85 @@ tasks:
     - `README.md` has a "Pre-seeding subsystems" subsection under Usage.
     - The subsection includes a minimal worked YAML example.
     - Commit in Atlas.
+  results: |
+    Added a "Pre-seeding subsystems" subsection to `README.md` under the
+    existing `## Usage` section (line 131), placed after the `atlas index --help`
+    sentence and before `## Release Process`.
+
+    ## What was written
+
+    The subsection covers all five points from the task description:
+
+    1. **Purpose** — opens with "A *subsystem* is a named group of
+       components with hand-drawn boundaries", explains that Atlas reads
+       `subsystems.overrides.yaml` and emits `.atlas/subsystems.yaml`.
+    2. **YAML shape** — minimal `subsystems.overrides.yaml` example
+       (verbatim from the design spec / Task 13 plan template) with `id`,
+       `members`, `role`, `rationale`, `evidence_grade` and inline comments
+       distinguishing glob vs id forms.
+    3. **Membership form heuristic** — explicitly: contains `/` or `*` →
+       glob; otherwise id. Globs that match zero components produce a
+       warning; id forms that don't resolve are a hard error.
+    4. **Output** — one prose paragraph describing what appears in
+       `.atlas/subsystems.yaml` (one entry per subsystem with concrete
+       member ids and a `member_evidence` block recording how each was
+       matched). This is the bit Task 13's template did not include but
+       the task description (point 4) and the design-spec Documentation
+       section (point 4) both asked for.
+    5. **Collision detection** — note that subsystem ids share a namespace
+       with component ids and `atlas index` halts before saving on
+       collision.
+
+    Plus the design spec's required `atlas validate-overrides` pointer.
+
+    ## Implementation pre-flight
+
+    Before writing, verified the feature exists end-to-end:
+    - `crates/atlas-engine/src/l9_subsystems.rs` exposes
+      `subsystems_yaml_snapshot`, `check_subsystem_namespace`,
+      `check_subsystem_id_members`.
+    - `crates/atlas-engine/src/db.rs` has `Workspace.subsystems_overrides`
+      with the skip-if-equal setter pattern.
+    - `crates/atlas-cli/src/main.rs` `run_validate_overrides_cmd` loads
+      `subsystems.overrides.yaml` and calls
+      `validate_overrides_with_subsystems`.
+
+    So everything the README now points to is real and shipping.
+
+    ## Verification
+
+    - `grep -nE "^### Pre-seeding subsystems" README.md` → `131:### Pre-seeding subsystems` (Task 13, Step 2 verification).
+    - Heading hierarchy is consistent — sits at `###` under `## Usage`,
+      next sibling `## Release Process` is at the right level.
+    - No code changes, so no clippy / fmt impact.
+    - No new generated files, so no `.gitignore` updates needed.
+
+    ## Status of the broader feature
+
+    This was Task 13 of the Subsystem Seeding plan
+    (`docs/superpowers/plans/2026-05-01-subsystem-seeding.md`). With this
+    documentation task done, all the plan's exit criteria are satisfied:
+    schemas land in atlas-contracts, L9 emits subsystems via
+    `subsystems_yaml_snapshot`, pipeline saves atomically, tests pass,
+    `validate-overrides` covers the new file, README has the new
+    subsection. The feature is shipped.
+
+    ## What this suggests next
+
+    - The subsystem-seeding feature is closed; no immediate follow-on.
+    - The "Open follow-ups" section of the design spec lists future work
+      (L6 prompt extension to let LLM-proposed edges name subsystems,
+      auto-discovery from L7 SCC/clique signals, nested subsystems,
+      subsystem `kind` vocabulary). None of these are urgent — they were
+      explicitly deferred from v1.
+    - The next logical task in the backlog is the cross-target eval work
+      (`hand-author-second-golden-for-merged-monorepo`) which unblocks the
+      HIGH-priority `verify-atlas-v1-success-criteria-end-to-end` v1
+      sign-off.
 - id: research-codex-cli-interface-for-codexbackend-implementation
   title: Research Codex CLI interface for CodexBackend implementation
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     Research the Codex CLI tool to inform a proper `CodexBackend` implementation beyond the stub that ships as part of `multi-provider-llm-config-implement-the-plan`.
@@ -285,3 +360,294 @@ tasks:
     - Decision made: HTTP or subprocess approach for `CodexBackend`.
     - `codex.rs` stub comment updated with the chosen path.
     - If a working implementation is straightforward, implement it; if complex, open a follow-up task.
+  results: |
+    Research complete. Findings live in
+    `docs/superpowers/specs/2026-05-02-codex-backend-research.md`. Stub
+    comment in `crates/atlas-llm/src/codex.rs` updated to point at it.
+    Implementation deferred to a follow-up backlog task (added in this
+    phase).
+
+    ## Decision
+
+    **Subprocess approach** for `CodexBackend`, structurally parallel to
+    `ClaudeCodeBackend`. Per-call shape:
+
+        codex exec --json --skip-git-repo-check --ephemeral \
+          --sandbox read-only --output-schema <tmp> --model <id> \
+          -- <prompt>
+
+    Parse JSONL on stdout; pick the last `item.completed` event with
+    `item.type == "agent_message"` for the final payload.
+
+    ## Why subprocess (and not the alternatives)
+
+    - **HTTP via `OpenAiHttpBackend` (already exists):** rejected because
+      it duplicates the `openai/` provider already in the router; nothing
+      agentic to add.
+    - **`codex-core` library link:** rejected for v1. Pulls in ~70
+      transitive crates and couples Atlas's release cycle to OpenAI's
+      internal API stability. Re-evaluate only if subprocess spawn cost
+      becomes a measurable bottleneck.
+    - **Subprocess:** chosen. Mirrors `ClaudeCodeBackend` exactly. User
+      upgrades `codex` independently of Atlas. `--output-schema` gives
+      schema enforcement at the Codex layer — strictly cleaner than the
+      freeform JSON-fence stripping the Claude Code path does today.
+
+    ## Empirical confirmation
+
+    Codex CLI 0.125.0 is installed locally
+    (`/opt/homebrew/bin/codex`). Probed `codex exec --json` directly to
+    confirm the event schema:
+
+        {"type":"thread.started","thread_id":"..."}
+        {"type":"turn.started"}
+        {"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"ok"}}
+        {"type":"turn.completed","usage":{"input_tokens":N,"cached_input_tokens":N,"output_tokens":N,"reasoning_output_tokens":N}}
+
+    This makes the parser trivially specifiable for the implementation
+    task — no doc-vs-reality risk.
+
+    ## Files changed
+
+    - `docs/superpowers/specs/2026-05-02-codex-backend-research.md` —
+      full research doc with findings, three-way trade-off table, and
+      implementation sketch (~280 lines).
+    - `crates/atlas-llm/src/codex.rs` — stub doc comment now points at
+      the spec and summarises the chosen approach. Code behaviour
+      unchanged (still returns `LlmError::Setup`).
+    - `crates/atlas-cli/tests/pipeline_integration.rs` — pre-existing
+      rustfmt drift fixed per `feedback_fix_all_lints`.
+
+    ## Verification
+
+    - `cargo build -p atlas-llm` — clean.
+    - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+    - `cargo fmt --all -- --check` — clean (after fixing the unrelated
+      pipeline_integration.rs drift).
+    - `cargo test -p atlas-llm --lib` — 90 passed, 0 failed, 2 ignored.
+
+    ## Backlog mutations
+
+    Two new feature tasks added during this phase:
+
+    1. **`Implement CodexBackend subprocess driver`** — concrete
+       implementation following the spec. LOW priority. Picks up where
+       the research doc leaves off; reads the spec rather than re-doing
+       the discovery.
+    2. **`Add OpenRouter as an LLM provider`** — driven by the user's
+       in-flight request mid-task. MEDIUM priority. Includes a flagged
+       design issue: OpenRouter's model ids embed a `/`
+       (`openrouter/anthropic/claude-sonnet-4-6`), which collides with
+       the existing `model.split_once('/')` logic in `router.rs`. Whoever
+       picks this up will need to switch to `splitn(2, '/')` and verify
+       no other backend assumes single-`/` model strings.
+
+    ## What this suggests next
+
+    The CodexBackend implementation task is bounded and well-specified
+    but LOW priority. The OpenRouter task is more user-driven and
+    MEDIUM priority. The HIGH-priority sequence is still
+    `hand-author-second-golden-for-merged-monorepo` →
+    `verify-atlas-v1-success-criteria-end-to-end` for v1 sign-off; that
+    should drive the next several work phases unless the user redirects.
+- id: implement-codexbackend-subprocess-driver
+  title: Implement CodexBackend subprocess driver
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: LOW.** Concrete implementation of the `CodexBackend` LLM
+    backend in `crates/atlas-llm/src/codex.rs`, replacing the current stub
+    that returns `LlmError::Setup`.
+
+    ## Decision (already made)
+
+    Subprocess approach, structurally parallel to `ClaudeCodeBackend`. The
+    research, trade-offs (subprocess vs HTTP vs `codex-core` library), and
+    implementation sketch live in
+    `docs/superpowers/specs/2026-05-02-codex-backend-research.md`.
+    Read that document first; it captures the empirical JSONL event schema
+    from a real Codex CLI 0.125.0 install and the rationale for every flag
+    choice. Don't re-do the discovery work.
+
+    ## Scope
+
+    1. **Backend struct + constructor.** Replace the stub in
+       `crates/atlas-llm/src/codex.rs`. New shape carries `model_id`,
+       `prompts_dir`, `version`, `template_sha`, `ontology_sha`,
+       `Option<Arc<dyn AgentObserver>>` — mirror `ClaudeCodeBackend`
+       exactly. Add `with_fingerprint_inputs` and `with_observer` builders
+       parallel to the Claude Code backend's.
+
+    2. **Version capture.** A `capture_codex_version()` helper that runs
+       `codex --version`, trims, and surfaces a clear `LlmError::Setup`
+       if the binary is missing. Cache the string for the run.
+
+    3. **Auth precheck.** At construction, run `codex login status` and
+       refuse construction with a remediation hint
+       (`printenv OPENAI_API_KEY | codex login --with-api-key`) if not
+       logged in. Matches the user's mental model for `claude-code/`.
+
+    4. **Per-call invocation.** Spawn:
+
+           codex exec \
+             --json \
+             --skip-git-repo-check \
+             --ephemeral \
+             --sandbox read-only \
+             --output-schema <tmpfile> \
+             --model <id> \
+             -- <rendered-prompt>
+
+       Render `req.schema` into a tempfile per call (use `tempfile` crate,
+       already a transitive dep). Drop the tempfile when the call returns.
+
+    5. **Stream parsing.** Reuse the line-splitter in
+       `crates/atlas-llm/src/stream_parse.rs` to walk JSONL stdout. Filter
+       for `item.completed` events with `item.type == "agent_message"`;
+       the **last** one carries the final payload. Parse `item.text` as
+       JSON and pass through `validate_response` against `req.schema`
+       (defense in depth — the Codex layer should already have enforced
+       shape via `--output-schema`).
+
+    6. **Event mapping for `AgentObserver`.** Map Codex events to the
+       existing `AgentEvent` variants:
+       - `item.started` / `item.completed` with `item.type` in
+         `{command_execution, file_change, web_search, plan_update}` →
+         parallel to Claude Code's tool_use/tool_result.
+       - `agent_message` and `reasoning` → message-level events.
+       - `turn.failed` → an error event surfaced to the observer.
+       Add a `parse_codex_stream` function alongside `stream_parse.rs`'s
+       Claude-Code parser; share the line splitter where convenient.
+
+    7. **Error mapping.** Map `turn.failed` payloads into `LlmError`
+       variants (`Schema` for schema-mismatch failures, `Invocation` for
+       transport/model failures, `Parse` for malformed output).
+       Empirically capture a real failure during implementation; the exact
+       payload shape isn't documented today.
+
+    8. **Fingerprint.** `backend_version: format!("codex/{}", version)`.
+       Parallels `claude-code/...` and `openai-http/...`.
+
+    9. **Tests.**
+       - Unit tests in `codex.rs` against fixture JSONL (mirror
+         `parse_openai_response` test pattern).
+       - `#[ignore]` integration test against real `codex` binary, gated by
+         `ATLAS_LLM_RUN_CODEX_TESTS=1` (parallel to
+         `ATLAS_LLM_RUN_CLAUDE_TESTS=1`).
+       - Fingerprint test asserts the `codex/<version>` shape.
+
+    10. **Router wiring.** `crates/atlas-llm/src/router.rs` already
+        accepts `codex/` as a provider prefix and constructs the stub
+        today. Update that branch to call the real constructor (with
+        `prompts_dir`, `template_sha`, `ontology_sha`, `observer`
+        threaded through) and surface the auth-precheck error path.
+
+    ## Out of scope
+
+    - `codex mcp-server` integration (Codex-as-MCP-server). Noted in the
+      research doc as a future option.
+    - `codex-core` library link. Rejected for v1; revisit only if
+      subprocess spawn cost becomes a measurable bottleneck.
+    - Concurrency / map-reduce work — covered by
+      `map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis`.
+      The CodexBackend should be call-thread-safe (`Send + Sync`) but
+      doesn't need to introduce its own bounded concurrency.
+
+    ## Exit criteria
+
+    - `codex/<model-id>` selectable via `.atlas/config.yaml`, dispatched
+      by the router, runs end-to-end against a real Codex binary.
+    - All exit criteria of the research doc are satisfied.
+    - `cargo test -p atlas-llm` is green; the gated integration test
+      passes under `ATLAS_LLM_RUN_CODEX_TESTS=1`.
+    - Research doc's "Open questions" section is closed (each question
+      has a resolution recorded inline in the implementation or in a
+      follow-up note).
+- id: add-openrouter-as-an-llm-provider
+  title: Add OpenRouter as an LLM provider
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** Add OpenRouter (https://openrouter.ai) as a
+    selectable LLM provider in `.atlas/config.yaml`, parallel to
+    `anthropic/`, `openai/`, `claude-code/`, `codex/`.
+
+    ## Why
+
+    OpenRouter is a routing layer that exposes a single
+    OpenAI-Chat-Completions-compatible API across hundreds of models from
+    many providers (Anthropic, Google, Mistral, DeepSeek, Meta, etc.). One
+    account and one key gets users access to models Atlas otherwise
+    couldn't reach without provider-specific HTTP clients. Useful for cost
+    optimisation (route Classify to a cheap model) and model
+    experimentation without per-provider integration work.
+
+    ## Approach options (decide during implementation)
+
+    1. **Reuse `OpenAiHttpBackend` with a configurable base URL.** OpenRouter
+       speaks the OpenAI Chat Completions wire format verbatim. Adding a
+       `base_url: Option<String>` parameter to `OpenAiHttpBackend` and a new
+       `openrouter/` branch in `router.rs` that constructs it pointed at
+       `https://openrouter.ai/api/v1/chat/completions` is the smallest
+       diff. OpenRouter also accepts optional `HTTP-Referer` and
+       `X-Title` headers for app attribution — surface these as optional
+       `params` fields.
+
+    2. **Dedicated `OpenRouterHttpBackend`.** A separate struct that
+       composes `OpenAiHttpBackend` internally. Useful if OpenRouter-specific
+       features (provider preference routing, fallback chains, transforms)
+       need to surface as first-class config. Probably not needed for v1 —
+       OpenRouter's OpenAI-compatible mode covers everything Atlas does
+       today.
+
+    Recommendation (open to revision): start with option 1.
+
+    ## Scope
+
+    - `crates/atlas-llm/src/http_openai.rs` (or a sibling): make the base
+      URL configurable, defaulting to OpenAI's URL when unset.
+    - `crates/atlas-llm/src/router.rs`: add `"openrouter"` provider branch
+      that constructs the backend with the OpenRouter URL and reads
+      `providers.openrouter.api_key` from config.
+    - `.atlas/config.yaml` example / docs: show an OpenRouter config
+      example. Model strings would look like
+      `openrouter/anthropic/claude-sonnet-4-6` — note the second `/` is
+      part of OpenRouter's model id, not Atlas's provider/model split.
+      This means the existing `model.split_once('/')` logic in
+      `router.rs` needs adjustment to take only the *first* segment as
+      provider and pass the rest verbatim.
+    - Optional headers: `HTTP-Referer` and `X-Title` for OpenRouter's app
+      attribution. Surface as `providers.openrouter.referer` /
+      `providers.openrouter.app_title` config fields, defaulted off.
+    - Tests: parser-level tests for OpenRouter responses (likely identical
+      to OpenAI; verify with one fixture). Optionally an `#[ignore]`
+      integration test gated by `ATLAS_LLM_RUN_OPENROUTER_TESTS=1` and an
+      `OPENROUTER_API_KEY` env var.
+
+    ## Open design questions
+
+    - **Provider/model splitting.** Today `router.rs` uses
+      `model.split_once('/')`. With OpenRouter, `openrouter/anthropic/claude-sonnet-4-6`
+      needs `splitn(2, '/')` so the rest passes verbatim as the model id.
+      Verify no other backend assumes a single `/` in the model string.
+    - **Cost/budget tracking.** OpenRouter returns pricing in response
+      `usage` data. Atlas's budget sentinel may want to read this rather
+      than relying on per-provider token counts.
+    - **Caching fingerprint.** OpenRouter routes to backend providers
+      opaquely; the same model id can be served by different upstreams.
+      `LlmFingerprint::backend_version` should incorporate any provider
+      hint OpenRouter returns to keep the Salsa cache sound.
+
+    ## Exit criteria
+
+    - `openrouter/<model-id>` selectable via `.atlas/config.yaml`,
+      dispatched by the router, runs end-to-end against a real OpenRouter
+      account.
+    - Provider/model splitting handles OpenRouter's nested model ids
+      without breaking the existing `anthropic/`, `openai/`, `claude-code/`,
+      `codex/` paths.
+    - `cargo test -p atlas-llm` green; gated integration test passes
+      under `ATLAS_LLM_RUN_OPENROUTER_TESTS=1`.
+    - README's Usage section mentions OpenRouter as a supported provider.

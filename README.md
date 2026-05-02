@@ -128,6 +128,44 @@ Common flags:
 
 `atlas index --help` prints the full surface.
 
+### Pre-seeding subsystems
+
+A *subsystem* is a named group of components with hand-drawn boundaries.
+Atlas reads them from `subsystems.overrides.yaml` (alongside `.atlas/`) and
+emits the resolved boundaries into `.atlas/subsystems.yaml`.
+
+```yaml
+# subsystems.overrides.yaml
+schema_version: 1
+subsystems:
+  - id: auth
+    members:
+      - services/auth/*           # glob: contains '/' or '*'
+      - libs/identity             # glob
+      - identity-core             # id: no '/' and no '*'
+    role: identity-and-authorisation
+    rationale: "owns all session/token surfaces"
+    evidence_grade: strong
+```
+
+A `members` entry containing `/` or `*` is treated as a path glob and
+matched against component path segments; otherwise it is treated as a
+component id and looked up directly. Globs that match zero components
+produce a warning; id forms that don't resolve are a hard error.
+
+After `atlas index`, the resolved boundaries appear in `.atlas/subsystems.yaml`,
+one entry per subsystem with concrete member ids and a `member_evidence`
+block recording how each id was matched (glob pattern or direct id).
+
+Subsystem ids share a namespace with component ids — `atlas index` will
+halt before saving if a subsystem id collides with a component id.
+
+Validate without running the pipeline:
+
+```sh
+atlas validate-overrides
+```
+
 ## Release Process
 
 Atlas ships as Homebrew bottles built locally and uploaded to GitHub Releases. The flow
