@@ -29,7 +29,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use atlas_index::{ComponentsFile, ExternalsFile, OverridesFile, RelatedComponentsFile};
+use atlas_index::{
+    ComponentsFile, ExternalsFile, OverridesFile, RelatedComponentsFile, SubsystemsOverridesFile,
+};
 use atlas_llm::{LlmBackend, LlmFingerprint};
 use salsa::Setter;
 
@@ -69,6 +71,8 @@ pub struct Workspace {
     pub prior_related_components: Arc<RelatedComponentsFile>,
     #[returns(ref)]
     pub components_overrides: Arc<OverridesFile>,
+    #[returns(ref)]
+    pub subsystems_overrides: Arc<SubsystemsOverridesFile>,
     #[returns(ref)]
     pub llm_fingerprint: Arc<LlmFingerprint>,
     /// Fixedpoint back-edge: per-component sub-directories that L8 has
@@ -161,6 +165,7 @@ impl AtlasDatabase {
             Arc::new(ExternalsFile::default()),
             Arc::new(RelatedComponentsFile::default()),
             Arc::new(OverridesFile::default()),
+            Arc::new(SubsystemsOverridesFile::default()),
             Arc::new(fingerprint),
             Arc::new(BTreeMap::new()),
         );
@@ -271,6 +276,14 @@ impl AtlasDatabase {
         ws.set_components_overrides(self).to(Arc::new(value));
     }
 
+    pub fn set_subsystems_overrides(&mut self, value: SubsystemsOverridesFile) {
+        let ws = self.workspace();
+        if **ws.subsystems_overrides(self as &dyn salsa::Database) == value {
+            return;
+        }
+        ws.set_subsystems_overrides(self).to(Arc::new(value));
+    }
+
     pub fn set_llm_fingerprint(&mut self, value: LlmFingerprint) {
         let ws = self.workspace();
         if **ws.llm_fingerprint(self as &dyn salsa::Database) == value {
@@ -337,3 +350,35 @@ impl AtlasDatabase {
 
 #[salsa::db]
 impl salsa::Database for AtlasDatabase {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use atlas_index::SubsystemsOverridesFile;
+    use atlas_llm::TestBackend;
+
+    fn fingerprint() -> LlmFingerprint {
+        LlmFingerprint {
+            template_sha: [0u8; 32],
+            ontology_sha: [0u8; 32],
+            model_id: "test-backend".into(),
+            backend_version: "v0".into(),
+        }
+    }
+
+    #[test]
+    fn set_subsystems_overrides_skip_if_equal_preserves_arc_identity() {
+        let backend: Arc<dyn LlmBackend> = Arc::new(TestBackend::new());
+        let mut db = AtlasDatabase::new(backend, std::path::PathBuf::from("/tmp/x"), fingerprint());
+        let initial = SubsystemsOverridesFile::default();
+        db.set_subsystems_overrides(initial.clone());
+        let ws = db.workspace();
+        let arc1 = ws.subsystems_overrides(&db as &dyn salsa::Database).clone();
+        db.set_subsystems_overrides(initial);
+        let arc2 = ws.subsystems_overrides(&db as &dyn salsa::Database).clone();
+        assert!(
+            Arc::ptr_eq(&arc1, &arc2),
+            "skip-if-equal must keep the same Arc allocation"
+        );
+    }
+}

@@ -117,6 +117,7 @@ dependencies = [
  "atlas-index",
  "atlas-llm",
  "component-ontology",
+ "globset",
  "ignore",
  "petgraph",
  "salsa",

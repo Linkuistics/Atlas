@@ -27,6 +27,7 @@ pub mod l6_edges;
 pub mod l7_structural;
 pub mod l8_recurse;
 pub mod l9_projections;
+pub mod l9_subsystems;
 pub mod llm_cache;
 pub mod manifest_parse;
 pub mod manifest_patterns;
@@ -69,6 +70,9 @@ pub use l9_projections::{
     components_yaml_snapshot, components_yaml_snapshot_with_prompt_shas,
     external_components_yaml_snapshot, externals_from_manifests, known_component_ids,
     related_components_yaml_snapshot, sha256_hex, PROMPT_ID_STRINGS,
+};
+pub use l9_subsystems::{
+    check_subsystem_id_members, check_subsystem_namespace, subsystems_yaml_snapshot,
 };
 pub use llm_cache::{LlmCacheKey, LlmResponseCache};
 pub use manifest_patterns::is_manifest_file;

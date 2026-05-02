@@ -413,3 +413,16 @@ sessions:
     - **What didn't**: No failures — the task completed fully. The atlas-contracts repo changes are not committed in that repo; only Atlas LLM_STATE is being committed here.
     - **What to try next**: A brief release note or docs entry noting that natural-form `suppress: true` / `suppress_children: [...]` is now preferred. Cross-repo: commit atlas-contracts before any publish that flips the local path dep to a git+rev ref.
     - **Key learnings**: The user's exact failure case (`/Users/antony/Development/dull/.atlas/components.overrides.yaml` writing `suppress_children: [connector-lib/formats]`) was a real-user regression. The Visitor pattern is the correct escape hatch when serde's untagged enum disambiguation cannot be extended via derive alone.
+- id: session-34
+  timestamp: 2026-05-02T07:11:43Z
+  phase: work
+  body: |
+    ### Session 34 (2026-05-02T07:11:43Z) — subsystem engine integration and atlas-contracts PinValue commit
+
+    - Committed the atlas-contracts PinValue serde rewrite (`d5d0dac`) to `origin/main` of `Linkuistics/atlas-contracts`. The three expected files were dirty (`schema.rs`, `yaml_io.rs`, snapshot). 102 tests pass post-commit; clippy and fmt clean. No Atlas tree changes needed — the sibling-repo commit was the whole task.
+    - Implemented subsystem seeding Phase 2 in `crates/atlas-engine/`: added `globset` as a workspace dependency, extended the `Workspace` Salsa input with a `subsystems_overrides` field + skip-if-equal setter, created `l9_subsystems.rs` (~330 lines) with `subsystems_yaml_snapshot`, `resolve_subsystems`, `check_subsystem_namespace`, and `check_subsystem_id_members`, and re-exported the public surface from `lib.rs`.
+    - TDD ordering was preserved throughout: test written first (forced compile failure on missing field/setter), then implementation, then green. 12 new tests added (1 setter Arc-identity in `db.rs`, 11 unit tests in `l9_subsystems.rs`). Final count: 200 engine tests pass.
+    - Two deviations from the backlog description were intentional and correct: (a) `globset` promoted to workspace dep rather than crate-local (matches all other deps in the project); (b) inline `BTreeSet::intersection` used for collision detection rather than calling `validate_participant_namespace` from atlas-contracts (the plan's prescribed code uses the inline form).
+    - Phase 3 (Atlas CLI integration: load/save `subsystems.yaml`, extend `validate-overrides`, cross-namespace halt) is now unblocked.
+
+    ## Hand-offs (omit this section entirely when there are none)
