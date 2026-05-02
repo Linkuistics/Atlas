@@ -426,9 +426,9 @@ entries:
 
     `from_dispatch_table` is `#[cfg(test)]` inside `atlas-llm`. It cannot be called from `atlas-cli` integration tests without a cross-crate API change; current structure is sufficient for `atlas-llm` unit tests only.
 - id: codexbackend-is-a-stub-returning-llmerror-setup
-  title: CodexBackend is a stub; subprocess implementation spec complete
+  title: CodexBackend is a full subprocess driver; peer of ClaudeCodeBackend
   body: |
-    `CodexBackend` returns `LlmError::Setup` for all calls. Research complete; subprocess implementation spec at `docs/superpowers/specs/2026-05-02-codex-backend-research.md`. Backlog task `implement-codexbackend-subprocess-driver` carries the full implementation spec inline.
+    `CodexBackend` is fully implemented in `crates/atlas-llm/src/codex.rs` (no longer a stub). It mirrors `ClaudeCodeBackend`: subprocess spawn, stream-JSON parse via `codex_stream.rs`, fingerprint + observer wiring. Fixtures at `crates/atlas-llm/tests/fixtures/codex-stream/` (simple-classify, with-tools, turn-failed). HTTP-400 upstream errors map to `LlmError::Invocation`. 17 unit tests pass; live construction test against `codex-cli 0.125.0` verified.
 - id: atlas-init-scaffolds-config-files-skips-existing
   title: atlas init scaffolds config files; skips existing
   body: |
@@ -438,6 +438,13 @@ entries:
   body: |
     `SimpleBackend` in `crates/atlas-cli/tests/subsystems_integration.rs` is a lean duplicate of `LenientBackend` without override machinery. Use it for subsystem-focused CLI integration tests that do not need the lenient-backend logging infrastructure.
 - id: codexbackend-subprocess-uses-codex-exec-with-output-schema
-  title: CodexBackend subprocess uses codex exec with --output-schema
+  title: CodexBackend skips --output-schema; validate_response provides defense in depth
   body: |
-    `CodexBackend` uses `codex exec` as a subprocess (no HTTP server; `codex-core` crate not recommended for embedding). Version string prefix is `codex-cli` (e.g. `codex-cli 0.125.0`), not `codex`. `--output-schema <schema>` enforces JSON response shape at the Codex layer. `codex login status` is the auth-precheck command before any `exec` call.
+    `CodexBackend` deliberately omits `--output-schema` because Atlas's `ResponseSchema::accept_any()` schemas lack `additionalProperties: false` and have non-exhaustive `required` lists — both required by OpenAI strict mode. Existing `validate_response` provides defense in depth. Revisit when Atlas adopts strict response schemas as part of the map/reduce architecture shift. Decision documented in module-level doc comment in `codex.rs`.
+- id: codexbackend-uses-stdio-null-for-stdin-strips-bin-zsh-wrapper-from-command-execution
+  title: CodexBackend uses Stdio::null() for stdin; strips /bin/zsh wrapper from command_execution
+  body: |
+    Two non-obvious `CodexBackend` subprocess constraints:
+
+    1. `Stdio::null()` for stdin is required — without it, `codex` emits `"Reading additional input from stdin..."` which can hang CI.
+    2. `codex` wraps every shell-out in `/bin/zsh -lc "..."`. The `command_execution` summary helper strips this wrapper so agent sub-lines show the inner command, not the zsh invocation.
