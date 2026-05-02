@@ -31,8 +31,9 @@ use atlas_engine::{
 };
 use atlas_index::{
     load_or_default_components, load_or_default_externals, load_or_default_overrides,
-    load_or_default_related_components, save_components_atomic, save_externals_atomic,
-    save_related_components_atomic, ComponentsFile,
+    load_or_default_related_components, load_or_default_subsystems,
+    load_or_default_subsystems_overrides, save_components_atomic, save_externals_atomic,
+    save_related_components_atomic, save_subsystems_atomic, ComponentsFile, SubsystemsFile,
 };
 use atlas_llm::{LlmBackend, LlmFingerprint, TokenCounter};
 
@@ -130,6 +131,8 @@ pub fn run_index(
     let prior_externals_path = config.output_dir.join("external-components.yaml");
     let prior_related_path = config.output_dir.join("related-components.yaml");
     let overrides_path = config.output_dir.join("components.overrides.yaml");
+    let subsystems_overrides_path = config.output_dir.join("subsystems.overrides.yaml");
+    let subsystems_path = config.output_dir.join("subsystems.yaml");
 
     let prior_components =
         load_or_default_components(&prior_components_path).map_err(IndexError::Other)?;
@@ -138,7 +141,10 @@ pub fn run_index(
     let prior_related =
         load_or_default_related_components(&prior_related_path).map_err(IndexError::Other)?;
     let overrides = load_or_default_overrides(&overrides_path).map_err(IndexError::Other)?;
-    let validation = crate::validate::validate_overrides(&overrides);
+    let subsystems_overrides = load_or_default_subsystems_overrides(&subsystems_overrides_path)
+        .map_err(IndexError::Other)?;
+    let validation =
+        crate::validate::validate_overrides_with_subsystems(&overrides, &subsystems_overrides);
     if validation.has_any() {
         crate::validate::print_report(&validation, &overrides_path, &mut std::io::stderr().lock());
     }
@@ -179,6 +185,7 @@ pub fn run_index(
     db.set_prior_externals(prior_externals);
     db.set_prior_related_components(prior_related);
     db.set_components_overrides(overrides);
+    db.set_subsystems_overrides(subsystems_overrides.clone());
 
     // ---- fixedpoint -----------------------------------------------
     reporter.on_event(ProgressEvent::Phase(Phase::Fixedpoint));
@@ -211,6 +218,27 @@ pub fn run_index(
         .filter(|c| !c.deleted)
         .cloned()
         .collect();
+
+    // Post-L4 subsystem validation: cross-namespace collision and
+    // id-form-member resolution. Both must be checked against the
+    // resolved component tree, so they run after `all_components` is
+    // available. Hard error on either; halt before any writes.
+    if let Err(collisions) =
+        atlas_engine::check_subsystem_namespace(&subsystems_overrides.subsystems, &live_components)
+    {
+        return Err(IndexError::Other(anyhow::anyhow!(
+            "subsystem id(s) {:?} collide with component ids; rename the subsystem(s)",
+            collisions
+        )));
+    }
+    if let Err(bad) =
+        atlas_engine::check_subsystem_id_members(&subsystems_overrides.subsystems, &live_components)
+    {
+        return Err(IndexError::Other(anyhow::anyhow!(
+            "id-form member(s) {:?} do not resolve to any component (use a glob if the path is forward-looking)",
+            bad
+        )));
+    }
     let n = live_components.len() as u64;
     for (i, comp) in live_components.iter().enumerate() {
         reporter.on_event(ProgressEvent::Surface {
@@ -227,6 +255,7 @@ pub fn run_index(
     let externals_file = (*external_components_yaml_snapshot(&db)).clone();
     reporter.on_event(ProgressEvent::Phase(Phase::Edges));
     let related_file = (*related_components_yaml_snapshot(&db)).clone();
+    let mut subsystems_file = (*atlas_engine::subsystems_yaml_snapshot(&db)).clone();
 
     // Preserve generated_at for byte-identity on no-op re-runs: if
     // every other field of the new components file equals the prior
@@ -235,6 +264,13 @@ pub fn run_index(
         prior_components_path.as_path(),
         &prior_components,
         &components_file,
+        SystemTime::now(),
+    );
+    let prior_subsystems = load_or_default_subsystems(&subsystems_path).unwrap_or_default();
+    subsystems_file.generated_at = stable_generated_at_subsystems(
+        subsystems_path.as_path(),
+        &prior_subsystems,
+        &subsystems_file,
         SystemTime::now(),
     );
 
@@ -263,6 +299,7 @@ pub fn run_index(
         save_externals_atomic(&prior_externals_path, &externals_file).map_err(IndexError::Other)?;
         save_related_components_atomic(&prior_related_path, &related_file)
             .map_err(IndexError::Other)?;
+        save_subsystems_atomic(&subsystems_path, &subsystems_file).map_err(IndexError::Other)?;
 
         // Persist the LLM response cache. A failed save is not fatal —
         // the outputs are already committed; we just lose the cache hit
@@ -295,6 +332,29 @@ fn stable_generated_at(
     prior_path: &Path,
     prior: &ComponentsFile,
     fresh: &ComponentsFile,
+    now: SystemTime,
+) -> String {
+    if !prior_path.exists() {
+        return format_utc_rfc3339(now);
+    }
+    let mut prior_canonical = prior.clone();
+    let mut fresh_canonical = fresh.clone();
+    prior_canonical.generated_at = String::new();
+    fresh_canonical.generated_at = String::new();
+    if prior_canonical == fresh_canonical && !prior.generated_at.is_empty() {
+        prior.generated_at.clone()
+    } else {
+        format_utc_rfc3339(now)
+    }
+}
+
+/// Mirror of [`stable_generated_at`] for `subsystems.yaml`. Reuses the
+/// prior timestamp when the new snapshot equals what's on disk modulo
+/// `generated_at`; otherwise stamps `now`.
+fn stable_generated_at_subsystems(
+    prior_path: &Path,
+    prior: &SubsystemsFile,
+    fresh: &SubsystemsFile,
     now: SystemTime,
 ) -> String {
     if !prior_path.exists() {

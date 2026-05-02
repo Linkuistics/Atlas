@@ -130,7 +130,14 @@ fn run() -> Result<ExitCode> {
 fn run_validate_overrides_cmd(args: ValidateOverridesArgs) -> Result<ExitCode> {
     let overrides = atlas_index::load_or_default_overrides(&args.path)
         .with_context(|| format!("failed to load {}", args.path.display()))?;
-    let report = atlas_cli::validate::validate_overrides(&overrides);
+    let subsystems_path = args
+        .path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("subsystems.overrides.yaml");
+    let subsystems = atlas_index::load_or_default_subsystems_overrides(&subsystems_path)
+        .with_context(|| format!("failed to load {}", subsystems_path.display()))?;
+    let report = atlas_cli::validate::validate_overrides_with_subsystems(&overrides, &subsystems);
     let mut stdout = std::io::stdout().lock();
     atlas_cli::validate::print_report(&report, &args.path, &mut stdout);
     if report.has_errors() {

@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::Path;
 
 use atlas_engine::ComponentKind;
-use atlas_index::{OverridesFile, PinValue};
+use atlas_index::{OverridesFile, PinValue, SubsystemsOverridesFile};
 
 /// Recognised pin field names. Any other field in a pin entry is
 /// silently ignored by the engine, so an unrecognised field is almost
@@ -127,6 +127,41 @@ pub fn validate_overrides(overrides: &OverridesFile) -> ValidationReport {
         }
     }
 
+    report
+}
+
+/// Like [`validate_overrides`] but also checks `SubsystemsOverridesFile`
+/// for shape-level errors (duplicate ids, empty members). Cross-namespace
+/// collision and id-resolution checks happen post-L4 in the engine.
+pub fn validate_overrides_with_subsystems(
+    overrides: &OverridesFile,
+    subsystems: &SubsystemsOverridesFile,
+) -> ValidationReport {
+    let mut report = validate_overrides(overrides);
+    let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for sub in &subsystems.subsystems {
+        if !seen.insert(sub.id.as_str()) {
+            report.issues.push(ValidationIssue {
+                severity: Severity::Error,
+                pin_key: Some(sub.id.clone()),
+                field: None,
+                message: format!("duplicate subsystem id '{}'", sub.id),
+                suggestion: None,
+            });
+        }
+        if sub.members.is_empty() {
+            report.issues.push(ValidationIssue {
+                severity: Severity::Error,
+                pin_key: Some(sub.id.clone()),
+                field: Some("members".into()),
+                message: format!(
+                    "subsystem '{}' has empty members; remove the entry or add at least one glob/id",
+                    sub.id
+                ),
+                suggestion: None,
+            });
+        }
+    }
     report
 }
 
@@ -294,5 +329,71 @@ mod tests {
         let report = validate_overrides(&overrides);
         // `language` is free-form; no error.
         assert!(!report.has_errors());
+    }
+
+    use atlas_index::{SubsystemOverride, SubsystemsOverridesFile};
+
+    fn subsystem_override(id: &str, members: Vec<String>) -> SubsystemOverride {
+        SubsystemOverride {
+            id: id.into(),
+            members,
+            role: None,
+            lifecycle_roles: vec![],
+            rationale: "x".into(),
+            evidence_grade: EvidenceGrade::Strong,
+            evidence_fields: vec![],
+        }
+    }
+
+    #[test]
+    fn validate_subsystems_flags_duplicate_ids() {
+        let overrides = OverridesFile::default();
+        let subs = SubsystemsOverridesFile {
+            schema_version: 1,
+            subsystems: vec![
+                subsystem_override("auth", vec!["x".into()]),
+                subsystem_override("auth", vec!["y".into()]),
+            ],
+        };
+        let report = validate_overrides_with_subsystems(&overrides, &subs);
+        assert!(
+            report
+                .errors()
+                .any(|i| i.message.contains("duplicate subsystem id 'auth'")),
+            "expected duplicate-id error, got: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn validate_subsystems_flags_empty_members() {
+        let overrides = OverridesFile::default();
+        let subs = SubsystemsOverridesFile {
+            schema_version: 1,
+            subsystems: vec![subsystem_override("auth", vec![])],
+        };
+        let report = validate_overrides_with_subsystems(&overrides, &subs);
+        assert!(
+            report
+                .errors()
+                .any(|i| i.message.contains("subsystem 'auth' has empty members")),
+            "expected empty-members error, got: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn validate_subsystems_passes_well_formed_input() {
+        let overrides = OverridesFile::default();
+        let subs = SubsystemsOverridesFile {
+            schema_version: 1,
+            subsystems: vec![subsystem_override("auth", vec!["services/auth/*".into()])],
+        };
+        let report = validate_overrides_with_subsystems(&overrides, &subs);
+        assert!(
+            !report.has_errors(),
+            "expected no errors, got: {:?}",
+            report.issues
+        );
     }
 }

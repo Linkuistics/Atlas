@@ -436,3 +436,76 @@ fn llm_cache_json_is_written_and_read_across_invocations() {
     .unwrap();
     assert_eq!(backend2.call_count(), 0);
 }
+
+// ---------------------------------------------------------------
+// subsystems pipeline integration
+// ---------------------------------------------------------------
+
+#[test]
+fn pipeline_emits_subsystems_yaml_when_overrides_present() {
+    use atlas_index::{
+        load_or_default_subsystems, save_subsystems_overrides_atomic, SubsystemOverride,
+        SubsystemsOverridesFile, SUBSYSTEMS_OVERRIDES_SCHEMA_VERSION,
+    };
+
+    let tmp = materialise_tiny_fixture();
+    let config = base_config(tmp.path());
+
+    std::fs::create_dir_all(&config.output_dir).unwrap();
+    let subs_path = config.output_dir.join("subsystems.overrides.yaml");
+    let subs = SubsystemsOverridesFile {
+        schema_version: SUBSYSTEMS_OVERRIDES_SCHEMA_VERSION,
+        subsystems: vec![SubsystemOverride {
+            id: "fixture-subsystem".into(),
+            members: vec!["*".into()],
+            role: None,
+            lifecycle_roles: vec![],
+            rationale: "test".into(),
+            evidence_grade: component_ontology::EvidenceGrade::Strong,
+            evidence_fields: vec![],
+        }],
+    };
+    save_subsystems_overrides_atomic(&subs_path, &subs).unwrap();
+
+    run_index(
+        &config,
+        LenientBackend::new(),
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
+
+    let out_path = config.output_dir.join("subsystems.yaml");
+    assert!(
+        out_path.exists(),
+        "expected subsystems.yaml at {}",
+        out_path.display()
+    );
+    let loaded = load_or_default_subsystems(&out_path).unwrap();
+    assert_eq!(loaded.subsystems.len(), 1);
+    assert_eq!(loaded.subsystems[0].id, "fixture-subsystem");
+}
+
+#[test]
+fn pipeline_emits_empty_subsystems_yaml_when_no_overrides() {
+    use atlas_index::load_or_default_subsystems;
+
+    let tmp = materialise_tiny_fixture();
+    let config = base_config(tmp.path());
+
+    run_index(
+        &config,
+        LenientBackend::new(),
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
+
+    let out_path = config.output_dir.join("subsystems.yaml");
+    assert!(
+        out_path.exists(),
+        "expected empty subsystems.yaml even without overrides"
+    );
+    let loaded = load_or_default_subsystems(&out_path).unwrap();
+    assert!(loaded.subsystems.is_empty());
+}

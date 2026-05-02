@@ -1,13 +1,19 @@
-id: session-34
-timestamp: 2026-05-02T07:11:43Z
+id: session-35
+timestamp: 2026-05-02T07:41:55Z
 phase: work
 body: |
-  ### Session 34 (2026-05-02T07:11:43Z) — subsystem engine integration and atlas-contracts PinValue commit
+  ### Session 35 (2026-05-02T07:41:55Z) — Wire subsystem seeding into Atlas CLI (Phase 3)
 
-  - Committed the atlas-contracts PinValue serde rewrite (`d5d0dac`) to `origin/main` of `Linkuistics/atlas-contracts`. The three expected files were dirty (`schema.rs`, `yaml_io.rs`, snapshot). 102 tests pass post-commit; clippy and fmt clean. No Atlas tree changes needed — the sibling-repo commit was the whole task.
-  - Implemented subsystem seeding Phase 2 in `crates/atlas-engine/`: added `globset` as a workspace dependency, extended the `Workspace` Salsa input with a `subsystems_overrides` field + skip-if-equal setter, created `l9_subsystems.rs` (~330 lines) with `subsystems_yaml_snapshot`, `resolve_subsystems`, `check_subsystem_namespace`, and `check_subsystem_id_members`, and re-exported the public surface from `lib.rs`.
-  - TDD ordering was preserved throughout: test written first (forced compile failure on missing field/setter), then implementation, then green. 12 new tests added (1 setter Arc-identity in `db.rs`, 11 unit tests in `l9_subsystems.rs`). Final count: 200 engine tests pass.
-  - Two deviations from the backlog description were intentional and correct: (a) `globset` promoted to workspace dep rather than crate-local (matches all other deps in the project); (b) inline `BTreeSet::intersection` used for collision detection rather than calling `validate_participant_namespace` from atlas-contracts (the plan's prescribed code uses the inline form).
-  - Phase 3 (Atlas CLI integration: load/save `subsystems.yaml`, extend `validate-overrides`, cross-namespace halt) is now unblocked.
-
-  ## Hand-offs (omit this section entirely when there are none)
+  - **Attempted:** Implement atlas-cli Phase 3 of subsystem seeding: extend `validate_overrides` with subsystem shape checks, update the `validate-overrides` subcommand to load `subsystems.overrides.yaml`, and wire subsystem loading/validation/output into the index pipeline.
+  - **What worked:**
+    - `validate.rs`: Added `validate_overrides_with_subsystems()` that runs component-overrides checks first then appends subsystem shape checks (duplicate ids, empty members). Three unit tests cover all three paths.
+    - `main.rs`: `validate-overrides` subcommand now derives the subsystems path from the parent directory of the overrides path argument and calls the new combined validator.
+    - `pipeline.rs`: Loads `subsystems.overrides.yaml`, installs on the Salsa `Workspace` via `set_subsystems_overrides`, runs shape validation as part of the unified `validate_overrides_with_subsystems` call, runs post-L4 namespace collision check (`check_subsystem_namespace`) and id-member resolution check (`check_subsystem_id_members`) before any writes, projects `subsystems.yaml` via `subsystems_yaml_snapshot`, and saves atomically. A `stable_generated_at_subsystems` helper mirrors the existing `stable_generated_at` pattern so no-op re-runs preserve the timestamp and the byte-identity contract is maintained.
+    - `pipeline_integration.rs`: Two new integration tests — one with a single-subsystem override confirming `subsystems.yaml` lands on disk with the expected id, and one with no override file confirming a default empty `subsystems.yaml` is still produced.
+    - `cargo check`, `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, and `cargo fmt --check` all clean.
+    - The existing `second_run_on_unchanged_fixture_is_byte_identical` test passes, confirming no-op re-run byte-identity is preserved for the new `subsystems.yaml` output.
+  - **What didn't work / minor quirks:**
+    - `print_report` renders subsystem shape errors under the components-overrides path header using `pin_key` to label the subsystem id. The prefix reads `pins[<id>]` rather than `subsystems[<id>]`. The error message itself includes the id, so users can trace the issue, but it is mildly misleading cosmetically. The plan explicitly accepted this.
+  - **What this suggests next:**
+    - Phase 4 (`subsystem-seeding-phase-4-end-to-end-fixtures`) is now unblocked — adds richer golden-style fixture tests including rename-stability and collision-halt scenarios.
+    - Two low-priority follow-ups identified: (1) add a `category` discriminant to `ValidationIssue` so subsystem errors render under their own heading; (2) wrap the `load_or_default_subsystems_overrides` error path in `pipeline.rs` with `.with_context()` to include the path in the error message.

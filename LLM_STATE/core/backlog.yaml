@@ -65,7 +65,7 @@ tasks:
 - id: subsystem-seeding-phase-3-atlas-cli-integration
   title: 'Subsystem seeding Phase 3: Atlas CLI integration'
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: MEDIUM.** Third implementation phase for the subsystem seeding feature. Depends on `subsystem-seeding-phase2-atlas-engine-integration`.
@@ -96,6 +96,50 @@ tasks:
     - `atlas validate-overrides` accepts a `subsystems.overrides.yaml` and reports errors/warnings correctly.
     - `atlas index` produces `subsystems.yaml` alongside `components.yaml`.
     - Commit in Atlas covering all three tasks.
+  results: |
+    ## What was done
+
+    Wired subsystem-seeding into the Atlas CLI per `docs/superpowers/plans/2026-05-01-subsystem-seeding.md` Phase 3 (plan tasks 8–9; backlog "Tasks 9–11"). All four files touched are in `crates/atlas-cli`:
+
+    - **`src/validate.rs`** — added `validate_overrides_with_subsystems(overrides, subsystems)`. Shape-level checks: duplicate subsystem ids and empty `members` lists are both `Severity::Error`. Reuses the existing `ValidationReport` machinery so callers see one merged report. Three unit tests cover duplicate-id, empty-members, and well-formed input.
+    - **`src/main.rs`** — `validate-overrides` subcommand now also loads `<dir>/subsystems.overrides.yaml` (where `<dir>` is `args.path.parent()`) and passes both files through `validate_overrides_with_subsystems`. The directory fallback is `.` if `args.path` has no parent.
+    - **`src/pipeline.rs`** — load `subsystems.overrides.yaml`, install on the Salsa workspace via `set_subsystems_overrides`, run shape validation alongside components-overrides validation, run post-L4 namespace + id-member checks (`atlas_engine::check_subsystem_namespace`, `check_subsystem_id_members`) before any output writes, project `subsystems.yaml` via `atlas_engine::subsystems_yaml_snapshot`, stamp `generated_at` via a new `stable_generated_at_subsystems` helper that mirrors the existing `stable_generated_at` for components, and atomically save the result.
+    - **`tests/pipeline_integration.rs`** — two new integration tests:
+      - `pipeline_emits_subsystems_yaml_when_overrides_present` — authors a single-subsystem override, runs the pipeline, asserts `subsystems.yaml` lands on disk and round-trips with the expected id.
+      - `pipeline_emits_empty_subsystems_yaml_when_no_overrides` — no override file, pipeline still produces a default-shaped `subsystems.yaml` with empty `subsystems`.
+
+    The plan referred to a fixture helper named `setup_pipeline_fixture`; the actual helper in this file is `materialise_tiny_fixture()` + `base_config(path)`. Both new tests use the existing pattern, which the plan explicitly permits.
+
+    ## What worked
+
+    - `cargo check -p atlas-cli` clean.
+    - `cargo test -p atlas-cli` — 3 lib tests + 10 pipeline_integration tests + the rest, all green (no regressions).
+    - `cargo test --workspace` — all green across atlas-cli, atlas-engine, atlas-llm, atlas-eval, plus the contracts crates.
+    - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+    - `cargo fmt --check` — clean (one fmt pass applied during the work).
+    - Critical regression check: the existing `second_run_on_unchanged_fixture_is_byte_identical` test still passes, proving the new `subsystems.yaml` write does not break the no-op-re-run byte-identity contract — `stable_generated_at_subsystems` reuses the prior timestamp when content is unchanged, the same recipe `components.yaml` already uses.
+    - Smoke test of the binary against `/tmp/atlas-smoke`: a malformed `subsystems.overrides.yaml` (duplicate id, empty members) produces both errors and exit 1; a clean override produces `ok` and exit 0.
+
+    ## What didn't
+
+    - One cosmetic quirk: `print_report` renders subsystem errors under the components-overrides path header and uses `pin_key` to surface the subsystem id, so the location prefix reads `pins[dup-id]` rather than something like `subsystems[dup-id]`. The error message itself includes the subsystem id, so users can trace the issue, but the rendering is mildly misleading. The plan explicitly accepted this ("the report itself carries enough context").
+
+    ## What this suggests next
+
+    - **Phase 4 (`subsystem-seeding-phase-4-end-to-end-fixtures`) is now unblocked.** That phase adds a real golden-style fixture that exercises an actual subsystems override end-to-end — a richer scenario than the synthetic single-subsystem tests added here.
+    - **Phase 5 (`subsystem-seeding-phase-5-readme-documentation`) is reachable once Phase 4 lands.**
+    - Two follow-ups worth surfacing in triage:
+      1. **`ValidationIssue` rendering for subsystem errors** — add a `category: Pin | Subsystem` field (or pass the issue origin into `print_report`) so subsystem errors render under their own heading. Low-priority polish.
+      2. **`load_or_default_subsystems_overrides` error path in `pipeline.rs`** — currently maps any IO/parse error to `IndexError::Other(anyhow)` with no subsystem-specific context. If a user authors a malformed file, the error is "failed to parse YAML" without the path. Could be wrapped with `.with_context()` like `load_or_default_overrides` calls in some other code paths. Trivial follow-up.
+
+    ## Files modified
+
+    - `crates/atlas-cli/src/main.rs`
+    - `crates/atlas-cli/src/pipeline.rs`
+    - `crates/atlas-cli/src/validate.rs`
+    - `crates/atlas-cli/tests/pipeline_integration.rs`
+
+    No new files; no `.gitignore` change needed (`.atlas/` already covers the new `subsystems.yaml` and `subsystems.overrides.yaml`).
 - id: hand-author-second-golden-for-merged-monorepo
   title: Hand-author synthetic second golden for cross-target validation
   category: eval
