@@ -478,3 +478,17 @@ sessions:
 
     - Next: `map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis` is now unblocked. Wire `AnthropicHttpBackend` as default for `Classify` and `Subcarve` prompts, add L8 map/reduce parallelism.
     - `CodexBackend` stub ready to be replaced once the research task completes.
+- id: session-38
+  timestamp: 2026-05-02T11:17:52Z
+  phase: work
+  body: |
+    ### Session 38 (2026-05-02T11:17:52Z) — Add end-to-end fixture tests for subsystem seeding
+
+    - Added three tests to `pipeline_integration.rs`: glob+id membership resolution, byte-identical no-op re-run, and collision halt with component id.
+    - Created new `crates/atlas-cli/tests/subsystems_integration.rs` with two tests: rename-stability (glob re-matches after directory rename) and collision halt.
+    - Minor `cargo fmt` reformatting of import line in `backend.rs` and expression reformatting in `router.rs` (no logic changes).
+    - All 15 new tests pass alongside the full existing test suite; clippy and fmt clean.
+
+    What worked: the `SimpleBackend` fixture in `subsystems_integration.rs` (lean duplicate of `LenientBackend` without override machinery) was sufficient for subsystem-focused tests without pulling in the full lenient-backend logging infrastructure. The rename-stability test exercises the glob path-based re-matching directly and confirmed the feature works correctly.
+
+    What's next: `subsystem-seeding-phase-5-readme-documentation` is now unblocked (depends on Phase 4).

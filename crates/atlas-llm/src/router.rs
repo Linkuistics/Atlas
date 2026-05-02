@@ -82,9 +82,7 @@ impl BackendRouter {
                     Arc::new(b)
                 }
                 "codex" => Arc::new(crate::CodexBackend::new(model_id)),
-                other => {
-                    return Err(LlmError::Setup(format!("unknown provider `{other}`")))
-                }
+                other => return Err(LlmError::Setup(format!("unknown provider `{other}`"))),
             };
 
             let fp = backend.fingerprint();
@@ -163,8 +161,7 @@ mod tests {
         table.insert(PromptId::Stage1Surface, other_backend.clone());
         table.insert(PromptId::Stage2Edges, other_backend);
 
-        let router =
-            BackendRouter::from_dispatch_table(table, make_fingerprint("test-composite"));
+        let router = BackendRouter::from_dispatch_table(table, make_fingerprint("test-composite"));
 
         let req = LlmRequest {
             prompt_template: PromptId::Classify,
@@ -177,10 +174,7 @@ mod tests {
 
     #[test]
     fn missing_table_entry_is_setup_error() {
-        let router = BackendRouter::from_dispatch_table(
-            HashMap::new(),
-            make_fingerprint("empty"),
-        );
+        let router = BackendRouter::from_dispatch_table(HashMap::new(), make_fingerprint("empty"));
         let req = LlmRequest {
             prompt_template: PromptId::Classify,
             inputs: json!({}),
@@ -192,10 +186,8 @@ mod tests {
 
     #[test]
     fn fingerprint_returns_composite() {
-        let router = BackendRouter::from_dispatch_table(
-            HashMap::new(),
-            make_fingerprint("composite-fp"),
-        );
+        let router =
+            BackendRouter::from_dispatch_table(HashMap::new(), make_fingerprint("composite-fp"));
         assert_eq!(router.fingerprint().model_id, "composite-fp");
     }
 }

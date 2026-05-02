@@ -509,3 +509,167 @@ fn pipeline_emits_empty_subsystems_yaml_when_no_overrides() {
     let loaded = load_or_default_subsystems(&out_path).unwrap();
     assert!(loaded.subsystems.is_empty());
 }
+
+#[test]
+fn subsystems_glob_and_id_membership_both_resolve() {
+    use atlas_index::{
+        load_or_default_subsystems, save_subsystems_overrides_atomic, SubsystemOverride,
+        SubsystemsOverridesFile, SUBSYSTEMS_OVERRIDES_SCHEMA_VERSION,
+    };
+
+    // The tiny fixture produces components "mylib" and "mycli".
+    // Use an id-form member ("mylib") and a glob member ("m*") in the
+    // same subsystem to verify both resolution paths fire.
+    let tmp = materialise_tiny_fixture();
+    let config = base_config(tmp.path());
+
+    std::fs::create_dir_all(&config.output_dir).unwrap();
+    save_subsystems_overrides_atomic(
+        &config.output_dir.join("subsystems.overrides.yaml"),
+        &SubsystemsOverridesFile {
+            schema_version: SUBSYSTEMS_OVERRIDES_SCHEMA_VERSION,
+            subsystems: vec![SubsystemOverride {
+                id: "my-services".into(),
+                members: vec!["mylib".into(), "m*".into()],
+                role: None,
+                lifecycle_roles: vec![],
+                rationale: "test".into(),
+                evidence_grade: component_ontology::EvidenceGrade::Strong,
+                evidence_fields: vec![],
+            }],
+        },
+    )
+    .unwrap();
+
+    run_index(
+        &config,
+        LenientBackend::new(),
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
+
+    let out = load_or_default_subsystems(&config.output_dir.join("subsystems.yaml")).unwrap();
+    assert_eq!(out.subsystems.len(), 1);
+    let s = &out.subsystems[0];
+    assert_eq!(s.id, "my-services");
+    assert!(
+        s.members.contains(&"mylib".to_string()),
+        "id-form member 'mylib' must resolve; members: {:?}",
+        s.members
+    );
+    assert!(
+        s.members.contains(&"mycli".to_string()),
+        "glob 'm*' must resolve mycli; members: {:?}",
+        s.members
+    );
+    assert!(
+        s.member_evidence.iter().any(|e| e.matched_via == "id"),
+        "id-form evidence must be present"
+    );
+    assert!(
+        s.member_evidence.iter().any(|e| e.matched_via == "m*"),
+        "glob-form evidence must be present"
+    );
+}
+
+#[test]
+fn subsystems_yaml_is_byte_identical_on_no_op_re_run() {
+    use atlas_index::{
+        save_subsystems_overrides_atomic, SubsystemOverride, SubsystemsOverridesFile,
+        SUBSYSTEMS_OVERRIDES_SCHEMA_VERSION,
+    };
+
+    let tmp = materialise_tiny_fixture();
+    let config = base_config(tmp.path());
+
+    std::fs::create_dir_all(&config.output_dir).unwrap();
+    save_subsystems_overrides_atomic(
+        &config.output_dir.join("subsystems.overrides.yaml"),
+        &SubsystemsOverridesFile {
+            schema_version: SUBSYSTEMS_OVERRIDES_SCHEMA_VERSION,
+            subsystems: vec![SubsystemOverride {
+                id: "all-libs".into(),
+                members: vec!["*".into()],
+                role: None,
+                lifecycle_roles: vec![],
+                rationale: "test".into(),
+                evidence_grade: component_ontology::EvidenceGrade::Strong,
+                evidence_fields: vec![],
+            }],
+        },
+    )
+    .unwrap();
+
+    run_index(
+        &config,
+        LenientBackend::new(),
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
+    let first = std::fs::read(config.output_dir.join("subsystems.yaml")).unwrap();
+
+    run_index(
+        &config,
+        LenientBackend::new(),
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
+    let second = std::fs::read(config.output_dir.join("subsystems.yaml")).unwrap();
+
+    assert_eq!(
+        first, second,
+        "subsystems.yaml must be byte-identical on no-op re-run"
+    );
+}
+
+#[test]
+fn pipeline_halts_when_subsystem_id_collides_with_component() {
+    use atlas_index::{
+        save_subsystems_overrides_atomic, SubsystemOverride, SubsystemsOverridesFile,
+        SUBSYSTEMS_OVERRIDES_SCHEMA_VERSION,
+    };
+
+    // The tiny fixture produces a component with id "mylib". Using the
+    // same id for a subsystem must trigger a hard error before any writes.
+    let tmp = materialise_tiny_fixture();
+    let config = base_config(tmp.path());
+
+    std::fs::create_dir_all(&config.output_dir).unwrap();
+    save_subsystems_overrides_atomic(
+        &config.output_dir.join("subsystems.overrides.yaml"),
+        &SubsystemsOverridesFile {
+            schema_version: SUBSYSTEMS_OVERRIDES_SCHEMA_VERSION,
+            subsystems: vec![SubsystemOverride {
+                id: "mylib".into(),
+                members: vec!["*".into()],
+                role: None,
+                lifecycle_roles: vec![],
+                rationale: "test".into(),
+                evidence_grade: component_ontology::EvidenceGrade::Strong,
+                evidence_fields: vec![],
+            }],
+        },
+    )
+    .unwrap();
+
+    let err = run_index(
+        &config,
+        LenientBackend::new(),
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        err.contains("collide with component ids"),
+        "expected collision error, got: {err}"
+    );
+    assert!(
+        !config.output_dir.join("subsystems.yaml").exists(),
+        "subsystems.yaml must not be saved when collision halts the pipeline"
+    );
+}

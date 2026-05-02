@@ -1,22 +1,14 @@
-id: session-37
-timestamp: 2026-05-02T10:17:03Z
+id: session-38
+timestamp: 2026-05-02T11:17:52Z
 phase: work
 body: |
-  ### Session 37 (2026-05-02T10:17:03Z) — Implement multi-provider LLM config
+  ### Session 38 (2026-05-02T11:17:52Z) — Add end-to-end fixture tests for subsystem seeding
 
-  - Implemented all 11 plan tasks for multi-provider LLM configuration architecture.
-  - Added `reqwest` (blocking+json) and `serde_yaml` to workspace and `atlas-llm` Cargo.toml.
-  - Created five new modules in `atlas-llm`: `config.rs` (AtlasConfig, ProviderConfig, OperationConfig, env-var interpolation, load/validation, 12 tests), `http_anthropic.rs` (AnthropicHttpBackend, 4 tests), `http_openai.rs` (OpenAiHttpBackend, 4 tests), `codex.rs` (CodexBackend stub returning LlmError::Setup, 2 tests), `router.rs` (BackendRouter dispatching by PromptId via HashMap, composite fingerprint, 3 tests).
-  - Modified `atlas-cli/src/backend.rs`: `build_production_backend_with_counter` now takes `&AtlasConfig` instead of `model_id: String`; constructs `BackendRouter`; removed legacy `build_production_backend` shim and several stale comments.
-  - Modified `atlas-cli/src/main.rs`: removed `--model` flag from `IndexArgs`; added `atlas init` subcommand; loads `AtlasConfig` from `output_dir/config.yaml` before running index.
-  - Added `atlas-cli/src/init.rs`: `run_init_cmd` scaffolds `.atlas/config.yaml`, `components.overrides.yaml`, `subsystems.overrides.yaml` with heavy comments; skips existing files.
-  - Added `atlas-cli/tests/init_cmd.rs`: 3 integration tests via `assert_cmd`.
-  - `cargo test --workspace` passes: 0 failed.
-  - Added `research-codex-cli-subprocess-interface-for-codexbackend` research task to backlog.
+  - Added three tests to `pipeline_integration.rs`: glob+id membership resolution, byte-identical no-op re-run, and collision halt with component id.
+  - Created new `crates/atlas-cli/tests/subsystems_integration.rs` with two tests: rename-stability (glob re-matches after directory rename) and collision halt.
+  - Minor `cargo fmt` reformatting of import line in `backend.rs` and expression reformatting in `router.rs` (no logic changes).
+  - All 15 new tests pass alongside the full existing test suite; clippy and fmt clean.
 
-  - Plan structure was self-contained and subagents followed it cleanly.
-  - `pub(crate)` reuse of helper functions across HTTP backends worked well.
-  - `BackendRouter::new` handles `ClaudeCodeBackend` construction (which calls `capture_claude_version()`); tests use `from_dispatch_table` to bypass it.
+  What worked: the `SimpleBackend` fixture in `subsystems_integration.rs` (lean duplicate of `LenientBackend` without override machinery) was sufficient for subsystem-focused tests without pulling in the full lenient-backend logging infrastructure. The rename-stability test exercises the glob path-based re-matching directly and confirmed the feature works correctly.
 
-  - Next: `map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis` is now unblocked. Wire `AnthropicHttpBackend` as default for `Classify` and `Subcarve` prompts, add L8 map/reduce parallelism.
-  - `CodexBackend` stub ready to be replaced once the research task completes.
+  What's next: `subsystem-seeding-phase-5-readme-documentation` is now unblocked (depends on Phase 4).
