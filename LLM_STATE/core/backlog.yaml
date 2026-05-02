@@ -103,6 +103,37 @@ tasks:
     - All six criteria pass or have documented follow-up tasks (criterion 5 may be deferred pending Ravel-Lite M5).
     - Sign-off report committed to the Atlas repo.
     - An announcement-ready short summary written (optional) as `README-v1.md` documenting what Atlas v1 does and does not do.
+- id: spike-validate-l3-l8-prompt-shape-for-per-candidate-http-backend
+  title: 'Spike: validate L3/L8 prompt shape for per-candidate HTTP backend'
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** Unblocks `map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis` from MEDIUM to HIGH priority.
+
+    ## Context
+
+    The map/reduce architecture task notes that "Priority: MEDIUM (HIGH once spike unblocks)" and flags a key unknown: whether L3's `is_component` and L8's `subcarve` prompts are scoped correctly for the per-candidate/per-subdir HTTP-call model.
+
+    The concern: a per-subdir map call sees only that subdirectory's immediate listing and manifest snippet (~500 tokens). If the existing L3 or L8 prompts implicitly lean on cross-directory signals — e.g., comparing against sibling directories, referencing workspace-level patterns, or requiring multi-crate awareness to classify a candidate — then the narrowed map-call shape will produce lower-quality verdicts than the current agentic path.
+
+    ## Scope
+
+    1. **Read the current L3 and L8 prompt templates** (`crates/atlas-cli/src/prompts.rs` or the rendered prompts directory). Identify every input token the templates reference.
+    2. **For L3 `is_component`:** Does the prompt reference any signal that spans multiple candidate directories? E.g., "how many siblings have the same shape", "what does the parent workspace look like", etc.? If yes, is that signal present in the per-candidate input that the map step would receive?
+    3. **For L8 subcarve (per-subdir verdict):** Does the current agent prompt ask for cross-subdir comparison within a single call? The existing agentic call sees all subdirs of one component in one pass; the proposed map step sees one subdir at a time. Would per-subdir verdicts match the aggregate agentic verdict on representative cases?
+    4. **Sample validation:** Run the current agentic L3/L8 on 5–10 representative candidates (from the dev-workspace golden), then construct equivalent per-candidate/per-subdir HTTP prompts and manually evaluate whether the answer would differ. Document results in `docs/spikes/2026-05-XX-l3-l8-prompt-shape-spike.md`.
+    5. **Recommendation:** Based on findings, produce one of:
+       - "Prompts are already scoped correctly — map step is viable without prompt changes."
+       - "L3 prompt needs modification X before the map step is safe."
+       - "L8 prompt needs modification Y."
+       - "Neither L3 nor L8 are safe to narrow — the map/reduce design must be reconsidered."
+
+    ## Exit criteria
+
+    - Spike doc committed to `docs/spikes/`.
+    - A clear go/no-go recommendation for each of L3 and L8.
+    - If modifications are recommended, the scope of those changes is described in sufficient detail to add to the map/reduce task description.
 - id: map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis
   title: Map/reduce LLM architecture with backend routing for context-light analysis
   category: feature
@@ -314,271 +345,3 @@ tasks:
 
     - Test passes under `ATLAS_LLM_RUN_CLAUDE_TESTS=1`.
     - No regressions in other `atlas-cli` tests.
-- id: implement-codexbackend-subprocess-driver
-  title: Implement CodexBackend subprocess driver
-  category: feature
-  status: done
-  dependencies: []
-  description: |
-    **Priority: LOW.** Concrete implementation of the `CodexBackend` LLM
-    backend in `crates/atlas-llm/src/codex.rs`, replacing the current stub
-    that returns `LlmError::Setup`.
-
-    ## Decision (already made)
-
-    Subprocess approach, structurally parallel to `ClaudeCodeBackend`. The
-    research, trade-offs (subprocess vs HTTP vs `codex-core` library), and
-    implementation sketch live in
-    `docs/superpowers/specs/2026-05-02-codex-backend-research.md`.
-    Read that document first; it captures the empirical JSONL event schema
-    from a real Codex CLI 0.125.0 install and the rationale for every flag
-    choice. Don't re-do the discovery work.
-
-    ## Scope
-
-    1. **Backend struct + constructor.** Replace the stub in
-       `crates/atlas-llm/src/codex.rs`. New shape carries `model_id`,
-       `prompts_dir`, `version`, `template_sha`, `ontology_sha`,
-       `Option<Arc<dyn AgentObserver>>` — mirror `ClaudeCodeBackend`
-       exactly. Add `with_fingerprint_inputs` and `with_observer` builders
-       parallel to the Claude Code backend's.
-
-    2. **Version capture.** A `capture_codex_version()` helper that runs
-       `codex --version`, trims, and surfaces a clear `LlmError::Setup`
-       if the binary is missing. Cache the string for the run.
-
-    3. **Auth precheck.** At construction, run `codex login status` and
-       refuse construction with a remediation hint
-       (`printenv OPENAI_API_KEY | codex login --with-api-key`) if not
-       logged in. Matches the user's mental model for `claude-code/`.
-
-    4. **Per-call invocation.** Spawn:
-
-           codex exec \
-             --json \
-             --skip-git-repo-check \
-             --ephemeral \
-             --sandbox read-only \
-             --output-schema <tmpfile> \
-             --model <id> \
-             -- <rendered-prompt>
-
-       Render `req.schema` into a tempfile per call (use `tempfile` crate,
-       already a transitive dep). Drop the tempfile when the call returns.
-
-    5. **Stream parsing.** Reuse the line-splitter in
-       `crates/atlas-llm/src/stream_parse.rs` to walk JSONL stdout. Filter
-       for `item.completed` events with `item.type == "agent_message"`;
-       the **last** one carries the final payload. Parse `item.text` as
-       JSON and pass through `validate_response` against `req.schema`
-       (defense in depth — the Codex layer should already have enforced
-       shape via `--output-schema`).
-
-    6. **Event mapping for `AgentObserver`.** Map Codex events to the
-       existing `AgentEvent` variants:
-       - `item.started` / `item.completed` with `item.type` in
-         `{command_execution, file_change, web_search, plan_update}` →
-         parallel to Claude Code's tool_use/tool_result.
-       - `agent_message` and `reasoning` → message-level events.
-       - `turn.failed` → an error event surfaced to the observer.
-       Add a `parse_codex_stream` function alongside `stream_parse.rs`'s
-       Claude-Code parser; share the line splitter where convenient.
-
-    7. **Error mapping.** Map `turn.failed` payloads into `LlmError`
-       variants (`Schema` for schema-mismatch failures, `Invocation` for
-       transport/model failures, `Parse` for malformed output).
-       Empirically capture a real failure during implementation; the exact
-       payload shape isn't documented today.
-
-    8. **Fingerprint.** `backend_version: format!("codex/{}", version)`.
-       Parallels `claude-code/...` and `openai-http/...`.
-
-    9. **Tests.**
-       - Unit tests in `codex.rs` against fixture JSONL (mirror
-         `parse_openai_response` test pattern).
-       - `#[ignore]` integration test against real `codex` binary, gated by
-         `ATLAS_LLM_RUN_CODEX_TESTS=1` (parallel to
-         `ATLAS_LLM_RUN_CLAUDE_TESTS=1`).
-       - Fingerprint test asserts the `codex/<version>` shape.
-
-    10. **Router wiring.** `crates/atlas-llm/src/router.rs` already
-        accepts `codex/` as a provider prefix and constructs the stub
-        today. Update that branch to call the real constructor (with
-        `prompts_dir`, `template_sha`, `ontology_sha`, `observer`
-        threaded through) and surface the auth-precheck error path.
-
-    ## Out of scope
-
-    - `codex mcp-server` integration (Codex-as-MCP-server). Noted in the
-      research doc as a future option.
-    - `codex-core` library link. Rejected for v1; revisit only if
-      subprocess spawn cost becomes a measurable bottleneck.
-    - Concurrency / map-reduce work — covered by
-      `map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis`.
-      The CodexBackend should be call-thread-safe (`Send + Sync`) but
-      doesn't need to introduce its own bounded concurrency.
-
-    ## Exit criteria
-
-    - `codex/<model-id>` selectable via `.atlas/config.yaml`, dispatched
-      by the router, runs end-to-end against a real Codex binary.
-    - All exit criteria of the research doc are satisfied.
-    - `cargo test -p atlas-llm` is green; the gated integration test
-      passes under `ATLAS_LLM_RUN_CODEX_TESTS=1`.
-    - Research doc's "Open questions" section is closed (each question
-      has a resolution recorded inline in the implementation or in a
-      follow-up note).
-  results: |
-    ## What was done
-
-    `CodexBackend` is no longer a stub. The full subprocess driver lands in
-    `crates/atlas-llm/src/codex.rs`, a sibling pure-parser module in
-    `crates/atlas-llm/src/codex_stream.rs`, three real-capture JSONL
-    fixtures (+ README) under
-    `crates/atlas-llm/tests/fixtures/codex-stream/`, and a router rewire in
-    `crates/atlas-llm/src/router.rs`.
-
-    Surface mirrors `ClaudeCodeBackend` deliberately:
-
-    - `CodexBackend::new(model_id, prompts_dir) -> Result<Self, LlmError>`
-      runs `codex --version` (binary check) and `codex login status`
-      (auth check) eagerly. Returns `LlmError::Setup` with a remediation
-      hint when either fails.
-    - `with_fingerprint_inputs(template_sha, ontology_sha)` and
-      `with_observer(Arc<dyn AgentObserver>)` builders.
-    - `LlmBackend::call` spawns
-      `codex exec --json --skip-git-repo-check --ephemeral --sandbox read-only --model <id> -- <rendered-prompt>`,
-      drains stderr on a worker thread, parses stdout via
-      `parse_codex_stream`, and runs `validate_response` for defense in
-      depth.
-    - `LlmBackend::fingerprint` returns `backend_version =
-      format!("codex/{}", version)` paralleling the `claude-code/` and
-      `openai-http/` shapes.
-
-    Router wiring in `router.rs` matches the `claude-code` arm exactly
-    (`new(...)?.with_fingerprint_inputs(...).with_observer(...)`), so any
-    operation in `.atlas/config.yaml` with `model: codex/<id>` now
-    dispatches end-to-end.
-
-    `AgentObserver` mapping for Codex events:
-
-    - `item.started` with `item.type == "command_execution"` →
-      `AgentEvent::ToolUse { name: "command_execution", summary: <stripped command> }`.
-      Codex shells out via `/bin/zsh -lc "<cmd>"`; the summary helper
-      strips the wrapper so the agent sub-line shows the inner command.
-    - `item.completed` with `item.type == "command_execution"` →
-      `AgentEvent::ToolResult { ok: exit_code == 0 }`.
-    - `item.completed` with `item.type == "agent_message"` → captured as
-      the candidate response payload; the **last** such event wins.
-    - `turn.failed` → terminates the stream with `LlmError::Invocation`,
-      inner error message preserved verbatim.
-
-    `CallStart`/`CallEnd` lifecycle is enforced by the same `ObserverGuard`
-    used by the Claude path (RAII on every termination path).
-
-    ## What worked
-
-    - 17 codex-related unit tests pass (parser branch coverage, command
-      summary normalisation, observer event mapping, fingerprint shape,
-      template rendering). Three of those run against real captured JSONL
-      fixtures.
-    - 453 workspace tests pass with no regressions.
-    - `cargo fmt --all -- --check` and
-      `cargo clippy --workspace --all-targets -- -D warnings` are clean.
-    - Live `ATLAS_LLM_RUN_CODEX_TESTS=1` construction test passes against
-      the real `codex-cli 0.125.0` binary (verified `codex --version`
-      capture and `codex login status` precheck both work).
-    - The live roundtrip test exposed a real account-specific finding (see
-      below); the parser correctly mapped the upstream HTTP-400 into a
-      typed `LlmError::Invocation` with the OpenAI error text intact —
-      strong end-to-end validation.
-
-    ## Decisions worth recording
-
-    1. **Skipped `--output-schema`.** Every Atlas production callsite uses
-       `ResponseSchema::accept_any()`. OpenAI structured-output strict mode
-       requires `additionalProperties: false` on every object plus
-       exhaustive `required` lists — Atlas's schemas conform to neither.
-       Adding `--output-schema` would have meant either rejecting all calls
-       or shipping a schema-rewriter for zero real validation gain. Defense
-       in depth via the existing `validate_response` (which is a no-op for
-       accept-any schemas) keeps current guarantees. Documented in the
-       module-level doc comment; revisit if Atlas adopts strict schemas.
-
-    2. **Auth precheck included.** Backlog scope said yes; spec text was
-       ambiguous. The precheck (`codex login status` at construction)
-       catches the most common new-user error eagerly, paralleling
-       `capture_codex_version`. Adds one subprocess at startup; trivial
-       cost.
-
-    3. **`Stdio::null()` for stdin** (matching `ClaudeCodeBackend`).
-       Codex prints `"Reading additional input from stdin..."` to stderr
-       when stdin is a TTY; without piping `/dev/null` we'd risk CI
-       hangs. Probe-time finding baked into the implementation.
-
-    4. **`command_execution` summary helper strips `/bin/zsh -lc "..."`**
-       so the agent sub-line shows the inner shell command rather than
-       the wrapper. Codex doesn't expose typed Read/Grep tools the way
-       Claude Code does — every shell-out goes through this wrapper.
-
-    ## What didn't work / gotchas
-
-    - **Live roundtrip test fails on this machine due to ChatGPT-account
-      auth model restrictions.** With `ATLAS_LLM_RUN_CODEX_TESTS=1
-      cargo test ... call_roundtrips_json_response`, the request is
-      rejected upstream: `"The 'gpt-5-codex' model is not supported when
-      using Codex with a ChatGPT account."` (also tried `gpt-5` — same
-      failure mode). The implementation is correct: Codex's
-      `turn.failed` payload propagates as `LlmError::Invocation` with the
-      exact upstream error message. Workaround for this user: set
-      `ATLAS_LLM_CODEX_TEST_MODEL=<account-allowed-model>` before
-      running the gated test, or skip the roundtrip and run only
-      `construction_succeeds_when_codex_is_on_path_and_authenticated`.
-      Test infrastructure now reads `ATLAS_LLM_CODEX_TEST_MODEL` as an
-      override.
-
-    - **`RecordingObserver` couldn't be shared between
-      `stream_parse::tests` and `codex_stream::tests`.** The struct lives
-      inside a private `mod tests` block, so cross-module access would
-      require restructuring. Inlined a copy in `codex_stream::tests` —
-      ~25 lines, fine for test infrastructure.
-
-    ## What this suggests next
-
-    - **CodexBackend is now a peer of ClaudeCodeBackend in routing.** Any
-      user whose `.atlas/config.yaml` selects `codex/<model>` for an
-      operation will now dispatch live. No follow-up wiring needed.
-
-    - **Schema-rewrite for `--output-schema` is a deferred follow-up.**
-      When Atlas's L3/L5/L6 prompts adopt strict response schemas (e.g.
-      as part of the map/reduce architectural shift in the
-      `map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis`
-      task), revisit passing `--output-schema` to gain Codex-layer
-      schema enforcement. The shape would be: a `--output-schema`
-      rewriter that injects `additionalProperties: false` and ensures
-      `required` is exhaustive over `properties.keys()` for every nested
-      object before writing the schema tempfile.
-
-    - **Codex's lack of typed tools is a UX divergence from Claude Code.**
-      All file reads happen via shell-out `command_execution`. The agent
-      sub-line currently shows the inner shell command, which is fine but
-      longer than Claude Code's typed-tool summaries (e.g.
-      `Read:/path/to/file`). If terminal width becomes a problem for the
-      agent sub-line, consider truncating `command_execution` summaries
-      more aggressively.
-
-    - **`codex-core` library link revisit threshold unchanged.** Subprocess
-      spawn cost is the same as ClaudeCodeBackend. Re-evaluate only if
-      per-call latency becomes a measurable bottleneck (per the research
-      doc).
-
-    ## Files changed (uncommitted; analyse-work will commit)
-
-    - `crates/atlas-llm/src/codex.rs` — full driver (replaces stub).
-    - `crates/atlas-llm/src/codex_stream.rs` — new pure parser module.
-    - `crates/atlas-llm/src/lib.rs` — register `codex_stream` module.
-    - `crates/atlas-llm/src/router.rs` — `codex/` arm now constructs the
-      real backend with fingerprint inputs and observer.
-    - `crates/atlas-llm/tests/fixtures/codex-stream/{simple-classify,with-tools,turn-failed}.jsonl`
-      + `README.md` — three real captures plus capture/redaction
-      documentation.
