@@ -1,74 +1,4 @@
 tasks:
-- id: commit-atlas-contracts-pinvalue-schema-changes
-  title: Commit atlas-contracts PinValue schema changes
-  category: feature
-  status: done
-  dependencies: []
-  description: |
-    **Priority: HIGH.** The atlas-contracts PinValue schema rewrite (custom `Serialize`/`Deserialize` via `deserialize_any` Visitor, replacing `#[serde(untagged)]`) was implemented in `/Users/antony/Development/atlas-contracts` but left uncommitted. The Atlas-side state update was committed separately; the atlas-contracts diff is the only outstanding piece.
-
-    ## Context
-
-    The PinValue serde rewrite spans two repos:
-    - **atlas-contracts** (`/Users/antony/Development/atlas-contracts`) — three files changed: `crates/atlas-index/src/schema.rs`, `crates/atlas-index/src/yaml_io.rs`, `crates/atlas-index/tests/snapshots/components.overrides.yaml`.
-    - **Atlas** — no source changes (only backlog state).
-
-    The atlas-contracts diff is not yet committed. Until it is, the work is at risk of loss and any future `cargo update` or git+rev flip in Atlas will not include the fix.
-
-    ## What to do
-
-    1. `cd /Users/antony/Development/atlas-contracts`
-    2. Verify the expected three files are dirty: `git status`
-    3. Run `cargo test --workspace` to confirm all 55 tests pass.
-    4. Run `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` — both should be clean.
-    5. Commit with a message describing the PinValue natural-form deserialiser.
-    6. Push to origin.
-
-    ## Exit criteria
-
-    - `git status` in atlas-contracts is clean.
-    - Commit is on origin.
-    - `cargo test --workspace` still passes post-commit.
-  results: |
-    ## Outcome: done
-
-    The atlas-contracts PinValue serde rewrite is now committed to `origin/main` of `Linkuistics/atlas-contracts` as `d5d0dac` ("Replace PinValue serde(untagged) with deserialize_any Visitor").
-
-    ## What was done
-
-    1. Verified the three expected files were dirty: `crates/atlas-index/src/schema.rs`, `crates/atlas-index/src/yaml_io.rs`, `crates/atlas-index/tests/snapshots/components.overrides.yaml`.
-    2. Ran `cargo test --workspace`: **102 tests pass** (52 + 3 + 47, plus 0 doc tests). The task description's "55 tests" was a stale snapshot — the workspace has grown since the description was written.
-    3. Ran `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` — both clean.
-    4. Staged the three files and committed with a substantive message describing:
-       - why `#[serde(untagged)]` failed on natural-form input (untagged dispatch keys on field names, not scalar shape — `suppress_children: [...]` produced "did not match any variant"),
-       - the new shape-based dispatch (bool → `Suppress`, seq → `SuppressChildren`, map → `Value`),
-       - the legacy doubly-nested forms still accepted on input for backward compat,
-       - the snapshot regeneration as a canonicalisation receipt.
-    5. Pushed `c78bb39..d5d0dac` to `origin/main`.
-    6. Re-ran `cargo test --workspace` post-commit: still 102/102 green.
-
-    ## Exit criteria — all met
-
-    - `git status` in atlas-contracts: clean, on `main`, up to date with `origin/main`.
-    - Commit `d5d0dac` is on origin (local HEAD == origin/main hash confirmed).
-    - `cargo test --workspace` passes post-commit.
-
-    ## What worked
-
-    - The natural input/output asymmetry the deserialiser implements (accept legacy + natural; emit natural only) is the right migration shape — pre-existing override files in the wild keep loading, fresh writes normalise to the new form.
-    - The `components.overrides.yaml` snapshot edit is a forced canonicalisation: once the serialiser changed, any round-trip resave would diverge from the stored snapshot. Updating it inline keeps tests deterministic.
-    - The new test `overrides_load_accepts_natural_inline_suppress_children_form` in `yaml_io.rs` directly pins the regression that motivated the rewrite — anyone removing the `visit_map` "suppress_children" arm in the future will see this test fail.
-
-    ## What didn't / surprises
-
-    - The task description claimed 55 tests; the workspace actually runs 102 across three test binaries. Not a problem — just a sign that the description was written some commits ago. Worth noting for triage if other backlog tasks anchor numeric expectations.
-    - No Atlas-side changes were needed (or made). The whole task body was a sibling-repo commit, so this work-phase ran with a clean Atlas tree throughout.
-
-    ## What this suggests next
-
-    - **Memory entry already covers the lesson.** The existing memory "Serde untagged enum variants need unique field names" (`serde-untagged-enum-variants-need-unique-field-names.md`) already captures the rule. No memory update needed.
-    - **Atlas does not yet consume this fix.** Atlas's `Cargo.lock` still pins the previous atlas-contracts revision (this commit is brand new on origin). When the natural-inline-form override regression matters in Atlas (likely via the `atlas index` CLI fed a hand-authored overrides file), a `cargo update -p atlas-contracts` or git+rev bump in Atlas's `Cargo.toml` will be needed. That's a small follow-on but not part of this task's exit criteria — leaving it for whoever next touches Atlas's contracts dependency.
-    - **No follow-up task needed** for this regression itself; it is closed end-to-end on the contracts side.
 - id: l3-prototype-map-style-classify-via-plain-anthropic-http-backend
   title: 'L3 prototype: map-style classify via plain Anthropic HTTP backend'
   category: feature
@@ -132,6 +62,40 @@ tasks:
     - Benchmark numbers recorded in `evaluation/results/`.
     - Brief notes in `docs/superpowers/specs/<date>-l3-http-spike-findings.md` with the verdict and any prompt-quality observations.
     - The follow-on epic (`map-reduce-llm-architecture`) either gets the green light, or gets concrete pivot guidance based on what didn't work.
+- id: subsystem-seeding-phase-3-atlas-cli-integration
+  title: 'Subsystem seeding Phase 3: Atlas CLI integration'
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** Third implementation phase for the subsystem seeding feature. Depends on `subsystem-seeding-phase2-atlas-engine-integration`.
+
+    This phase wires the subsystem engine into the Atlas CLI: validation, pipeline execution, and output saving.
+
+    ## Scope
+
+    Implement Tasks 9–11 from the plan (`docs/superpowers/plans/2026-05-01-subsystem-seeding.md`):
+
+    9. **Task 9: `validate.rs`** — extend `validate_overrides` in `crates/atlas-cli/src/validate.rs` to accept a `&SubsystemsOverridesFile` and produce subsystem-shape issues (unknown-id errors, empty-glob warnings) alongside existing component-shape issues.
+
+    10. **Task 10: `main.rs` validate-overrides subcommand** — modify `crates/atlas-cli/src/main.rs` to load `subsystems.overrides.yaml` (or default to empty) in the `validate-overrides` subcommand handler and pass it to the extended `validate_overrides`.
+
+    11. **Task 11: `pipeline.rs`** — modify `crates/atlas-cli/src/pipeline.rs` to:
+        - Load `subsystems.overrides.yaml` at pipeline start.
+        - `set_subsystems_overrides` on the Salsa `Workspace`.
+        - After L4, run the cross-namespace collision check; halt with error if any collision found.
+        - At L9, call `subsystems_yaml_snapshot` and save result to `subsystems.yaml` using `save_subsystems_atomic`.
+
+    ## Full task detail
+
+    See `docs/superpowers/plans/2026-05-01-subsystem-seeding.md` Tasks 9–11 for step-by-step instructions.
+
+    ## Exit criteria
+
+    - `cargo check -p atlas-cli` is clean.
+    - `atlas validate-overrides` accepts a `subsystems.overrides.yaml` and reports errors/warnings correctly.
+    - `atlas index` produces `subsystems.yaml` alongside `components.yaml`.
+    - Commit in Atlas covering all three tasks.
 - id: hand-author-second-golden-for-merged-monorepo
   title: Hand-author synthetic second golden for cross-target validation
   category: eval
@@ -361,140 +325,6 @@ tasks:
 
     - Test passes under `ATLAS_LLM_RUN_CLAUDE_TESTS=1`.
     - No regressions in other `atlas-cli` tests.
-- id: subsystem-seeding-phase-2-atlas-engine-integration
-  title: 'Subsystem seeding Phase 2: Atlas engine integration'
-  category: feature
-  status: done
-  dependencies: []
-  description: |
-    **Priority: MEDIUM.** Second implementation phase for the subsystem seeding feature. Depends on `subsystem-seeding-phase1-atlas-contracts-schemas`.
-
-    This phase operates entirely in `~/Development/Atlas/`. Extends the Atlas engine with a new Salsa input and the L9 subsystem projection function.
-
-    ## Scope
-
-    Implement Tasks 5–8 from the plan (`docs/superpowers/plans/2026-05-01-subsystem-seeding.md`):
-
-    5. **Task 5: `globset` direct dependency** — add `globset` to `crates/atlas-engine/Cargo.toml` (it is already a transitive dep via `ignore`; make it direct for explicit use in l9_subsystems.rs).
-
-    6. **Task 6: Salsa input on `Workspace`** — add `subsystems_overrides` field and `set_subsystems_overrides` setter (with skip-if-equal guard) to `crates/atlas-engine/src/db.rs`.
-
-    7. **Task 7: `l9_subsystems.rs`** — create `crates/atlas-engine/src/l9_subsystems.rs` with:
-       - `subsystems_yaml_snapshot` Salsa query
-       - `MemberMatch` enum (Glob / Id)
-       - glob/id resolution logic (entries containing `/` or `*` → glob match against component path; otherwise id match)
-       - empty-glob warning emission
-       - cross-namespace collision detection (calls `validate_participant_namespace` from atlas-contracts)
-
-    8. **Task 8: Re-export** — add `mod l9_subsystems;` to `crates/atlas-engine/src/lib.rs` and re-export `subsystems_yaml_snapshot`.
-
-    ## Full task detail
-
-    See `docs/superpowers/plans/2026-05-01-subsystem-seeding.md` Tasks 5–8 for step-by-step instructions.
-
-    ## Exit criteria
-
-    - `cargo check -p atlas-engine` is clean.
-    - `cargo test -p atlas-engine` passes.
-    - Commit in Atlas covering all four tasks.
-  results: |
-    ## Outcome: done
-
-    Phase 2 of subsystem seeding is implemented end-to-end in the Atlas engine. Tasks 5–7 from the plan (`docs/superpowers/plans/2026-05-01-subsystem-seeding.md`) are complete. The new public surface is exported from `atlas-engine`'s `lib.rs`.
-
-    ## What was done — TDD ordering preserved throughout
-
-    1. **globset workspace dep.** Added `globset = "0.4"` to `Cargo.toml`'s `[workspace.dependencies]` and referenced it as `globset = { workspace = true }` from `crates/atlas-engine/Cargo.toml`. This is a small deviation from the plan's literal "add `globset = "0.4"` to crates/atlas-engine/Cargo.toml" — the workspace pattern is the project's consistent convention (every other dep follows it; the Rust coding-style memo also mandates it). Functionally equivalent.
-
-    2. **Salsa input field on `Workspace`** (`db.rs`): added `subsystems_overrides: Arc<SubsystemsOverridesFile>` slotted next to `components_overrides` to keep override-related fields contiguous, plus the import.
-
-    3. **Setter with skip-if-equal guard** (`db.rs`): `set_subsystems_overrides` mirrors the `set_components_overrides` pattern exactly — Arc-deref equality check, early return on no-op, otherwise `set_*(self).to(Arc::new(value))`.
-
-    4. **Workspace::new init** (`db.rs`): added `Arc::new(SubsystemsOverridesFile::default())` positionally between `components_overrides` and `llm_fingerprint` so the constructor matches the new field order.
-
-    5. **TDD test for setter Arc identity** (`db.rs`): wrote `set_subsystems_overrides_skip_if_equal_preserves_arc_identity` *first*, ran it, observed compile failure ("method not found in `Workspace`"), then implemented the field/setter, re-ran, observed pass. The plan's draft used `LlmFingerprint::default()`; the type has no `Default` impl, so I followed the project pattern (see `l9_projections.rs` line 323) of an explicit `fingerprint()` helper with zeroed SHAs and `"test-backend"` model id.
-
-    6. **`l9_subsystems.rs`** (new file, ~330 lines): the full L9 subsystem projection, including
-       - `subsystems_yaml_snapshot(db)` — public, returns `Arc<SubsystemsFile>`, mirrors the existing `components_yaml_snapshot` shape (plain function over `&AtlasDatabase`, not `#[salsa::tracked]` — consistent with the `all_components` decision recorded in memory).
-       - `resolve_subsystems` (pub(crate)) — pure function over `&[SubsystemOverride]` + `&[ComponentEntry]`. Iterates each override's members; each member is either glob-form (contains `/` or `*`, dispatched through `globset::Glob::compile_matcher` and matched against component path segments) or id-form (looked up in a pre-built `BTreeMap<&str, &ComponentEntry>`).
-       - Three classes of evidence in the output: matched-via-glob (records the glob string), matched-via-id (records `"id"`), and matched-via-id-but-unknown (records `"id (no such component)"`). Empty-glob-match emits `"<glob> (no matches)"`. An invalid glob string emits `"<glob> (invalid glob)"` rather than panicking.
-       - Soft warning `"all members unresolved"` pushed into `notes` when the resolved id set is empty.
-       - `BTreeSet<String>` accumulator for resolved ids gives sorted-and-deduped output for free; the *first* match wins for evidence (a duplicate glob/id form is a no-op).
-       - `check_subsystem_namespace` — sorted-set intersection of subsystem ids vs. live component ids, returns `Err(Vec<String>)` on collision. Inline implementation rather than calling `validate_participant_namespace` from atlas-contracts (the plan's prescribed code uses the inline form; the backlog summary's reference to `validate_participant_namespace` was less specific).
-       - `check_subsystem_id_members` — for every id-form member, checks live-id membership; collects `<sub-id>/<member>` strings on miss, returns sorted error vec.
-
-    7. **Module registration + re-exports** (`lib.rs`): `pub mod l9_subsystems;` slotted next to `pub mod l9_projections;`, matching the project's `pub mod` convention (the plan's draft used private `mod`; `pub mod` is what every other engine module uses). Re-exports added: `subsystems_yaml_snapshot`, `check_subsystem_namespace`, `check_subsystem_id_members`.
-
-    8. **11 unit tests in `l9_subsystems.rs`** covering: empty input → empty output, glob → path-segments, id form → direct, glob with zero matches, unknown id form, dedupe of duplicate glob/id forms, deleted components skipped, collision check disjoint vs. clash, collision check unknown id-member vs. present.
-
-    ## Verification — all green
-
-    | Check | Result |
-    |---|---|
-    | `cargo check -p atlas-engine` | clean |
-    | `cargo test -p atlas-engine` | **200 tests pass** (154 unit + 16 + 16 + 11 + 3 integration; up from 189 baseline by +12 new — 1 db setter + 11 l9_subsystems) |
-    | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
-    | `cargo fmt --check` | clean (rustfmt rewrote a few multi-line calls in the plan-prescribed code; applied via `cargo fmt`) |
-
-    ## Exit criteria — all met
-
-    - `cargo check -p atlas-engine` is clean. ✓
-    - `cargo test -p atlas-engine` passes. ✓
-    - Commit in Atlas covering all four tasks — **deferred to analyse-work** per the shared work-phase instructions ("Do NOT commit source-file changes yourself. The analyse-work phase that runs immediately after this one is responsible for committing everything you edited"). The exit criterion is met in spirit: all source changes are in the working tree ready for commit.
-
-    ## What worked
-
-    - The plan's TDD-first ordering ("write failing test, see compile error, then add the field") caught the `LlmFingerprint::default()` problem one edit earlier than it would have otherwise. Worth keeping for future Salsa-input additions.
-    - `BTreeSet<String>` for the resolved-ids accumulator is the right pick: dedupe + sorted output for free, and `insert` returns `bool` so we can gate evidence-push on first occurrence with `if resolved_ids.insert(c.id.clone())`.
-    - The `pub(crate) fn resolve_subsystems(&[SubsystemOverride], &[ComponentEntry]) -> Vec<SubsystemEntry>` factoring is what makes the file testable without a full `AtlasDatabase`. All 11 unit tests exercise pure functions over plain Rust types — no salsa, no tempfiles, no LLM stubs. Fast (0.04s for the whole engine unit-test binary).
-
-    ## What didn't / surprises
-
-    - **Backlog summary diverged from plan in two places.** The backlog mentions a `MemberMatch` enum (Glob / Id) and a call to `validate_participant_namespace` from atlas-contracts. Neither is in the plan's prescribed code: the plan uses an inline `is_glob_form()` helper and an inline `BTreeSet::intersection` for collision detection. I followed the plan since it is the source of truth ("See `docs/superpowers/plans/...` Tasks 5–8 for step-by-step instructions"). Worth noting for triage in case the backlog summary should be updated.
-    - **Plan's task numbering vs. backlog numbering.** Backlog Tasks 5–8 are actually plan Tasks 5, 6, 7 (Phase 2 is three tasks in the plan, four in the backlog). Plan Task 8 is in Phase 3 (CLI integration), not Phase 2. The backlog's Phase 3 task accurately points at plan Tasks 8/9 — no overlap.
-    - **Test count mismatch with plan expectations.** Plan said "Step 4: Run tests to verify they pass — Expected: 6 unit tests pass" after Task 6, then "Expected: 4 new tests pass; previous 6 still pass" after Task 7. Actual is 7 + 4 = 11 (the plan's L9 file has 7 resolution tests, not 6 — the seventh is `deleted_components_are_skipped`). Just a stale count.
-    - `cargo fmt --check` was the only step that produced post-write drift — the plan-prescribed code had multi-line `vec![override_with_members(...)]` calls that rustfmt folds onto single lines. Applied with `cargo fmt`.
-
-    ## What this suggests next
-
-    - **Phase 3 is now unblocked.** Subsystem seeding Phase 3 (Atlas CLI integration) depends on this Phase 2 task and is the natural next pick. It wires `subsystems_yaml_snapshot` into the CLI pipeline, extends `validate-overrides` to subsystems (plan Task 8), and loads/saves the file (plan Task 9).
-    - **Memory candidate:** "L9 sub-projections live as plain functions over `&AtlasDatabase`, not `#[salsa::tracked]`" — already partially captured by the existing `all_components_not_salsa_tracked` memory entry. The new `subsystems_yaml_snapshot` matches the same pattern; no new memory needed unless we generalise the rule.
-    - **No follow-up cleanup task needed** for this work itself; it is closed end-to-end on the engine side. The downstream tasks in the plan (Phases 3-5) handle CLI wiring, fixtures, and README — already in the backlog.
-- id: subsystem-seeding-phase-3-atlas-cli-integration
-  title: 'Subsystem seeding Phase 3: Atlas CLI integration'
-  category: feature
-  status: not_started
-  dependencies:
-  - subsystem-seeding-phase-2-atlas-engine-integration
-  description: |
-    **Priority: MEDIUM.** Third implementation phase for the subsystem seeding feature. Depends on `subsystem-seeding-phase2-atlas-engine-integration`.
-
-    This phase wires the subsystem engine into the Atlas CLI: validation, pipeline execution, and output saving.
-
-    ## Scope
-
-    Implement Tasks 9–11 from the plan (`docs/superpowers/plans/2026-05-01-subsystem-seeding.md`):
-
-    9. **Task 9: `validate.rs`** — extend `validate_overrides` in `crates/atlas-cli/src/validate.rs` to accept a `&SubsystemsOverridesFile` and produce subsystem-shape issues (unknown-id errors, empty-glob warnings) alongside existing component-shape issues.
-
-    10. **Task 10: `main.rs` validate-overrides subcommand** — modify `crates/atlas-cli/src/main.rs` to load `subsystems.overrides.yaml` (or default to empty) in the `validate-overrides` subcommand handler and pass it to the extended `validate_overrides`.
-
-    11. **Task 11: `pipeline.rs`** — modify `crates/atlas-cli/src/pipeline.rs` to:
-        - Load `subsystems.overrides.yaml` at pipeline start.
-        - `set_subsystems_overrides` on the Salsa `Workspace`.
-        - After L4, run the cross-namespace collision check; halt with error if any collision found.
-        - At L9, call `subsystems_yaml_snapshot` and save result to `subsystems.yaml` using `save_subsystems_atomic`.
-
-    ## Full task detail
-
-    See `docs/superpowers/plans/2026-05-01-subsystem-seeding.md` Tasks 9–11 for step-by-step instructions.
-
-    ## Exit criteria
-
-    - `cargo check -p atlas-cli` is clean.
-    - `atlas validate-overrides` accepts a `subsystems.overrides.yaml` and reports errors/warnings correctly.
-    - `atlas index` produces `subsystems.yaml` alongside `components.yaml`.
-    - Commit in Atlas covering all three tasks.
 - id: subsystem-seeding-phase-4-end-to-end-fixtures
   title: 'Subsystem seeding Phase 4: end-to-end fixtures'
   category: feature
