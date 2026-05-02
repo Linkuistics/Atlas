@@ -467,3 +467,16 @@ entries:
   title: L8 redesign uses per-subdir L3 Classify plus deterministic Rust reduce
   body: |
     Current L8 subcarve prompt mixes parent-scoped signals with per-candidate output. Redesign: run L3 `Classify` on each subdir independently, then reduce deterministically in Rust. Five action items documented in `docs/spikes/2026-05-02-l3-l8-prompt-shape-spike.md`. The map/reduce task description must absorb these items before implementation is scheduled.
+- id: anthropichttpbackend-already-implemented-map-reduce-scope-is-narrower-than-task-description-implies
+  title: AnthropicHttpBackend already implemented; map/reduce scope is narrower than task description implies
+  body: |
+    `AnthropicHttpBackend` is already fully implemented at `crates/atlas-llm/src/http_anthropic.rs` and wired through `BackendRouter` (`router.rs`) with provider/model selection driven by `.atlas/config.yaml` operation overrides. Prompt caching is enabled and structured JSON output validation is in place.
+
+    The map/reduce task description treats `AnthropicHttpBackend` as a deliverable ("New AnthropicHttpBackend in crates/atlas-llm/...") — but the infrastructure is already there. The task's remaining work is:
+
+    1. The map/reduce L8 redesign (5 action items in `docs/spikes/2026-05-02-l3-l8-prompt-shape-spike.md`)
+    2. Routing `PromptId::Classify` through `AnthropicHttpBackend` via the `.atlas/config.yaml` operation-override key (config-only change, no Rust diff)
+    3. Cache hit-rate verification after the backend swap
+    4. Goldens/eval re-run
+
+    The backend infrastructure scope items in the task description can be treated as done.
