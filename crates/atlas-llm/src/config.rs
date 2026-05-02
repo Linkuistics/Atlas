@@ -55,6 +55,36 @@ pub enum ConfigError {
 
 pub(crate) fn interpolate_env_vars(s: &str) -> Result<String, ConfigError> {
     let mut out = String::with_capacity(s.len());
+    let mut first = true;
+    for line in s.split('\n') {
+        if !first {
+            out.push('\n');
+        }
+        first = false;
+        let comment_start = find_yaml_comment_start(line);
+        let (active, comment) = line.split_at(comment_start);
+        interpolate_segment(active, &mut out)?;
+        out.push_str(comment);
+    }
+    Ok(out)
+}
+
+// Returns the index of the first `#` that begins a YAML comment on `line`,
+// or `line.len()` if none. A `#` starts a comment when it is at column 0 or
+// preceded by ASCII whitespace; this matches YAML's rule for flow-out
+// comments and is sufficient for Atlas's config templates. Quoted-string
+// edge cases are not modelled — no template ships `#` inside a quoted value.
+fn find_yaml_comment_start(line: &str) -> usize {
+    let bytes = line.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'#' && (i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b'\t') {
+            return i;
+        }
+    }
+    line.len()
+}
+
+fn interpolate_segment(s: &str, out: &mut String) -> Result<(), ConfigError> {
     let mut rest = s;
     while let Some(pos) = rest.find("${") {
         out.push_str(&rest[..pos]);
@@ -73,7 +103,7 @@ pub(crate) fn interpolate_env_vars(s: &str) -> Result<String, ConfigError> {
         rest = &after[end + 1..];
     }
     out.push_str(rest);
-    Ok(out)
+    Ok(())
 }
 
 impl AtlasConfig {
@@ -210,6 +240,46 @@ operations:
         assert!(
             matches!(err, ConfigError::EnvVarUnset { name } if name == "_ATLAS_DEFINITELY_UNSET_XYZ")
         );
+    }
+
+    #[test]
+    fn placeholder_in_full_comment_line_is_skipped() {
+        std::env::remove_var("_ATLAS_UNSET_IN_COMMENT");
+        let yaml = "# example: api_key: ${_ATLAS_UNSET_IN_COMMENT}\nkey: value\n";
+        let out = interpolate_env_vars(yaml).expect("comment-only ${} must not be expanded");
+        assert_eq!(out, yaml);
+    }
+
+    #[test]
+    fn placeholder_in_indented_comment_is_skipped() {
+        std::env::remove_var("_ATLAS_UNSET_IN_INDENTED_COMMENT");
+        let yaml = "providers:\n  #     api_key: ${_ATLAS_UNSET_IN_INDENTED_COMMENT}\n";
+        let out = interpolate_env_vars(yaml).expect("indented comment ${} must not be expanded");
+        assert_eq!(out, yaml);
+    }
+
+    #[test]
+    fn placeholder_before_trailing_comment_is_expanded_only_in_value() {
+        std::env::set_var("_ATLAS_VALUE_KEY", "real-secret");
+        std::env::remove_var("_ATLAS_COMMENT_KEY");
+        let yaml = "api_key: ${_ATLAS_VALUE_KEY} # fallback was ${_ATLAS_COMMENT_KEY}\n";
+        let out = interpolate_env_vars(yaml).unwrap();
+        assert_eq!(
+            out,
+            "api_key: real-secret # fallback was ${_ATLAS_COMMENT_KEY}\n"
+        );
+        std::env::remove_var("_ATLAS_VALUE_KEY");
+    }
+
+    #[test]
+    fn hash_inside_value_without_preceding_whitespace_is_not_a_comment() {
+        std::env::set_var("_ATLAS_HASH_VAL", "ok");
+        // `foo#${VAR}` has `#` with no preceding whitespace — it is part of
+        // the value (e.g. a URL fragment), not a comment, so the placeholder
+        // after it must still be expanded.
+        let out = interpolate_env_vars("url: foo#${_ATLAS_HASH_VAL}\n").unwrap();
+        assert_eq!(out, "url: foo#ok\n");
+        std::env::remove_var("_ATLAS_HASH_VAL");
     }
 
     use std::io::Write;

@@ -544,3 +544,14 @@ sessions:
 
     - What this suggests next: the map/reduce task description should absorb the five L8 redesign action items from the spike doc before scheduling implementation; that task can be promoted to HIGH priority on the L3 swap alone.
     - Key learning: `TestBackend` keys on byte-identical inputs JSON, so any `build_llm_inputs` addition must also appear in integration test canned inputs; this is why the bug was invisible for over a year.
+- id: session-43
+  timestamp: 2026-05-02T14:13:56Z
+  phase: work
+  body: |
+    ### Session 43 (2026-05-02T14:13:56Z) — Fix env-var interpolation inside YAML comment lines
+
+    - **Attempted:** Fix `atlas init`-generated `config.yaml` failing to load because `${ENV_VAR}` placeholders in comment lines were being expanded (and erroring when unset).
+    - **What worked:** Refactored `interpolate_env_vars` in `crates/atlas-llm/src/config.rs` to be line-aware. Each line is split at the first comment-starting `#` (column-0 or preceded by ASCII whitespace); only the active prefix is scanned for `${...}` placeholders; the comment suffix is emitted verbatim. The hot-path scanning was extracted into `interpolate_segment`; comment-start detection into `find_yaml_comment_start`. TDD approach: four unit tests authored for both positive (value still expands) and negative (comment skipped) directions. The `hash_inside_value_without_preceding_whitespace_is_not_a_comment` test caught a thinko early — the heuristic must require whitespace before `#`, otherwise URL fragments like `foo#${VAR}` would silently stop expanding.
+    - **End-to-end coverage:** `crates/atlas-cli/tests/init_cmd.rs` gained `freshly_init_config_loads_without_setting_env_vars` — runs `atlas init`, then calls `AtlasConfig::load` with no env vars set, asserts success and correct default model. This is the direct regression test for the reported bug.
+    - **What this suggests next:** First-run UX is now clean. `verify-atlas-v1-success-criteria-end-to-end` is the natural next eval task; it would catch any similar first-run breakage on a real codebase. A v1.3.1 cut may also be warranted given the accumulated post-v1.3.0 fixes.
+    - **Known limitation:** The `find_yaml_comment_start` heuristic does not model quoted strings. A `${VAR}` inside a quoted YAML scalar that also contains ` # ` would be incorrectly treated as a comment. No Atlas template ships such a value; a code comment documents the limitation and the remediation path.

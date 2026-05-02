@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use atlas_llm::AtlasConfig;
 use tempfile::TempDir;
 
 #[test]
@@ -54,4 +55,22 @@ fn init_prints_written_paths() {
     assert!(stdout.contains("config.yaml"));
     assert!(stdout.contains("components.overrides.yaml"));
     assert!(stdout.contains("subsystems.overrides.yaml"));
+}
+
+#[test]
+fn freshly_init_config_loads_without_setting_env_vars() {
+    let dir = TempDir::new().unwrap();
+    Command::cargo_bin("atlas")
+        .unwrap()
+        .args(["init", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    // The scaffolded config.yaml ships ${ANTHROPIC_API_KEY} etc. inside
+    // commented-out documentation lines. Loading it should succeed without
+    // any provider env vars being set, because the active config selects
+    // claude-code/* which needs no providers entry.
+    let config = AtlasConfig::load(&dir.path().join(".atlas/config.yaml"))
+        .expect("freshly init'd config must load without env vars set");
+    assert_eq!(config.defaults.model, "claude-code/claude-sonnet-4-6");
 }
