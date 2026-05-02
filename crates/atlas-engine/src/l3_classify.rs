@@ -29,6 +29,9 @@ use component_ontology::{EvidenceGrade, LifecycleScope};
 use serde_json::{json, Value};
 
 use crate::db::{AtlasDatabase, Workspace};
+use crate::defaults::{
+    parse_embedded, render_kinds_for_prompt, render_lifecycle_scopes_for_prompt,
+};
 use crate::heuristics::{classify_deterministic, ManifestContents};
 use crate::l1_queries::{doc_headings, file_content, git_boundaries, manifests_in, shebangs};
 use crate::types::{Classification, ComponentKind, RationaleBundle};
@@ -314,6 +317,15 @@ fn build_llm_inputs(
         })
         .collect();
 
+    // `{{COMPONENT_KINDS}}` and `{{LIFECYCLE_SCOPES}}` are referenced in
+    // classify.md; without them prompt::render fails with an unknown-token
+    // error and every LLM-fallback classification degrades to `unknown`.
+    // Mirrors the L5/L6 `{{CATALOG_COMPONENTS}}` / `{{ONTOLOGY_KINDS}}`
+    // injection pattern.
+    let kinds_yaml = parse_embedded().expect("embedded component-kinds YAML must parse");
+    let kinds_block = render_kinds_for_prompt(&kinds_yaml);
+    let lifecycle_block = render_lifecycle_scopes_for_prompt(&kinds_yaml);
+
     json!({
         "dir_relative": rel_str,
         "rationale_bundle": {
@@ -323,6 +335,8 @@ fn build_llm_inputs(
             "shebangs": shebangs_json,
         },
         "manifest_contents": manifest_contents_json,
+        "COMPONENT_KINDS": kinds_block,
+        "LIFECYCLE_SCOPES": lifecycle_block,
     })
 }
 
@@ -555,6 +569,39 @@ mod tests {
             "rationale": "x",
         });
         assert!(parse_llm_response(value).is_err());
+    }
+
+    #[test]
+    fn classify_prompt_renders_with_build_llm_inputs() {
+        // Regression: `{{COMPONENT_KINDS}}` and `{{LIFECYCLE_SCOPES}}` in
+        // classify.md must be supplied by build_llm_inputs. Without them,
+        // every LLM-fallback classification degrades to `unknown` because
+        // `prompt::render` errors on unknown tokens.
+        let template = include_str!("../../../defaults/prompts/classify.md");
+        let bundle = RationaleBundle {
+            manifests: Vec::new(),
+            is_git_root: false,
+            doc_headings: Vec::new(),
+            shebangs: Vec::new(),
+        };
+        let snippets = BTreeMap::new();
+        let inputs = build_llm_inputs(
+            Path::new("/ws"),
+            Path::new("/ws/some-dir"),
+            &bundle,
+            &snippets,
+        );
+        let object = inputs.as_object().expect("inputs must be a JSON object");
+        let mut tokens = BTreeMap::new();
+        for (key, value) in object {
+            let rendered = match value {
+                Value::String(s) => s.clone(),
+                other => serde_json::to_string(other).unwrap_or_default(),
+            };
+            tokens.insert(key.clone(), rendered);
+        }
+        atlas_llm::prompt::render(template, &tokens)
+            .expect("classify.md must render with build_llm_inputs output");
     }
 
     #[test]

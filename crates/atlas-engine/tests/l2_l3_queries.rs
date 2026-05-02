@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use atlas_engine::{
-    candidate_components_at, is_component, seed_filesystem, AtlasDatabase, ComponentKind,
+    candidate_components_at, is_component, parse_embedded_component_kinds_yaml,
+    render_kinds_for_prompt, render_lifecycle_scopes_for_prompt, seed_filesystem, AtlasDatabase,
+    ComponentKind,
 };
 use atlas_index::{
     AlwaysTrue, ComponentEntry, OverridesFile, PathSegment, PinValue, OVERRIDES_SCHEMA_VERSION,
@@ -427,6 +429,8 @@ fn l3_ambiguous_candidate_calls_llm_fallback() {
     // exact inputs L3 will build. We construct the same inputs
     // structure here — if L3's JSON shape drifts, this miss will
     // surface immediately.
+    let kinds_yaml =
+        parse_embedded_component_kinds_yaml().expect("embedded component-kinds YAML must parse");
     let inputs = json!({
         "dir_relative": "",
         "rationale_bundle": {
@@ -439,6 +443,8 @@ fn l3_ambiguous_candidate_calls_llm_fallback() {
             "shebangs": [],
         },
         "manifest_contents": {},
+        "COMPONENT_KINDS": render_kinds_for_prompt(&kinds_yaml),
+        "LIFECYCLE_SCOPES": render_lifecycle_scopes_for_prompt(&kinds_yaml),
     });
     backend.respond(
         PromptId::Classify,

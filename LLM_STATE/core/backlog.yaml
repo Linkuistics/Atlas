@@ -106,7 +106,7 @@ tasks:
 - id: spike-validate-l3-l8-prompt-shape-for-per-candidate-http-backend
   title: 'Spike: validate L3/L8 prompt shape for per-candidate HTTP backend'
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: MEDIUM.** Unblocks `map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis` from MEDIUM to HIGH priority.
@@ -134,6 +134,40 @@ tasks:
     - Spike doc committed to `docs/spikes/`.
     - A clear go/no-go recommendation for each of L3 and L8.
     - If modifications are recommended, the scope of those changes is described in sufficient detail to add to the map/reduce task description.
+  results: |
+    **Spike doc:** `docs/spikes/2026-05-02-l3-l8-prompt-shape-spike.md` (12 KB).
+
+    ## What was decided
+
+    - **L3 `is_component`: GO without prompt changes.** The prompt is already shaped per-candidate; `build_llm_inputs` (l3_classify.rs:264) supplies no cross-candidate context, and the prompt body says "single candidate directory". Swapping `claude-code` → `anthropic` is a one-line `.atlas/config.yaml` change with zero Rust diff.
+    - **L8 `subcarve`: GO via redesign — not narrowing.** The current prompt's output is a curated list, three of its five structural signals are inherently parent-scoped, and the immediate-subdirectory listing isn't even in `req.inputs` (the agent discovers it via Glob). The redesign reuses the L3 `Classify` prompt per-subdir + a deterministic reduce step in Rust; the standalone `subcarve.md` prompt can be retired.
+
+    The spike doc carries five concrete action items the map/reduce task description should absorb before implementation, plus an in-document case for promoting that task from MEDIUM to HIGH priority on the L3 swap alone.
+
+    ## Bug found and fixed in scope
+
+    `prompt::render` was failing with `unknown token {{COMPONENT_KINDS}} in template` whenever L3 escalated to the LLM. Root cause: classify.md references `{{COMPONENT_KINDS}}` and `{{LIFECYCLE_SCOPES}}`, but `build_llm_inputs` never injected them — `render_kinds_for_prompt` and `render_lifecycle_scopes_for_prompt` were exported from atlas-engine and only ever called from drift tests. L5 and L6 had the analogous wiring; L3 was the asymmetry.
+
+    The bug stayed hidden because deterministic rules cover most candidates and L3 unit tests use TestBackend (which never invokes `prompt::render`). When the LLM-fallback path did fire in production, the error was swallowed into `unknown_classification("LLM call failed: …")` — every ambiguous candidate silently downgraded to `is_boundary: false`.
+
+    Fix: 5-line addition to `l3_classify.rs::build_llm_inputs` plus a regression test (`classify_prompt_renders_with_build_llm_inputs`) that calls `prompt::render` against the real template with the real inputs builder. The integration test `l3_ambiguous_candidate_calls_llm_fallback` was updated to add the same two keys to its canned-input JSON since TestBackend keys on byte-identical inputs.
+
+    ## Live testing
+
+    - **L3:** mechanically verified by the new regression test. A pipeline-level smoke test (`atlas index` over a markdown-only tempdir) ran but didn't trigger the LLM-fallback path — the bare-git-no-manifests deterministic rule short-circuited every candidate. Forcing the LLM path through the full pipeline would need hand-authored override `additions` or specifically-crafted non-manifest signals; out of scope.
+    - **L8:** ran `atlas index` against a synthetic Rust library at `/tmp/atlas-spike-l8/` mirroring Ravel-Lite's `agent/discover/state/survey` split. Result: 1 component (deterministic L3 via `cargo-lib`), 1 LLM call (Stage1Surface), no subcarve happened despite the structural setup being exactly what the prompt body describes. Either the subcarve LLM returned `should_subcarve: false` or the call errored — the cache only persists outcome-influencing successes. Either way, this confirms the prompt is brittle on minimal synthetic content and the redesigned per-subdir map step would not have this fragility.
+
+    ## What this enables
+
+    - Map/reduce task can be promoted from MEDIUM to HIGH priority on the L3 swap alone (zero-Rust-diff config change).
+    - The L8 redesign scope is now concrete: 5 action items with file/line references in the spike doc.
+    - Atlas's L3 LLM-fallback path is no longer silently broken; real ambiguous candidates will now produce real verdicts.
+
+    ## Suggests next
+
+    - The map/reduce task description should absorb the five L8 action items from the spike's "L8 — go via redesign" section before scheduling implementation.
+    - Consider a follow-up backlog task to harden the prompt-vocabulary contract: add a build-time test that diffs every `{{TOKEN}}` referenced in `defaults/prompts/*.md` against the union of input keys produced by every `build_*_inputs` builder, so the next vocab divergence fails the build at the point of authoring rather than silently in production.
+    - The `${ENV_VAR}` interpolation in `.atlas/config.yaml` greedily matches inside comment lines — `atlas init`'s scaffolded config fails to load for this reason. Trivial config-loader fix; not the spike's concern but observed in passing.
 - id: map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis
   title: Map/reduce LLM architecture with backend routing for context-light analysis
   category: feature
@@ -345,3 +379,54 @@ tasks:
 
     - Test passes under `ATLAS_LLM_RUN_CLAUDE_TESTS=1`.
     - No regressions in other `atlas-cli` tests.
+- id: prompt-template-token-coverage-check-build-time
+  title: Prompt-template token coverage check (build-time)
+  category: infra
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: LOW.** Defensive infrastructure to prevent recurrence of the bug surfaced by the L3/L8 prompt-shape spike (2026-05-02).
+
+    ## Context
+
+    `defaults/prompts/classify.md` referenced `{{COMPONENT_KINDS}}` and `{{LIFECYCLE_SCOPES}}` for over a year without ever being supplied — `l3_classify.rs::build_llm_inputs` forgot to inject them. `prompt::render` errored with `unknown token`, `classify_via_llm` swallowed the error into `unknown_classification("LLM call failed: ...")`, and every ambiguous L3 LLM-fallback candidate silently downgraded to `is_boundary: false`. The bug stayed hidden because:
+
+    - Deterministic rules cover most production candidates, so the LLM-fallback path rarely fired.
+    - L3 unit tests use `TestBackend`, which never invokes `prompt::render`.
+    - Cross-prompt asymmetry was invisible — L5 and L6 had analogous tokens (`{{CATALOG_COMPONENTS}}`, `{{ONTOLOGY_KINDS}}`) wired correctly, but nothing ties the four prompts to a shared contract.
+
+    The spike fixed L3 (commit landed via the analyse-work phase that follows the spike's work phase) and added a regression test specific to classify.md. This task adds the *general* contract.
+
+    ## Goal
+
+    Make the next vocab divergence fail at build time, not at the first cache-miss LLM call in production.
+
+    ## Scope
+
+    A single test (or `build.rs` check, depending on engineering taste — the test lives in atlas-cli or atlas-engine; build.rs lives in either) that:
+
+    1. Reads every `defaults/prompts/*.md` template at compile/test time.
+    2. Extracts every `{{TOKEN}}` referenced (the same regex `prompt::render` walks).
+    3. For each prompt, knows the engine builder that produces its `LlmRequest.inputs` JSON — `build_llm_inputs` (L3), `build_subcarve_inputs` (L8), `build_inputs` (L5), `build_inputs` (L6).
+    4. Calls each builder with a minimal but realistic stub component / candidate / surface input.
+    5. Asserts the union of top-level keys produced by the builder is a superset of the tokens the corresponding template references.
+
+    Builder hooks already exist as `pub(crate) fn build_*_inputs_for_tests` (L5, L8) so they can be reached from a sibling test file. L3 currently has no such hook; one would need to be added (`pub(crate) fn build_llm_inputs_for_tests`) that wraps `build_llm_inputs` with stub args.
+
+    The check should fail loudly with a message naming the prompt, the missing token, and the builder that should have supplied it — not just "tokens differ" which is unactionable.
+
+    ## Out of scope
+
+    - Validating *values* of tokens (the existing `l5_l6_tests_include_template_token_coverage_check` memory describes the per-prompt template-token coverage check that L5 and L6 already do — this task generalises it to all four prompts and builds the cross-cutting contract).
+    - Validating that response shapes match the prompts' declared output schemas (a different bug class).
+    - Catching the inverse direction (a builder field that no prompt references) — harmless, doesn't degrade behaviour.
+
+    ## Exit criteria
+
+    - A single test (or build check) that fails with a clear message when any prompt references a token its builder does not supply.
+    - The test passes today (post-spike fix).
+    - Documented in the relevant `tests/` README or as a top-of-file doc comment so a future contributor adding a prompt knows to extend the matrix.
+
+    ## Why low priority
+
+    The acute bug is fixed. The infrastructure prevents recurrence but doesn't unblock anything. Right work for a quiet hour or as part of the map/reduce task that introduces new prompts (`PromptId::ClassifySubdir` or similar — that work is the natural moment to make this check exist before a new prompt can ship without input-key coverage).

@@ -1,15 +1,17 @@
-id: session-41
-timestamp: 2026-05-02T12:28:54Z
+id: session-42
+timestamp: 2026-05-02T13:51:47Z
 phase: work
 body: |
-  ### Session 41 (2026-05-02T12:28:54Z) — Implement CodexBackend subprocess driver
+  ### Session 42 (2026-05-02T13:51:47Z) — Spike L3/L8 prompt shape; fix silent classify.md token bug
 
-  - Implemented the full `CodexBackend` in `crates/atlas-llm/src/codex.rs`, replacing the stub with a complete subprocess driver that parallels `ClaudeCodeBackend`.
-  - Added a pure parser module `crates/atlas-llm/src/codex_stream.rs` for parsing Codex's JSON-stream stdout output.
-  - Added three real-capture JSONL fixtures under `crates/atlas-llm/tests/fixtures/codex-stream/` (simple-classify, with-tools, turn-failed) plus a README documenting the capture/redaction process.
-  - Rewired the `codex/` arm in `crates/atlas-llm/src/router.rs` to construct the real backend with fingerprint inputs and observer (mirroring the `claude-code` arm exactly).
-  - 17 codex-specific unit tests pass; 453 total workspace tests pass; `cargo fmt` and `cargo clippy` are clean.
-  - Live construction test against real `codex-cli 0.125.0` binary passes. Live roundtrip test correctly maps HTTP-400 upstream errors into `LlmError::Invocation` — strong end-to-end validation.
-  - Key design decision: skipped `--output-schema` because Atlas's `ResponseSchema::accept_any()` schemas don't conform to OpenAI strict-mode requirements (no `additionalProperties: false`, non-exhaustive `required` lists); existing `validate_response` provides defense in depth. This decision is documented in the module-level doc comment and deferred for revisit when Atlas adopts strict schemas.
-  - Key discovery: `codex` wraps every shell-out in `/bin/zsh -lc "..."` — the `command_execution` summary helper strips this wrapper so agent sub-lines show the inner command. Also: `Stdio::null()` for stdin prevents a `"Reading additional input from stdin..."` message that could hang CI.
-  - What this suggests next: `CodexBackend` is now a peer of `ClaudeCodeBackend`; any `.atlas/config.yaml` selecting `codex/<model>` dispatches live. `--output-schema` support is a deferred follow-up once Atlas adopts strict response schemas as part of the map/reduce architecture shift.
+  - Executed spike `spike-validate-l3-l8-prompt-shape-for-per-candidate-http-backend`: audited L3 and L8 prompt shapes against the per-candidate HTTP backend design.
+  - L3 verdict: GO without prompt changes. `build_llm_inputs` supplies only candidate-scoped context; swapping `claude-code` → `anthropic` is a one-line config change.
+  - L8 verdict: GO via redesign. The subcarve prompt mixes parent-scoped signals with per-candidate output; redesign uses L3 `Classify` per-subdir plus a deterministic Rust reduce step. Five concrete action items documented in spike doc.
+  - Bug found and fixed in scope: `l3_classify.rs::build_llm_inputs` never injected `COMPONENT_KINDS` or `LIFECYCLE_SCOPES` despite `classify.md` referencing both. `prompt::render` silently errored; `classify_via_llm` swallowed the error; every LLM-fallback candidate degraded to `is_boundary: false`. Fix: inject both tokens at `l3_classify.rs:317` using `render_kinds_for_prompt` / `render_lifecycle_scopes_for_prompt`, matching the L5/L6 pattern.
+  - Regression test added (`classify_prompt_renders_with_build_llm_inputs` in `l3_classify.rs:571`): calls `prompt::render` against the real `classify.md` template with real `build_llm_inputs` output; fails loud if any token is missing.
+  - Integration test `l3_ambiguous_candidate_calls_llm_fallback` updated: canned `TestBackend` inputs now include `COMPONENT_KINDS` and `LIFECYCLE_SCOPES` so the byte-equality key still matches after the fix.
+  - Spike doc written to `docs/spikes/2026-05-02-l3-l8-prompt-shape-spike.md` (12 KB); includes five L8 action items for the map/reduce task to absorb.
+  - New backlog task `prompt-template-token-coverage-check-build-time` added: generalises the token-coverage check to all four prompts so the next vocab divergence fails at build time.
+
+  - What this suggests next: the map/reduce task description should absorb the five L8 redesign action items from the spike doc before scheduling implementation; that task can be promoted to HIGH priority on the L3 swap alone.
+  - Key learning: `TestBackend` keys on byte-identical inputs JSON, so any `build_llm_inputs` addition must also appear in integration test canned inputs; this is why the bug was invisible for over a year.
