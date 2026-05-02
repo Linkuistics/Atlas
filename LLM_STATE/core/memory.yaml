@@ -421,7 +421,7 @@ entries:
 - id: llm-config-env-var-interpolation-resolves-at-load-time
   title: LLM config env-var interpolation resolves at load time
   body: |
-    `${ENV_VAR}` placeholders in `.atlas/config.yaml` are resolved at config-load time, keeping API keys and secrets out of committed files. Unset variables produce a hard error at load time rather than a silent empty string.
+    `${ENV_VAR}` placeholders in `.atlas/config.yaml` are resolved at config-load time, keeping API keys and secrets out of committed files. Unset variables produce a hard error at load time rather than a silent empty string. Comment portions of lines (text after a `#` preceded by ASCII whitespace) are not interpolated — only the active YAML prefix of each line is scanned.
 - id: backendrouter-is-inside-the-existing-sentinel-cache-progress-stack
   title: BackendRouter is inside the existing sentinel/cache/progress stack
   body: |
@@ -480,3 +480,7 @@ entries:
     4. Goldens/eval re-run
 
     The backend infrastructure scope items in the task description can be treated as done.
+- id: interpolate-env-vars-skips-hash-in-quoted-scalar-silently
+  title: interpolate_env_vars skips hash-in-quoted-scalar silently
+  body: |
+    `find_yaml_comment_start` does not model quoted YAML strings. A `${VAR}` inside a quoted scalar that also contains ` # ` is incorrectly skipped as a comment and not interpolated. No Atlas template ships such a value; a code comment documents the remediation path.
