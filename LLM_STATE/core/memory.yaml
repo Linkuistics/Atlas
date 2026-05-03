@@ -527,3 +527,7 @@ entries:
     **Test escape hatch:** `BackendRouter::from_dispatch_table` (cfg-test) bypasses this check, so router unit tests that wire arbitrary `TestBackend` instances per `PromptId` are unaffected.
 
     **Future relaxation:** if HTTP backends gain a tool-use loop (filesystem Read/Glob/Grep returning to atlas-cli), the rejection becomes too strict — it can be loosened per-provider once a backend declares filesystem-access capability. A `LlmBackend::supports_filesystem()` capability flag is the natural shape.
+- id: openrouter-uses-openaihttpbackend-with-base-url-and-provider-label-fingerprint
+  title: OpenRouter uses OpenAiHttpBackend with_base_url and provider_label fingerprint
+  body: |
+    OpenRouter routes through `OpenAiHttpBackend` with `with_base_url` override and a distinct `provider_label` field. The `provider_label` is folded into `backend_version` fingerprint (`openai-http/<ver>+upstream=openrouter`), so Salsa LLM cache entries for OpenRouter and plain OpenAI do not collide even when both use the same model-id string. New providers on the OpenAI wire format follow this same pattern: override `base_url`, set `provider_label`.
