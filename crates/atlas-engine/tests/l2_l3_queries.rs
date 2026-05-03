@@ -432,8 +432,8 @@ fn l3_ambiguous_candidate_calls_llm_fallback() {
     let kinds_yaml =
         parse_embedded_component_kinds_yaml().expect("embedded component-kinds YAML must parse");
     let inputs = json!({
-        "dir_relative": "",
-        "rationale_bundle": {
+        "DIR_RELATIVE": "",
+        "RATIONALE_BUNDLE": {
             "manifests": [],
             "is_git_root": false,
             "doc_headings": [
@@ -442,7 +442,7 @@ fn l3_ambiguous_candidate_calls_llm_fallback() {
             ],
             "shebangs": [],
         },
-        "manifest_contents": {},
+        "MANIFEST_CONTENTS": {},
         "COMPONENT_KINDS": render_kinds_for_prompt(&kinds_yaml),
         "LIFECYCLE_SCOPES": render_lifecycle_scopes_for_prompt(&kinds_yaml),
     });

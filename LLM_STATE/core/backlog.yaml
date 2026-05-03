@@ -135,7 +135,7 @@ tasks:
 - id: investigate-l3-ambiguous-candidate-calls-llm-fallback-test-failure
   title: Investigate l3_ambiguous_candidate_calls_llm_fallback test failure
   category: infra
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: MEDIUM.** The `l3_ambiguous_candidate_calls_llm_fallback` test has been failing as a pre-existing failure independent of the current changes. Mentioned in the `surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing` results cycle: "The pre-existing `l3_ambiguous_candidate_calls_llm_fallback` failure should be triaged separately — out of scope here but worth surfacing."
@@ -154,6 +154,26 @@ tasks:
 
     - `cargo test -p atlas-engine --lib l3_ambiguous_candidate_calls_llm_fallback` passes.
     - No other L3 tests regress.
+  results: |
+    ## What was done
+
+    Updated `crates/atlas-engine/tests/l2_l3_queries.rs::l3_ambiguous_candidate_calls_llm_fallback` to use the uppercase JSON keys (`DIR_RELATIVE`, `RATIONALE_BUNDLE`, `MANIFEST_CONTENTS`) that `l3_classify::build_llm_inputs` now produces. The fixture had been authored against the pre-fix lowercase shape; the recent token-injection fix uppercased these alongside the new `COMPONENT_KINDS`/`LIFECYCLE_SCOPES` keys and updated the other affected test inputs, but missed this one.
+
+    ## Root cause
+
+    Classic stale-fixture cache miss. `TestBackend` keys canned responses on the byte-identical serialised `LlmRequest` (memory: `testbackend-requires-byte-identical-llmrequest-inputs-to-match-cache`). When the production keys uppercased, this fixture's lowercase keys stopped matching, every L3 LLM call fell through to `unknown_classification`, and the test asserted `DocsRepo` against the resulting `NonComponent` fallback.
+
+    The failure was structural, not behavioural: the fix was a one-line key-casing alignment, not a logic change.
+
+    ## Verification
+
+    - `cargo test -p atlas-engine --test l2_l3_queries` — 16/16 pass (was 15/16).
+    - `cargo test --workspace` — all 26 test binaries pass, 0 failures, 4 pre-existing `#[ignore]`s untouched.
+
+    ## What this suggests next
+
+    - The L3 token-injection follow-up triage caught some fixtures but not all. A future similar refactor should grep for `PromptId::Classify`/`backend.respond` callsites *and* JSON-fragment matches on the old key spelling before declaring fixture sync complete.
+    - The build-time token-coverage check (`prompt-template-token-coverage-check-build-time` infra task) remains relevant: it would catch template-side drift but not test-fixture drift like this one. A complementary safeguard would be a snapshot test of `build_llm_inputs` output keys, but that may be over-engineering for a 5-key payload — the existing template token-coverage test plus disciplined fixture audit during refactors is probably enough.
 - id: prompt-template-token-coverage-check-build-time
   title: Prompt-template token coverage check (build-time)
   category: infra
