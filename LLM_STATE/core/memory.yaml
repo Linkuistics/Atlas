@@ -26,12 +26,11 @@ entries:
   body: |
     `PinValue::Suppress` carries an `AlwaysTrue` marker field so that the legacy doubly-nested form (`suppress: false`) is a parse error rather than a silent no-op. Omitting `suppress: true` entirely is the intended representation of "no suppression".
 
-    **Two rejection paths now exist** (as of the natural-form deserialiser shipped in the PinValue serde rewrite):
+    Two rejection paths exist (as of the natural-form deserialiser):
+    1. **Natural bool path** — `PinValueVisitor::visit_bool` returns an error directly on `false`.
+    2. **Legacy map path** — `{suppress: false}` hits `AlwaysTrue::deserialize` which rejects non-true booleans.
 
-    1. **Natural bool path** — `PinValueVisitor::visit_bool` returns an error directly when it sees `false` (before `AlwaysTrue` is consulted).
-    2. **Legacy map path** — `{suppress: false}` still hits `AlwaysTrue::deserialize` which rejects non-true booleans.
-
-    Both paths produce an error; the outcome is identical. `AlwaysTrue` is still active for backward-compat with the legacy doubly-nested form.
+    Both paths produce an error; `AlwaysTrue` is still active for backward-compat with the legacy doubly-nested form.
 
     Cross-ref: `pinvalue-deserializer-dispatches-on-value-shape-via-visitor`.
 - id: docs-overrides-migration-md-is-a-ghost-reference-until-v2-schema-ships
@@ -131,7 +130,7 @@ entries:
   body: |
     TestBackend caches canned responses keyed by the full serialised LlmRequest. Any field difference produces a cache miss and triggers an unexpected LLM call. All TestBackend fixture inputs must be byte-identical to what the production driver builds.
 
-    Corollary: fixtures that pre-date a `build_llm_inputs` bug contain inputs matching the broken state, causing tests to pass while masking the bug. When fixing `build_llm_inputs`, audit all TestBackend fixture inputs and update them to match the corrected output.
+    Corollary: fixtures pre-dating a `build_llm_inputs` bug contain inputs matching the broken state, so tests pass while masking the bug. When fixing `build_llm_inputs`, audit all TestBackend fixture inputs and update them to match the corrected output.
 - id: seam-density-modularity-hint-uninformative-on-fixedpoint-iteration-0
   title: seam_density/modularity_hint uninformative on fixedpoint iteration 0
   body: |
@@ -149,36 +148,30 @@ entries:
 - id: assert-cmd-real-binary-tests-must-be-gated-behind-atlas-llm-run-claude-tests-1
   title: assert_cmd real-binary tests must be gated behind ATLAS_LLM_RUN_CLAUDE_TESTS=1
   body: |
-    Integration tests using assert_cmd that invoke the real atlas-cli binary must be gated behind `ATLAS_LLM_RUN_CLAUDE_TESTS=1`. Without the guard, running the test suite hits the production LLM backend and burns tokens.
+    Integration tests using assert_cmd that invoke the real atlas-cli binary must be gated behind `ATLAS_LLM_RUN_CLAUDE_TESTS=1`. Without the guard, the test suite hits the production LLM backend.
 
-    Gated tests short-circuit silently (vacuous pass) when the env var is unset. This makes structural breakage invisible: a prerequisite change (e.g. `atlas index` now requiring `.atlas/config.yaml`) leaves gated tests broken for an extended period with no test-suite signal.
+    Gated tests short-circuit silently (vacuous pass) when the env var is unset, making structural breakage invisible. A prerequisite change (e.g. `atlas index` now requiring `.atlas/config.yaml`) leaves gated tests broken with no test-suite signal.
 
-    Apply the same awareness to any new gated infrastructure test — the guard that prevents token burns is the same guard that hides regressions.
+    New gated infrastructure tests carry the same risk: the guard preventing token burns is the same guard hiding regressions.
 - id: externals-from-manifests-omits-workspace-dependencies-entries
   title: externals_from_manifests omits [workspace.dependencies] entries
   body: |
     `externals_from_manifests` parses each Cargo.toml independently and does not resolve `{ workspace = true }` dependency declarations. Workspace-inherited dependencies are silently omitted from external component detection. Deferred as a follow-up.
 - id: llm-cache-json-schema-split-deferred-to-v2
-  title: llm-cache.json schema split deferred to v2
+  title: llm-cache.json co-mingles responses and fingerprint metadata
   body: |
-    `llm-cache.json` co-mingles per-prompt responses with fingerprint metadata in a single flat file. Not urgent — byte-identity on no-op re-runs works. A v2 refactor (one file per prompt type, or content-sha keying) would produce smaller diffs and cheaper cache invalidation on fingerprint-only changes. Surface if the file grows large or diffs are hard to review.
+    `llm-cache.json` co-mingles per-prompt responses with fingerprint metadata in a single flat file. A v2 split — one file per prompt type, or content-sha keying — would reduce diff size and isolate cache invalidation to fingerprint-only changes.
 - id: l5-l6-tests-include-template-token-coverage-check
-  title: Prompt template token coverage tests are bidirectional for L3/L8, forward-only for L5/L6
+  title: 'Template coverage: L3/L8 bidirectional, L5/L6 forward-only'
   body: |
-    All LLM-adjacent prompts (L3, L5, L6, L8, and any new layer) require template-token coverage tests. Two directions matter:
+    All LLM-adjacent prompts (L3, L5, L6, L8) need two-direction coverage tests:
 
-    - **Forward** — every `{{TOKEN}}` in the template must map to a key in the `build_inputs` result. Catches `TemplateSyntax` panics.
-    - **Inverse** — every key in the `build_inputs` result must be referenced by a `{{TOKEN}}` in the template. Catches the silent-data-drop failure where a builder field has no matching template token, gets dropped by `prompt::render`, and leaves the LLM with no input. This was the L3/L8 bug (classify.md and subcarve.md were missing every per-call token).
+    - **Forward** — every `{{TOKEN}}` in the template maps to a `build_inputs` key. Catches `TemplateSyntax` panics.
+    - **Inverse** — every `build_inputs` key is referenced in the template. Catches silent-data-drop: a builder field with no matching template token is dropped by `prompt::render`. This was the L3/L8 bug (classify.md and subcarve.md were missing every per-call token).
 
-    Current coverage:
+    **L3** (`classify_prompt_token_coverage_is_bidirectional`) and **L8** (`subcarve_prompt_token_coverage_is_bidirectional`): bidirectional + verbatim rendered-prompt assertion. **L5** and **L6**: forward-only via `collect_template_tokens` helper; inverse not yet covered.
 
-    - **L3** (`classify_prompt_token_coverage_is_bidirectional` in `l3_classify.rs`): bidirectional + asserts the rendered prompt contains the candidate `dir_relative` value verbatim.
-    - **L8** (`subcarve_prompt_token_coverage_is_bidirectional` in `l8_recurse.rs`): bidirectional + asserts the rendered prompt contains the component id.
-    - **L5** (`l5_surface.rs`) and **L6** (`l6_edges.rs`): forward-only via `collect_template_tokens` helper. Inverse direction not yet covered.
-
-    Each test module duplicates a small `collect_template_tokens` helper rather than extracting it to a shared crate; trade is fine for four tests but extract if a fifth layer arrives.
-
-    Build-time generalisation to all four prompts is a pending backlog task (`prompt-template-token-coverage-check-build-time`) — its scope must include the inverse direction.
+    `collect_template_tokens` is duplicated in 4 test modules; extract to a shared crate if a fifth layer arrives. Build-time generalization (`prompt-template-token-coverage-check-build-time`) must include the inverse direction.
 - id: prompt-drift-tests-against-ravel-lite-are-invalid
   title: Prompt drift tests against Ravel-Lite are invalid
   body: |
@@ -279,15 +272,14 @@ entries:
     2. `git merge-base --is-ancestor HEAD origin/main` — fail unless HEAD is reachable from origin/main.
     3. `git ls-remote --exit-code --tags origin refs/tags/v<version>` — fail unless the release tag is on origin.
 
-    `release-build.sh` runs the check after `require_clean_tagged_tree` (fail-fast before the cold zigbuild). `release-publish.sh` runs it after `verify_tag_matches_artifacts` for defense in depth.
+    `release-build.sh` runs the check after `require_clean_tagged_tree`; `release-publish.sh` runs it after `verify_tag_matches_artifacts`.
 
     Without this check, `release-publish.sh` can create a GitHub Release whose underlying commit is absent from `origin/main` — `gh release create` silently auto-creates a remote tag even when the commit is not pushed.
 
     **Implementation invariants:**
-
-    - Use **ancestry** (`merge-base --is-ancestor HEAD origin/main`), not SHA equality. SHA equality false-positives if someone else lands on origin/main between local push and build.
-    - **No `--prune` / `--prune-tags`** on the fetch — release scripts must not impose tag-pruning side effects on the operator's working tree.
-    - Helper is **duplicated** in both scripts rather than sourced from `scripts/lib/`. Extract `lib/release-checks.sh` if the scripts grow more shared helpers.
+    - Use **ancestry** (`merge-base --is-ancestor`), not SHA equality. SHA equality false-positives if someone else lands on origin/main between local push and build.
+    - **No `--prune` / `--prune-tags`** on the fetch — release scripts must not impose tag-pruning side effects.
+    - Helper is **duplicated** in both scripts rather than sourced from `scripts/lib/`. Extract `lib/release-checks.sh` if more shared helpers accrue.
 - id: agent-progress-sub-line-is-a-third-indicatif-line-on-callstart-callend
   title: Agent progress sub-line is a third indicatif line on CallStart/CallEnd
   body: |
@@ -478,40 +470,33 @@ entries:
   body: |
     Current L8 subcarve prompt mixes parent-scoped signals with per-candidate output. Redesign: run L3 `Classify` on each subdir independently, then reduce deterministically in Rust. Five action items documented in `docs/spikes/2026-05-02-l3-l8-prompt-shape-spike.md`. The map/reduce task description must absorb these items before implementation is scheduled.
 - id: anthropichttpbackend-already-implemented-map-reduce-scope-is-narrower-than-task-description-implies
-  title: AnthropicHttpBackend already implemented; map/reduce scope is narrower than task description implies
+  title: AnthropicHttpBackend implemented; Anthropic prompt caching not yet enabled
   body: |
-    `AnthropicHttpBackend` is fully implemented at `crates/atlas-llm/src/http_anthropic.rs` and wired through `BackendRouter` (`router.rs`) with provider/model selection driven by `.atlas/config.yaml` operation overrides. Structured JSON output validation is in place.
+    `AnthropicHttpBackend` is implemented at `crates/atlas-llm/src/http_anthropic.rs` and wired through `BackendRouter` with provider/model routing from `.atlas/config.yaml`. Structured JSON output validation is in place.
 
-    **Prompt caching is NOT enabled.** The current implementation builds a single `messages: [{role: user, content: rendered}]` body with no `cache_control` blocks (verified at `http_anthropic.rs:84-88` on 2026-05-03). A separate backlog task (`enable-anthropic-prompt-caching-in-anthropichttpbackend`) tracks the work.
+    **Prompt caching not enabled.** The implementation sends `messages: [{role: user, content: rendered}]` with no `cache_control` blocks. Backlog task: `enable-anthropic-prompt-caching-in-anthropichttpbackend`.
 
-    **OpenAI prompt caching is automatic** — OpenAI caches any prompt ≥ 1024 tokens server-side without an opt-in marker. `http_openai.rs` therefore needs no code change for caching.
+    **OpenAI prompt caching is automatic** — any prompt ≥1024 tokens is cached server-side; `http_openai.rs` needs no code change.
 
-    The map/reduce task description treats `AnthropicHttpBackend` as a deliverable ("New AnthropicHttpBackend in crates/atlas-llm/...") — but the infrastructure is already there. The task's remaining work is:
-
-    1. The map/reduce L8 redesign (5 action items in `docs/spikes/2026-05-02-l3-l8-prompt-shape-spike.md`)
-    2. Routing `PromptId::Classify` through `AnthropicHttpBackend` via the `.atlas/config.yaml` operation-override key (config-only change, no Rust diff)
-    3. Cache hit-rate verification after the backend swap (depends on the prompt-caching task above)
+    Remaining map/reduce work:
+    1. L8 redesign (5 items in `docs/spikes/2026-05-02-l3-l8-prompt-shape-spike.md`)
+    2. Route `PromptId::Classify` through `AnthropicHttpBackend` via `.atlas/config.yaml` (config-only)
+    3. Cache hit-rate verification after backend swap
     4. Goldens/eval re-run
-
-    The backend infrastructure scope items in the task description can be treated as done.
 - id: interpolate-env-vars-skips-hash-in-quoted-scalar-silently
   title: interpolate_env_vars skips hash-in-quoted-scalar silently
   body: |
     `find_yaml_comment_start` does not model quoted YAML strings. A `${VAR}` inside a quoted scalar that also contains ` # ` is incorrectly skipped as a comment and not interpolated. No Atlas template ships such a value; a code comment documents the remediation path.
 - id: post-v1-3-0-surface-is-release-ready-consider-v1-3-1-before-external-monorepo-test
-  title: Post-v1.3.0 surface is release-ready; consider v1.3.1 before external monorepo test
+  title: Cut v1.3.1 before external monorepo test to reduce noise
   body: |
-    Post-v1.3.0 surface (env-var comment-skip fix + L3 token-injection fix + CodexBackend) is coherent enough to cut v1.3.1 (or v1.4.0 if Codex is treated as a feature) ahead of an external monorepo test. Decision is a release-cadence judgement, not blocked by code.
-
-    **Why:** Three paper-cut and correctness fixes landed in the same cycle; first-run UX is now clean. Cutting a minor version before external testing reduces "is this a known bug?" noise in early feedback.
-
-    **How to apply:** When preparing for external monorepo testing, check whether a release tag has been cut since this entry was written. If not, consider whether tagging v1.3.1 first is worthwhile.
+    v1.3.0 includes three correctness fixes: env-var comment-skip, L3 token-injection, CodexBackend. First-run UX is clean. Cut v1.3.1 before external monorepo testing to reduce "is this a known bug?" noise in early feedback.
 - id: dull-depth-1-skips-llm-path-due-to-dense-pin-coverage
   title: dull depth-1 skips LLM path due to dense pin coverage
   body: |
     `dull` depth-1 calibration produces output identical to depth-0: pin coverage is dense enough that all classify/subcarve decisions short-circuit deterministically, so the LLM call path is never exercised. `dull` cannot serve as a cross-target LLM validator in its current state.
 
-    Exit criteria for meaningful dull evaluation (authoring goldens + metric scoring) require three pipeline blockers to land first. Two are fixed (init schema_version fix; L3/L8 prompt-token fix). One remains: `validate-params-max-tokens-at-config-load-for-http-providers`.
+    Meaningful dull evaluation (authoring goldens + metric scoring) is blocked on `validate-params-max-tokens-at-config-load-for-http-providers`; the init schema_version fix and L3/L8 prompt-token fix are complete.
 - id: missing-params-max-tokens-causes-three-silent-llm-failure-layers
   title: Missing params.max_tokens causes three silent LLM failure layers
   body: |
