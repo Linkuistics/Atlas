@@ -166,18 +166,20 @@ entries:
   body: |
     `llm-cache.json` co-mingles per-prompt responses with fingerprint metadata in a single flat file. A v2 split — one file per prompt type, or content-sha keying — would reduce diff size and isolate cache invalidation to fingerprint-only changes.
 - id: l5-l6-tests-include-template-token-coverage-check
-  title: All four LLM prompts have bidirectional token-coverage tests
+  title: Three LLM prompts (L3/L5/L6) have bidirectional token-coverage tests
   body: |
-    All LLM-adjacent prompts (L3, L5, L6, L8) have bidirectional token-coverage tests:
+    Three LLM prompts (L3, L5, L6) have bidirectional token-coverage tests:
 
     - **Forward** — every `{{TOKEN}}` in the template maps to a `build_inputs` key. Catches `TemplateSyntax` panics.
     - **Inverse** — every `build_inputs` key is referenced in the template. Catches silent-data-drop: a builder field with no matching template token is dropped by `prompt::render`.
 
-    All four prompts are covered bidirectionally in a single `prompt_token_coverage.rs` test that iterates a `cases()` vec. Each layer exposes a parameterless stub builder for the matrix.
+    All three prompts are covered bidirectionally in a single `prompt_token_coverage.rs` test that iterates a `cases()` vec. Each layer exposes a parameterless stub builder for the matrix.
 
     **`cache_only_keys` exception:** builder fields used purely for cache-key fingerprinting (not referenced in the template) must be declared in `Case::cache_only_keys` to suppress the inverse-direction failure. Current example: `COMPONENT_CONTENT_SHAS` in L5 — baked into builder output to reshape cache keys on file-content change, but never mentioned in the prompt.
 
-    `collect_template_tokens` is duplicated in 4 test modules; extract to a shared crate if a fifth layer arrives. Build-time generalization (`prompt-template-token-coverage-check-build-time`) must include the inverse direction.
+    `collect_template_tokens` is duplicated in 3 test modules; extract to a shared crate if a fourth layer arrives. Build-time generalization (`prompt-template-token-coverage-check-build-time`) must include the inverse direction.
+
+    **L8/subcarve.md removed:** `subcarve.md` is no longer rendered (L8 map/reduce redesign replaces it with per-subdir L3 calls). Its row was removed from the coverage matrix. The file remains in `EMBEDDED_PROMPTS` for fingerprint stability but is not a live prompt.
 - id: prompt-drift-tests-against-ravel-lite-are-invalid
   title: Prompt drift tests against Ravel-Lite are invalid
   body: |
