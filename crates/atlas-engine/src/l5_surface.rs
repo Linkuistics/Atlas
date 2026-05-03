@@ -143,6 +143,33 @@ pub(crate) fn build_inputs_for_tests(component: &ComponentEntry, peer_ids: &[Str
     build_inputs(component, peer_ids)
 }
 
+/// Parameterless variant for the unified prompt/builder coverage
+/// matrix in [`crate::prompt_token_coverage`]. Constructs a minimal
+/// stub component so the matrix can call all four builders uniformly.
+#[cfg(test)]
+pub(crate) fn build_inputs_with_stubs_for_tests() -> Value {
+    let component = ComponentEntry {
+        id: "demo".into(),
+        parent: None,
+        kind: "rust-library".into(),
+        lifecycle_roles: Vec::new(),
+        language: None,
+        build_system: None,
+        role: None,
+        path_segments: vec![atlas_index::PathSegment {
+            path: std::path::PathBuf::from("crates/demo"),
+            content_sha: "0".repeat(64),
+        }],
+        manifests: Vec::new(),
+        doc_anchors: Vec::new(),
+        evidence_grade: component_ontology::EvidenceGrade::Strong,
+        evidence_fields: Vec::new(),
+        rationale: String::new(),
+        deleted: false,
+    };
+    build_inputs(&component, &[])
+}
+
 fn render_catalog_for_prompt(peer_ids: &[String]) -> String {
     if peer_ids.is_empty() {
         return "_(none — this component is the only catalog entry)_".to_string();

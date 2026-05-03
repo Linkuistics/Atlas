@@ -108,6 +108,25 @@ fn build_inputs(surfaces: &[SurfaceWithId]) -> Value {
     })
 }
 
+/// Parameterless wrapper for the unified prompt/builder coverage
+/// matrix in [`crate::prompt_token_coverage`]. Constructs a minimal
+/// pair of stub surfaces so the matrix can call all four builders
+/// uniformly.
+#[cfg(test)]
+pub(crate) fn build_inputs_with_stubs_for_tests() -> Value {
+    let surfaces = vec![
+        SurfaceWithId {
+            id: "alpha".into(),
+            surface: crate::surface_types::SurfaceRecord::default(),
+        },
+        SurfaceWithId {
+            id: "beta".into(),
+            surface: crate::surface_types::SurfaceRecord::default(),
+        },
+    ];
+    build_inputs(&surfaces)
+}
+
 #[derive(Debug, Serialize)]
 struct SurfacesWrapper<'a> {
     surfaces: &'a [SurfaceWithId],

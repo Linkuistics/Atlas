@@ -36,6 +36,9 @@ pub mod subcarve_policy;
 pub mod surface_types;
 pub mod types;
 
+#[cfg(test)]
+mod prompt_token_coverage;
+
 pub use db::{AtlasDatabase, ExecutedEvent, File, Workspace, DEFAULT_MAX_DEPTH};
 pub use defaults::{
     parse as parse_component_kinds_yaml, parse_embedded as parse_embedded_component_kinds_yaml,

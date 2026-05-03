@@ -22,11 +22,19 @@ const CONFIG_TEMPLATE: &str = r#"# Atlas LLM Configuration
 #   openai:
 #     api_key: ${OPENAI_API_KEY}
 
-# Global defaults — both `model` fields are REQUIRED.
+# Global defaults — `model` is REQUIRED. `params.max_tokens` is required
+# whenever the resolved provider is HTTP (`anthropic`, `openai`); ignored
+# for subprocess providers (`claude-code`, `codex`). Shipped active so a
+# user flipping `model:` to an HTTP provider only needs to add the api_key.
+# 4096 fits Haiku/Sonnet-class outputs; raise to 8192+ for Opus/larger.
 defaults:
   model: claude-code/claude-sonnet-4-6
+  params:
+    max_tokens: 4096
 
-# Per-operation overrides — all optional; absent entries inherit defaults.
+# Per-operation overrides — all optional; absent entries inherit `defaults`
+# (including `params.max_tokens`). Override `max_tokens` per-op when a
+# specific stage needs a different output budget.
 # operations:
 #
 #   # L3: is_component — one call per candidate directory.

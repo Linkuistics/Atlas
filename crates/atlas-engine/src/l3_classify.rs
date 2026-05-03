@@ -340,6 +340,27 @@ fn build_llm_inputs(
     })
 }
 
+/// Parameterless wrapper around [`build_llm_inputs`] for the unified
+/// prompt/builder coverage matrix in [`crate::prompt_token_coverage`].
+/// Stubs out the workspace, candidate dir, rationale bundle, and
+/// snippets so the matrix can call all four builders uniformly.
+#[cfg(test)]
+pub(crate) fn build_llm_inputs_for_tests() -> Value {
+    let bundle = RationaleBundle {
+        manifests: Vec::new(),
+        is_git_root: false,
+        doc_headings: Vec::new(),
+        shebangs: Vec::new(),
+    };
+    let snippets = BTreeMap::new();
+    build_llm_inputs(
+        Path::new("/ws"),
+        Path::new("/ws/some-dir"),
+        &bundle,
+        &snippets,
+    )
+}
+
 fn parse_llm_response(value: Value) -> Result<Classification, String> {
     // Accept a Classification shape plus a handful of minor
     // deviations the LLM may introduce (missing optional fields,

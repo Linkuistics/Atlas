@@ -76,6 +76,32 @@ fn freshly_init_config_loads_without_setting_env_vars() {
 }
 
 #[test]
+fn freshly_init_config_loads_when_flipped_to_http_provider() {
+    let dir = TempDir::new().unwrap();
+    Command::cargo_bin("atlas")
+        .unwrap()
+        .args(["init", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    // Simulate the smallest realistic edit a user makes to enable an HTTP
+    // provider: swap the default model and add a concrete api_key.
+    // params.max_tokens must already be in the scaffold — otherwise
+    // AtlasConfig::load returns ConfigError::MissingMaxTokens.
+    let config_path = dir.path().join(".atlas/config.yaml");
+    let original = std::fs::read_to_string(&config_path).unwrap();
+    let edited = original.replace(
+        "defaults:\n  model: claude-code/claude-sonnet-4-6",
+        "providers:\n  anthropic:\n    api_key: \"test-key\"\ndefaults:\n  model: anthropic/claude-sonnet-4-6",
+    );
+    assert_ne!(edited, original, "model line not found in scaffold");
+    std::fs::write(&config_path, edited).unwrap();
+
+    AtlasConfig::load(&config_path)
+        .expect("flipped-to-anthropic config must load — params.max_tokens must ship in scaffold");
+}
+
+#[test]
 fn freshly_init_overrides_pass_validate_overrides() {
     let dir = TempDir::new().unwrap();
     Command::cargo_bin("atlas")

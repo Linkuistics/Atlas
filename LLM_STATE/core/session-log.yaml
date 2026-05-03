@@ -623,3 +623,13 @@ sessions:
     - **What didn't work:** Nothing; the implementation matched the task spec exactly and no iteration was needed.
     - **What this suggests trying next:** The `filesystem-tool-use-loop-for-http-llm-backends-provider-agnostic` task is the natural follow-on — once tool-use loops are wired to `AnthropicHttpBackend` and `OpenAiHttpBackend`, the routing rejection added here can loosen from an unconditional ban to a per-backend capability check.
     - **Key learnings:** Placing the guard after provider string parsing but before the `match` block keeps the rejection synchronous and env-independent — no subprocess is ever constructed for the rejected case, so the failure is cheap and deterministic regardless of whether the `claude` binary is available.
+- id: session-49
+  timestamp: 2026-05-03T12:35:23Z
+  phase: work
+  body: |
+    ### Session 49 (2026-05-03T12:35:23Z) — Bidirectional prompt/builder token-coverage matrix + atlas init max_tokens scaffold
+
+    - **Attempted:** Two infra tasks: (1) implement the unified bidirectional prompt/builder token-coverage matrix deferred from the prior session, and (2) add `params.max_tokens` as an active field in the `atlas init` config scaffold.
+    - **What worked:** Both tasks completed. `prompt_token_coverage.rs` now exercises all four shipped prompts (`classify.md`, `subcarve.md`, `stage1-surface.md`, `stage2-edges.md`) in both directions from a single test; each layer exposes a parameterless stub builder for the matrix. The `atlas init` template now ships `params: max_tokens: 4096` active under `defaults:`, with a new regression test that verifies a freshly-init'd config survives an HTTP-provider flip without a `MissingMaxTokens` error.
+    - **What this suggests next:** The three high-priority bugs discovered in the previous session (`validate-params-max-tokens-at-config-load-for-http-providers`, `surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing`, `reject-http-providers-for-stage1surface-and-stage2edges-in-backendrouter`) are still the critical path to the second-golden eval task. The token-coverage infrastructure now makes adding future prompt templates safe by default — extend `prompt_token_coverage::cases()` when adding a new `PromptId`.
+    - **Key learnings:** The inverse-direction coverage check required `cache_only_keys` allowlisting for L5: `COMPONENT_CONTENT_SHAS` is baked into builder output to reshape cache keys on file-content change, but the LLM prompt never references it. This pattern (builder supplies SHA-bearing fields for cache fingerprinting that the template never sees) will recur and the `Case::cache_only_keys` field handles it cleanly.

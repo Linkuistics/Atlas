@@ -207,6 +207,42 @@ pub(crate) fn build_subcarve_inputs_for_tests(
     build_subcarve_inputs(entry, signals)
 }
 
+/// Parameterless variant for the unified prompt/builder coverage matrix
+/// in [`crate::prompt_token_coverage`]. Constructs minimal stub entry +
+/// signals so the matrix can call all four builders uniformly.
+#[cfg(test)]
+pub(crate) fn build_subcarve_inputs_with_stubs_for_tests() -> Value {
+    let entry = ComponentEntry {
+        id: "demo".into(),
+        parent: None,
+        kind: "rust-library".into(),
+        lifecycle_roles: Vec::new(),
+        language: None,
+        build_system: None,
+        role: None,
+        path_segments: vec![atlas_index::PathSegment {
+            path: std::path::PathBuf::from("crates/demo"),
+            content_sha: "0".repeat(64),
+        }],
+        manifests: Vec::new(),
+        doc_anchors: Vec::new(),
+        evidence_grade: component_ontology::EvidenceGrade::Strong,
+        evidence_fields: Vec::new(),
+        rationale: String::new(),
+        deleted: false,
+    };
+    let signals = SubcarveSignals {
+        kind: ComponentKind::RustLibrary,
+        current_depth: 0,
+        max_depth: 8,
+        seam_density: 0.0,
+        modularity_hint: None,
+        cliques_touching: Vec::new(),
+        pin_suppressed_children: Vec::new(),
+    };
+    build_subcarve_inputs(&entry, &signals)
+}
+
 /// Build the input JSON fed to `PromptId::Subcarve`. Shape matches the
 /// prompt's `{{COMPONENT_ID}}`, `{{COMPONENT_KIND}}`,
 /// `{{STRUCTURAL_SIGNALS}}`, `{{EDGE_NEIGHBOURHOOD}}` tokens.
