@@ -1,11 +1,15 @@
-id: session-53
-timestamp: 2026-05-03T23:42:11Z
+id: session-54
+timestamp: 2026-05-03T23:58:34Z
 phase: work
 body: |
-  ### Session 53 (2026-05-03T23:42:11Z) — Add bounded concurrency to L8 map step via rayon
+  ### Session 54 (2026-05-03T23:58:34Z) — Drop vestigial seam_density/cliques_touching from SubcarveSignals
 
-  - **Attempted:** Wire bounded concurrency into the L8 `map_reduce_subcarve` map step, replacing the serial `for` loop with a `rayon` parallel iterator backed by a private thread pool sized to a configurable `map_concurrency` value.
-  - **What worked:** All objectives landed cleanly. `run_map_step` extracts the parallel path cleanly; `classify_with_panic_isolation` wraps each closure in `catch_unwind(AssertUnwindSafe(...))` so a panicked classifier degrades to an `unknown_classification` verdict without poisoning sibling workers. Salsa 0.26's `&Database: !Send` constraint was resolved by passing a cloned `AtlasDatabase` as the `map_with` seed — clones share the memoised query graph and `LlmResponseCache` but each get their own `ZalsaLocal`. `map_concurrency` is plumbed end-to-end: `AtlasDatabase` getter/setter, `FixedpointConfig`, `IndexConfig`, and `--map-concurrency` CLI flag. Determinism is covered by a new test (`map_step_is_deterministic_across_concurrency_settings`) on a four-subdir lib fixture. All 26 test groups pass; `cargo clippy` clean.
-  - **What didn't:** No regressions; no blocked objectives. The task's "wall-time ≤5 min on a 74-component monorepo" criterion cannot be verified without a live HTTP backend run, but the logic path is correct.
-  - **What this suggests next:** Verify the cache hit-rate and wall-time improvement on `dull` at depth 1 with `anthropic/claude-haiku-4-5` (or similar cheap model). Consider whether `LlmResponseCache` contention under high concurrency is a bottleneck at `map_concurrency > 8`.
-  - **Key learnings:** The `par_iter().map_with(...).collect()` pattern from rayon's `IndexedParallelIterator` preserves input order deterministically — no manual post-sort needed. The `LlmResponseCache` Mutex releases around the backend call, so a panicked backend does not poison the lock for siblings.
+  - Removed `seam_density` (f32) and `cliques_touching` (Vec<Clique>) fields from `SubcarveSignals` in `subcarve_policy.rs` — neither field was read by `subcarve_policy::decide`; only `modularity_hint` feeds into depth-cap logic.
+  - Removed their computation from `compute_decision` in `l8_recurse.rs`: dropped `seam_density_value`, the `cliques_touching_id` helper, and the `CLIQUES_TOUCHING_MIN_K` constant.
+  - Updated the import in `l8_recurse.rs` from `{cliques, modularity_hint, seam_density, Clique}` to `modularity_hint` only.
+  - Updated all affected comments and test doc-strings to remove references to the removed fields (three comment blocks in `l8_recurse.rs`, two in `subcarve_policy.rs`).
+  - All tests pass; no behavioural change — the removed fields were computed but never used in any policy branch.
+
+  What worked: the removal was clean and mechanical — no call sites referenced the dropped fields outside of `compute_decision`, so no cascading changes were required beyond the two files.
+
+  What this suggests trying next: the next structural task is to ensure the L8 bidirectional token-coverage test (added in session 53) correctly covers the trimmed `SubcarveSignals`; that test is already in tree and references the struct, so it will catch any future field drift.

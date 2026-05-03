@@ -47,15 +47,9 @@ use rayon::prelude::*;
 
 use crate::db::{AtlasDatabase, Workspace};
 use crate::l4_tree::all_components;
-use crate::l7_structural::{cliques, modularity_hint, seam_density, Clique};
+use crate::l7_structural::modularity_hint;
 use crate::subcarve_policy::{decide, decide_kind_only, PolicyDecision, SubcarveSignals};
 use crate::types::{Classification, ComponentKind};
-
-/// Min-k for clique search feeding [`SubcarveSignals::cliques_touching`].
-/// 3 matches the design §4.1 wording ("triangles of mutual reference are
-/// a strong coupling signal"); a K2 clique is just an edge and would
-/// flood the signal with noise.
-const CLIQUES_TOUCHING_MIN_K: u32 = 3;
 
 /// The full outcome of an L8 decision: whether to recurse, the
 /// directories to open up as new L2 candidate roots, and the rationale
@@ -115,10 +109,9 @@ fn compute_decision(db: &AtlasDatabase, id: &str) -> SubcarveDecision {
 
     // Cheap guards first: the universal depth cap and the kind-only
     // policy fast-path stop most components without ever touching
-    // `seam_density` / `modularity_hint` / `cliques`. Those signals
-    // transitively pull L5 `surface_of` LLM calls via `edge_graph`, so
-    // computing them eagerly would burn LLM budget on components whose
-    // verdict is already `Stop`.
+    // `modularity_hint`. That signal transitively pulls L5 `surface_of`
+    // LLM calls via `edge_graph`, so computing it eagerly would burn LLM
+    // budget on components whose verdict is already `Stop`.
     if current_depth >= max_depth {
         return SubcarveDecision::stopped(&format!(
             "policy: stop (kind={}, depth={}/{})",
@@ -152,20 +145,16 @@ fn compute_decision(db: &AtlasDatabase, id: &str) -> SubcarveDecision {
         None => {}
     }
 
-    // Library kinds: structural signals are required to decide the
-    // depth cap and to feed the map step.
-    let seam_density_value = seam_density(db, id.to_string());
+    // Library kinds: the modularity hint is required to decide the
+    // depth cap, and pin-suppressed children gate the map step.
     let modularity_hint_value = modularity_hint(db, id.to_string());
-    let cliques_touching = cliques_touching_id(db, id);
     let pin_suppressed_children = pin_suppressed_children_of(db, id);
 
     let signals = SubcarveSignals {
         kind,
         current_depth,
         max_depth,
-        seam_density: seam_density_value,
         modularity_hint: modularity_hint_value,
-        cliques_touching,
         pin_suppressed_children,
     };
 
@@ -198,14 +187,6 @@ fn compute_depth(components: &[ComponentEntry], id: &str) -> u32 {
         }
     }
     depth
-}
-
-fn cliques_touching_id(db: &AtlasDatabase, id: &str) -> Vec<Clique> {
-    cliques(db, CLIQUES_TOUCHING_MIN_K)
-        .iter()
-        .filter(|c| c.members.iter().any(|m| m == id))
-        .cloned()
-        .collect()
 }
 
 fn pin_suppressed_children_of(db: &AtlasDatabase, id: &str) -> Vec<String> {
@@ -581,10 +562,10 @@ mod tests {
 
     // ---------------------------------------------------------------
     // Regression: short-circuiting Stop verdicts must skip structural
-    // signal computation. `seam_density` and `modularity_hint`
-    // transitively pull L5 `surface_of` calls via `edge_graph` →
-    // `all_proposed_edges`, so an eager `compute_decision` would burn
-    // the LLM budget on components it has already decided to stop on.
+    // signal computation. `modularity_hint` transitively pulls L5
+    // `surface_of` calls via `edge_graph` → `all_proposed_edges`, so an
+    // eager `compute_decision` would burn the LLM budget on components
+    // it has already decided to stop on.
     // ---------------------------------------------------------------
 
     /// Backend that records every `call` it receives. Wraps an inner
@@ -641,7 +622,7 @@ mod tests {
         // The universal depth guard fires before any structural-signal
         // read; with `--max-depth 0`, no Stage1Surface calls should be
         // issued for the component under decision. A regression here
-        // would mean `seam_density` is being computed eagerly again.
+        // would mean `modularity_hint` is being computed eagerly again.
         let (db, backend, _tmp) = db_with_recording_backend(|root| build_lib_crate(root, "lib"));
         db.set_max_depth(0);
         let id = all_components(&db)

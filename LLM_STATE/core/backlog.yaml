@@ -358,7 +358,7 @@ tasks:
 - id: drop-vestigial-seam-density-cliques-touching-from-subcarvesignals
   title: Drop vestigial seam_density/cliques_touching from SubcarveSignals
   category: infra
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: LOW (cleanup).** `seam_density` and `cliques_touching` in `SubcarveSignals` are computed in `l8_recurse::compute_decision` on every library-kind component path but are never read by `subcarve_policy::decide`. `modularity_hint` is the only structural signal that feeds into depth-cap logic.
@@ -384,6 +384,37 @@ tasks:
 
     - Memory: `seam-density-modularity-hint-uninformative-on-fixedpoint-iteration-0`
     - Surfaced in results of `skip-l8-structural-signal-computation-when-policy-will-stop`
+  results: |
+    ## Outcome
+
+    Dropped `seam_density` and `cliques_touching` from `SubcarveSignals` and removed their computation in `compute_decision`. `modularity_hint` is now the only structural signal feeding the policy, matching the design recorded in memory entry `seam-density-modularity-hint-uninformative-on-fixedpoint-iteration-0`.
+
+    ## What changed
+
+    - `crates/atlas-engine/src/subcarve_policy.rs`:
+      - Removed `seam_density: f32` and `cliques_touching: Vec<Clique>` fields from `SubcarveSignals`.
+      - Removed unused `Clique` import.
+      - Removed field initialisations from the `signals_for` test helper.
+      - Updated the `decide_kind_only` doc comment to drop `seam_density` / `cliques` mentions.
+    - `crates/atlas-engine/src/l8_recurse.rs`:
+      - Removed `seam_density(...)` and `cliques_touching_id(...)` calls from `compute_decision`.
+      - Deleted the `cliques_touching_id` helper (no remaining callers).
+      - Deleted the `CLIQUES_TOUCHING_MIN_K` constant (no remaining callers).
+      - Trimmed `cliques`, `seam_density`, `Clique` from the `crate::l7_structural` import.
+      - Updated three comments (one inline, two in the test module) that named `seam_density` to name `modularity_hint` instead.
+
+    Net diff: 16 insertions, 40 deletions across the two files.
+
+    ## Verification
+
+    - `cargo build --workspace` — clean.
+    - `cargo test --workspace` — every test suite passes (no failures, no new ignored tests). Of particular note, the regression tests that assert "stop-kind decisions must not pull L5 `surface_of`" — `max_depth_zero_skips_all_l5_surface_calls_on_library_kind` and `cli_kind_skips_all_llm_calls_under_normal_max_depth` — both still pass: the depth-guard fast-path remains load-bearing because `modularity_hint` (the surviving structural signal) transitively pulls L5 just as `seam_density` did.
+    - `cargo clippy --workspace --all-targets -- -D warnings` — clean. The deletion of `cliques_touching_id` / `CLIQUES_TOUCHING_MIN_K` removes the last in-crate users of `cliques(...)`, but `lib.rs` still re-exports `cliques`, `Clique`, `seam_density` publicly via `pub use`, so clippy does not flag them as dead code.
+
+    ## What this suggests next
+
+    - The L7 query functions `seam_density` and `cliques` (in `l7_structural.rs`) and the `Clique` type now have **zero in-crate consumers**; they survive only as publicly re-exported items in `lib.rs:67-70`. This is a separate cleanup candidate: deleting them removes ~50 lines of code plus their unit tests, but it is a public-API breakage and out of scope for this task. Worth a follow-up backlog entry only if the surface remains unused after the next planned-capabilities work lands; otherwise leave them as keep-for-now reusable analyses.
+    - Memory entry `seam-density-modularity-hint-uninformative-on-fixedpoint-iteration-0` is now partially stale (it describes `seam_density` and `cliques_touching` as "computed but never consulted by `decide`"; that's no longer true because they aren't computed at all). The analyse-work phase should refresh that entry to reflect the new shape: only `modularity_hint` remains as a structural signal, and the depth-guard short-circuit is what keeps it from costing LLM calls on Stop-kind components.
 - id: confirm-l8-perf-win-on-dull-at-max-depth-0
   title: Confirm L8 perf win on dull at --max-depth 0
   category: eval

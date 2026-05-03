@@ -11,7 +11,7 @@
 //! table handles most components and the LLM is only consulted when
 //! the policy genuinely cannot decide.
 
-use crate::l7_structural::{Clique, ModularityHint};
+use crate::l7_structural::ModularityHint;
 use crate::types::ComponentKind;
 
 /// Hard depth cap for library-like kinds whose signals do not fire.
@@ -26,9 +26,7 @@ pub struct SubcarveSignals {
     pub kind: ComponentKind,
     pub current_depth: u32,
     pub max_depth: u32,
-    pub seam_density: f32,
     pub modularity_hint: Option<ModularityHint>,
-    pub cliques_touching: Vec<Clique>,
     pub pin_suppressed_children: Vec<String>,
 }
 
@@ -50,11 +48,10 @@ pub enum PolicyDecision {
 /// cap), or `None` when structural signals are required.
 ///
 /// Used by [`crate::l8_recurse::compute_decision`] to short-circuit the
-/// `seam_density` / `modularity_hint` / `cliques` computation when the
-/// verdict is already known — those signals transitively pull L5
-/// `surface_of` LLM calls, so skipping them on every Stop kind takes a
-/// `--max-depth 0 --dry-run` pass from many minutes to filesystem-walk-
-/// only.
+/// `modularity_hint` computation when the verdict is already known —
+/// that signal transitively pulls L5 `surface_of` LLM calls, so skipping
+/// it on every Stop kind takes a `--max-depth 0 --dry-run` pass from
+/// many minutes to filesystem-walk-only.
 ///
 /// Only library kinds return `None`: their depth cap depends on
 /// `modularity_hint`. Every other arm decides from `kind` alone.
@@ -148,9 +145,7 @@ mod tests {
             kind,
             current_depth: 0,
             max_depth: 8,
-            seam_density: 0.0,
             modularity_hint: None,
-            cliques_touching: Vec::new(),
             pin_suppressed_children: Vec::new(),
         }
     }
