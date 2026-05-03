@@ -496,7 +496,7 @@ entries:
   body: |
     `dull` depth-1 calibration produces output identical to depth-0: pin coverage is dense enough that all classify/subcarve decisions short-circuit deterministically, so the LLM call path is never exercised. `dull` cannot serve as a cross-target LLM validator in its current state.
 
-    The init `schema_version` fix, L3/L8 prompt-token fix, and `params.max_tokens` config-load validation are all complete; no remaining known blockers on authoring goldens + metric scoring.
+    The init `schema_version` fix, L3/L8 prompt-token fix, and `params.max_tokens` config-load validation are all complete. One remaining blocker: `surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing` must land to close the soft-fail error-absorption layer before authoring goldens + metric scoring is meaningful.
 - id: missing-params-max-tokens-causes-three-silent-llm-failure-layers
   title: HTTP-provider config missing params.max_tokens rejected at config load
   body: |
