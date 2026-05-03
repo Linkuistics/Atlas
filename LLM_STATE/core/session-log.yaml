@@ -612,3 +612,14 @@ sessions:
     - **What didn't work:** Nothing; the fix was minimal and surgical (3 key renames in the JSON fixture).
     - **What this suggests trying next:** The L3/L8 test suite is now clean. `verify-atlas-v1-success-criteria-end-to-end` against `dull` is the next natural step.
     - **Key learnings:** The `TestBackend` byte-exact matching requirement means every key rename in `build_llm_inputs` must be mirrored in every test fixture that constructs the matching `LlmRequest`. A helper or macro that assembles the canonical fixture inputs from the same source-of-truth as the production function would prevent this class of drift.
+- id: session-48
+  timestamp: 2026-05-03T12:03:45Z
+  phase: work
+  body: |
+    ### Session 48 (2026-05-03T12:03:45Z) — Reject HTTP providers for filesystem-required prompts in BackendRouter
+
+    - **What was attempted:** Implement routing constraint: `BackendRouter::new` must reject HTTP providers (`anthropic`, `openai`) for `Stage1Surface` and `Stage2Edges` at construction time, since those prompt IDs require filesystem access that HTTP backends cannot provide.
+    - **What worked:** Full implementation via option 1 from the task description. A module-level helper `reject_http_for_filesystem_required_prompt` was added to `crates/atlas-llm/src/router.rs` and called inside `BackendRouter::new`'s provider-routing loop after provider string parsing but before any subprocess construction. Error messages name the prompt label, suggest the correct provider alternatives, and include the offending model string from config. Five unit tests cover: anthropic rejected for `Stage1Surface`, openai rejected for `Stage2Edges`, HTTP accepted for `Classify`/`Subcarve`, filesystem providers accepted for all four prompt IDs, and end-to-end router construction failure for an anthropic-defaulted config.
+    - **What didn't work:** Nothing; the implementation matched the task spec exactly and no iteration was needed.
+    - **What this suggests trying next:** The `filesystem-tool-use-loop-for-http-llm-backends-provider-agnostic` task is the natural follow-on — once tool-use loops are wired to `AnthropicHttpBackend` and `OpenAiHttpBackend`, the routing rejection added here can loosen from an unconditional ban to a per-backend capability check.
+    - **Key learnings:** Placing the guard after provider string parsing but before the `match` block keeps the rejection synchronous and env-independent — no subprocess is ever constructed for the rejected case, so the failure is cheap and deterministic regardless of whether the `claude` binary is available.

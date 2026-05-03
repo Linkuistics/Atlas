@@ -507,3 +507,15 @@ entries:
   title: Pipeline aborts with exit code 3 on LlmError::Setup
   body: |
     `IndexError::SetupFailed(String)` maps to exit code 3 in `main.rs`. The pipeline checks `BudgetSentinel` twice: once after the fixedpoint (catches L3/L8 paths) and once after the L9 projection walk (catches L5/L6 `surface_of`/`all_proposed_edges`). L5/L6/L8 still produce fallback notes on `LlmError::Setup`; the sentinel gates before those notes reach disk. `IndexSummary.llm_errors` reports error count separately from call count.
+- id: backendrouter-rejects-http-providers-for-stage1surface-and-stage2edges
+  title: BackendRouter rejects HTTP providers for Stage1Surface and Stage2Edges
+  body: |
+    `BackendRouter::new` rejects HTTP providers (`anthropic`, `openai`) when routed to `PromptId::Stage1Surface` or `PromptId::Stage2Edges`. The check fires after provider/model parsing and before any backend construction; failure is `LlmError::Setup` carrying a message that names the prompt label, the suggested filesystem-access providers (`claude-code`, `codex`), and the offending model string.
+
+    **Why:** the rendered surface/edges prompts interpolate only candidate-id and catalog tokens — no file contents — so an HTTP backend (which has no out-of-band filesystem tool) cannot meaningfully extract a surface or synthesise edges. Without the rejection, a config that routes `operations.surface.model: anthropic/...` loads cleanly and produces hallucinated surfaces.
+
+    **Helper:** `reject_http_for_filesystem_required_prompt(prompt_id, provider, model_str)` lives at module level in `crates/atlas-llm/src/router.rs`. The HTTP-providers list is duplicated from `config.rs::validate`'s `HTTP_PROVIDERS` constant; consolidate if a third caller arrives.
+
+    **Test escape hatch:** `BackendRouter::from_dispatch_table` (cfg-test) bypasses this check, so router unit tests that wire arbitrary `TestBackend` instances per `PromptId` are unaffected.
+
+    **Future relaxation:** if HTTP backends gain a tool-use loop (filesystem Read/Glob/Grep returning to atlas-cli), the rejection becomes too strict — it can be loosened per-provider once a backend declares filesystem-access capability.

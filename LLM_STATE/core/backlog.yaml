@@ -192,7 +192,7 @@ tasks:
 - id: reject-http-providers-for-stage1surface-and-stage2edges-in-backendrouter
   title: Reject HTTP providers for Stage1Surface and Stage2Edges in BackendRouter
   category: infra
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: MEDIUM.** L5 surface extraction is currently routable to any provider via `.atlas/config.yaml` operation overrides — including HTTP providers (`anthropic/*`, `openai/*`). But HTTP backends have no filesystem-access tool: the LLM receives only the rendered prompt template, which for `stage1-surface.md` interpolates only `COMPONENT_ID`, `COMPONENT_PATHS`, and `CATALOG_COMPONENTS`. No file contents reach the LLM. The HTTP-routed L5 cannot meaningfully extract a component's API surface — it can only reason about names.
@@ -222,6 +222,44 @@ tasks:
     - Unit test: a config with `operations.surface.model: anthropic/...` fails to load (or fails to construct the router).
     - Unit test: same config with `operations.surface.model: claude-code/...` succeeds.
     - Memory note added documenting the routing constraint.
+  results: |
+    **Done.** Implemented option 1 from the task description: `BackendRouter::new` rejects HTTP providers for `Stage1Surface` and `Stage2Edges` at construction time, before any backend is built.
+
+    ## Implementation
+
+    `crates/atlas-llm/src/router.rs`:
+
+    - Added module-level helper `reject_http_for_filesystem_required_prompt(prompt_id, provider, model_str) -> Result<(), LlmError>`. Returns `Ok(())` for non-HTTP providers and for `Classify`/`Subcarve` regardless of provider; returns `Err(LlmError::Setup(...))` for HTTP-on-`Stage1Surface`/`Stage2Edges`. Error message names the prompt label (`stage1-surface` / `stage2-edges`), the suggested filesystem-access providers (`claude-code`, `codex`), and the offending model string.
+    - Called the helper inside `BackendRouter::new`'s loop, after provider parsing, before the per-provider `match`. Rejection short-circuits before any subprocess construction, so the HTTP-rejection path is purely synchronous and env-independent.
+
+    ## Tests added (5; all in `router::tests`)
+
+    - `rejects_anthropic_for_stage1_surface` — helper returns `Setup` and message contains the three expected strings.
+    - `rejects_openai_for_stage2_edges` — helper returns `Setup` and message contains prompt label + model.
+    - `accepts_http_for_classify_and_subcarve` — `{Classify, Subcarve}` × `{anthropic, openai}` all pass.
+    - `accepts_filesystem_providers_for_all_prompts` — all four `PromptId`s × `{claude-code, codex}` all pass.
+    - `router_construction_rejects_http_routed_surface` — end-to-end through `BackendRouter::new` with an anthropic-only `AtlasConfig` that falls through `defaults` to `Stage1Surface`. Verifies wiring of the helper into the constructor; uses anthropic for `Classify` and `Subcarve` first to avoid touching the `claude` binary.
+
+    The "claude-code on surface succeeds" exit-criterion test (named in the task) is intentionally not added — `ClaudeCodeBackend::new` runs `capture_claude_version()`, so any positive test that actually constructs the router with claude-code requires a working `claude` binary. Existing router tests handle this by routing through `from_dispatch_table` (cfg-test escape hatch); the same pattern is followed here. The negative end-to-end test plus the helper-level positive tests give equivalent coverage without subprocess dependency.
+
+    ## Verification
+
+    - `cargo test -p atlas-llm` — 118 passing (5 new + 113 existing).
+    - `cargo test --workspace` — 474 passing across all crates, no failures, no regressions.
+    - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+    - `cargo fmt --check -p atlas-llm` — clean.
+
+    ## Memory
+
+    Added `backendrouter-rejects-http-providers-for-stage1surface-and-stage2edges` documenting the constraint, the helper location, the test escape hatch, and the future-relaxation path (HTTP tool-use loop).
+
+    ## Source-file changes left for analyse-work to commit
+
+    - `crates/atlas-llm/src/router.rs` — helper + call site + 5 unit tests.
+
+    ## Follow-up suggested by the user during this phase
+
+    User raised that HTTP backends could service `Stage1Surface`/`Stage2Edges` if they gained filesystem tool-use, and noted this would be generally useful beyond Atlas. Adding a new backlog task for it as the final action of this phase. Once that lands, the rejection in `reject_http_for_filesystem_required_prompt` would need to become per-backend-capability (e.g., gated on a "supports filesystem tools" flag the backend declares), not unconditional on `provider in HTTP_PROVIDERS`.
 - id: enable-anthropic-prompt-caching-in-anthropichttpbackend
   title: Enable Anthropic prompt caching in AnthropicHttpBackend
   category: feature
@@ -522,3 +560,158 @@ tasks:
     - The scaffolded `.atlas/config.yaml` includes active `params.max_tokens` values in HTTP-provider example blocks.
     - Existing `freshly_init_overrides_pass_validate_overrides` test still passes (it checks override files, not config.yaml, but run the full test suite to confirm no regressions).
     - A live smoke run: `atlas init` + edit config to add a real API key + `atlas index` — no `MissingMaxTokens` error.
+- id: filesystem-tool-use-loop-for-http-llm-backends-provider-agnostic
+  title: Filesystem tool-use loop for HTTP LLM backends (provider-agnostic)
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** Add a generic filesystem-tool-use loop to `AnthropicHttpBackend` and `OpenAiHttpBackend` so HTTP providers can service `Stage1Surface` and `Stage2Edges`. Once landed, the routing rejection in `BackendRouter` (added in `reject-http-providers-for-stage1surface-and-stage2edges-in-backendrouter`) loosens to a per-backend capability check rather than an unconditional ban on `provider in {anthropic, openai}`.
+
+    ## Context
+
+    Today, `Stage1Surface` and `Stage2Edges` only run on subprocess backends (`claude-code`, `codex`) because their rendered prompts ship no file content — surface and edge extraction need to read source. Subprocess backends provide that filesystem access via the upstream agent's built-in tools (Read, Grep, Glob, Bash). HTTP backends carry only the rendered prompt text, so they cannot read files and must currently be rejected for these prompt ids.
+
+    Both Anthropic Messages API and OpenAI Chat Completions support **tool use / function calling** as a first-class part of the wire protocol. With a tool-use loop driven by Atlas, an HTTP backend can delegate filesystem reads back to the host process and produce surfaces/edges with the same fidelity as a subprocess backend — at lower cost (HTTP is cheaper per call than full agent sessions), with prompt caching benefits, and against any provider that speaks the protocol (Anthropic, OpenAI, OpenRouter, Vertex, Bedrock, etc.).
+
+    User-stated motivation: "We could use the http backends if we provided the tools. I think it could be generally useful, not only here but for other projects as well." Design with reusability in mind — the tool-use loop should be liftable to a separate crate (e.g. `linkuistics/llm-tools` or `atlas-llm-tools`) once it has two consumers.
+
+    ## Scope
+
+    ### Tool set (initial)
+
+    Minimum viable filesystem tool surface, mirroring what the agentic backends use:
+
+    - `read_file(path: str, max_bytes: int = 64KiB) -> { content: str, truncated: bool }`
+    - `glob(pattern: str, root: str = "<workspace>") -> { paths: [str] }`
+    - `grep(pattern: str, paths: [str] | str, max_matches: int = 100) -> { matches: [{path, line, text}] }`
+    - `list_dir(path: str) -> { entries: [{name, kind: "file" | "dir"}] }`
+
+    Each tool's input/output JSON schemas live in one place and are exposed in both Anthropic and OpenAI tool-definition shapes via small adapter functions.
+
+    ### Loop semantics
+
+    1. Initial request: prompt + `tools: [...]` definitions.
+    2. Receive response. If `stop_reason: "tool_use"` (Anthropic) or `finish_reason: "tool_calls"` (OpenAI), execute each tool call against the host filesystem, append `tool_result` / `tool` messages, send next turn.
+    3. Repeat until `stop_reason: "end_turn"` or `finish_reason: "stop"`, or until a hard turn cap (e.g. 25) trips an `LlmError::Invocation`.
+    4. Final assistant text is the structured-JSON response — same validation path as today via existing `validate_response`.
+
+    ### Sandboxing
+
+    Tool implementations must restrict filesystem access to a configured root (the Atlas workspace path). Path normalisation rejects `..` escapes and absolute paths outside the root. No write tools — read-only. `grep` and `glob` re-use Atlas's existing `ignore`-crate-aware traversal so `.gitignore` filtering applies (subprocess backends already inherit this from the agent host's defaults).
+
+    ### Configurable budget
+
+    - `max_turns` (default 25): maximum back-and-forth iterations per call.
+    - `max_tool_calls_per_turn` (default 10): caps fan-out within one turn.
+    - `max_total_bytes_read` (default 1 MiB per call): caps cumulative bytes returned via `read_file` across the whole loop.
+
+    Exhausting any cap returns `LlmError::Invocation` with a clear message; the call is recorded as an error in the existing budget/sentinel stack.
+
+    ### Provider adapters
+
+    - **AnthropicHttpBackend.** Tools are sent under `tools: [{name, description, input_schema}, ...]`; tool results returned as `content: [{type: "tool_result", tool_use_id, content: <json>}]` blocks in the next user message.
+    - **OpenAiHttpBackend.** Tools sent under `tools: [{type: "function", function: {name, description, parameters}}, ...]`; tool results returned as `{role: "tool", tool_call_id, content: <json-string>}` messages.
+    - Wire-format differences absorbed by per-provider adapters; the engine-facing surface (the `LlmBackend::call` impl) is unchanged.
+
+    ### Reusability shape
+
+    Aim for a clean internal split so the tool-use loop and the tool implementations can be lifted to a sibling crate later:
+
+    - `tool_use::loop::run<Provider, Tools>(provider: &Provider, tools: &Tools, messages, budget) -> Result<String>` — generic over provider adapter and tool implementer traits.
+    - `tool_use::filesystem::FilesystemTools` — the concrete read-only filesystem tool set.
+    - Atlas's HTTP backends become thin wrappers: parse Atlas's `LlmRequest`, build messages, call `tool_use::loop::run`, validate the final JSON response.
+
+    Don't over-engineer — keep it inline in `atlas-llm` until a second consumer materialises, but design the module boundary so extraction is mechanical.
+
+    ### Cache fingerprint
+
+    `LlmFingerprint::backend_version` must encode "tool-use enabled" + tool-set version (a SHA over the tool definitions). Two runs with different tool sets are not interchangeable; the response cache must invalidate.
+
+    ### Routing relaxation
+
+    Once landed, `reject_http_for_filesystem_required_prompt` in `crates/atlas-llm/src/router.rs` becomes a per-backend capability check. Each backend declares whether it supplies filesystem tools (`fn supports_filesystem_tools(&self) -> bool`); the router asks the resolved backend instead of hard-coding HTTP-provider names.
+
+    ## Cross-references
+
+    - `enable-anthropic-prompt-caching-in-anthropichttpbackend` — caching applies to the static prefix (system + tool definitions); compose the two features so cached prefix benefits stack across tool-use turns.
+    - `add-openrouter-as-an-llm-provider` — OpenRouter speaks OpenAI tool-call format verbatim; the OpenAI adapter covers OpenRouter for free.
+    - `map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis` — Stage1Surface stays "needs filesystem access" in that design; tool-use HTTP backends become a third option alongside `claude-code` and `codex`.
+    - Memory: `backendrouter-rejects-http-providers-for-stage1surface-and-stage2edges` — the rejection's "future relaxation" path points at this task.
+
+    ## Risks
+
+    - **Determinism.** Tool-use loops can take different code paths across runs (the model may pick different files). Cache key remains canonical-input-based; cached-response soundness depends on the fingerprint encoding "tools enabled". Document this; consider a stricter fingerprint that includes tool-set hash.
+    - **Cost.** Each round-trip adds prompt + response tokens. A surface extraction that took one agent call may take 5–10 HTTP turns. Budget caps are essential; profile against the dev-workspace before promoting from experimental.
+    - **Sandboxing soundness.** Path-traversal escapes via symlinks, `..`, Unicode normalisation, etc. Use `Path::canonicalize` against the workspace root; reject anything outside.
+    - **Streaming.** v1 implementation can be non-streaming (`reqwest::blocking`) like the current HTTP backends. Streaming tool-use is a follow-up.
+
+    ## Out of scope
+
+    - Write tools (Edit, Write, Bash). Atlas is read-only against the target codebase by design.
+    - Streaming. Block-mode parity with current HTTP backends.
+    - Lifting to a separate crate. Design for it; defer until two consumers.
+
+    ## Exit criteria
+
+    - `AnthropicHttpBackend::call` and `OpenAiHttpBackend::call` execute tool-use loops when configured for `Stage1Surface` or `Stage2Edges`.
+    - Read-only filesystem tools available: `read_file`, `glob`, `grep`, `list_dir`. Sandboxed to a configured root.
+    - `LlmBackend::supports_filesystem_tools(&self) -> bool` declared; default `false` for current backends, `true` for the new tool-using HTTP path; routing layer asks the trait method instead of hard-coding providers.
+    - Configuration: `.atlas/config.yaml` `params.tools.enabled: true` (or similar) opts a per-operation HTTP backend into tool-use mode. Default off so existing configs are unchanged.
+    - Cache fingerprint encodes "tools enabled" + tool-set hash; existing zero-LLM-call no-op re-runs remain byte-identical.
+    - Live end-to-end: `atlas index ~/Development/dull/` with `surface` routed to `anthropic/...` (tools enabled) produces non-empty surfaces and edge proposals; metrics within 5pp of the same run on `claude-code/...`.
+    - Memory note added documenting the design and the routing-relaxation that follows.
+- id: audit-atlas-cli-against-llm-friendly-cli-design-guide
+  title: Audit Atlas CLI against LLM-friendly CLI design guide
+  category: infra
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** Audit Atlas's CLI surface (`atlas`, all subcommands, all flags, all output formats) against the LLM-friendly CLI design guide at `~/Development/Ravel-Lite/defaults/fixed-memory/cli-tool-design.md`. Produce a punch-list of findings, prioritised by ROI per the guide's own ordering (structured output > examples in --help > actionable errors > flag consistency > exit codes > defaults > non-TTY behaviour > capabilities).
+
+    ## Why
+
+    Atlas is increasingly invoked by other agents (Ravel-Lite tooling, future Uplift/Redeveloper consumers, ad-hoc evaluation runs in subagents). Friction in the CLI surface — missing `--json`, prose-only output, vague errors, undocumented exit codes — costs tokens and produces flaky agent loops. The guide is opinionated and ordered by impact; follow its ordering rather than re-deriving it.
+
+    ## Scope
+
+    ### Discovery (read-only audit)
+
+    Walk every code path that produces user-facing output:
+
+    - `atlas --help` and every subcommand's `--help`.
+    - `atlas index` — the primary data-producing command. Outputs three YAMLs + `llm-cache.json`. Stdout summary line. Stderr progress.
+    - `atlas validate-overrides` — error reporting on malformed config / overrides.
+    - `atlas init` — scaffold output.
+    - `atlas --version` — version output, `--json` form?
+    - Error paths: missing config, missing API key, invalid model string, budget exhausted, filesystem-required prompt routed to HTTP (the new `LlmError::Setup` from `BackendRouter`), `LlmError::Invocation`, `LlmError::Schema`.
+    - Exit codes: which subcommands emit which codes for which conditions.
+
+    For each surface, score against the guide's audit checklist (lines 208–252 of `cli-tool-design.md`). Each "no" is a finding.
+
+    ### Output
+
+    A markdown report at `evaluation/results/cli-audit-<date>.md` with:
+
+    - One section per audit-checklist subheading (Output, Help, Errors, Conventions, Behaviour, Discoverability).
+    - Each finding tagged `[blocker]` / `[high]` / `[medium]` / `[low]` per the guide's ROI ordering.
+    - A prioritised remediation backlog at the bottom — each entry small enough to be its own follow-up backlog task.
+    - Explicit "out of scope for v1" calls where appropriate (e.g. `atlas capabilities` is "optional but valuable" — don't block v1 sign-off on it).
+
+    ### Out of scope
+
+    - Implementing fixes. This task ends at the report; remediation work spawns separate backlog tasks per the report's recommendations.
+    - Auditing Ravel-Lite or other linkuistics CLIs.
+    - Reworking the YAML output schemas — they are separately governed by the components/externals/related-components contracts.
+
+    ## Exit criteria
+
+    - `evaluation/results/cli-audit-<date>.md` exists, walks every guide audit-checklist item against Atlas's current CLI, and identifies findings.
+    - Each finding is prioritised per the guide's ROI ordering (structured output > examples > errors > consistency > etc.).
+    - A short follow-up backlog of 3–8 remediation tasks is proposed in the report's final section. The user reviews and decides which to file.
+    - Atlas v1 sign-off (`verify-atlas-v1-success-criteria-end-to-end`) cross-references the report so anyone reading the v1 announcement understands what is and is not LLM-friendly today.
+
+    ## References
+
+    - Guide: `~/Development/Ravel-Lite/defaults/fixed-memory/cli-tool-design.md`. Treat the audit checklist (lines 208–252) and the anti-patterns list (lines 256–268) as load-bearing.
+    - The guide's own remediation order (lines 271–284) — "Add `--json` everywhere it's missing" first, "stabilise the JSON schema" second, "rewrite error messages" third — is the recommended order for any follow-up tasks the report spawns.

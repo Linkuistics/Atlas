@@ -40,6 +40,8 @@ impl BackendRouter {
                 ))
             })?;
 
+            reject_http_for_filesystem_required_prompt(prompt_id, provider, model_str)?;
+
             let backend: Arc<dyn LlmBackend> = match provider {
                 "anthropic" => {
                     let api_key = config
@@ -116,6 +118,34 @@ impl BackendRouter {
     ) -> Self {
         Self { table, fingerprint }
     }
+}
+
+/// HTTP backends (`anthropic`, `openai`) cannot service `Stage1Surface` or
+/// `Stage2Edges` because their rendered prompts carry no file-content tokens —
+/// surface and edge extraction need filesystem access, which only the
+/// subprocess backends (`claude-code`, `codex`) provide. Reject the
+/// combination at construction time so a misconfigured `.atlas/config.yaml`
+/// fails loudly instead of silently producing hallucinated surfaces or edges.
+fn reject_http_for_filesystem_required_prompt(
+    prompt_id: PromptId,
+    provider: &str,
+    model_str: &str,
+) -> Result<(), LlmError> {
+    const HTTP_PROVIDERS: &[&str] = &["anthropic", "openai"];
+
+    if !HTTP_PROVIDERS.contains(&provider) {
+        return Ok(());
+    }
+    let prompt_label = match prompt_id {
+        PromptId::Stage1Surface => "stage1-surface",
+        PromptId::Stage2Edges => "stage2-edges",
+        PromptId::Classify | PromptId::Subcarve => return Ok(()),
+    };
+    Err(LlmError::Setup(format!(
+        "{prompt_label} requires a filesystem-access provider \
+         (claude-code, codex); HTTP providers (anthropic, openai) cannot be \
+         used here — configured `{model_str}` in .atlas/config.yaml"
+    )))
 }
 
 impl LlmBackend for BackendRouter {
@@ -196,5 +226,101 @@ mod tests {
         let router =
             BackendRouter::from_dispatch_table(HashMap::new(), make_fingerprint("composite-fp"));
         assert_eq!(router.fingerprint().model_id, "composite-fp");
+    }
+
+    #[test]
+    fn rejects_anthropic_for_stage1_surface() {
+        let err = reject_http_for_filesystem_required_prompt(
+            PromptId::Stage1Surface,
+            "anthropic",
+            "anthropic/claude-haiku-4-5",
+        )
+        .unwrap_err();
+        let LlmError::Setup(msg) = err else {
+            panic!("expected Setup error, got {err:?}");
+        };
+        assert!(msg.contains("stage1-surface"));
+        assert!(msg.contains("filesystem-access"));
+        assert!(msg.contains("anthropic/claude-haiku-4-5"));
+    }
+
+    #[test]
+    fn rejects_openai_for_stage2_edges() {
+        let err = reject_http_for_filesystem_required_prompt(
+            PromptId::Stage2Edges,
+            "openai",
+            "openai/gpt-4o-mini",
+        )
+        .unwrap_err();
+        let LlmError::Setup(msg) = err else {
+            panic!("expected Setup error, got {err:?}");
+        };
+        assert!(msg.contains("stage2-edges"));
+        assert!(msg.contains("openai/gpt-4o-mini"));
+    }
+
+    #[test]
+    fn accepts_http_for_classify_and_subcarve() {
+        for prompt_id in [PromptId::Classify, PromptId::Subcarve] {
+            for provider in ["anthropic", "openai"] {
+                reject_http_for_filesystem_required_prompt(
+                    prompt_id,
+                    provider,
+                    &format!("{provider}/some-model"),
+                )
+                .unwrap_or_else(|e| panic!("{prompt_id:?} + {provider} should pass: {e:?}"));
+            }
+        }
+    }
+
+    #[test]
+    fn accepts_filesystem_providers_for_all_prompts() {
+        for prompt_id in [
+            PromptId::Classify,
+            PromptId::Subcarve,
+            PromptId::Stage1Surface,
+            PromptId::Stage2Edges,
+        ] {
+            for provider in ["claude-code", "codex"] {
+                reject_http_for_filesystem_required_prompt(
+                    prompt_id,
+                    provider,
+                    &format!("{provider}/some-model"),
+                )
+                .unwrap_or_else(|e| panic!("{prompt_id:?} + {provider} should pass: {e:?}"));
+            }
+        }
+    }
+
+    #[test]
+    fn router_construction_rejects_http_routed_surface() {
+        use crate::{AtlasConfig, OperationConfig, OperationsConfig, ProviderConfig};
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "anthropic".to_string(),
+            ProviderConfig {
+                api_key: "sk-test".to_string(),
+            },
+        );
+        let config = AtlasConfig {
+            providers,
+            defaults: OperationConfig {
+                model: "anthropic/claude-haiku-4-5".to_string(),
+                params: json!({ "max_tokens": 4096 }),
+            },
+            operations: OperationsConfig::default(),
+        };
+
+        let prompts_dir = tempfile::TempDir::new().unwrap();
+        let result = BackendRouter::new(&config, prompts_dir.path(), [0u8; 32], [0u8; 32], None);
+        match result {
+            Err(LlmError::Setup(msg)) => assert!(
+                msg.contains("stage1-surface"),
+                "expected stage1-surface mention, got: {msg}"
+            ),
+            Err(other) => panic!("expected Setup error, got {other:?}"),
+            Ok(_) => panic!("expected router construction to fail"),
+        }
     }
 }
