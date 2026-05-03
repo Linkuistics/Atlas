@@ -132,48 +132,6 @@ tasks:
     - All six criteria pass or have documented follow-up tasks (criterion 5 may be deferred pending Ravel-Lite M5).
     - Sign-off report committed to the Atlas repo.
     - An announcement-ready short summary written (optional) as `README-v1.md` documenting what Atlas v1 does and does not do.
-- id: investigate-l3-ambiguous-candidate-calls-llm-fallback-test-failure
-  title: Investigate l3_ambiguous_candidate_calls_llm_fallback test failure
-  category: infra
-  status: done
-  dependencies: []
-  description: |
-    **Priority: MEDIUM.** The `l3_ambiguous_candidate_calls_llm_fallback` test has been failing as a pre-existing failure independent of the current changes. Mentioned in the `surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing` results cycle: "The pre-existing `l3_ambiguous_candidate_calls_llm_fallback` failure should be triaged separately — out of scope here but worth surfacing."
-
-    ## What to do
-
-    1. Run: `cargo test -p atlas-engine --lib l3_ambiguous_candidate_calls_llm_fallback -- --nocapture`
-    2. Determine root cause: is this a test-fixture mismatch introduced by recent `build_llm_inputs` key-casing changes, a prompt-rendering regression, or a deeper logic failure?
-    3. Fix if straightforward; open a follow-up if the fix requires significant rework.
-
-    ## Context
-
-    This test was confirmed failing on the `surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing` baseline via `git stash` + retest — every other test passed; only this one was pre-existing. The recent L3 `build_llm_inputs` key upper-casing fix (classify.md token alignment) updated TestBackend fixture inputs; if the `l3_ambiguous_candidate_calls_llm_fallback` fixture was not updated in sync, it may be a simple fixture mismatch.
-
-    ## Exit criteria
-
-    - `cargo test -p atlas-engine --lib l3_ambiguous_candidate_calls_llm_fallback` passes.
-    - No other L3 tests regress.
-  results: |
-    ## What was done
-
-    Updated `crates/atlas-engine/tests/l2_l3_queries.rs::l3_ambiguous_candidate_calls_llm_fallback` to use the uppercase JSON keys (`DIR_RELATIVE`, `RATIONALE_BUNDLE`, `MANIFEST_CONTENTS`) that `l3_classify::build_llm_inputs` now produces. The fixture had been authored against the pre-fix lowercase shape; the recent token-injection fix uppercased these alongside the new `COMPONENT_KINDS`/`LIFECYCLE_SCOPES` keys and updated the other affected test inputs, but missed this one.
-
-    ## Root cause
-
-    Classic stale-fixture cache miss. `TestBackend` keys canned responses on the byte-identical serialised `LlmRequest` (memory: `testbackend-requires-byte-identical-llmrequest-inputs-to-match-cache`). When the production keys uppercased, this fixture's lowercase keys stopped matching, every L3 LLM call fell through to `unknown_classification`, and the test asserted `DocsRepo` against the resulting `NonComponent` fallback.
-
-    The failure was structural, not behavioural: the fix was a one-line key-casing alignment, not a logic change.
-
-    ## Verification
-
-    - `cargo test -p atlas-engine --test l2_l3_queries` — 16/16 pass (was 15/16).
-    - `cargo test --workspace` — all 26 test binaries pass, 0 failures, 4 pre-existing `#[ignore]`s untouched.
-
-    ## What this suggests next
-
-    - The L3 token-injection follow-up triage caught some fixtures but not all. A future similar refactor should grep for `PromptId::Classify`/`backend.respond` callsites *and* JSON-fragment matches on the old key spelling before declaring fixture sync complete.
-    - The build-time token-coverage check (`prompt-template-token-coverage-check-build-time` infra task) remains relevant: it would catch template-side drift but not test-fixture drift like this one. A complementary safeguard would be a snapshot test of `build_llm_inputs` output keys, but that may be over-engineering for a 5-key payload — the existing template token-coverage test plus disciplined fixture audit during refactors is probably enough.
 - id: prompt-template-token-coverage-check-build-time
   title: Prompt-template token coverage check (build-time)
   category: infra
@@ -231,6 +189,99 @@ tasks:
     ## Why MEDIUM (was LOW)
 
     The 2026-05-03 incident demonstrated that the inverse-direction failure mode was real, shipped, and caused an entire L3 LLM-fallback / L8 subcarve regression. The infrastructure prevents recurrence on the next prompt addition (the map/reduce L8 redesign will introduce `PromptId::ClassifySubdir` or similar — that's the natural moment for this check to exist).
+- id: reject-http-providers-for-stage1surface-and-stage2edges-in-backendrouter
+  title: Reject HTTP providers for Stage1Surface and Stage2Edges in BackendRouter
+  category: infra
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** L5 surface extraction is currently routable to any provider via `.atlas/config.yaml` operation overrides — including HTTP providers (`anthropic/*`, `openai/*`). But HTTP backends have no filesystem-access tool: the LLM receives only the rendered prompt template, which for `stage1-surface.md` interpolates only `COMPONENT_ID`, `COMPONENT_PATHS`, and `CATALOG_COMPONENTS`. No file contents reach the LLM. The HTTP-routed L5 cannot meaningfully extract a component's API surface — it can only reason about names.
+
+    ## Why this matters
+
+    Memory `anthropichttpbackend-already-implemented-map-reduce-scope-is-narrower-than-task-description-implies` and the design spec for the map/reduce architectural shift both note: "Per-component surface extraction (L5 Stage1Surface): keep agentic — extracting an API surface needs to read source files, but the scope is bounded to one component's tree." The architectural intent is clear: L3 and L8 are per-candidate fixed-shape classification (HTTP-suitable); L5 needs filesystem access (agentic-only); L6 needs cross-component context (agentic, broadly-contextual).
+
+    Today's config router treats L5 routing as a free choice. A user who routes everything to HTTP for cost gets a config that loads cleanly, runs to completion, and produces empty / hallucinated surfaces.
+
+    ## Two paths (decide during implementation)
+
+    1. **Enforce in routing layer.** `BackendRouter` rejects HTTP providers for `Stage1Surface` and `Stage2Edges` at construction time. Surfaces a clear error: "stage1-surface requires a filesystem-access provider (claude-code, codex); HTTP providers (anthropic, openai) cannot be used here."
+
+    2. **Redesign stage1-surface for content-shipping.** Bound the candidate's source tree to a few KB of content (top-N files by extension, manifest snippets, etc.) and ship those in the rendered prompt. Lose the agentic exploration capability but make the prompt provider-agnostic. Bigger surface area; non-trivial spike before commit.
+
+    Recommendation: option 1 in the short term, option 2 as a longer-horizon spike. Option 1 codifies the architectural intent immediately; option 2 is a real broadening of supported providers.
+
+    ## Cross-references
+
+    - `enable-anthropic-prompt-caching-in-anthropichttpbackend` — orthogonal but related (caching applies to whatever provider is in use).
+    - `map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis` — the parent task that introduced per-prompt routing. This task formalises one routing constraint that the parent's design doc assumed but didn't enforce.
+
+    ## Exit criteria (for option 1)
+
+    - `BackendRouter` construction fails with a clear error when `Stage1Surface` or `Stage2Edges` is routed to an HTTP provider.
+    - Unit test: a config with `operations.surface.model: anthropic/...` fails to load (or fails to construct the router).
+    - Unit test: same config with `operations.surface.model: claude-code/...` succeeds.
+    - Memory note added documenting the routing constraint.
+- id: enable-anthropic-prompt-caching-in-anthropichttpbackend
+  title: Enable Anthropic prompt caching in AnthropicHttpBackend
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** Enable Anthropic prompt caching in `AnthropicHttpBackend` to cut input-token costs on the L3/L8/L5/L6 LLM paths.
+
+    ## Context
+
+    `crates/atlas-llm/src/http_anthropic.rs:84-88` currently builds a single `messages: [{role: user, content: rendered}]` body with no `cache_control` markers. A prior memory entry incorrectly claimed caching was enabled; the code does not enable it. This task closes that gap.
+
+    OpenAI's HTTP backend (`http_openai.rs`) does **not** need code changes — OpenAI's prompt caching is automatic for prompts ≥ 1024 tokens. The Claude Code subprocess backend is out of scope for this task.
+
+    ## What's cacheable in Atlas's prompts
+
+    The four templates (`defaults/prompts/{classify,subcarve,stage1-surface,stage2-edges}.md`) split naturally into:
+
+    - **Stable prefix** — the template body up to and including catalog interpolations (`{{COMPONENT_KINDS}}`, `{{LIFECYCLE_SCOPES}}`, `{{ONTOLOGY_KINDS}}`, `{{CATALOG_COMPONENTS}}`). These tokens depend only on `defaults/component-kinds.yaml` + ontology, not per-candidate inputs, so the rendered prefix is byte-identical across all calls within a run. Several hundred lines per template — well above the 1024-token Sonnet cacheable minimum.
+    - **Variable suffix** — per-candidate fields (`{{COMPONENT_ID}}`, `{{COMPONENT_PATHS}}`, etc., where present) plus any per-call inputs that get interpolated.
+
+    ## Approach
+
+    Two implementation paths; pick during implementation:
+
+    1. **Renderer split.** Modify `prompt::render` (or add a sibling `render_split`) to emit `(stable_prefix, variable_suffix)`. Templates declare a marker (e.g. a comment line `<!-- CACHE_BOUNDARY -->`) that splits them. `AnthropicHttpBackend` sends two content blocks:
+       ```json
+       "messages": [{
+         "role": "user",
+         "content": [
+           {"type": "text", "text": "<prefix>", "cache_control": {"type": "ephemeral"}},
+           {"type": "text", "text": "<suffix>"}
+         ]
+       }]
+       ```
+    2. **Two-template files.** Split each template into `<name>.prefix.md` and `<name>.suffix.md`. Renderer interpolates each; backend sends two blocks. Simpler logic in code, more files in `defaults/prompts/`.
+
+    Recommendation: option 1. Keeps templates in one file each; explicit boundary marker is self-documenting.
+
+    ## Pricing math
+
+    Anthropic cache write is 1.25× normal input cost; cache read is 0.10× normal input cost. Break-even is roughly one re-use beyond the write. Atlas issues O(N) classify calls per index run where N = unpinned candidates, plus O(M) surface and one batch edge call. The catalog prefix is byte-equal across every classify call — re-use rate is high once L3 traffic is non-trivial.
+
+    ## Out of scope
+
+    - OpenAI HTTP backend changes (caching is automatic).
+    - Claude Code subprocess caching (separate backend; subprocess CLI may not expose cache controls).
+    - Cache TTL extension to 1h (default 5m is fine for Atlas's run shape).
+
+    ## Exit criteria
+
+    - `AnthropicHttpBackend` sends a two-block user message with `cache_control: ephemeral` on the prefix block.
+    - A unit test asserts the request body shape (mock the `client.post` call or use a deserialisation round-trip).
+    - A live end-to-end run on `~/Development/dull/` shows non-zero `cache_read_input_tokens` in Anthropic response usage data after the second-onwards LLM call.
+    - Memory note `anthropichttpbackend-already-implemented-map-reduce-scope-is-narrower-than-task-description-implies` updated or replaced — caching is now genuinely enabled.
+
+    ## Risks
+
+    - Cache-key fingerprinting: `LlmFingerprint::backend_version` should incorporate "caching=on" to keep the Salsa cache sound across versions where caching changes the wire format.
+    - Prefix drift: if a template-token in the cached prefix gets renamed but the marker stays put, the prefix changes silently. Add a build-time check that the rendered prefix shape matches the declared cacheable token set.
 - id: map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis
   title: L8 map/reduce redesign and L3 HTTP routing (AnthropicHttpBackend already complete)
   category: feature
@@ -471,96 +522,3 @@ tasks:
     - The scaffolded `.atlas/config.yaml` includes active `params.max_tokens` values in HTTP-provider example blocks.
     - Existing `freshly_init_overrides_pass_validate_overrides` test still passes (it checks override files, not config.yaml, but run the full test suite to confirm no regressions).
     - A live smoke run: `atlas init` + edit config to add a real API key + `atlas index` — no `MissingMaxTokens` error.
-- id: enable-anthropic-prompt-caching-in-anthropichttpbackend
-  title: Enable Anthropic prompt caching in AnthropicHttpBackend
-  category: feature
-  status: not_started
-  dependencies: []
-  description: |
-    **Priority: MEDIUM.** Enable Anthropic prompt caching in `AnthropicHttpBackend` to cut input-token costs on the L3/L8/L5/L6 LLM paths.
-
-    ## Context
-
-    `crates/atlas-llm/src/http_anthropic.rs:84-88` currently builds a single `messages: [{role: user, content: rendered}]` body with no `cache_control` markers. A prior memory entry incorrectly claimed caching was enabled; the code does not enable it. This task closes that gap.
-
-    OpenAI's HTTP backend (`http_openai.rs`) does **not** need code changes — OpenAI's prompt caching is automatic for prompts ≥ 1024 tokens. The Claude Code subprocess backend is out of scope for this task.
-
-    ## What's cacheable in Atlas's prompts
-
-    The four templates (`defaults/prompts/{classify,subcarve,stage1-surface,stage2-edges}.md`) split naturally into:
-
-    - **Stable prefix** — the template body up to and including catalog interpolations (`{{COMPONENT_KINDS}}`, `{{LIFECYCLE_SCOPES}}`, `{{ONTOLOGY_KINDS}}`, `{{CATALOG_COMPONENTS}}`). These tokens depend only on `defaults/component-kinds.yaml` + ontology, not per-candidate inputs, so the rendered prefix is byte-identical across all calls within a run. Several hundred lines per template — well above the 1024-token Sonnet cacheable minimum.
-    - **Variable suffix** — per-candidate fields (`{{COMPONENT_ID}}`, `{{COMPONENT_PATHS}}`, etc., where present) plus any per-call inputs that get interpolated.
-
-    ## Approach
-
-    Two implementation paths; pick during implementation:
-
-    1. **Renderer split.** Modify `prompt::render` (or add a sibling `render_split`) to emit `(stable_prefix, variable_suffix)`. Templates declare a marker (e.g. a comment line `<!-- CACHE_BOUNDARY -->`) that splits them. `AnthropicHttpBackend` sends two content blocks:
-       ```json
-       "messages": [{
-         "role": "user",
-         "content": [
-           {"type": "text", "text": "<prefix>", "cache_control": {"type": "ephemeral"}},
-           {"type": "text", "text": "<suffix>"}
-         ]
-       }]
-       ```
-    2. **Two-template files.** Split each template into `<name>.prefix.md` and `<name>.suffix.md`. Renderer interpolates each; backend sends two blocks. Simpler logic in code, more files in `defaults/prompts/`.
-
-    Recommendation: option 1. Keeps templates in one file each; explicit boundary marker is self-documenting.
-
-    ## Pricing math
-
-    Anthropic cache write is 1.25× normal input cost; cache read is 0.10× normal input cost. Break-even is roughly one re-use beyond the write. Atlas issues O(N) classify calls per index run where N = unpinned candidates, plus O(M) surface and one batch edge call. The catalog prefix is byte-equal across every classify call — re-use rate is high once L3 traffic is non-trivial.
-
-    ## Out of scope
-
-    - OpenAI HTTP backend changes (caching is automatic).
-    - Claude Code subprocess caching (separate backend; subprocess CLI may not expose cache controls).
-    - Cache TTL extension to 1h (default 5m is fine for Atlas's run shape).
-
-    ## Exit criteria
-
-    - `AnthropicHttpBackend` sends a two-block user message with `cache_control: ephemeral` on the prefix block.
-    - A unit test asserts the request body shape (mock the `client.post` call or use a deserialisation round-trip).
-    - A live end-to-end run on `~/Development/dull/` shows non-zero `cache_read_input_tokens` in Anthropic response usage data after the second-onwards LLM call.
-    - Memory note `anthropichttpbackend-already-implemented-map-reduce-scope-is-narrower-than-task-description-implies` updated or replaced — caching is now genuinely enabled.
-
-    ## Risks
-
-    - Cache-key fingerprinting: `LlmFingerprint::backend_version` should incorporate "caching=on" to keep the Salsa cache sound across versions where caching changes the wire format.
-    - Prefix drift: if a template-token in the cached prefix gets renamed but the marker stays put, the prefix changes silently. Add a build-time check that the rendered prefix shape matches the declared cacheable token set.
-- id: reject-http-providers-for-stage1surface-and-stage2edges-in-backendrouter
-  title: Reject HTTP providers for Stage1Surface and Stage2Edges in BackendRouter
-  category: infra
-  status: not_started
-  dependencies: []
-  description: |
-    **Priority: MEDIUM.** L5 surface extraction is currently routable to any provider via `.atlas/config.yaml` operation overrides — including HTTP providers (`anthropic/*`, `openai/*`). But HTTP backends have no filesystem-access tool: the LLM receives only the rendered prompt template, which for `stage1-surface.md` interpolates only `COMPONENT_ID`, `COMPONENT_PATHS`, and `CATALOG_COMPONENTS`. No file contents reach the LLM. The HTTP-routed L5 cannot meaningfully extract a component's API surface — it can only reason about names.
-
-    ## Why this matters
-
-    Memory `anthropichttpbackend-already-implemented-map-reduce-scope-is-narrower-than-task-description-implies` and the design spec for the map/reduce architectural shift both note: "Per-component surface extraction (L5 Stage1Surface): keep agentic — extracting an API surface needs to read source files, but the scope is bounded to one component's tree." The architectural intent is clear: L3 and L8 are per-candidate fixed-shape classification (HTTP-suitable); L5 needs filesystem access (agentic-only); L6 needs cross-component context (agentic, broadly-contextual).
-
-    Today's config router treats L5 routing as a free choice. A user who routes everything to HTTP for cost gets a config that loads cleanly, runs to completion, and produces empty / hallucinated surfaces.
-
-    ## Two paths (decide during implementation)
-
-    1. **Enforce in routing layer.** `BackendRouter` rejects HTTP providers for `Stage1Surface` and `Stage2Edges` at construction time. Surfaces a clear error: "stage1-surface requires a filesystem-access provider (claude-code, codex); HTTP providers (anthropic, openai) cannot be used here."
-
-    2. **Redesign stage1-surface for content-shipping.** Bound the candidate's source tree to a few KB of content (top-N files by extension, manifest snippets, etc.) and ship those in the rendered prompt. Lose the agentic exploration capability but make the prompt provider-agnostic. Bigger surface area; non-trivial spike before commit.
-
-    Recommendation: option 1 in the short term, option 2 as a longer-horizon spike. Option 1 codifies the architectural intent immediately; option 2 is a real broadening of supported providers.
-
-    ## Cross-references
-
-    - `enable-anthropic-prompt-caching-in-anthropichttpbackend` — orthogonal but related (caching applies to whatever provider is in use).
-    - `map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis` — the parent task that introduced per-prompt routing. This task formalises one routing constraint that the parent's design doc assumed but didn't enforce.
-
-    ## Exit criteria (for option 1)
-
-    - `BackendRouter` construction fails with a clear error when `Stage1Surface` or `Stage2Edges` is routed to an HTTP provider.
-    - Unit test: a config with `operations.surface.model: anthropic/...` fails to load (or fails to construct the router).
-    - Unit test: same config with `operations.surface.model: claude-code/...` succeeds.
-    - Memory note added documenting the routing constraint.
