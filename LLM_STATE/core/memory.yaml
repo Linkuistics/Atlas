@@ -496,8 +496,10 @@ entries:
   body: |
     `dull` depth-1 calibration produces output identical to depth-0: pin coverage is dense enough that all classify/subcarve decisions short-circuit deterministically, so the LLM call path is never exercised. `dull` cannot serve as a cross-target LLM validator in its current state.
 
-    Meaningful dull evaluation (authoring goldens + metric scoring) is blocked on `validate-params-max-tokens-at-config-load-for-http-providers`; the init schema_version fix and L3/L8 prompt-token fix are complete.
+    The init `schema_version` fix, L3/L8 prompt-token fix, and `params.max_tokens` config-load validation are all complete; no remaining known blockers on authoring goldens + metric scoring.
 - id: missing-params-max-tokens-causes-three-silent-llm-failure-layers
-  title: Missing params.max_tokens causes three silent LLM failure layers
+  title: HTTP-provider config missing params.max_tokens rejected at config load
   body: |
-    When `params.max_tokens` is absent from config for HTTP-routed providers, three layers of failure absorption prevent the error from surfacing. The backlog task `validate-params-max-tokens-at-config-load-for-http-providers` tracks the fix: validate and hard-error at config load time before any LLM calls start.
+    `AtlasConfig::validate` rejects any HTTP-provider operation (`anthropic`, `openai`) that lacks a positive-integer `params.max_tokens`, erroring at config-load time before any LLM calls start.
+
+    `BackendRouter` reads `op.params` whole-cloth — it does not merge per-key from `defaults.params`. An override block that includes `params:` but omits `max_tokens` is rejected even if `defaults.params.max_tokens` is set. Validation idiom: `get("max_tokens").and_then(Value::as_u64).is_some_and(|n| n > 0)` collapses presence, type-check, and positivity into one guard.
