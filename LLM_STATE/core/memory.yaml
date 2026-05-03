@@ -142,9 +142,9 @@ entries:
   body: |
     Cache persistence across processes (llm-cache.json) and stable generated_at timestamps are both required for zero-diff no-op re-runs in atlas-cli. Stable generated_at reuses the prior timestamp when file content is unchanged. Missing either mechanism produces spurious diffs even when no source files changed.
 - id: budgetsentinel-is-only-reliable-budget-exhaustion-detection-path
-  title: BudgetSentinel is only reliable budget-exhaustion detection path
+  title: BudgetSentinel detects both Setup failures and BudgetExhausted
   body: |
-    L5 and L6 swallow `LlmError::BudgetExhausted` into surface notes rather than propagating it. The `BudgetSentinel` wrapper intercepts the error before it enters L5/L6, making it the only reliable signal for detecting budget exhaustion in the pipeline.
+    L5 and L6 swallow `LlmError::BudgetExhausted` and `LlmError::Setup` into surface notes rather than propagating them. `BudgetSentinel` intercepts both error types before they enter L5/L6: `budget_exhausted: AtomicBool` for budget exhaustion, `setup_failed: AtomicBool` + `setup_message: Mutex<Option<String>>` for setup failures. It is the only reliable signal for detecting either failure in the pipeline.
 - id: assert-cmd-real-binary-tests-must-be-gated-behind-atlas-llm-run-claude-tests-1
   title: assert_cmd real-binary tests must be gated behind ATLAS_LLM_RUN_CLAUDE_TESTS=1
   body: |
@@ -253,7 +253,7 @@ entries:
 - id: llmresponsecache-call-count-increments-on-cache-misses-only
   title: LlmResponseCache::call_count increments on cache misses only
   body: |
-    LlmResponseCache::call_count increments only on successful cache misses — errors short-circuit before the increment. A test that asserts `call_count() == 0` may still have triggered real backend traffic if those calls errored out. When using TestBackend in tests that need to verify "zero live LLM calls", an erroring backend can show `call_count=0` while logically having fired. Use a wrapping `CountingBackend` (counts every `.call()` invocation, including errors) when the assertion is about traffic rather than successful responses.
+    `LlmResponseCache::call_count` increments only on successful cache misses — errors short-circuit before the increment. A parallel `error_count` field increments on backend errors; `clear()` resets both. A test asserting `call_count() == 0` may still have triggered real backend traffic if those calls errored; use a wrapping `CountingBackend` when the assertion is about traffic rather than successful responses.
 - id: testbackend-json-matches-only-literal-empty-object-not-wildcard
   title: TestBackend json!({}) matches only literal empty-object, not wildcard
   body: |
@@ -496,10 +496,14 @@ entries:
   body: |
     `dull` depth-1 calibration produces output identical to depth-0: pin coverage is dense enough that all classify/subcarve decisions short-circuit deterministically, so the LLM call path is never exercised. `dull` cannot serve as a cross-target LLM validator in its current state.
 
-    The init `schema_version` fix, L3/L8 prompt-token fix, and `params.max_tokens` config-load validation are all complete. One remaining blocker: `surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing` must land to close the soft-fail error-absorption layer before authoring goldens + metric scoring is meaningful.
+    `verify-atlas-v1-success-criteria-end-to-end` against `dull` is unblocked — the init `schema_version` fix, L3/L8 prompt-token fix, `params.max_tokens` config-load validation, and pipeline setup-error abort have all landed.
 - id: missing-params-max-tokens-causes-three-silent-llm-failure-layers
   title: HTTP-provider config missing params.max_tokens rejected at config load
   body: |
     `AtlasConfig::validate` rejects any HTTP-provider operation (`anthropic`, `openai`) that lacks a positive-integer `params.max_tokens`, erroring at config-load time before any LLM calls start.
 
     `BackendRouter` reads `op.params` whole-cloth — it does not merge per-key from `defaults.params`. An override block that includes `params:` but omits `max_tokens` is rejected even if `defaults.params.max_tokens` is set. Validation idiom: `get("max_tokens").and_then(Value::as_u64).is_some_and(|n| n > 0)` collapses presence, type-check, and positivity into one guard.
+- id: pipeline-aborts-with-exit-code-3-on-llmerror-setup
+  title: Pipeline aborts with exit code 3 on LlmError::Setup
+  body: |
+    `IndexError::SetupFailed(String)` maps to exit code 3 in `main.rs`. The pipeline checks `BudgetSentinel` twice: once after the fixedpoint (catches L3/L8 paths) and once after the L9 projection walk (catches L5/L6 `surface_of`/`all_proposed_edges`). L5/L6/L8 still produce fallback notes on `LlmError::Setup`; the sentinel gates before those notes reach disk. `IndexSummary.llm_errors` reports error count separately from call count.
