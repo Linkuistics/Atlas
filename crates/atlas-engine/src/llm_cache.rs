@@ -69,6 +69,7 @@ pub struct LlmResponseCache {
 struct Inner {
     entries: HashMap<LlmCacheKey, Arc<Value>>,
     call_count: u64,
+    error_count: u64,
 }
 
 impl LlmResponseCache {
@@ -81,6 +82,16 @@ impl LlmResponseCache {
     /// assert cache-hit behaviour.
     pub fn call_count(&self) -> u64 {
         self.inner.lock().expect("llm cache poisoned").call_count
+    }
+
+    /// Number of cache misses where the wrapped backend returned an
+    /// error. Increments only on an error path — successful misses go to
+    /// [`LlmResponseCache::call_count`] instead. Lets pipeline summaries
+    /// distinguish "no calls were needed" (call_count=0, error_count=0)
+    /// from "every call attempted, every call failed" (call_count=0,
+    /// error_count>0).
+    pub fn error_count(&self) -> u64 {
+        self.inner.lock().expect("llm cache poisoned").error_count
     }
 
     /// Lookup-or-populate. Returns the cached response if present;
@@ -108,7 +119,16 @@ impl LlmResponseCache {
         // way out. A concurrent call for the same key may double-fetch,
         // but the responses are equal by the backend invariant so the
         // worst case is one redundant call, not a correctness problem.
-        let value = backend.call(request)?;
+        let value = match backend.call(request) {
+            Ok(v) => v,
+            Err(e) => {
+                self.inner
+                    .lock()
+                    .expect("llm cache poisoned")
+                    .error_count += 1;
+                return Err(e);
+            }
+        };
         let value = Arc::new(value);
         let mut inner = self.inner.lock().expect("llm cache poisoned");
         inner.call_count += 1;
@@ -120,6 +140,7 @@ impl LlmResponseCache {
         let mut inner = self.inner.lock().expect("llm cache poisoned");
         inner.entries.clear();
         inner.call_count = 0;
+        inner.error_count = 0;
     }
 
     /// Snapshot of every `(key, response)` pair currently cached.
@@ -260,6 +281,34 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cache.call_count(), 2);
+    }
+
+    #[test]
+    fn error_count_increments_on_backend_error_and_call_count_does_not() {
+        // TestBackend with no canned responses errors with TestBackendMiss
+        // on every request — exercises the miss-then-error path.
+        let backend = TestBackend::with_fingerprint(fp("m"));
+        let cache = LlmResponseCache::new();
+
+        let err = cache
+            .call_cached(
+                &backend,
+                &req(PromptId::Stage1Surface, json!({ "id": "A" })),
+            )
+            .unwrap_err();
+        assert!(matches!(err, LlmError::TestBackendMiss(_)), "{err:?}");
+        assert_eq!(cache.call_count(), 0);
+        assert_eq!(cache.error_count(), 1);
+
+        // A second erroring call increments error_count again.
+        let _ = cache
+            .call_cached(
+                &backend,
+                &req(PromptId::Stage1Surface, json!({ "id": "B" })),
+            )
+            .unwrap_err();
+        assert_eq!(cache.call_count(), 0);
+        assert_eq!(cache.error_count(), 2);
     }
 
     #[test]

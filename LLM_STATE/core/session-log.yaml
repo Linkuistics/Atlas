@@ -583,3 +583,21 @@ sessions:
     - **What didn't:** Nothing significant. One semantic subtlety surfaced: the task spec said "Else if defaults has params.max_tokens → ok" but runtime `BackendRouter` reads `op.params` whole-cloth without merging per-key from defaults. Validation was adjusted to mirror runtime exactly — an override block with a `params:` field but no `max_tokens` is rejected even if `defaults.params.max_tokens` exists. This is safer than accepting a config that runtime would reject.
     - **Key learnings:** Collapsing three guards (presence, type, positivity) into `get("max_tokens").and_then(Value::as_u64).is_some_and(|n| n > 0)` is idiomatic; a string-typed or zero or missing value all fail uniformly. The `overrides.iter().any(|(_, op)| op.is_none())` guard for the defaults check correctly handles partial override configs.
     - **What this suggests next:** `surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing` is the remaining complementary fix — closes the second silent-failure layer. After that `hand-author-second-golden-for-merged-monorepo` unblocks, then `verify-atlas-v1-success-criteria-end-to-end` follows.
+- id: session-46
+  timestamp: 2026-05-03T11:26:44Z
+  phase: work
+  body: |
+    ### Session 46 (2026-05-03T11:26:44Z) — Surface L5/L6/L8 setup errors: abort pipeline on LlmError::Setup
+
+    - Attempted: Make the pipeline abort with a non-zero exit code when the LLM backend returns `LlmError::Setup`, rather than silently writing outputs derived from fallback notes. The concrete trigger was the `dull` config missing `params.max_tokens`, which caused every L5/L6 call to fail but the pipeline to report "0 LLM calls" and write `components.yaml` as if successful.
+    - What worked: All three implementation options converged cleanly.
+      - `LlmResponseCache` gains `error_count` (parallel to `call_count`) in `crates/atlas-engine/src/llm_cache.rs` — incremented on backend error, not on success. `clear()` resets both.
+      - `BudgetSentinel` in `crates/atlas-cli/src/backend.rs` now tracks `LlmError::Setup` alongside `LlmError::BudgetExhausted` via `setup_failed: AtomicBool` and `setup_message: Mutex<Option<String>>`.
+      - `IndexError::SetupFailed(String)` added in `crates/atlas-cli/src/pipeline.rs`. Pipeline checks the sentinel twice — once after the fixedpoint (catches L3/L8 paths) and once after the L9 projection walk (catches L5/L6 `surface_of`/`all_proposed_edges`). `main.rs` maps it to exit code 3.
+      - `IndexSummary.llm_errors` and `format_summary` updated to report error count separately from call count.
+      - 3 new integration tests in `crates/atlas-cli/tests/pipeline_integration.rs`: `setup_error_aborts_pipeline_and_writes_no_outputs`, `budget_exhausted_does_not_alias_setup_failed_error`, `summary_reports_llm_errors_for_cache_miss_failures`.
+      - 1 new unit test in `crates/atlas-engine/src/llm_cache.rs`: `error_count_increments_on_backend_error_and_call_count_does_not`.
+      - `cargo test --workspace` — only the pre-existing `l3_ambiguous_candidate_calls_llm_fallback` failure remains (confirmed to fail on baseline too). All 17 new and existing pipeline integration tests pass.
+      - `cargo clippy -p atlas-engine -p atlas-cli --all-targets -- -D warnings` — clean.
+    - What didn't work: Did not thread `Result<…, LlmError>` through `surface_of` / `all_proposed_edges` / `subcarve_decision`. The sticky-flag sentinel approach reuses the established `BudgetSentinel` pattern and avoids invasive signature churn across the L-layers. The L5/L6/L8 sites still produce their fallback notes on error; the pipeline gates before those notes reach disk.
+    - What this suggests next: `verify-atlas-v1-success-criteria-end-to-end` against `dull` is now unblocked. The pre-existing `l3_ambiguous_candidate_calls_llm_fallback` failure should be separately triaged.

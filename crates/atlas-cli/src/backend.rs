@@ -4,11 +4,12 @@
 //! Tests bypass this path by constructing a `TestBackend` directly and
 //! passing it to [`crate::run_index`]; they still benefit from the
 //! [`BudgetSentinel`] wrapper, which is the only reliable way to
-//! observe budget exhaustion once L5/L6 have collapsed the error into
-//! a "LLM call failed" surface note.
+//! observe budget exhaustion or backend-setup failure once L5/L6 have
+//! collapsed the underlying error into a "LLM call failed" surface
+//! note.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use atlas_engine::sha256_hex;
@@ -32,10 +33,19 @@ pub struct BackendHandles {
 }
 
 /// Sticky-flag wrapper: forwards every call to the inner backend and
-/// records whether any call ever returned [`LlmError::BudgetExhausted`].
+/// records whether any call ever returned [`LlmError::BudgetExhausted`]
+/// or [`LlmError::Setup`]. Both are terminal conditions for the run —
+/// budget exhaustion means subsequent calls would also fail because the
+/// counter is drained; setup failure means the configuration is broken
+/// and every call will hit the same root cause. Recording them at the
+/// top of the backend stack lets the pipeline check after the
+/// fixedpoint without threading a custom error type through every
+/// L-layer.
 pub struct BudgetSentinel {
     inner: Arc<dyn LlmBackend>,
     exhausted: AtomicBool,
+    setup_failed: AtomicBool,
+    setup_message: Mutex<Option<String>>,
 }
 
 impl BudgetSentinel {
@@ -43,11 +53,27 @@ impl BudgetSentinel {
         Arc::new(Self {
             inner,
             exhausted: AtomicBool::new(false),
+            setup_failed: AtomicBool::new(false),
+            setup_message: Mutex::new(None),
         })
     }
 
     pub fn was_exhausted(&self) -> bool {
         self.exhausted.load(Ordering::Acquire)
+    }
+
+    pub fn was_setup_failed(&self) -> bool {
+        self.setup_failed.load(Ordering::Acquire)
+    }
+
+    /// First Setup-error message observed by the sentinel, if any. The
+    /// pipeline propagates this verbatim so the user sees the root cause
+    /// rather than a generic "backend setup failed" line.
+    pub fn first_setup_message(&self) -> Option<String> {
+        self.setup_message
+            .lock()
+            .expect("setup_message poisoned")
+            .clone()
     }
 }
 
@@ -63,6 +89,14 @@ impl LlmBackend for BudgetSentinel {
                     requested,
                     remaining,
                 })
+            }
+            Err(LlmError::Setup(msg)) => {
+                self.setup_failed.store(true, Ordering::Release);
+                let mut slot = self.setup_message.lock().expect("setup_message poisoned");
+                if slot.is_none() {
+                    *slot = Some(msg.clone());
+                }
+                Err(LlmError::Setup(msg))
             }
             other => other,
         }

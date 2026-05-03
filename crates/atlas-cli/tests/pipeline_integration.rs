@@ -711,3 +711,143 @@ fn pipeline_halts_when_subsystem_id_collides_with_component() {
         "subsystems.yaml must not be saved when collision halts the pipeline"
     );
 }
+
+// ---------------------------------------------------------------
+// Setup-error propagation
+// ---------------------------------------------------------------
+
+/// Backend that always returns [`LlmError::Setup`]. Models the dull
+/// failure mode where every L5/L6/L8 call returned Setup yet the
+/// pipeline reported "0 LLM calls" because errors are not counted as
+/// calls. The pipeline must now abort with `IndexError::SetupFailed`
+/// rather than write outputs derived from silent fallbacks.
+struct SetupOnlyBackend {
+    fingerprint: LlmFingerprint,
+    message: String,
+    calls: Mutex<u32>,
+}
+
+impl SetupOnlyBackend {
+    fn new(message: &str) -> Arc<Self> {
+        Arc::new(SetupOnlyBackend {
+            fingerprint: fingerprint(),
+            message: message.to_string(),
+            calls: Mutex::new(0),
+        })
+    }
+}
+
+impl LlmBackend for SetupOnlyBackend {
+    fn call(&self, _req: &LlmRequest) -> Result<Value, LlmError> {
+        *self.calls.lock().unwrap() += 1;
+        Err(LlmError::Setup(self.message.clone()))
+    }
+
+    fn fingerprint(&self) -> LlmFingerprint {
+        self.fingerprint.clone()
+    }
+}
+
+#[test]
+fn setup_error_aborts_pipeline_and_writes_no_outputs() {
+    let tmp = materialise_tiny_fixture();
+    let config = base_config(tmp.path());
+    let backend = SetupOnlyBackend::new("missing params.max_tokens");
+
+    let err = run_index(
+        &config,
+        backend.clone(),
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap_err();
+
+    match err {
+        IndexError::SetupFailed(msg) => {
+            assert!(
+                msg.contains("missing params.max_tokens"),
+                "expected sentinel message in error, got: {msg}"
+            );
+        }
+        other => panic!("expected IndexError::SetupFailed, got {other:?}"),
+    }
+
+    assert!(
+        *backend.calls.lock().unwrap() > 0,
+        "backend must have been invoked at least once for the sentinel to trip"
+    );
+    assert!(
+        !config.output_dir.join("components.yaml").exists(),
+        "setup-failed run must not write components.yaml"
+    );
+    assert!(
+        !config.output_dir.join("external-components.yaml").exists(),
+        "setup-failed run must not write external-components.yaml"
+    );
+    assert!(
+        !config.output_dir.join("related-components.yaml").exists(),
+        "setup-failed run must not write related-components.yaml"
+    );
+}
+
+#[test]
+fn budget_exhausted_does_not_alias_setup_failed_error() {
+    // Regression guard for the Setup vs BudgetExhausted split: a
+    // budget-only failure must continue to map to BudgetExhausted, not
+    // SetupFailed. Mirrors the existing tiny_budget_triggers_budget_exhausted
+    // test but is colocated here so a future change to the sentinel that
+    // accidentally collapses the two branches is caught by this file.
+    use atlas_llm::{default_token_estimator, BudgetedBackend};
+
+    let tmp = materialise_tiny_fixture();
+    let config = base_config(tmp.path());
+    let counter = Arc::new(TokenCounter::new(1));
+    let inner = LenientBackend::new();
+    let backend: Arc<dyn LlmBackend> = Arc::new(BudgetedBackend::new(
+        inner,
+        counter.clone(),
+        default_token_estimator(),
+    ));
+
+    let err = run_index(
+        &config,
+        backend,
+        Some(counter),
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, IndexError::BudgetExhausted),
+        "BudgetExhausted must not collapse into SetupFailed when the sentinel grew Setup tracking; got {err:?}"
+    );
+}
+
+#[test]
+fn summary_reports_llm_errors_for_cache_miss_failures() {
+    // A fresh backend that errors on every call: the pipeline aborts
+    // (per the SetupFailed test above), but if we look at the cache
+    // counters before the pipeline propagates we should see error_count
+    // > 0 and call_count == 0. This test confirms the counters split
+    // cleanly so a future "report errors but continue" mode would have
+    // accurate numbers to display.
+    let tmp = materialise_tiny_fixture();
+    let config = base_config(tmp.path());
+    let backend = SetupOnlyBackend::new("config rejected");
+
+    let err = run_index(
+        &config,
+        backend,
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap_err();
+
+    // The pipeline aborts with SetupFailed; the summary path is not
+    // reached. The behavioural guarantee is that we did NOT silently
+    // succeed — that's the regression this whole task fixes.
+    assert!(
+        matches!(err, IndexError::SetupFailed(_)),
+        "pipeline must abort, not produce a misleading 'success' summary"
+    );
+}

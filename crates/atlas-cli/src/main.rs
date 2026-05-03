@@ -240,6 +240,13 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
             drop(handles);
             Ok(ExitCode::from(2))
         }
+        Err(IndexError::SetupFailed(msg)) => {
+            eprintln!(
+                "atlas: LLM backend setup failed: {msg}; no output files were written"
+            );
+            drop(handles);
+            Ok(ExitCode::from(3))
+        }
         Err(IndexError::Other(err)) => {
             drop(handles);
             Err(err)

@@ -13,6 +13,11 @@
 //! 6. On budget exhaustion (detected via the driver's error or the
 //!    counter's state), return `IndexError::BudgetExhausted` — the
 //!    CLI maps that to exit code 2 and skips all writes.
+//! 7. On an `LlmError::Setup` from any L3/L5/L6/L8 call, return
+//!    `IndexError::SetupFailed` — exit code 3, no writes. The sentinel
+//!    is consulted twice: once after the fixedpoint, once after the L9
+//!    projection walk, so a Setup error first emitted during
+//!    `surface_of` does not leak into the writer.
 //! ```
 //!
 //! Atomic writes via `atlas_index::save_*_atomic`. The pipeline never
@@ -50,6 +55,15 @@ pub const DEFAULT_OUTPUT_SUBDIR: &str = ".atlas";
 pub enum IndexError {
     #[error("LLM token budget exhausted mid-run; no output files were written")]
     BudgetExhausted,
+
+    /// The backend returned [`atlas_llm::LlmError::Setup`] for at least
+    /// one call. Setup errors mean every call would fail the same way
+    /// (e.g. config-load HTTP-provider rejection, missing CLI binary),
+    /// so we abort the run instead of writing outputs derived from
+    /// silent fallbacks. The string carries the first setup message the
+    /// sentinel observed.
+    #[error("LLM backend setup failed: {0}; no output files were written")]
+    SetupFailed(String),
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),
@@ -99,6 +113,10 @@ pub struct IndexSummary {
     pub external_count: usize,
     pub edge_count: usize,
     pub llm_calls: u64,
+    /// Number of cache misses where the backend returned an error.
+    /// Distinct from `llm_calls` (successful misses) so a "0 calls,
+    /// many errors" run is no longer misreported as a no-op success.
+    pub llm_errors: u64,
     pub tokens_used: u64,
     pub token_budget: Option<u64>,
     pub fixedpoint_iterations: u32,
@@ -210,6 +228,13 @@ pub fn run_index(
     if sentinel.was_exhausted() {
         return Err(IndexError::BudgetExhausted);
     }
+    if sentinel.was_setup_failed() {
+        return Err(IndexError::SetupFailed(
+            sentinel
+                .first_setup_message()
+                .unwrap_or_else(|| "(no message)".to_string()),
+        ));
+    }
 
     // ---- demand L9 projections ------------------------------------
     reporter.on_event(ProgressEvent::Phase(Phase::Project));
@@ -274,6 +299,19 @@ pub fn run_index(
         SystemTime::now(),
     );
 
+    // Final setup-error gate: the L5/L6/L9 walks above run after the
+    // first sentinel check, so a Setup error first emitted during
+    // surface_of or all_proposed_edges would otherwise reach the
+    // writers. Re-check here so any setup failure aborts with no
+    // outputs.
+    if sentinel.was_setup_failed() {
+        return Err(IndexError::SetupFailed(
+            sentinel
+                .first_setup_message()
+                .unwrap_or_else(|| "(no message)".to_string()),
+        ));
+    }
+
     let summary = IndexSummary {
         component_count: components_file
             .components
@@ -283,6 +321,7 @@ pub fn run_index(
         external_count: externals_file.externals.len(),
         edge_count: related_file.edges.len(),
         llm_calls: db.llm_cache().call_count(),
+        llm_errors: db.llm_cache().error_count(),
         tokens_used: counter.as_ref().map(|c| c.used()).unwrap_or(0),
         token_budget: counter.as_ref().map(|c| c.budget()),
         fixedpoint_iterations: fp_result.iterations,
@@ -378,11 +417,12 @@ pub fn format_summary(summary: &IndexSummary) -> String {
         .map(|b| format!("{}/{}", summary.tokens_used, b))
         .unwrap_or_else(|| format!("{} (no budget)", summary.tokens_used));
     format!(
-        "atlas index: components={} externals={} edges={} llm_calls={} tokens={} iterations={} written={}",
+        "atlas index: components={} externals={} edges={} llm_calls={} llm_errors={} tokens={} iterations={} written={}",
         summary.component_count,
         summary.external_count,
         summary.edge_count,
         summary.llm_calls,
+        summary.llm_errors,
         budget,
         summary.fixedpoint_iterations,
         summary.outputs_written,

@@ -2,7 +2,7 @@ tasks:
 - id: surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing
   title: Surface L5/L6/L8 setup errors instead of silently swallowing
   category: infra
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: HIGH.** L5 surface and L6 edges silently swallow `LlmError` into a `SurfaceRecord { notes: "LLM call failed: ..." }` (and the equivalent for edges), but those notes never appear in `components.yaml` because the L9 projection's `ComponentEntry` schema doesn't include a surface field. Combined with the cache `call_count` only counting hits/misses (not errors), this produces "0 LLM calls" pipeline summaries when in fact every call failed.
@@ -38,11 +38,43 @@ tasks:
     - A configuration error (e.g., `LlmError::Setup`) on the L5/L6/L8 path either aborts the run or reports a non-zero error count in the pipeline summary.
     - BudgetExhausted continues to soft-fail (verified by an existing or new test).
     - The dull config-without-max_tokens scenario fails loudly, not silently.
+  results: |
+    ## What was done
+
+    Implemented options (1) + (3) from the task brief.
+
+    **(1) Cache error counter.**
+    - `LlmResponseCache` gains `error_count` parallel to `call_count` (`crates/atlas-engine/src/llm_cache.rs`). On cache miss, a successful backend response increments `call_count`; an `Err` increments `error_count`. `clear()` resets both.
+    - `IndexSummary.llm_errors` and the `format_summary` banner now report the error count, so a future "report and continue" mode has accurate numbers.
+
+    **(3) Setup-error abort.**
+    - `BudgetSentinel` was extended to track `LlmError::Setup` alongside `LlmError::BudgetExhausted` (`crates/atlas-cli/src/backend.rs`). New methods `was_setup_failed()` and `first_setup_message()`.
+    - `IndexError::SetupFailed(String)` added (`crates/atlas-cli/src/pipeline.rs`). The pipeline checks the sentinel twice — once after the fixedpoint (catches L3/L8 setup errors) and once after the L9 projection walk (catches L5/L6 setup errors emitted during `surface_of` / `all_proposed_edges`). Either trip aborts before any writes.
+    - `main.rs` maps the new variant to exit code 3 with a user-facing message.
+
+    ## What worked
+
+    - `cargo test -p atlas-engine --lib llm_cache` — 7/7 pass, including new `error_count_increments_on_backend_error_and_call_count_does_not`.
+    - `cargo test -p atlas-cli --test pipeline_integration` — 17/17 pass, including new `setup_error_aborts_pipeline_and_writes_no_outputs`, `budget_exhausted_does_not_alias_setup_failed_error`, `summary_reports_llm_errors_for_cache_miss_failures`.
+    - `cargo test --workspace` — only the **pre-existing** `l3_ambiguous_candidate_calls_llm_fallback` failure remains (verified to fail on baseline before my changes via `git stash` + retest). Every other test in the workspace passes.
+    - `cargo clippy -p atlas-engine -p atlas-cli --all-targets -- -D warnings` — clean.
+
+    ## What didn't work / was deliberately skipped
+
+    - Did **not** thread `Result<…, LlmError>` through `surface_of` / `all_proposed_edges` / `subcarve_decision`. The sticky-flag sentinel approach reuses the existing `BudgetSentinel` pattern and avoids invasive signature churn. The L5/L6/L8 sites still produce their fallback `notes:`/empty/`stopped` records; the pipeline gates on the sentinel before those records reach disk.
+    - Did **not** implement option (2) (per-component `surface_error: Option<String>` field on `ComponentEntry`). The brief recommended skipping it because the field would be empty in healthy runs.
+    - The L5 in-engine path at `l5_surface.rs:75-87` still constructs a `SurfaceRecord { notes: "LLM call failed: ..." }` on `Err`. That string is now never emitted to disk on a setup failure (pipeline aborts), and remains correct for transient `Invocation`/`Parse` errors that we still want to soft-fail through.
+
+    ## What this suggests next
+
+    - The original blocker for `hand-author-second-golden-for-merged-monorepo` is now lifted, but per the user's note we already have `dull` as a second golden — so the natural next task is `verify-atlas-v1-success-criteria-end-to-end` against `dull`, which depends on this fix.
+    - Memory entry to add: "BudgetSentinel tracks both BudgetExhausted and Setup; pipeline gates twice (post-fixedpoint, post-L9-walk)" — supersedes the earlier `budgetsentinel-is-only-reliable-budget-exhaustion-detection-path` note (which should be updated to reflect the broadened responsibility).
+    - The pre-existing `l3_ambiguous_candidate_calls_llm_fallback` failure should be triaged separately — out of scope here but worth surfacing.
+    - Consider promoting `LlmResponseCache::error_count` into a non-fatal "errors observed during run" reporter for transient errors: today the surfacing only fires on Setup, but transient `Invocation` or `Parse` errors are still silently absorbed. A follow-up could decide whether to fail or warn-on-stderr based on count thresholds.
 - id: hand-author-second-golden-for-merged-monorepo
   title: Hand-author synthetic second golden for cross-target validation
   category: eval
-  status: blocked
-  blocked_reason: validate-params-max-tokens-at-config-load is done; waiting on surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing to land before depth-1+ LLM run on dull produces meaningful cross-target output.
+  status: not_started
   dependencies:
   - surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing
   description: |
