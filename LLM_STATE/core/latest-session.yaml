@@ -1,10 +1,13 @@
-id: session-50
-timestamp: 2026-05-03T13:21:50Z
+id: session-51
+timestamp: 2026-05-03T14:25:15Z
 phase: work
 body: |
-  ### Session 50 (2026-05-03T13:21:50Z) — Prompt caching for Anthropic HTTP backend and OpenRouter provider
+  ### Session 51 (2026-05-03T14:25:15Z) — L8 map/reduce subcarve redesign
 
-  - **Attempted:** Two feature tasks: (1) enable Anthropic ephemeral prompt caching in `AnthropicHttpBackend`; (2) add OpenRouter as an LLM provider backed by the OpenAI Chat Completions wire format.
-  - **What worked:** Both tasks completed cleanly. Anthropic caching is now active for `Classify` and `Subcarve` via a `CACHE_BOUNDARY_MARKER` split in `prompt::render_split`; the two prompt templates were restructured to place stable catalog sections above the marker and per-call inputs below. OpenRouter routes through `OpenAiHttpBackend` with a `with_base_url` override and distinct `provider_label` so the Salsa LLM cache fingerprint distinguishes it from the plain OpenAI provider.
-  - **What this suggests next:** The `map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis` task is now the next highest-leverage item — it extends HTTP routing to L5/L6 analysis. The `hand-author-second-golden-for-merged-monorepo` task remains blocked on the three LLM-error-surfacing bugs filed in the previous session.
-  - **Key learnings:** `OpenAiHttpBackend::with_base_url` takes a builder-style approach so the default OpenAI path is unchanged; only the `base_url` and `provider_label` fields differ for OpenRouter. The `provider_label` is folded into the `backend_version` fingerprint (`openai-http/<ver>+upstream=openrouter`) to keep Salsa cache entries from colliding across providers sharing the same model id string. The `HTTP_PROVIDERS` constant was promoted from a local `const` to `pub const` in `config.rs` so `router.rs` and `config.rs` share a single source of truth without duplication.
+  - **Attempted and completed**: replaced the single large `Subcarve` LLM prompt with a map/reduce architecture in `l8_recurse.rs`. Instead of asking the LLM to propose sub-dirs, the engine now enumerates each component's immediate sub-dirs (`enumerate_immediate_subdirs`), calls `l3_classify::is_component` on each via the `Classify` prompt (the "map" step), and reduces the verdicts into a `SubcarveDecision`.
+  - **L3 caching wired in**: `classify_via_llm` in `l3_classify.rs` now routes through `db.call_llm_cached()` rather than calling `backend.call()` directly. This means the L8 map step benefits from cache reuse — two components with byte-equal immediate sub-dir layouts share one cache entry.
+  - **`EMBEDDED_SUBCARVE_PROMPT` removed** from `l8_recurse.rs` and its re-export in `lib.rs` dropped. The `subcarve.md` template remains in `EMBEDDED_PROMPTS` (contributing its sha to the run-wide fingerprint) but is no longer rendered, and its token-coverage case was removed from `prompt_token_coverage.rs`.
+  - **Test suite updated** to the new prompt shape: `fixedpoint.rs` now uses `AlwaysBoundaryBackend` (answers `Classify` with `is_boundary: true`) and the `PathologicalBackend`/`pathological_backend_panics_at_hard_cap` test was removed (the engine no longer generates novel sub-dirs via the LLM). `tests/l7_l8_fixedpoint.rs` back-edge, convergence, and depth-cap tests all updated to `PromptId::Classify` responses.
+  - **Design spec written**: `docs/superpowers/specs/2026-05-04-l8-map-reduce-design.md` captures the settled architecture.
+  - **Two follow-on tasks added** to the backlog: bounded concurrency for the L8 map step (rayon or Tokio semaphore), and skipping L7 structural-signal computation when policy will Stop.
+  - **What's next**: the `bounded-concurrency-for-l8-map-step-rayon-or-tokio-semaphore` task unlocks wall-time improvement on large targets like dull; once that lands, the `hand-author-second-golden-for-merged-monorepo` block condition (`0 LLM calls via pin short-circuit`) can be re-tested with HTTP-routed classify at depth 1.

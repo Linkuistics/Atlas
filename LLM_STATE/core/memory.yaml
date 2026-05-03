@@ -118,9 +118,13 @@ entries:
   body: |
     L6 `all_proposed_edges` and `candidate_edges_for` share a single cache key (the full component-pair input batch). One LLM call covers all pairs, but a single component input change invalidates the entire batch's cached result.
 - id: l5-l6-llm-calls-must-route-through-call-llm-cached-not-backend-call-directly
-  title: L5/L6+ LLM calls must route through call_llm_cached not backend.call directly
+  title: All engine LLM calls (L3/L5/L6/L8 map step) must route through call_llm_cached
   body: |
-    All LLM-adjacent queries in atlas-engine (L5/L6 and any future layers) must route through `AtlasDatabase::call_llm_cached(&self, req)` rather than calling `backend.call()` directly. This wrapper consults `LlmResponseCache` before hitting the backend and records the response keyed by `(LlmFingerprint, PromptId, canonical-JSON(inputs))`. Bypassing `call_llm_cached` silently skips the cache, causing redundant LLM calls and breaking the "zero LLM calls on no-op re-run" exit criterion.
+    All LLM-adjacent queries in `atlas-engine` must route through `AtlasDatabase::call_llm_cached(&self, req)` rather than calling `backend.call()` directly. This wrapper consults `LlmResponseCache` before hitting the backend and records the response keyed by `(LlmFingerprint, PromptId, canonical-JSON(inputs))`. Bypassing `call_llm_cached` silently skips the cache, causing redundant LLM calls and breaking the "zero LLM calls on no-op re-run" exit criterion.
+
+    **Coverage as of 2026-05-04:** L3 (`l3_classify::classify_via_llm`), L5 (`l5_surface::surface_of`), L6 (`l6_edges::all_proposed_edges` / `candidate_edges_for`). L8 itself no longer issues an LLM call directly under map/reduce — its map step calls `is_component`, which routes through the cache via L3.
+
+    **Trap fixed in this cycle:** L3 previously bypassed `call_llm_cached` and called `db.backend().call()` directly. With the L8 map/reduce redesign that calls `is_component` per sub-dir, the bypass turned into an N×-amplified cache miss on every re-run. `pipeline_integration::second_run_on_unchanged_fixture_is_byte_identical` is the regression test.
 - id: back-edge-inputs-stored-as-workspace-fields-not-tracked-queries
   title: Back-edge inputs stored as Workspace fields not tracked queries
   body: |
@@ -470,9 +474,19 @@ entries:
   body: |
     `build_llm_inputs` supplies only candidate-scoped context. Switching L3 from `claude-code` to `anthropic` backend is a one-line `.atlas/config.yaml` change. No prompt engineering needed for the per-candidate HTTP switch.
 - id: l8-redesign-uses-per-subdir-l3-classify-plus-deterministic-rust-reduce
-  title: L8 redesign uses per-subdir L3 Classify plus deterministic Rust reduce
+  title: 'L8 map/reduce: per-subdir L3 + deterministic reduce (implemented)'
   body: |
-    Current L8 subcarve prompt mixes parent-scoped signals with per-candidate output. Redesign: run L3 `Classify` on each subdir independently, then reduce deterministically in Rust. Five action items documented in `docs/spikes/2026-05-02-l3-l8-prompt-shape-spike.md`. The map/reduce task description must absorb these items before implementation is scheduled.
+    **Implemented (2026-05-04).** L8's `compute_decision` runs `map_reduce_subcarve` on the `Recurse | AskLlm` policy branches: enumerate immediate sub-dirs of each `path_segment`, filter pin-suppressed names (raw + slug), call `is_component(db, workspace, dir)` per sub-dir, reduce — `should_subcarve = any verdict.is_boundary`, `sub_dirs = [dir for verdict.is_boundary]`. Modularity hint becomes a logged prior; verdicts win.
+
+    **Map step uses the existing L3 cascade**: pin → deterministic → LLM via `db.call_llm_cached`. The L3 LLM call now routes through the engine's `LlmResponseCache` (previously bypassed it via `backend.call`); this was a correctness fix surfaced by the `pipeline_integration` no-op-re-run tests after the redesign — without it, the map step re-fired every L3 fallback on each re-run.
+
+    **Decommissioned**: `subcarve.md` is no longer rendered. The file remains in `EMBEDDED_PROMPTS` so its `template_sha` keeps contributing to the run-wide fingerprint during the transition; deletion slated for the next release. `build_subcarve_inputs`, `parse_subcarve_response`, and the `subcarve.md` row in the bidirectional `prompt_token_coverage` matrix are gone. The `EMBEDDED_SUBCARVE_PROMPT` const and its public re-export from `atlas-engine` are removed.
+
+    **Concurrency**: serial today (single-threaded `for` loop). Bounded concurrency (rayon or Tokio + Semaphore) is a follow-up; Salsa 0.26 supports parallel tracked-query execution and `LlmResponseCache` is thread-safe.
+
+    **Quality bar limitation**: enumeration is one level deep. A library at `crates/foo/` whose interesting boundary is `crates/foo/src/auth, src/billing` does not surface via this design — the only immediate sub-dir is `src`, which classifies as non-component. A future iteration can descend through "container" dirs (`src`, `lib`, `app`); tracked as a follow-up.
+
+    Spec: `docs/superpowers/specs/2026-05-04-l8-map-reduce-design.md`. Spike: `docs/spikes/2026-05-02-l3-l8-prompt-shape-spike.md`.
 - id: anthropichttpbackend-already-implemented-map-reduce-scope-is-narrower-than-task-description-implies
   title: AnthropicHttpBackend ephemeral prompt caching enabled for Classify/Subcarve
   body: |
@@ -484,13 +498,14 @@ entries:
 
     **OpenAI prompt caching is automatic** — any prompt ≥1024 tokens is cached server-side; `http_openai.rs` needs no code change.
 
-    **Live verification deferred** — no `~/Development/dull/` re-run was performed to observe `cache_read_input_tokens` in the response usage data. Run before relying on the cache for cost reduction.
+    **Map/reduce status (2026-05-04):**
+    1. **L8 redesign — DONE.** `map_reduce_subcarve` lands in `l8_recurse.rs`. Spec: `docs/superpowers/specs/2026-05-04-l8-map-reduce-design.md`. Subcarve prompt no longer rendered.
+    2. **Routing Classify through HTTP — config-only, ready.** Flip `.atlas/config.yaml` `operations.classify.model: anthropic/...`.
+    3. **Cache hit-rate verification — DEFERRED.** Run dull at depth 1 with `anthropic/claude-haiku-4-5` for `classify` and observe `cache_read_input_tokens` in usage data.
+    4. **Goldens/eval re-run — DEFERRED.** Pending the cache-hit-rate run.
+    5. **Bounded concurrency — DEFERRED.** Map step is currently serial; rayon or Tokio + Semaphore is the obvious next step. Salsa 0.26 supports parallel tracked queries and `LlmResponseCache` is thread-safe.
 
-    Remaining map/reduce work:
-    1. L8 redesign (5 items in `docs/spikes/2026-05-02-l3-l8-prompt-shape-spike.md`)
-    2. Route `PromptId::Classify` through `AnthropicHttpBackend` via `.atlas/config.yaml` (config-only)
-    3. Cache hit-rate verification after backend swap
-    4. Goldens/eval re-run
+    **Subcarve-prompt rendering is no longer load-bearing.** `defaults/prompts/subcarve.md` stays in `EMBEDDED_PROMPTS` for fingerprint stability and is slated for deletion after one shipped release. Prompt caching on subcarve.md no longer matters; classify.md prompt caching is the only HTTP cache lever now.
 - id: interpolate-env-vars-skips-hash-in-quoted-scalar-silently
   title: interpolate_env_vars skips hash-in-quoted-scalar silently
   body: |

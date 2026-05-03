@@ -56,13 +56,14 @@ fn cases() -> Vec<Case> {
             inputs: crate::l3_classify::build_llm_inputs_for_tests,
             cache_only_keys: &[],
         },
-        Case {
-            prompt: "subcarve.md",
-            builder: "l8_recurse::build_subcarve_inputs",
-            template: include_str!("../../../defaults/prompts/subcarve.md"),
-            inputs: crate::l8_recurse::build_subcarve_inputs_with_stubs_for_tests,
-            cache_only_keys: &[],
-        },
+        // `subcarve.md` is intentionally absent: as of the L8
+        // map/reduce redesign the engine no longer renders that
+        // template — the per-subdir map step routes through `Classify`
+        // — so a token-coverage check on it would assert against an
+        // unused prompt. The file remains in `EMBEDDED_PROMPTS` so its
+        // sha continues to contribute to the run-wide template
+        // fingerprint during the transition; deletion is slated for a
+        // post-release cleanup pass.
         Case {
             prompt: "stage1-surface.md",
             builder: "l5_surface::build_inputs",

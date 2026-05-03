@@ -174,7 +174,6 @@ mod tests {
     use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId, TestBackend};
     use serde_json::{json, Value};
     use std::path::Path;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
     use tempfile::TempDir;
 
@@ -217,43 +216,40 @@ mod tests {
         assert_eq!(db.fixedpoint_iteration_count(), 0);
     }
 
-    /// Pathological backend: every call returns a fresh, never-before-
-    /// seen sub_dir. Its only purpose is to exercise the hard-cap panic
-    /// path.
-    struct PathologicalBackend {
-        counter: AtomicU32,
+    /// Stub backend that answers every L3 `Classify` request with
+    /// `is_boundary: true`. Drives the L8 map/reduce path: every
+    /// immediate sub-dir of a library-kind component is treated as a
+    /// boundary, so the fixedpoint back-edge grows naturally as L2
+    /// re-walks each new sub-dir on the next iteration.
+    struct AlwaysBoundaryBackend {
         fingerprint: LlmFingerprint,
     }
 
-    impl PathologicalBackend {
+    impl AlwaysBoundaryBackend {
         fn new() -> Self {
-            PathologicalBackend {
-                counter: AtomicU32::new(0),
+            AlwaysBoundaryBackend {
                 fingerprint: fingerprint(),
             }
         }
     }
 
-    impl LlmBackend for PathologicalBackend {
+    impl LlmBackend for AlwaysBoundaryBackend {
         fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
             match req.prompt_template {
-                PromptId::Subcarve => {
-                    let n = self.counter.fetch_add(1, Ordering::SeqCst);
-                    Ok(json!({
-                        "should_subcarve": true,
-                        "sub_dirs": [format!("src/novel-{n}")],
-                        "rationale": "pathological",
-                    }))
-                }
-                // Any other prompt (e.g. Stage1/Stage2 triggered by
-                // L5/L6 via L7's modularity_hint → edge_graph) returns
-                // empty-shaped output so we don't panic incidentally.
-                PromptId::Stage1Surface => Ok(json!({ "purpose": "p" })),
-                PromptId::Stage2Edges => Ok(Value::Array(Vec::new())),
                 PromptId::Classify => Ok(json!({
                     "kind": "rust-library",
-                    "rationale": "r",
+                    "rationale": "stub",
+                    "is_boundary": true,
+                    "evidence_grade": "medium",
                 })),
+                PromptId::Stage1Surface => Ok(json!({ "purpose": "p" })),
+                PromptId::Stage2Edges => Ok(Value::Array(Vec::new())),
+                // Subcarve is no longer routed through the LLM under the
+                // map/reduce design; if the engine accidentally calls it
+                // we fail loud rather than masking the regression.
+                PromptId::Subcarve => Err(LlmError::Invocation(
+                    "Subcarve must not be routed through the LLM under map/reduce".to_string(),
+                )),
             }
         }
 
@@ -276,82 +272,26 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "did not converge")]
-    fn pathological_backend_panics_at_hard_cap() {
+    fn iteration_counter_reflects_number_of_productive_rounds() {
+        // A library whose immediate sub-dir (`src`) is reported as a
+        // boundary by L3 grows the back-edge once; the next round
+        // surfaces `src` as a new candidate but its own immediate
+        // sub-dirs are empty (only `lib.rs` lives there), so the second
+        // iteration adds nothing and the loop converges. Final
+        // productive iteration count: 1.
         let tmp = TempDir::new().unwrap();
         write_lib_crate(tmp.path(), "lib");
-        let backend: Arc<dyn LlmBackend> = Arc::new(PathologicalBackend::new());
+        let backend: Arc<dyn LlmBackend> = Arc::new(AlwaysBoundaryBackend::new());
         let mut db = AtlasDatabase::new(backend, tmp.path().to_path_buf(), fingerprint());
         seed_filesystem(&mut db, tmp.path(), false).unwrap();
 
-        let _ = run_fixedpoint(
-            &mut db,
-            FixedpointConfig {
-                max_depth: 8,
-                hard_cap: 3,
-                ..FixedpointConfig::default()
-            },
-        );
-    }
-
-    #[test]
-    fn iteration_counter_reflects_number_of_productive_rounds() {
-        // A library with one stable LLM response → one productive round
-        // (adds the sub_dir), then a second round that re-confirms the
-        // same sub_dir and terminates. Final counter: 1.
-        let tmp = TempDir::new().unwrap();
-        write_lib_crate(tmp.path(), "lib");
-        let backend = Arc::new(TestBackend::with_fingerprint(fingerprint()));
-        let backend_dyn: Arc<dyn LlmBackend> = backend.clone();
-        let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
-        seed_filesystem(&mut db, tmp.path(), false).unwrap();
-
-        // Canning a response for every input shape the driver will
-        // probe is impractical — instead, stub the response shape
-        // directly against whatever inputs the first call builds.
-        // We use a loop: drive one iteration manually via should_subcarve
-        // to capture the inputs, then register the canned response.
-        //
-        // But capturing inputs requires accessing build_subcarve_inputs
-        // — which is private. Register for all components.
         let live_id = all_components(&db)
             .iter()
             .find(|c| !c.deleted)
             .unwrap()
             .id
             .clone();
-        let entry = all_components(&db)
-            .iter()
-            .find(|c| c.id == live_id)
-            .unwrap()
-            .clone();
 
-        let signals_first_round = crate::subcarve_policy::SubcarveSignals {
-            kind: crate::types::ComponentKind::RustLibrary,
-            current_depth: 0,
-            max_depth: 4, // MUST match the FixedpointConfig.max_depth below
-            seam_density: 0.0,
-            modularity_hint: None,
-            cliques_touching: Vec::new(),
-            pin_suppressed_children: Vec::new(),
-        };
-        let inputs =
-            crate::l8_recurse::build_subcarve_inputs_for_tests(&entry, &signals_first_round);
-        backend.respond(
-            PromptId::Subcarve,
-            inputs,
-            json!({
-                "should_subcarve": true,
-                "sub_dirs": ["src/sub-a"],
-                "rationale": "split",
-            }),
-        );
-
-        // Run the driver. After the first iteration, workspace.carve_back_edge
-        // picks up `src/sub-a`; L2 re-walks and finds no manifests there
-        // (it's an empty dir), so L4 does not add a new component. The
-        // second pass therefore re-confirms the same decision → no
-        // growth → terminates.
         let result = run_fixedpoint(
             &mut db,
             FixedpointConfig {
@@ -464,37 +404,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn pathological_backend_emits_iter_start_for_each_iteration_until_cap() {
-        use crate::progress::{ProgressEvent, RecordingSink};
-
-        let tmp = TempDir::new().unwrap();
-        write_lib_crate(tmp.path(), "lib");
-        let backend: Arc<dyn LlmBackend> = Arc::new(PathologicalBackend::new());
-        let mut db = AtlasDatabase::new(backend, tmp.path().to_path_buf(), fingerprint());
-        seed_filesystem(&mut db, tmp.path(), false).unwrap();
-
-        let sink = RecordingSink::new();
-        let cfg = FixedpointConfig {
-            max_depth: 8,
-            hard_cap: 3,
-            progress: Some(sink.clone() as Arc<dyn crate::progress::ProgressSink>),
-        };
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_fixedpoint(&mut db, cfg)
-        }));
-        assert!(result.is_err(), "expected hard-cap panic");
-
-        let events = sink.snapshot();
-        let iter_starts: Vec<u32> = events
-            .iter()
-            .filter_map(|e| match e {
-                ProgressEvent::IterStart { iteration, .. } => Some(*iteration),
-                _ => None,
-            })
-            .collect();
-        // Hard cap is 3. The driver fires IterStart for iterations 0, 1, 2
-        // (the panic occurs after the third merge step).
-        assert_eq!(iter_starts, vec![0, 1, 2]);
-    }
+    // Note: a former `pathological_backend_emits_iter_start_for_each_iteration_until_cap`
+    // test exercised the hard-cap panic path by using a backend that
+    // proposed fresh sub_dirs on every Subcarve call. Under the L8
+    // map/reduce redesign sub_dirs are enumerated from the filesystem
+    // — no LLM can inject novel paths — so naturally bounding fixed
+    // points happen by depth-cap or fs exhaustion. The hard-cap is now
+    // defensive against future bugs rather than a routinely-tested
+    // path; if a regression test for it becomes necessary, build a
+    // fixture with deeply-nested module dirs and a small `hard_cap`.
 }

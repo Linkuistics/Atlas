@@ -190,7 +190,7 @@ tasks:
 - id: map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis
   title: L8 map/reduce redesign and L3 HTTP routing (AnthropicHttpBackend already complete)
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: MEDIUM (HIGH once spike unblocks).** Foundational architectural shift for Atlas's LLM strategy. Replaces the per-component agentic-Claude-Code model with a routed two-backend design: plain Anthropic HTTP for fixed-shape classification queries, agentic Claude Code only for genuinely exploratory work. Combines this with map/reduce for L8 subcarve so a component with N immediate sub-directories costs N small parallel calls instead of one long-context-rotted agent run.
@@ -288,6 +288,43 @@ tasks:
     - `kind_accuracy` against the dev-workspace golden is within 2pp of the pre-conversion baseline.
     - `--dry-run` re-run produces byte-identical outputs to the prior run.
     - Documentation: a section in the design spec (`docs/superpowers/specs/`) describing the routing rules, map/reduce shape, and concurrency model.
+  results: |
+    **2026-05-04 work phase: L8 map/reduce structural redesign landed.** The engine no longer renders `subcarve.md` for live LLM calls; `compute_decision` routes the `Recurse | AskLlm` branch through `map_reduce_subcarve`, which enumerates each component's immediate sub-directories and asks the existing L3 cascade (`is_component`) per sub-dir, then deterministically reduces the per-sub-dir verdicts. Modularity hint becomes a logged prior, not a gate. AnthropicHttpBackend was already complete; its remaining wiring (route Classify by config) is unchanged config-only work.
+
+    ## Concrete deliverables
+
+    - **`crates/atlas-engine/src/l8_recurse.rs`** — `ask_llm_for_subcarve` replaced by `map_reduce_subcarve`. Helpers added: `enumerate_immediate_subdirs` (walks `workspace.files()` + `git_boundary_dirs` for first-component-strictly-inside paths), `pin_suppressed_keys` / `is_pin_suppressed` (raw + slug match), `build_rationale`. Removed: `build_subcarve_inputs`, `parse_subcarve_response`, `format_seam_density`, `value_kind`, `EMBEDDED_SUBCARVE_PROMPT` const.
+    - **`crates/atlas-engine/src/l3_classify.rs::classify_via_llm`** — flipped from `db.backend().call(&request)` to `db.call_llm_cached(&request)`. Required to maintain the no-op-re-run zero-LLM-call contract once L8's map step started calling `is_component` N times per component.
+    - **`crates/atlas-engine/src/lib.rs`** — `EMBEDDED_SUBCARVE_PROMPT` re-export removed.
+    - **`crates/atlas-engine/src/prompt_token_coverage.rs`** — `subcarve.md` row removed from the bidirectional matrix with a rationale comment.
+    - **`crates/atlas-engine/tests/l7_l8_fixedpoint.rs`** — `ScriptedBackend` integration tests rewritten to drive Classify (not Subcarve). New shape: backend returns `is_boundary: true`, the engine enumerates `lib/src` from the filesystem walk, back-edge picks it up. The `max_depth_one_caps_recursion_for_library_children` test renamed to `max_depth_zero_blocks_every_sub_carve` to reflect what it actually exercises.
+    - **`crates/atlas-engine/src/fixedpoint.rs`** — `iteration_counter_reflects_number_of_productive_rounds` rewritten with an `AlwaysBoundaryBackend` mini-backend that drives the new map/reduce path. Removed: `PathologicalBackend` and the `pathological_backend_emits_iter_start_for_each_iteration_until_cap` test — its premise (LLM proposing novel sub_dirs each round) cannot occur under map/reduce, where sub_dirs are filesystem-enumerated.
+    - **`docs/superpowers/specs/2026-05-04-l8-map-reduce-design.md`** — design spec covering the redesign, the cache routing fix, and explicit deferred items.
+    - **`defaults/prompts/subcarve.md`** — kept in `EMBEDDED_PROMPTS` so `template_sha` stays stable through this release; deletion slated post-release.
+
+    ## What works
+
+    - `cargo test --workspace` — all green (154 engine unit tests, 65 atlas-cli tests, 41 fixedpoint tests, 17 pipeline integration tests, the bidirectional prompt-token-coverage matrix).
+    - `cargo clippy --workspace --tests -- -D warnings` — clean.
+    - `pipeline_integration::second_run_on_unchanged_fixture_is_byte_identical` and `pipeline_integration::llm_cache_json_is_written_and_read_across_invocations` continue to pass — the L3 cache fix preserves the no-op-re-run zero-LLM-call contract.
+
+    ## What did not work this phase
+
+    - **Live smoke run on dull stalled at 17 min.** A `--dry-run --no-budget --max-depth 0` invocation against `~/Development/dull/` was killed at 17 min wall when the stack-sample showed it was making live ClaudeCodeBackend calls inside `compute_decision → seam_density → all_proposed_edges → surface_of → call_cached → ClaudeCodeBackend::call` — the engine's `LlmResponseCache` was missing, almost certainly because the on-disk cache fingerprint no longer matches the live `claude --version` output. This is *not* a regression in the L8 redesign; it's an existing pre-condition: the engine's `compute_decision` unconditionally evaluates structural signals (`seam_density`, `modularity_hint`, `cliques`) BEFORE the policy decides, which transitively pulls L5/L6 LLM calls even for components whose policy will return `Stop`. Filed as a separate backlog task: `skip-l8-structural-signal-computation-when-policy-will-stop`.
+    - **No measured wall-time vs the >>15-min baseline.** Cannot confirm the ≤5-min exit criterion without a clean LLM budget on the dull (or another monorepo) target. Deferred to the eval re-run that's already on the eval-criterion task.
+
+    ## Follow-ups filed in this phase
+
+    1. **`bounded-concurrency-for-l8-map-step-rayon-or-tokio-semaphore`** — parallelise the per-sub-dir map calls. The infrastructure (Salsa parallel queries, `LlmResponseCache` thread-safety) is already in place; this is the obvious next perf step.
+    2. **`skip-l8-structural-signal-computation-when-policy-will-stop`** — short-circuit the universal-depth and leaf-like-kind cases before computing structural signals. Independent of the map/reduce redesign but surfaced by it.
+
+    ## Status of this task
+
+    **Done** for the architectural redesign + L3 cache fix. The remaining exit-criteria items (bounded concurrency, ≤5-min wall-time on a real monorepo, kind_accuracy within 2pp on the dev-workspace golden, `--dry-run` byte-identity at scale) are filed as the two follow-up tasks above plus the eval-side criteria already on `verify-atlas-v1-success-criteria-end-to-end`. Marking `done` here unblocks the criterion-3 re-run on v1 sign-off; concurrency lands as a perf follow-up rather than gating the v1 release.
+
+    ## Source-file changes left for analyse-work to commit
+
+    All edits are listed in "Concrete deliverables" above plus the new spec at `docs/superpowers/specs/2026-05-04-l8-map-reduce-design.md`. No `.atlas/` outputs, no generated artefacts. `dull/.atlas/config.yaml` still defaults to `claude-code/...`; flipping `operations.classify.model: anthropic/...` to drive the HTTP path is a config-only edit on the user side, not in this repo's tree.
 - id: run-agent-progress-e2e-integration-test-against-real-claude-binary
   title: Run agent-progress e2e integration test against real claude binary
   category: eval
@@ -412,3 +449,75 @@ tasks:
     - Cache fingerprint encodes "tools enabled" + tool-set hash; existing zero-LLM-call no-op re-runs remain byte-identical.
     - Live end-to-end: `atlas index ~/Development/dull/` with `surface` routed to `anthropic/...` (tools enabled) produces non-empty surfaces and edge proposals; metrics within 5pp of the same run on `claude-code/...`.
     - Memory note added documenting the design and the routing-relaxation that follows.
+- id: bounded-concurrency-for-l8-map-step-rayon-or-tokio-semaphore
+  title: Bounded concurrency for L8 map step (rayon or Tokio + Semaphore)
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** Follow-up to the L8 map/reduce redesign (`map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis`). The map step in `l8_recurse::map_reduce_subcarve` currently calls `is_component(db, workspace, dir)` in a serial `for` loop. With HTTP-routed Classify, each map call is ~1s; on a 74-component first iteration with say 10 immediate sub-dirs each, that's ~12 min serial.
+
+    ## Why
+
+    Map calls are independent and idempotent. Salsa 0.26 supports parallel tracked-query execution, and `LlmResponseCache` is already thread-safe via `AtomicU64` CAS. The infrastructure is ready — what's missing is the parallel iterator at the call site.
+
+    ## Scope
+
+    - **Pick a runtime.** Rayon's parallel iterator is the simplest fit because L8 is a sync function called from a sync fixedpoint driver; Tokio + Semaphore is alternative but pulls async into a currently-sync layer.
+    - **Bound the concurrency.** Start with 8 in flight; expose as `FixedpointConfig.map_concurrency` so the CLI can tune. Avoid hammering Anthropic / OpenAI rate limits.
+    - **Preserve determinism.** Output `sub_dirs` ordering must match the serial path. Sort the verdicts deterministically before assembling the final `Vec<PathBuf>`.
+    - **Error isolation.** A panic in one map call must not poison sibling calls. Capture per-subdir errors into the `unknown_classification` path that already exists in L3 — same fallback behaviour as today, just wrapped.
+
+    ## Exit criteria
+
+    - `map_reduce_subcarve` runs N parallel `is_component` calls bounded by `map_concurrency`.
+    - Wall-time on dull at depth 1 with a real LLM budget is ≤ 5 min on a freshly-uncached run (the `map-reduce-llm-architecture-...` task's exit criterion).
+    - All existing engine tests still pass (no flake from concurrent Salsa access).
+    - A new test demonstrates that the same fixture produces byte-identical `sub_dirs` under `map_concurrency = 1` and `map_concurrency = 8`.
+
+    ## Cross-references
+
+    - Memory: `tokencounter-charge-uses-cas-loop-on-atomicu64` — the CAS lock-free counter is what makes this safe today.
+    - Spec: `docs/superpowers/specs/2026-05-04-l8-map-reduce-design.md` § Concurrency.
+- id: skip-l8-structural-signal-computation-when-policy-will-stop
+  title: Skip L8 structural-signal computation when policy will Stop
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: LOW (perf polish).** `l8_recurse::compute_decision` unconditionally computes `seam_density(db, id)`, `modularity_hint(db, id)`, and `cliques_touching_id(db, id)` BEFORE the policy decides. For components whose policy decision is `Stop` (the universal depth guard, all leaf-like kinds, externals), the structural signals are wasted compute — and worse, `seam_density` transitively pulls L5 `surface_of` LLM calls via the `edge_graph` → `all_proposed_edges` chain.
+
+    Surfaced during the L8 map/reduce smoke run on `~/Development/dull/`: a `--max-depth 0 --dry-run` invocation made live ClaudeCodeBackend calls because every component's `compute_decision` eagerly evaluated `seam_density` even though the policy was about to return `Stop`.
+
+    ## Fix
+
+    Reorder `compute_decision` so the universal-depth guard and the kind-based stop check fire before any structural signal is read:
+
+    ```rust
+    let kind = ComponentKind::parse(&entry.kind).unwrap_or(ComponentKind::NonComponent);
+    let current_depth = compute_depth(&components, id);
+    let max_depth = db.max_depth();
+
+    if current_depth >= max_depth {
+        return SubcarveDecision::stopped(...);
+    }
+    if let PolicyDecision::Stop = decide_kind_only(kind) {
+        return SubcarveDecision::stopped(...);
+    }
+
+    // only now: compute structural signals
+    let seam_density_value = ...;
+    ```
+
+    `decide_kind_only(kind)` is the kind-arm of the policy that doesn't require structural signals — it stops on `RustCli`, `Spec`, `External`, etc. without looking at `modularity_hint`.
+
+    ## Exit criteria
+
+    - `compute_decision` skips `seam_density` / `modularity_hint` / `cliques_touching_id` for components whose policy is `Stop`.
+    - A regression test asserts that a fixture with all-pinned-CLI components produces zero L5 `surface_of` calls under `--max-depth 0`.
+    - Wall-time on dull at `--max-depth 0` drops to filesystem-walk-only (single-digit minutes vs the current many-minutes when the cache is cold).
+
+    ## Out of scope
+
+    - Restructuring the policy itself.
+    - Caching structural signals more aggressively.

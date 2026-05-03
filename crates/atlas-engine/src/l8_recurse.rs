@@ -3,9 +3,10 @@
 //!
 //! The policy table in [`crate::subcarve_policy`] resolves most cases
 //! deterministically. For genuinely ambiguous ones — a Rust library
-//! with no modularity hint, say — the LLM is consulted via
-//! [`atlas_llm::PromptId::Subcarve`]. Either way, the result is a
-//! [`SubcarveDecision`] consumed by [`crate::fixedpoint`].
+//! with no modularity hint, say — the engine maps over the component's
+//! immediate sub-directories, calling [`crate::l3_classify::is_component`]
+//! on each (the "map" step), then deterministically reduces the
+//! verdicts into a [`SubcarveDecision`] consumed by [`crate::fixedpoint`].
 //!
 //! Workspaces are an exception: they always recurse (their members are
 //! discovered by L2's manifest walk), so no sub-dirs are proposed and
@@ -17,15 +18,32 @@
 //! `&dyn salsa::Database` to access the LLM backend, so tracked
 //! recursion would bypass the response cache. The fixedpoint back-edge
 //! closes through `workspace.carve_back_edge` instead.
+//!
+//! ## Map/reduce shape
+//!
+//! Each L8 decision now produces N small per-subdir Classify calls
+//! instead of one large Subcarve call. The advantages:
+//!
+//! - **Cache reuse.** Two crates with similar layouts share Classify
+//!   cache entries on identical sub-dir signal shapes; today's single
+//!   Subcarve prompt was so large that no two prompts ever cache-shared.
+//! - **HTTP routing.** The map step routes through the same `Classify`
+//!   prompt id as L3 itself, so an HTTP backend (e.g. `anthropic/...`)
+//!   handles both seamlessly via [`atlas_llm::BackendRouter`].
+//! - **No prompt drift.** A single classification prompt, not two.
+//!
+//! `defaults/prompts/subcarve.md` is retained in the prompt corpus so
+//! its `template_sha` keeps contributing to the run-wide fingerprint
+//! during the transition. Slated for deletion after one shipped
+//! release cycle.
 
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use atlas_index::{ComponentEntry, PinValue};
-use atlas_llm::{LlmRequest, PromptId, ResponseSchema};
-use serde_json::{json, Value};
+use atlas_index::{ComponentEntry, PathSegment, PinValue};
 
-use crate::db::AtlasDatabase;
+use crate::db::{AtlasDatabase, Workspace};
 use crate::l4_tree::all_components;
 use crate::l7_structural::{cliques, modularity_hint, seam_density, Clique};
 use crate::subcarve_policy::{decide, PolicyDecision, SubcarveSignals};
@@ -36,9 +54,6 @@ use crate::types::ComponentKind;
 /// a strong coupling signal"); a K2 clique is just an edge and would
 /// flood the signal with noise.
 const CLIQUES_TOUCHING_MIN_K: u32 = 3;
-
-/// The shipped Atlas sub-carve prompt, embedded at compile time.
-pub const EMBEDDED_SUBCARVE_PROMPT: &str = include_str!("../../../defaults/prompts/subcarve.md");
 
 /// The full outcome of an L8 decision: whether to recurse, the
 /// directories to open up as new L2 candidate roots, and the rationale
@@ -127,7 +142,7 @@ fn compute_decision(db: &AtlasDatabase, id: &str) -> SubcarveDecision {
             }
         }
         PolicyDecision::Recurse | PolicyDecision::AskLlm => {
-            ask_llm_for_subcarve(db, entry, &signals)
+            map_reduce_subcarve(db, entry, &signals)
         }
     }
 }
@@ -176,189 +191,185 @@ fn pin_suppressed_children_of(db: &AtlasDatabase, id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn ask_llm_for_subcarve(
+/// Map step: enumerate the component's immediate sub-directories,
+/// filter those the user has pin-suppressed, classify each via
+/// [`crate::l3_classify::is_component`], and aggregate the boundary
+/// verdicts into a [`SubcarveDecision`].
+///
+/// Verdicts win over the engine's structural hints: when
+/// `signals.modularity_hint` disagrees with the verdicts, the verdicts
+/// stand and the disagreement is logged in the rationale. The hint is
+/// a prior, not a gate.
+///
+/// Returns a stopped decision when there are no eligible sub-dirs at
+/// all — this avoids spinning the LLM on leaf-like layouts where the
+/// component's source tree is a single directory of files.
+fn map_reduce_subcarve(
     db: &AtlasDatabase,
     entry: &ComponentEntry,
     signals: &SubcarveSignals,
 ) -> SubcarveDecision {
-    let request = LlmRequest {
-        prompt_template: PromptId::Subcarve,
-        inputs: build_subcarve_inputs(entry, signals),
-        schema: ResponseSchema::accept_any(),
-    };
+    let workspace = db.workspace();
+    let workspace_root = workspace.root(db as &dyn salsa::Database).clone();
 
-    match db.call_llm_cached(&request) {
-        Ok(value) => parse_subcarve_response(&value).unwrap_or_else(|reason| {
-            SubcarveDecision::stopped(&format!("LLM response parse failed: {reason}"))
-        }),
-        Err(err) => SubcarveDecision::stopped(&format!("LLM call failed: {err}")),
+    let suppressed = pin_suppressed_keys(&signals.pin_suppressed_children);
+    let candidates: Vec<PathBuf> =
+        enumerate_immediate_subdirs(db, workspace, &workspace_root, &entry.path_segments)
+            .into_iter()
+            .filter(|abs_dir| !is_pin_suppressed(abs_dir, &suppressed))
+            .collect();
+
+    if candidates.is_empty() {
+        return SubcarveDecision::stopped("no eligible immediate sub-directories");
+    }
+
+    let mut sub_dirs: Vec<PathBuf> = Vec::new();
+    let mut accepted_summaries: Vec<String> = Vec::new();
+    let mut rejected = 0usize;
+    for abs_dir in &candidates {
+        let classification = crate::l3_classify::is_component(db, workspace, abs_dir.clone());
+        if classification.is_boundary {
+            let rel = abs_dir.strip_prefix(&workspace_root).unwrap_or(abs_dir);
+            sub_dirs.push(rel.to_path_buf());
+            accepted_summaries.push(format!(
+                "{} ({})",
+                path_to_forward_slash(rel),
+                classification.kind.as_str()
+            ));
+        } else {
+            rejected += 1;
+        }
+    }
+
+    let should_subcarve = !sub_dirs.is_empty();
+    let rationale = build_rationale(
+        should_subcarve,
+        sub_dirs.len(),
+        rejected,
+        candidates.len(),
+        &accepted_summaries,
+        signals.modularity_hint.is_some(),
+    );
+
+    SubcarveDecision {
+        should_subcarve,
+        sub_dirs,
+        rationale,
     }
 }
 
-/// Test-only escape hatch: the fixedpoint tests need to register a
-/// canned TestBackend response against the exact inputs `compute_decision`
-/// will build. Kept private elsewhere so the production code continues
-/// to own the shape.
-#[cfg(test)]
-pub(crate) fn build_subcarve_inputs_for_tests(
-    entry: &ComponentEntry,
-    signals: &SubcarveSignals,
-) -> Value {
-    build_subcarve_inputs(entry, signals)
+/// Build the set of pin-suppressed name keys, expanded to cover both
+/// the raw form and the slugified form so `crates/Atlas-Engine` and
+/// `atlas-engine` both match a single user pin.
+fn pin_suppressed_keys(suppressed: &[String]) -> BTreeSet<String> {
+    let mut keys: BTreeSet<String> = BTreeSet::new();
+    for name in suppressed {
+        keys.insert(name.clone());
+        if let Some(slug) = crate::identifiers::slugify_segment(name) {
+            keys.insert(slug);
+        }
+    }
+    keys
 }
 
-/// Parameterless variant for the unified prompt/builder coverage matrix
-/// in [`crate::prompt_token_coverage`]. Constructs minimal stub entry +
-/// signals so the matrix can call all four builders uniformly.
-#[cfg(test)]
-pub(crate) fn build_subcarve_inputs_with_stubs_for_tests() -> Value {
-    let entry = ComponentEntry {
-        id: "demo".into(),
-        parent: None,
-        kind: "rust-library".into(),
-        lifecycle_roles: Vec::new(),
-        language: None,
-        build_system: None,
-        role: None,
-        path_segments: vec![atlas_index::PathSegment {
-            path: std::path::PathBuf::from("crates/demo"),
-            content_sha: "0".repeat(64),
-        }],
-        manifests: Vec::new(),
-        doc_anchors: Vec::new(),
-        evidence_grade: component_ontology::EvidenceGrade::Strong,
-        evidence_fields: Vec::new(),
-        rationale: String::new(),
-        deleted: false,
+fn is_pin_suppressed(abs_dir: &Path, suppressed: &BTreeSet<String>) -> bool {
+    let basename = match abs_dir.file_name().and_then(|n| n.to_str()) {
+        Some(name) => name,
+        None => return false,
     };
-    let signals = SubcarveSignals {
-        kind: ComponentKind::RustLibrary,
-        current_depth: 0,
-        max_depth: 8,
-        seam_density: 0.0,
-        modularity_hint: None,
-        cliques_touching: Vec::new(),
-        pin_suppressed_children: Vec::new(),
-    };
-    build_subcarve_inputs(&entry, &signals)
+    if suppressed.contains(basename) {
+        return true;
+    }
+    if let Some(slug) = crate::identifiers::slugify_segment(basename) {
+        if suppressed.contains(&slug) {
+            return true;
+        }
+    }
+    false
 }
 
-/// Build the input JSON fed to `PromptId::Subcarve`. Shape matches the
-/// prompt's `{{COMPONENT_ID}}`, `{{COMPONENT_KIND}}`,
-/// `{{STRUCTURAL_SIGNALS}}`, `{{EDGE_NEIGHBOURHOOD}}` tokens.
-fn build_subcarve_inputs(entry: &ComponentEntry, signals: &SubcarveSignals) -> Value {
-    let paths: Vec<String> = entry
-        .path_segments
+/// Enumerate the immediate sub-directories of every path segment
+/// owned by the component. A directory counts as "immediate" when it
+/// is the first path component strictly inside one of the component's
+/// segments AND has at least one registered file underneath (so
+/// gitignored or otherwise unindexed dirs disappear automatically).
+///
+/// Directories that ARE another owned segment are filtered out: a
+/// component's own carved-out children must not be re-proposed.
+fn enumerate_immediate_subdirs(
+    db: &AtlasDatabase,
+    workspace: Workspace,
+    workspace_root: &Path,
+    path_segments: &[PathSegment],
+) -> Vec<PathBuf> {
+    let dyn_db: &dyn salsa::Database = db;
+    let owned_dirs: BTreeSet<PathBuf> = path_segments
         .iter()
-        .map(|seg| path_to_forward_slash(&seg.path))
+        .map(|seg| absolutise(workspace_root, &seg.path))
         .collect();
 
-    let modularity_hint_json = match &signals.modularity_hint {
-        Some(hint) => json!({
-            "partition_a": hint.partition_a,
-            "partition_b": hint.partition_b,
-            "cross_edges": hint.cross_edges,
-            "total_internal_edges": hint.total_internal_edges,
-        }),
-        None => Value::Null,
+    let mut immediate: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut consider = |descendant: &Path| {
+        for owned_dir in &owned_dirs {
+            let rel = match descendant.strip_prefix(owned_dir) {
+                Ok(r) if !r.as_os_str().is_empty() => r,
+                _ => continue,
+            };
+            if let Some(first) = rel.components().next() {
+                let abs = owned_dir.join(first.as_os_str());
+                if &abs != owned_dir {
+                    immediate.insert(abs);
+                }
+            }
+        }
     };
 
-    let cliques_json: Vec<Value> = signals
-        .cliques_touching
-        .iter()
-        .map(|c| json!({ "members": c.members }))
-        .collect();
+    for file in workspace.files(dyn_db).iter() {
+        if let Some(parent) = file.path(dyn_db).parent() {
+            consider(parent);
+        }
+    }
+    for git_dir in workspace.git_boundary_dirs(dyn_db).iter() {
+        consider(git_dir);
+    }
 
-    let structural = json!({
-        "seam_density": format_seam_density(signals.seam_density),
-        "modularity_hint": modularity_hint_json,
-        "cliques_touching": cliques_json,
-        "current_depth": signals.current_depth,
-        "max_depth": signals.max_depth,
-    });
-
-    json!({
-        "COMPONENT_ID": entry.id,
-        "COMPONENT_KIND": entry.kind,
-        "COMPONENT_PATHS": paths,
-        "STRUCTURAL_SIGNALS": structural,
-        "EDGE_NEIGHBOURHOOD": Value::Array(Vec::new()),
-        "PIN_SUPPRESSED_CHILDREN": signals.pin_suppressed_children.clone(),
-    })
+    immediate.retain(|d| !owned_dirs.contains(d));
+    immediate.into_iter().collect()
 }
 
-/// Infinity round-trips poorly through JSON — serde_json emits `null`
-/// which the LLM then sees as "no information". Clamp to a large finite
-/// stand-in so the prompt renders a concrete number.
-fn format_seam_density(value: f32) -> Value {
-    if value.is_infinite() {
-        json!(1.0e6_f64)
-    } else if value.is_nan() {
-        json!(0.0_f64)
+fn absolutise(workspace_root: &Path, segment_path: &Path) -> PathBuf {
+    if segment_path.is_absolute() {
+        segment_path.to_path_buf()
     } else {
-        json!(value as f64)
+        workspace_root.join(segment_path)
     }
 }
 
-fn path_to_forward_slash(path: &std::path::Path) -> String {
+fn build_rationale(
+    should_subcarve: bool,
+    accepted: usize,
+    rejected: usize,
+    total: usize,
+    accepted_summaries: &[String],
+    modularity_hint_present: bool,
+) -> String {
+    let mut parts = vec![format!(
+        "L3 verdicts across {total} immediate sub-dir(s): {accepted} component(s), {rejected} non-component(s)"
+    )];
+    if !accepted_summaries.is_empty() {
+        parts.push(format!("kept: {}", accepted_summaries.join(", ")));
+    }
+    if modularity_hint_present && !should_subcarve {
+        parts.push("note: modularity_hint suggested a partition but no sub-dir verdict was a boundary".to_string());
+    }
+    parts.join("; ")
+}
+
+fn path_to_forward_slash(path: &Path) -> String {
     path.components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join("/")
-}
-
-/// Parse the LLM response into a [`SubcarveDecision`]. Expected shape:
-/// `{ "should_subcarve": bool, "sub_dirs": ["path", ...], "rationale": "..." }`.
-fn parse_subcarve_response(value: &Value) -> Result<SubcarveDecision, String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| format!("expected JSON object, got {}", value_kind(value)))?;
-
-    let should_subcarve = object
-        .get("should_subcarve")
-        .and_then(|v| v.as_bool())
-        .ok_or_else(|| "response missing bool `should_subcarve`".to_string())?;
-
-    let sub_dirs: Vec<PathBuf> = object
-        .get("sub_dirs")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(PathBuf::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let rationale = object
-        .get("rationale")
-        .and_then(|v| v.as_str())
-        .unwrap_or("LLM did not supply a rationale")
-        .to_string();
-
-    // Schema-consistency check: should_subcarve=false but sub_dirs
-    // non-empty is contradictory; prefer the boolean (no recursion).
-    let sub_dirs = if should_subcarve {
-        sub_dirs
-    } else {
-        Vec::new()
-    };
-
-    Ok(SubcarveDecision {
-        should_subcarve,
-        sub_dirs,
-        rationale,
-    })
-}
-
-fn value_kind(value: &Value) -> &'static str {
-    match value {
-        Value::Null => "null",
-        Value::Bool(_) => "bool",
-        Value::Number(_) => "number",
-        Value::String(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) => "object",
-    }
 }
 
 #[cfg(test)]
@@ -418,7 +429,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Policy-short-circuit tests — no LLM call must fire.
+    // Policy short-circuits — never enters the map step.
     // ---------------------------------------------------------------
 
     #[test]
@@ -432,18 +443,12 @@ mod tests {
             .clone();
         assert!(!should_subcarve(&db, id.clone()));
         assert!(subcarve_plan(&db, id).is_empty());
-        assert_eq!(
-            db.llm_cache().call_count(),
-            0,
-            "RustCli must short-circuit before the backend"
-        );
     }
 
     #[test]
-    fn unknown_id_returns_stopped_decision_without_backend_call() {
+    fn unknown_id_returns_stopped_decision() {
         let (db, _backend, _tmp) = db_with_single_crate(|root| build_lib_crate(root, "lib"));
         assert!(!should_subcarve(&db, "does-not-exist".into()));
-        assert_eq!(db.llm_cache().call_count(), 0);
     }
 
     #[test]
@@ -457,103 +462,17 @@ mod tests {
             .id
             .clone();
         assert!(!should_subcarve(&db, id));
-        assert_eq!(db.llm_cache().call_count(), 0);
     }
 
     // ---------------------------------------------------------------
-    // LLM-escalation tests — route via canned TestBackend responses.
+    // Map/reduce flow
     // ---------------------------------------------------------------
 
     #[test]
-    fn rust_library_with_no_hint_asks_llm_and_returns_sub_dirs() {
-        let (db, backend, _tmp) = db_with_single_crate(|root| build_lib_crate(root, "lib"));
-        let id = all_components(&db)
-            .iter()
-            .find(|c| !c.deleted)
-            .unwrap()
-            .id
-            .clone();
-        let entry_clone = all_components(&db)
-            .iter()
-            .find(|c| c.id == id)
-            .unwrap()
-            .clone();
-        let signals = SubcarveSignals {
-            kind: ComponentKind::RustLibrary,
-            current_depth: 0,
-            max_depth: 8,
-            seam_density: 0.0,
-            modularity_hint: None,
-            cliques_touching: Vec::new(),
-            pin_suppressed_children: Vec::new(),
-        };
-        let inputs = build_subcarve_inputs(&entry_clone, &signals);
-        backend.respond(
-            PromptId::Subcarve,
-            inputs,
-            json!({
-                "should_subcarve": true,
-                "sub_dirs": ["src/auth", "src/billing"],
-                "rationale": "two independent sub-systems",
-            }),
-        );
-
-        let plan = subcarve_plan(&db, id);
-        assert_eq!(
-            plan.iter()
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect::<Vec<_>>(),
-            vec!["src/auth".to_string(), "src/billing".to_string()]
-        );
-        assert_eq!(db.llm_cache().call_count(), 1);
-    }
-
-    #[test]
-    fn llm_response_with_should_subcarve_false_yields_empty_plan() {
-        let (db, backend, _tmp) = db_with_single_crate(|root| build_lib_crate(root, "lib"));
-        let id = all_components(&db)
-            .iter()
-            .find(|c| !c.deleted)
-            .unwrap()
-            .id
-            .clone();
-        let entry_clone = all_components(&db)
-            .iter()
-            .find(|c| c.id == id)
-            .unwrap()
-            .clone();
-        let signals = SubcarveSignals {
-            kind: ComponentKind::RustLibrary,
-            current_depth: 0,
-            max_depth: 8,
-            seam_density: 0.0,
-            modularity_hint: None,
-            cliques_touching: Vec::new(),
-            pin_suppressed_children: Vec::new(),
-        };
-        let inputs = build_subcarve_inputs(&entry_clone, &signals);
-        backend.respond(
-            PromptId::Subcarve,
-            inputs,
-            json!({
-                "should_subcarve": false,
-                "sub_dirs": ["src/ignore_me"],
-                "rationale": "library is already the right granularity",
-            }),
-        );
-
-        let decision = subcarve_decision(&db, id);
-        assert!(!decision.should_subcarve);
-        assert!(
-            decision.sub_dirs.is_empty(),
-            "should_subcarve=false forces sub_dirs empty regardless of LLM output"
-        );
-    }
-
-    #[test]
-    fn llm_call_failure_maps_to_stopped_decision_with_rationale() {
-        // No canned response registered → TestBackend will error,
-        // which maps to a non-panicking Stopped decision.
+    fn library_with_no_immediate_subdir_yields_no_subcarve() {
+        // `lib/` has exactly one immediate sub-dir (`src`); the L3
+        // map step on `src` errors against the empty TestBackend and
+        // defaults to non-boundary, so the reduce yields no carve.
         let (db, _backend, _tmp) = db_with_single_crate(|root| build_lib_crate(root, "lib"));
         let id = all_components(&db)
             .iter()
@@ -563,32 +482,16 @@ mod tests {
             .clone();
         let decision = subcarve_decision(&db, id);
         assert!(!decision.should_subcarve);
-        assert!(decision.rationale.contains("LLM"), "{}", decision.rationale);
-    }
-
-    #[test]
-    fn parse_subcarve_response_accepts_minimal_shape() {
-        let v = json!({ "should_subcarve": true, "sub_dirs": ["a", "b"] });
-        let got = parse_subcarve_response(&v).unwrap();
-        assert!(got.should_subcarve);
-        assert_eq!(got.sub_dirs.len(), 2);
-        assert_eq!(got.rationale, "LLM did not supply a rationale");
-    }
-
-    #[test]
-    fn parse_subcarve_response_rejects_missing_bool() {
-        let v = json!({ "sub_dirs": ["a"] });
-        assert!(parse_subcarve_response(&v).is_err());
-    }
-
-    #[test]
-    fn format_seam_density_maps_infinity_to_large_finite() {
-        let n = format_seam_density(f32::INFINITY);
-        assert_eq!(n, json!(1.0e6_f64));
+        assert!(decision.sub_dirs.is_empty());
+        assert!(
+            decision.rationale.contains("L3 verdicts"),
+            "rationale should record map-step verdicts; got: {}",
+            decision.rationale
+        );
     }
 
     // ---------------------------------------------------------------
-    // Depth walk
+    // Helpers
     // ---------------------------------------------------------------
 
     fn entry(id: &str, parent: Option<&str>) -> ComponentEntry {
@@ -628,112 +531,51 @@ mod tests {
         assert_eq!(compute_depth(&comps, "nope"), 0);
     }
 
+    // ---------------------------------------------------------------
+    // Pin-suppression helper unit tests
+    // ---------------------------------------------------------------
+
     #[test]
-    fn subcarve_prompt_token_coverage_is_bidirectional() {
-        // Every `{{TOKEN}}` in subcarve.md must be supplied by
-        // build_subcarve_inputs (forward) AND every key
-        // build_subcarve_inputs supplies must be referenced by a
-        // `{{TOKEN}}` in subcarve.md (inverse). The inverse direction
-        // catches the silent-data-drop failure: a builder field with no
-        // matching template token is dropped by `prompt::render`,
-        // leaving the LLM with no component context for the subcarve
-        // decision.
-        let entry = ComponentEntry {
-            id: "demo".into(),
-            parent: None,
-            kind: "rust-library".into(),
-            lifecycle_roles: Vec::new(),
-            language: None,
-            build_system: None,
-            role: None,
-            path_segments: vec![atlas_index::PathSegment {
-                path: std::path::PathBuf::from("crates/demo"),
-                content_sha: "0".repeat(64),
-            }],
-            manifests: Vec::new(),
-            doc_anchors: Vec::new(),
-            evidence_grade: component_ontology::EvidenceGrade::Strong,
-            evidence_fields: Vec::new(),
-            rationale: String::new(),
-            deleted: false,
-        };
-        let signals = SubcarveSignals {
-            kind: ComponentKind::RustLibrary,
-            current_depth: 0,
-            max_depth: 8,
-            seam_density: 0.0,
-            modularity_hint: None,
-            cliques_touching: Vec::new(),
-            pin_suppressed_children: Vec::new(),
-        };
-        let inputs = build_subcarve_inputs(&entry, &signals);
-        let object = inputs.as_object().expect("inputs must be a JSON object");
-        let supplied: std::collections::HashSet<String> = object.keys().cloned().collect();
-        let referenced: std::collections::HashSet<String> =
-            collect_template_tokens(EMBEDDED_SUBCARVE_PROMPT)
-                .into_iter()
-                .collect();
-
-        for token in &referenced {
-            assert!(
-                supplied.contains(token),
-                "subcarve.md references `{{{{{token}}}}}` but \
-                 build_subcarve_inputs does not populate key `{token}`"
-            );
-        }
-        for key in &supplied {
-            assert!(
-                referenced.contains(key),
-                "build_subcarve_inputs supplies key `{key}` but \
-                 subcarve.md does not reference `{{{{{key}}}}}` — \
-                 the value will be silently dropped by prompt::render, \
-                 leaving the LLM without that input"
-            );
-        }
-
-        let mut tokens = std::collections::BTreeMap::new();
-        for (key, value) in object {
-            let rendered = match value {
-                serde_json::Value::String(s) => s.clone(),
-                other => serde_json::to_string(other).unwrap_or_default(),
-            };
-            tokens.insert(key.clone(), rendered);
-        }
-        let rendered = atlas_llm::prompt::render(EMBEDDED_SUBCARVE_PROMPT, &tokens)
-            .expect("subcarve.md must render with build_subcarve_inputs output");
-
+    fn pin_suppressed_keys_includes_raw_and_slug_forms() {
+        let keys = pin_suppressed_keys(&["Atlas-Engine".to_string()]);
+        assert!(keys.contains("Atlas-Engine"));
         assert!(
-            rendered.contains("demo"),
-            "rendered subcarve prompt must contain component id; \
-             got prompt without it (length={})",
-            rendered.len()
+            keys.contains("atlas-engine"),
+            "slugified form must also be present so a pin written in \
+             slug form matches a raw mixed-case directory and vice versa"
         );
     }
 
-    /// Extract every `{{TOKEN}}` name referenced in `template`, using
-    /// the same grammar as `atlas_llm::prompt::render`: `{{TOKEN}}`
-    /// substitutes, `{{{{` and `}}}}` are literal-brace escapes.
-    fn collect_template_tokens(template: &str) -> Vec<String> {
-        let mut tokens = Vec::new();
-        let mut rest = template;
-        while !rest.is_empty() {
-            if let Some(body) = rest.strip_prefix("{{{{") {
-                rest = body;
-                continue;
-            }
-            if let Some(body) = rest.strip_prefix("}}}}") {
-                rest = body;
-                continue;
-            }
-            if let Some(body) = rest.strip_prefix("{{") {
-                let end = body.find("}}").expect("template must close `{{`");
-                tokens.push(body[..end].trim().to_string());
-                rest = &body[end + 2..];
-                continue;
-            }
-            let ch = rest.chars().next().unwrap();
-            rest = &rest[ch.len_utf8()..];
-        }
-        tokens
+    #[test]
+    fn is_pin_suppressed_matches_basename_and_slug() {
+        let mut suppressed = BTreeSet::new();
+        suppressed.insert("scripts".to_string());
+        assert!(is_pin_suppressed(Path::new("/ws/lib/scripts"), &suppressed));
+        assert!(!is_pin_suppressed(
+            Path::new("/ws/lib/src"),
+            &suppressed
+        ));
+    }
+
+    #[test]
+    fn build_rationale_summarises_zero_carve() {
+        let r = build_rationale(false, 0, 3, 3, &[], false);
+        assert!(r.contains("0 component"), "{r}");
+        assert!(r.contains("3 non-component"), "{r}");
+    }
+
+    #[test]
+    fn build_rationale_lists_accepted_subdirs_when_carving() {
+        let r = build_rationale(
+            true,
+            2,
+            1,
+            3,
+            &["src/auth (rust-library)".to_string(), "src/billing (rust-library)".to_string()],
+            false,
+        );
+        assert!(r.contains("kept:"));
+        assert!(r.contains("src/auth"));
+        assert!(r.contains("src/billing"));
     }
 }

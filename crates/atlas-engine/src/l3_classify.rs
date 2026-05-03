@@ -249,15 +249,25 @@ fn classify_via_llm(
     bundle: &RationaleBundle,
     snippets: &BTreeMap<PathBuf, String>,
 ) -> Classification {
-    let backend = db.backend();
     let request = LlmRequest {
         prompt_template: PromptId::Classify,
         inputs: build_llm_inputs(workspace_root, candidate_dir, bundle, snippets),
         schema: ResponseSchema::accept_any(),
     };
 
-    match backend.call(&request) {
-        Ok(value) => parse_llm_response(value).unwrap_or_else(|reason| {
+    // Route through the engine's `LlmResponseCache` so per-candidate
+    // verdicts are memoised. Required for two reasons:
+    //
+    // 1. **No-op re-run byte identity.** The L8 map/reduce step calls
+    //    `is_component` for each immediate sub-dir of every component
+    //    being carved; without caching, a re-run repeats every
+    //    map-step LLM call and `backend.call_count()` is non-zero on
+    //    a cache-only re-run.
+    // 2. **Cross-component reuse.** Two candidates with byte-equal
+    //    `LlmRequest` shapes share one cache entry, so a monorepo
+    //    with N nearly-identical Rust crates pays one map call, not N.
+    match db.call_llm_cached(&request) {
+        Ok(value) => parse_llm_response((*value).clone()).unwrap_or_else(|reason| {
             unknown_classification(format!("LLM response parse failed: {reason}"))
         }),
         Err(err) => unknown_classification(format!("LLM call failed: {err}")),

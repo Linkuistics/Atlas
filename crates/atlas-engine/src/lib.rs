@@ -66,9 +66,7 @@ pub use l7_structural::{
     cliques, edge_graph, modularity_hint, sccs, seam_density, Clique, EdgeGraph, ModularityHint,
     Scc,
 };
-pub use l8_recurse::{
-    should_subcarve, subcarve_decision, subcarve_plan, SubcarveDecision, EMBEDDED_SUBCARVE_PROMPT,
-};
+pub use l8_recurse::{should_subcarve, subcarve_decision, subcarve_plan, SubcarveDecision};
 pub use l9_projections::{
     components_yaml_snapshot, components_yaml_snapshot_with_prompt_shas,
     external_components_yaml_snapshot, externals_from_manifests, known_component_ids,
