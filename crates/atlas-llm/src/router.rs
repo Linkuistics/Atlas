@@ -75,6 +75,26 @@ impl BackendRouter {
                     );
                     Arc::new(b)
                 }
+                "openrouter" => {
+                    let api_key = config
+                        .providers
+                        .get("openrouter")
+                        .map(|p| p.api_key.clone())
+                        .unwrap_or_default();
+                    let b = crate::OpenAiHttpBackend::new(
+                        model_id,
+                        api_key,
+                        op.params.clone(),
+                        prompts_dir,
+                        template_sha,
+                        ontology_sha,
+                    )
+                    .with_base_url(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        "openrouter",
+                    );
+                    Arc::new(b)
+                }
                 "claude-code" => {
                     let mut b = crate::ClaudeCodeBackend::new(model_id, prompts_dir)?
                         .with_fingerprint_inputs(template_sha, ontology_sha);
@@ -120,20 +140,19 @@ impl BackendRouter {
     }
 }
 
-/// HTTP backends (`anthropic`, `openai`) cannot service `Stage1Surface` or
-/// `Stage2Edges` because their rendered prompts carry no file-content tokens —
-/// surface and edge extraction need filesystem access, which only the
-/// subprocess backends (`claude-code`, `codex`) provide. Reject the
-/// combination at construction time so a misconfigured `.atlas/config.yaml`
-/// fails loudly instead of silently producing hallucinated surfaces or edges.
+/// HTTP backends (`anthropic`, `openai`, `openrouter`) cannot service
+/// `Stage1Surface` or `Stage2Edges` because their rendered prompts carry no
+/// file-content tokens — surface and edge extraction need filesystem access,
+/// which only the subprocess backends (`claude-code`, `codex`) provide.
+/// Reject the combination at construction time so a misconfigured
+/// `.atlas/config.yaml` fails loudly instead of silently producing
+/// hallucinated surfaces or edges.
 fn reject_http_for_filesystem_required_prompt(
     prompt_id: PromptId,
     provider: &str,
     model_str: &str,
 ) -> Result<(), LlmError> {
-    const HTTP_PROVIDERS: &[&str] = &["anthropic", "openai"];
-
-    if !HTTP_PROVIDERS.contains(&provider) {
+    if !crate::config::HTTP_PROVIDERS.contains(&provider) {
         return Ok(());
     }
     let prompt_label = match prompt_id {
@@ -143,8 +162,8 @@ fn reject_http_for_filesystem_required_prompt(
     };
     Err(LlmError::Setup(format!(
         "{prompt_label} requires a filesystem-access provider \
-         (claude-code, codex); HTTP providers (anthropic, openai) cannot be \
-         used here — configured `{model_str}` in .atlas/config.yaml"
+         (claude-code, codex); HTTP providers (anthropic, openai, openrouter) \
+         cannot be used here — configured `{model_str}` in .atlas/config.yaml"
     )))
 }
 
@@ -257,6 +276,51 @@ mod tests {
         };
         assert!(msg.contains("stage2-edges"));
         assert!(msg.contains("openai/gpt-4o-mini"));
+    }
+
+    #[test]
+    fn rejects_openrouter_for_stage1_surface() {
+        let err = reject_http_for_filesystem_required_prompt(
+            PromptId::Stage1Surface,
+            "openrouter",
+            "openrouter/anthropic/claude-sonnet-4-6",
+        )
+        .unwrap_err();
+        let LlmError::Setup(msg) = err else {
+            panic!("expected Setup error, got {err:?}");
+        };
+        assert!(msg.contains("stage1-surface"));
+        assert!(msg.contains("openrouter/anthropic/claude-sonnet-4-6"));
+    }
+
+    #[test]
+    fn accepts_openrouter_for_classify_and_subcarve() {
+        for prompt_id in [PromptId::Classify, PromptId::Subcarve] {
+            reject_http_for_filesystem_required_prompt(
+                prompt_id,
+                "openrouter",
+                "openrouter/anthropic/claude-sonnet-4-6",
+            )
+            .unwrap_or_else(|e| panic!("{prompt_id:?} + openrouter should pass: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn nested_model_id_splits_only_on_first_slash() {
+        // OpenRouter model ids contain a second `/`; the router uses
+        // `split_once('/')` which already splits on the first slash, so
+        // the rest passes through verbatim as the model id.
+        let s = "openrouter/anthropic/claude-sonnet-4-6";
+        let (provider, model_id) = s.split_once('/').unwrap();
+        assert_eq!(provider, "openrouter");
+        assert_eq!(model_id, "anthropic/claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn http_providers_constant_includes_openrouter() {
+        assert!(crate::config::HTTP_PROVIDERS.contains(&"openrouter"));
+        assert!(crate::config::HTTP_PROVIDERS.contains(&"anthropic"));
+        assert!(crate::config::HTTP_PROVIDERS.contains(&"openai"));
     }
 
     #[test]

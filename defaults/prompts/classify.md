@@ -8,25 +8,6 @@ unit of design that makes sense to name and reason about on its own;
 it is not automatically every directory, nor every file with a
 manifest.
 
-## Inputs
-
-The candidate this call concerns:
-
-- **Directory (relative to repo root):** `{{DIR_RELATIVE}}`
-- **Rationale bundle** — per-candidate signals collected by the engine
-  (`manifests`, `is_git_root`, `doc_headings`, `shebangs`):
-
-```json
-{{RATIONALE_BUNDLE}}
-```
-
-- **Manifest contents** — the first few kilobytes of each manifest,
-  keyed by path:
-
-```json
-{{MANIFEST_CONTENTS}}
-```
-
 ## Output
 
 Return a JSON object matching this shape:
@@ -73,3 +54,24 @@ that are not listed above.
 ## Lifecycle-scope catalogue
 
 {{LIFECYCLE_SCOPES}}
+
+<!-- CACHE_BOUNDARY -->
+
+## Inputs
+
+The candidate this call concerns:
+
+- **Directory (relative to repo root):** `{{DIR_RELATIVE}}`
+- **Rationale bundle** — per-candidate signals collected by the engine
+  (`manifests`, `is_git_root`, `doc_headings`, `shebangs`):
+
+```json
+{{RATIONALE_BUNDLE}}
+```
+
+- **Manifest contents** — the first few kilobytes of each manifest,
+  keyed by path:
+
+```json
+{{MANIFEST_CONTENTS}}
+```

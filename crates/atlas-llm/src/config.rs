@@ -3,6 +3,13 @@ use serde_json::Value;
 use std::collections::HashMap;
 use thiserror::Error;
 
+/// Providers whose backends speak directly over HTTP rather than via a
+/// subprocess. These need an API key in `providers.<name>.api_key` and
+/// a positive `params.max_tokens` per operation. The `BackendRouter`
+/// also rejects them for prompts that require filesystem access
+/// (`Stage1Surface`, `Stage2Edges`) until a tool-use loop lands.
+pub const HTTP_PROVIDERS: &[&str] = &["anthropic", "openai", "openrouter"];
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AtlasConfig {
     #[serde(default)]
@@ -133,8 +140,6 @@ impl AtlasConfig {
         if self.defaults.model.is_empty() {
             return Err(ConfigError::MissingDefaultModel);
         }
-
-        const HTTP_PROVIDERS: &[&str] = &["anthropic", "openai"];
 
         let overrides: [(&str, Option<&OperationConfig>); 4] = [
             ("classify", self.operations.classify.as_ref()),
@@ -425,5 +430,50 @@ operations:
         let f = write_config("defaults:\n  model: \"claude-code/claude-sonnet-4-6\"\n");
         AtlasConfig::load(f.path())
             .expect("subprocess providers do not require max_tokens validation");
+    }
+
+    #[test]
+    fn load_accepts_openrouter_with_per_op_max_tokens() {
+        std::env::set_var("_ATLAS_TEST_KEY_OPENROUTER", "sk-or-test");
+        let f = write_config(
+            "providers:\n  openrouter:\n    api_key: \"${_ATLAS_TEST_KEY_OPENROUTER}\"\n\
+             defaults:\n  model: \"claude-code/claude-sonnet-4-6\"\n\
+             operations:\n  classify:\n    model: \"openrouter/anthropic/claude-sonnet-4-6\"\n    params:\n      max_tokens: 2048\n",
+        );
+        let config = AtlasConfig::load(f.path())
+            .expect("openrouter is an HTTP provider with valid api_key + max_tokens");
+        assert_eq!(
+            config.operations.classify.as_ref().unwrap().model,
+            "openrouter/anthropic/claude-sonnet-4-6"
+        );
+        std::env::remove_var("_ATLAS_TEST_KEY_OPENROUTER");
+    }
+
+    #[test]
+    fn load_rejects_openrouter_without_max_tokens() {
+        std::env::set_var("_ATLAS_TEST_KEY_OPENROUTER_NO_MAX", "sk-or-test");
+        let f = write_config(
+            "providers:\n  openrouter:\n    api_key: \"${_ATLAS_TEST_KEY_OPENROUTER_NO_MAX}\"\n\
+             defaults:\n  model: \"claude-code/claude-sonnet-4-6\"\n\
+             operations:\n  classify:\n    model: \"openrouter/anthropic/claude-sonnet-4-6\"\n    params: {}\n",
+        );
+        let err =
+            AtlasConfig::load(f.path()).expect_err("openrouter must require max_tokens like other HTTP providers");
+        assert!(matches!(err, ConfigError::MissingMaxTokens { .. }));
+        std::env::remove_var("_ATLAS_TEST_KEY_OPENROUTER_NO_MAX");
+    }
+
+    #[test]
+    fn load_rejects_openrouter_missing_provider_entry() {
+        let f = write_config(
+            "defaults:\n  model: \"claude-code/claude-sonnet-4-6\"\n\
+             operations:\n  classify:\n    model: \"openrouter/anthropic/claude-sonnet-4-6\"\n    params:\n      max_tokens: 1024\n",
+        );
+        let err =
+            AtlasConfig::load(f.path()).expect_err("openrouter usage without providers entry must fail");
+        let ConfigError::MissingProviderEntry { provider } = err else {
+            panic!("expected MissingProviderEntry, got different error");
+        };
+        assert_eq!(provider, "openrouter");
     }
 }

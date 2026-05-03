@@ -30,6 +30,34 @@ a clean internal partition and is asking you to confirm it and name
 the directories. An absent `modularity_hint` means the engine has no
 deterministic opinion; your judgement decides.
 
+## Output
+
+Return **only** a JSON object matching this schema — no prose outside
+the object, no extra fields:
+
+```json
+{
+  "should_subcarve": true,
+  "sub_dirs": ["src/auth", "src/billing"],
+  "rationale": "<one or two sentences in prose>"
+}
+```
+
+Field notes:
+
+- `should_subcarve` — `true` when the engine should open up one or
+  more sub-directories as new candidate roots; `false` when this
+  component is the right unit as-is. If `false`, `sub_dirs` is
+  ignored.
+- `sub_dirs` — relative-to-repository-root paths of sub-directories
+  to add as L2 candidate roots. Each path must lie inside one of
+  `COMPONENT_PATHS`. Typical shape is `src/<name>` or
+  `packages/<name>`. Do not propose the component's own root path.
+- `rationale` — plain-English justification tied to the evidence
+  (which directories, why they look independent).
+
+<!-- CACHE_BOUNDARY -->
+
 ## Inputs
 
 The component this call concerns:
@@ -68,29 +96,3 @@ The component this call concerns:
 ```json
 {{PIN_SUPPRESSED_CHILDREN}}
 ```
-
-## Output
-
-Return **only** a JSON object matching this schema — no prose outside
-the object, no extra fields:
-
-```json
-{
-  "should_subcarve": true,
-  "sub_dirs": ["src/auth", "src/billing"],
-  "rationale": "<one or two sentences in prose>"
-}
-```
-
-Field notes:
-
-- `should_subcarve` — `true` when the engine should open up one or
-  more sub-directories as new candidate roots; `false` when this
-  component is the right unit as-is. If `false`, `sub_dirs` is
-  ignored.
-- `sub_dirs` — relative-to-repository-root paths of sub-directories
-  to add as L2 candidate roots. Each path must lie inside one of
-  `COMPONENT_PATHS`. Typical shape is `src/<name>` or
-  `packages/<name>`. Do not propose the component's own root path.
-- `rationale` — plain-English justification tied to the evidence
-  (which directories, why they look independent).

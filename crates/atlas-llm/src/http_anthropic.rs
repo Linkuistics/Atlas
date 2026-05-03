@@ -36,14 +36,33 @@ impl AnthropicHttpBackend {
         }
     }
 
-    fn render_request(&self, req: &LlmRequest) -> Result<String, LlmError> {
+    fn render_request(&self, req: &LlmRequest) -> Result<(String, Option<String>), LlmError> {
         let path = self
             .prompts_dir
             .join(prompt_template_filename(req.prompt_template));
         let template = std::fs::read_to_string(&path)
             .map_err(|e| LlmError::Invocation(format!("failed to read {:?}: {e}", path)))?;
         let tokens = extract_tokens(&req.inputs)?;
-        crate::prompt::render(&template, &tokens)
+        crate::prompt::render_split(&template, &tokens)
+    }
+}
+
+/// Build the `messages[0].content` array for an Anthropic Messages
+/// request. When the rendered prompt has a cache boundary, the prefix
+/// becomes its own block carrying `cache_control: ephemeral`; the
+/// suffix follows as a second uncached block. Without a boundary, a
+/// single uncached block carries the whole prompt.
+pub(crate) fn build_user_content(prefix: String, suffix: Option<String>) -> Value {
+    match suffix {
+        Some(suffix) => json!([
+            {
+                "type": "text",
+                "text": prefix,
+                "cache_control": { "type": "ephemeral" }
+            },
+            { "type": "text", "text": suffix }
+        ]),
+        None => json!([{ "type": "text", "text": prefix }]),
     }
 }
 
@@ -67,7 +86,7 @@ pub(crate) fn parse_anthropic_response(
 
 impl LlmBackend for AnthropicHttpBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        let rendered = self.render_request(req)?;
+        let (prefix, suffix) = self.render_request(req)?;
 
         let max_tokens = self
             .params
@@ -81,10 +100,11 @@ impl LlmBackend for AnthropicHttpBackend {
                 )
             })?;
 
+        let content = build_user_content(prefix, suffix);
         let mut body = json!({
             "model": self.model_id,
             "max_tokens": max_tokens,
-            "messages": [{ "role": "user", "content": rendered }]
+            "messages": [{ "role": "user", "content": content }]
         });
         if let (Some(body_obj), Some(params_obj)) = (body.as_object_mut(), self.params.as_object())
         {
@@ -124,7 +144,10 @@ impl LlmBackend for AnthropicHttpBackend {
             template_sha: self.template_sha,
             ontology_sha: self.ontology_sha,
             model_id: self.model_id.clone(),
-            backend_version: format!("anthropic-http/{}", env!("CARGO_PKG_VERSION")),
+            backend_version: format!(
+                "anthropic-http/{}+caching=ephemeral",
+                env!("CARGO_PKG_VERSION")
+            ),
         }
     }
 }
@@ -170,5 +193,36 @@ mod tests {
         let schema = ResponseSchema::accept_any();
         let err = parse_anthropic_response(&resp, &schema).unwrap_err();
         assert!(matches!(err, LlmError::Parse(_)));
+    }
+
+    #[test]
+    fn build_user_content_emits_two_blocks_with_cache_control_when_split() {
+        let content = build_user_content("stable prefix".to_string(), Some("variable".to_string()));
+
+        let arr = content.as_array().expect("content is array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["type"], "text");
+        assert_eq!(arr[0]["text"], "stable prefix");
+        assert_eq!(arr[0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(arr[1]["type"], "text");
+        assert_eq!(arr[1]["text"], "variable");
+        assert!(
+            arr[1].get("cache_control").is_none(),
+            "suffix block must not carry cache_control"
+        );
+    }
+
+    #[test]
+    fn build_user_content_emits_single_block_when_no_split() {
+        let content = build_user_content("everything in one block".to_string(), None);
+
+        let arr = content.as_array().expect("content is array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["type"], "text");
+        assert_eq!(arr[0]["text"], "everything in one block");
+        assert!(
+            arr[0].get("cache_control").is_none(),
+            "single-block content must not carry cache_control"
+        );
     }
 }

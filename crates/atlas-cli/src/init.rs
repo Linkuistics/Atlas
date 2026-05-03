@@ -6,9 +6,14 @@ const CONFIG_TEMPLATE: &str = r#"# Atlas LLM Configuration
 # Model strings use the format: <provider>/<model-id>
 # Supported providers:
 #   claude-code  — Anthropic Claude Code CLI subprocess (requires `claude` on PATH)
-#   codex        — OpenAI Codex CLI subprocess (stub; pending research task)
+#   codex        — OpenAI Codex CLI subprocess (requires `codex` on PATH)
 #   anthropic    — Anthropic Messages HTTP API (requires ANTHROPIC_API_KEY)
 #   openai       — OpenAI Chat Completions HTTP API (requires OPENAI_API_KEY)
+#   openrouter   — OpenRouter aggregated HTTP API (requires OPENROUTER_API_KEY).
+#                  Model ids carry an extra slash, e.g.
+#                  `openrouter/anthropic/claude-sonnet-4-6`. Atlas's first slash
+#                  separates provider from model id; the rest passes verbatim
+#                  to OpenRouter as the upstream model identifier.
 #
 # API keys use ${ENV_VAR} interpolation and are resolved at startup.
 # Never hardcode secrets here — this file is safe to commit as long as
@@ -21,6 +26,8 @@ const CONFIG_TEMPLATE: &str = r#"# Atlas LLM Configuration
 #     api_key: ${ANTHROPIC_API_KEY}
 #   openai:
 #     api_key: ${OPENAI_API_KEY}
+#   openrouter:
+#     api_key: ${OPENROUTER_API_KEY}
 
 # Global defaults — `model` is REQUIRED. `params.max_tokens` is required
 # whenever the resolved provider is HTTP (`anthropic`, `openai`); ignored

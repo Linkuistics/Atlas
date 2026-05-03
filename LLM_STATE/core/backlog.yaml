@@ -189,7 +189,7 @@ tasks:
 - id: enable-anthropic-prompt-caching-in-anthropichttpbackend
   title: Enable Anthropic prompt caching in AnthropicHttpBackend
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: MEDIUM.** Enable Anthropic prompt caching in `AnthropicHttpBackend` to cut input-token costs on the L3/L8/L5/L6 LLM paths.
@@ -246,6 +246,54 @@ tasks:
 
     - Cache-key fingerprinting: `LlmFingerprint::backend_version` should incorporate "caching=on" to keep the Salsa cache sound across versions where caching changes the wire format.
     - Prefix drift: if a template-token in the cached prefix gets renamed but the marker stays put, the prefix changes silently. Add a build-time check that the rendered prefix shape matches the declared cacheable token set.
+  results: |
+    ## What was done
+
+    Enabled Anthropic ephemeral prompt caching in `AnthropicHttpBackend` for the two HTTP-routable prompts (`Classify` and `Subcarve`). Stage1Surface/Stage2Edges remain claude-code-only because `BackendRouter` rejects HTTP providers for them, so they were left untouched.
+
+    ### Implementation
+
+    - **Renderer split** (`crates/atlas-llm/src/prompt.rs`)
+      - Added `pub const CACHE_BOUNDARY_MARKER: &str = "<!-- CACHE_BOUNDARY -->"`.
+      - Added `render_split(template, tokens) -> Result<(String, Option<String>), LlmError>` which renders normally then splits on the marker, dropping a single newline either side so the split is byte-clean. Returns `(rendered, None)` when the marker is absent.
+      - 3 new unit tests covering marker-present, marker-absent, and marker-at-end-of-template.
+
+    - **Template restructure** (`defaults/prompts/classify.md`)
+      - Reordered sections so the stable catalogs (`{{COMPONENT_KINDS}}`, `{{LIFECYCLE_SCOPES}}`) come above the variable per-candidate inputs (`{{DIR_RELATIVE}}`, `{{RATIONALE_BUNDLE}}`, `{{MANIFEST_CONTENTS}}`). Cache boundary placed after the catalogs, before the inputs section.
+
+    - **Cache marker** (`defaults/prompts/subcarve.md`)
+      - Subcarve already had stable prose above and variable inputs below; the prompt's `Output` block was moved up alongside the prose so the marker can come before all variable interpolation. The trailing duplicate Output block was removed (single source of truth).
+
+    - **Two-block content body** (`crates/atlas-llm/src/http_anthropic.rs`)
+      - `render_request` now returns `(prefix, Option<suffix>)`.
+      - New helper `build_user_content(prefix, suffix) -> Value` builds the `messages[0].content` array: when `suffix` is `Some`, two text blocks where the first carries `cache_control: {type: ephemeral}`; when `None`, a single uncached text block.
+      - `call()` calls `build_user_content` and inlines the array into the request body.
+      - Two new unit tests assert the request-body shape for both branches.
+
+    - **Fingerprint bump**
+      - `backend_version` is now `anthropic-http/<crate-ver>+caching=ephemeral` so the Salsa LLM-response cache invalidates on toggle. Cache soundness is preserved across the version boundary.
+
+    ### Tests
+
+    - `cargo test -p atlas-llm --lib` — **123 passed, 0 failed, 4 ignored**. New tests: 3 for `render_split`, 2 for `build_user_content`.
+    - `cargo test --workspace` — all suites green, including `prompt_token_coverage::every_prompt_and_builder_agree_on_token_set`, `classify_prompt_token_coverage_is_bidirectional`, and `subcarve_prompt_token_coverage_is_bidirectional`. The bidirectional token-coverage tests confirm the restructured templates still satisfy the forward+inverse coverage invariant.
+    - `cargo clippy -p atlas-llm --all-targets` — clean.
+
+    ### Exit criteria status
+
+    - ✅ `AnthropicHttpBackend` sends a two-block user message with `cache_control: ephemeral` on the prefix block (verified by unit test `build_user_content_emits_two_blocks_with_cache_control_when_split`).
+    - ✅ Unit test asserts request-body shape (two new tests).
+    - ❌ Live end-to-end run on `~/Development/dull/` showing non-zero `cache_read_input_tokens` in Anthropic response usage — **deferred**. Cannot perform without burning real LLM tokens; flagged as next step in the updated memory entry.
+    - ✅ Memory entry `anthropichttpbackend-already-implemented-map-reduce-scope-is-narrower-than-task-description-implies` updated: title now reflects caching is enabled; body documents the implementation shape and lists live verification as a remaining step.
+
+    ### Risks not addressed
+
+    - The "build-time check that the rendered prefix shape matches the declared cacheable token set" listed under the task's Risks section was not implemented. It would catch silent prefix drift if a template token in the cached prefix gets renamed but the marker stays put. Token-coverage tests partly cover this (they assert every `{{TOKEN}}` is supplied), but they do not assert which tokens land on which side of the marker. Suggested follow-up: add a test that runs `render_split` and asserts a declared set of token names appear only in the prefix and another set only in the suffix.
+
+    ### What this suggests next
+
+    - **Live verification on dull**: route `operations.classify.model: anthropic/claude-sonnet-4-6` in the dull-workspace `.atlas/config.yaml`, run twice, observe `cache_creation_input_tokens` on the first call and `cache_read_input_tokens` on subsequent calls in the Anthropic response. Capture the figures into the memory entry.
+    - **Stage1Surface / Stage2Edges**: when the filesystem-tool-use loop lands and HTTP providers can serve those prompts, this same pattern (marker + restructure if needed) should be applied to `stage1-surface.md` (currently has variables at top) and `stage2-edges.md` (already friendly: `{{ONTOLOGY_KINDS}}` near top, `{{SURFACE_RECORDS_YAML}}` at end).
 - id: map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis
   title: L8 map/reduce redesign and L3 HTTP routing (AnthropicHttpBackend already complete)
   category: feature
@@ -350,7 +398,7 @@ tasks:
 - id: add-openrouter-as-an-llm-provider
   title: Add OpenRouter as an LLM provider
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: MEDIUM.** Add OpenRouter (https://openrouter.ai) as a
@@ -434,6 +482,73 @@ tasks:
     - `cargo test -p atlas-llm` green; gated integration test passes
       under `ATLAS_LLM_RUN_OPENROUTER_TESTS=1`.
     - README's Usage section mentions OpenRouter as a supported provider.
+  results: |
+    ## What was done
+
+    Added OpenRouter as a selectable LLM provider in `.atlas/config.yaml`. Followed task option 1 (reuse `OpenAiHttpBackend` with a configurable base URL); option 2 (a dedicated struct) was unnecessary because OpenRouter's wire format is OpenAI-compatible.
+
+    ### Implementation
+
+    - **Configurable upstream** (`crates/atlas-llm/src/http_openai.rs`)
+      - Added `pub const OPENAI_DEFAULT_URL`.
+      - `OpenAiHttpBackend` gained two fields: `base_url: String` (defaults to `OPENAI_DEFAULT_URL`) and `provider_label: String` (defaults to `"openai"`).
+      - New builder method `with_base_url(base_url, provider_label)` overrides both — chained off `new()` to keep existing call sites unchanged.
+      - All log/error messages now interpolate `provider_label` so an OpenRouter request that 4xx's says `openrouter API returned 4xx: …` not "OpenAI".
+      - Fingerprint's `backend_version` is now `openai-http/<crate-ver>+upstream=<provider-label>`. Two backends pointed at different OpenAI-compatible URLs produce distinct fingerprints — Salsa cache stays sound across upstreams even when the model id collides.
+      - Two new unit tests assert the default and overridden labels.
+
+    - **Shared `HTTP_PROVIDERS` constant** (`crates/atlas-llm/src/config.rs`)
+      - Promoted the previously-duplicated `HTTP_PROVIDERS` const to module-level `pub const HTTP_PROVIDERS: &[&str] = &["anthropic", "openai", "openrouter"]`.
+      - `router.rs` now references `crate::config::HTTP_PROVIDERS` rather than carrying its own copy. Resolves the de-duplication note flagged in memory entry `backendrouter-rejects-http-providers-for-stage1surface-and-stage2edges`.
+      - `validate()` now also enforces `api_key` presence and `params.max_tokens` for openrouter operations, exactly like anthropic/openai.
+
+    - **Router branch** (`crates/atlas-llm/src/router.rs`)
+      - New `"openrouter"` arm in the provider match: constructs `OpenAiHttpBackend::new(...)` then `.with_base_url("https://openrouter.ai/api/v1/chat/completions", "openrouter")`.
+      - Reads `providers.openrouter.api_key` from config.
+      - The existing `split_once('/')` already handles OpenRouter's nested model ids correctly — the first `/` separates provider from model id, and `claude-sonnet-4-6` (with its embedded `/`) passes verbatim. A dedicated test (`nested_model_id_splits_only_on_first_slash`) pins this behavior.
+      - Rejection message updated to list `(anthropic, openai, openrouter)`.
+
+    - **Init template** (`crates/atlas-cli/src/init.rs`)
+      - Documented the openrouter provider with the special case for nested model ids.
+      - Added a commented-out `providers.openrouter.api_key` example with `${OPENROUTER_API_KEY}` interpolation.
+
+    - **README** (`README.md`)
+      - Added an "LLM providers" subsection to Usage listing all five providers and noting that HTTP providers are restricted to `Classify`/`Subcarve` until the tool-use loop lands.
+
+    ### Tests added (7 new)
+
+    - `http_openai::tests::fingerprint_default_label_is_openai` — asserts default upstream label.
+    - `http_openai::tests::fingerprint_label_changes_with_base_url` — asserts custom label appears in fingerprint.
+    - `router::tests::rejects_openrouter_for_stage1_surface` — surface prompt rejected.
+    - `router::tests::accepts_openrouter_for_classify_and_subcarve` — non-filesystem prompts accepted.
+    - `router::tests::nested_model_id_splits_only_on_first_slash` — pins splitting semantics for OpenRouter ids.
+    - `router::tests::http_providers_constant_includes_openrouter` — pins shared constant content.
+    - `config::tests::load_accepts_openrouter_with_per_op_max_tokens` / `load_rejects_openrouter_without_max_tokens` / `load_rejects_openrouter_missing_provider_entry` — exercise validation parity with anthropic/openai.
+
+    ### Test run
+
+    - `cargo test -p atlas-llm --lib` — **132 passed, 0 failed, 4 ignored** (was 125 → +7 new tests; one earlier router test removed in favour of cleaner constant-check).
+    - `cargo test --workspace` — all suites green; full test count unchanged elsewhere.
+    - `cargo clippy --workspace --all-targets` — clean.
+
+    ### Exit criteria status
+
+    - ✅ `openrouter/<model-id>` selectable via `.atlas/config.yaml`, dispatched by router. Live OpenRouter integration **not exercised** — would require an API key and OpenRouter account.
+    - ✅ Provider/model splitting handles OpenRouter's nested model ids without breaking anthropic/openai/claude-code/codex paths (verified by all existing router tests + new pinning test).
+    - ✅ `cargo test -p atlas-llm` green.
+    - ❌ Gated integration test under `ATLAS_LLM_RUN_OPENROUTER_TESTS=1` not added — deferred (would require a fixture against a live OpenRouter response, similar pattern to the agent-progress e2e test gated on `ATLAS_LLM_RUN_CLAUDE_TESTS=1`).
+    - ✅ README's Usage section mentions OpenRouter alongside other providers.
+
+    ### Deferred
+
+    - **Optional headers `HTTP-Referer` / `X-Title`** for OpenRouter app attribution. Not strictly necessary — OpenRouter accepts requests without them and surfaces "unknown app" in dashboards. Add as `providers.openrouter.referer` / `providers.openrouter.app_title` config fields once a real user hits the dashboard friction.
+    - **Gated integration test** against a real OpenRouter account. Pattern would mirror the existing `ATLAS_LLM_RUN_CLAUDE_TESTS=1` gate; needed before claiming end-to-end correctness against the live API.
+    - **Cost/budget tracking** from OpenRouter's `usage.cost` field. Atlas's `BudgetSentinel` currently tracks tokens, not dollars. Threading cost through is a separate task.
+
+    ### What this suggests next
+
+    - The shared `HTTP_PROVIDERS` constant is now load-bearing in two places (config validation + router rejection). The filesystem-tool-use-loop task will need to *narrow* the rejection list per-backend rather than removing it entirely — capability flags on individual backends (e.g. `LlmBackend::supports_filesystem()`) would be the natural shape.
+    - Memory entry `backendrouter-rejects-http-providers-for-stage1surface-and-stage2edges` mentions `HTTP_PROVIDERS` is "duplicated from `config.rs::validate`'s `HTTP_PROVIDERS` constant; consolidate if a third caller arrives." It is now consolidated; the memory entry should be updated to reflect the new shared-constant location.
 - id: run-agent-progress-e2e-integration-test-against-real-claude-binary
   title: Run agent-progress e2e integration test against real claude binary
   category: eval

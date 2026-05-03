@@ -6,6 +6,9 @@ use crate::claude_code::{extract_tokens, prompt_template_filename, validate_resp
 use crate::stream_parse::strip_json_fence;
 use crate::{LlmBackend, LlmError, LlmFingerprint, LlmRequest};
 
+/// Default endpoint for the OpenAI Chat Completions API.
+pub const OPENAI_DEFAULT_URL: &str = "https://api.openai.com/v1/chat/completions";
+
 pub struct OpenAiHttpBackend {
     model_id: String,
     api_key: String,
@@ -13,6 +16,14 @@ pub struct OpenAiHttpBackend {
     prompts_dir: PathBuf,
     template_sha: [u8; 32],
     ontology_sha: [u8; 32],
+    base_url: String,
+    /// Short identifier for the upstream service. Used in the
+    /// fingerprint's `backend_version` so two backends pointed at
+    /// different OpenAI-compatible URLs (e.g. `openai` vs
+    /// `openrouter`) produce distinct fingerprints. Cache soundness
+    /// requires this — the same model id can route to different
+    /// upstreams across providers.
+    provider_label: String,
     client: reqwest::blocking::Client,
 }
 
@@ -32,8 +43,24 @@ impl OpenAiHttpBackend {
             prompts_dir: prompts_dir.into(),
             template_sha,
             ontology_sha,
+            base_url: OPENAI_DEFAULT_URL.to_string(),
+            provider_label: "openai".to_string(),
             client: reqwest::blocking::Client::new(),
         }
+    }
+
+    /// Override the upstream endpoint and provider label. Use this for
+    /// OpenAI-compatible providers (OpenRouter, vLLM, Together, etc.).
+    /// `provider_label` is folded into the fingerprint to keep the
+    /// Salsa LLM cache sound across upstreams.
+    pub fn with_base_url(
+        mut self,
+        base_url: impl Into<String>,
+        provider_label: impl Into<String>,
+    ) -> Self {
+        self.base_url = base_url.into();
+        self.provider_label = provider_label.into();
+        self
     }
 
     fn render_request(&self, req: &LlmRequest) -> Result<String, LlmError> {
@@ -85,24 +112,33 @@ impl LlmBackend for OpenAiHttpBackend {
 
         let response = self
             .client
-            .post("https://api.openai.com/v1/chat/completions")
+            .post(&self.base_url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&body)
             .send()
-            .map_err(|e| LlmError::Invocation(format!("OpenAI HTTP request failed: {e}")))?;
+            .map_err(|e| {
+                LlmError::Invocation(format!(
+                    "{} HTTP request failed: {e}",
+                    self.provider_label
+                ))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
             let body_text = response.text().unwrap_or_default();
             return Err(LlmError::Invocation(format!(
-                "OpenAI API returned {status}: {}",
+                "{} API returned {status}: {}",
+                self.provider_label,
                 &body_text[..body_text.len().min(200)]
             )));
         }
 
-        let resp_json: Value = response
-            .json()
-            .map_err(|e| LlmError::Parse(format!("failed to parse OpenAI response body: {e}")))?;
+        let resp_json: Value = response.json().map_err(|e| {
+            LlmError::Parse(format!(
+                "failed to parse {} response body: {e}",
+                self.provider_label
+            ))
+        })?;
         parse_openai_response(&resp_json, &req.schema)
     }
 
@@ -111,7 +147,11 @@ impl LlmBackend for OpenAiHttpBackend {
             template_sha: self.template_sha,
             ontology_sha: self.ontology_sha,
             model_id: self.model_id.clone(),
-            backend_version: format!("openai-http/{}", env!("CARGO_PKG_VERSION")),
+            backend_version: format!(
+                "openai-http/{}+upstream={}",
+                env!("CARGO_PKG_VERSION"),
+                self.provider_label
+            ),
         }
     }
 }
@@ -163,5 +203,49 @@ mod tests {
         let schema = ResponseSchema::accept_any();
         let err = parse_openai_response(&resp, &schema).unwrap_err();
         assert!(matches!(err, LlmError::Parse(_)));
+    }
+
+    #[test]
+    fn fingerprint_default_label_is_openai() {
+        let prompts_dir = tempfile::TempDir::new().unwrap();
+        let backend = OpenAiHttpBackend::new(
+            "gpt-4o-mini",
+            "sk-test",
+            json!({}),
+            prompts_dir.path(),
+            [0u8; 32],
+            [0u8; 32],
+        );
+
+        let fp = backend.fingerprint();
+        assert!(
+            fp.backend_version.contains("upstream=openai"),
+            "expected upstream=openai, got {}",
+            fp.backend_version
+        );
+    }
+
+    #[test]
+    fn fingerprint_label_changes_with_base_url() {
+        let prompts_dir = tempfile::TempDir::new().unwrap();
+        let backend = OpenAiHttpBackend::new(
+            "anthropic/claude-sonnet-4-6",
+            "sk-or-test",
+            json!({}),
+            prompts_dir.path(),
+            [0u8; 32],
+            [0u8; 32],
+        )
+        .with_base_url(
+            "https://openrouter.ai/api/v1/chat/completions",
+            "openrouter",
+        );
+
+        let fp = backend.fingerprint();
+        assert!(
+            fp.backend_version.contains("upstream=openrouter"),
+            "expected upstream=openrouter, got {}",
+            fp.backend_version
+        );
     }
 }

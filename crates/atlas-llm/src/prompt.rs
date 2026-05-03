@@ -1,9 +1,48 @@
 //! Prompt template rendering. `{{TOKEN}}` substitution with
 //! double-brace escape (`{{{{X}}}}` → literal `{{X}}`).
+//!
+//! Templates may declare a single `<!-- CACHE_BOUNDARY -->` marker on
+//! its own line. [`render_split`] uses the marker to split the rendered
+//! output into a stable prefix (everything before the marker) and a
+//! variable suffix (everything after). Backends that support prompt
+//! caching (Anthropic HTTP) attach `cache_control` to the prefix block
+//! so identical prefixes across calls hit the provider-side cache.
 
 use std::collections::BTreeMap;
 
 use crate::LlmError;
+
+/// Marker line that splits a template into a cacheable prefix and a
+/// per-call suffix. Must appear on its own line.
+pub const CACHE_BOUNDARY_MARKER: &str = "<!-- CACHE_BOUNDARY -->";
+
+/// Render a template, then split on [`CACHE_BOUNDARY_MARKER`].
+///
+/// Returns `(prefix, Some(suffix))` when the marker is present, or
+/// `(rendered, None)` when it is absent. The marker line itself is
+/// dropped from the output so backends do not have to filter it.
+pub fn render_split(
+    template: &str,
+    tokens: &BTreeMap<String, String>,
+) -> Result<(String, Option<String>), LlmError> {
+    let rendered = render(template, tokens)?;
+    match split_at_cache_boundary(&rendered) {
+        Some((prefix, suffix)) => Ok((prefix.to_string(), Some(suffix.to_string()))),
+        None => Ok((rendered, None)),
+    }
+}
+
+fn split_at_cache_boundary(rendered: &str) -> Option<(&str, &str)> {
+    let idx = rendered.find(CACHE_BOUNDARY_MARKER)?;
+    let prefix = &rendered[..idx];
+    let after = &rendered[idx + CACHE_BOUNDARY_MARKER.len()..];
+    // Drop a single trailing newline that immediately follows the
+    // marker on its own line, and any leading newline at the start of
+    // the suffix, so the split is byte-clean.
+    let prefix = prefix.strip_suffix('\n').unwrap_or(prefix);
+    let suffix = after.strip_prefix('\n').unwrap_or(after);
+    Some((prefix, suffix))
+}
 
 pub fn render(template: &str, tokens: &BTreeMap<String, String>) -> Result<String, LlmError> {
     let mut out = String::with_capacity(template.len());
@@ -124,5 +163,43 @@ mod tests {
         let out = render("日本語 {{GREETING}} 🙂", &tokens).expect("render ok");
 
         assert_eq!(out, "日本語 Привет 🙂");
+    }
+
+    #[test]
+    fn render_split_returns_none_suffix_when_marker_absent() {
+        let mut tokens = BTreeMap::new();
+        tokens.insert("NAME".to_string(), "atlas".to_string());
+
+        let (prefix, suffix) =
+            render_split("Hello {{NAME}}.", &tokens).expect("render_split ok");
+
+        assert_eq!(prefix, "Hello atlas.");
+        assert!(suffix.is_none());
+    }
+
+    #[test]
+    fn render_split_returns_prefix_and_suffix_when_marker_present() {
+        let mut tokens = BTreeMap::new();
+        tokens.insert("CATALOG".to_string(), "kinds: a, b, c".to_string());
+        tokens.insert("INPUT".to_string(), "candidate-42".to_string());
+
+        let template = "stable: {{CATALOG}}\n<!-- CACHE_BOUNDARY -->\nvariable: {{INPUT}}\n";
+
+        let (prefix, suffix) = render_split(template, &tokens).expect("render_split ok");
+
+        assert_eq!(prefix, "stable: kinds: a, b, c");
+        assert_eq!(suffix.as_deref(), Some("variable: candidate-42\n"));
+    }
+
+    #[test]
+    fn render_split_handles_marker_at_end_of_template() {
+        let tokens = BTreeMap::new();
+
+        let template = "everything stable\n<!-- CACHE_BOUNDARY -->\n";
+
+        let (prefix, suffix) = render_split(template, &tokens).expect("render_split ok");
+
+        assert_eq!(prefix, "everything stable");
+        assert_eq!(suffix.as_deref(), Some(""));
     }
 }

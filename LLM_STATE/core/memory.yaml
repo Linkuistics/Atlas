@@ -474,13 +474,17 @@ entries:
   body: |
     Current L8 subcarve prompt mixes parent-scoped signals with per-candidate output. Redesign: run L3 `Classify` on each subdir independently, then reduce deterministically in Rust. Five action items documented in `docs/spikes/2026-05-02-l3-l8-prompt-shape-spike.md`. The map/reduce task description must absorb these items before implementation is scheduled.
 - id: anthropichttpbackend-already-implemented-map-reduce-scope-is-narrower-than-task-description-implies
-  title: AnthropicHttpBackend implemented; Anthropic prompt caching not yet enabled
+  title: AnthropicHttpBackend ephemeral prompt caching enabled for Classify/Subcarve
   body: |
     `AnthropicHttpBackend` is implemented at `crates/atlas-llm/src/http_anthropic.rs` and wired through `BackendRouter` with provider/model routing from `.atlas/config.yaml`. Structured JSON output validation is in place.
 
-    **Prompt caching not enabled.** The implementation sends `messages: [{role: user, content: rendered}]` with no `cache_control` blocks. Backlog task: `enable-anthropic-prompt-caching-in-anthropichttpbackend`.
+    **Prompt caching enabled (ephemeral)** for `Classify` and `Subcarve` prompts. Templates declare a `<!-- CACHE_BOUNDARY -->` marker on its own line; `prompt::render_split` returns `(prefix, Option<suffix>)`; the backend sends `messages[0].content` as a two-block array with `cache_control: {type: ephemeral}` on the prefix block when the marker is present. Backend `fingerprint().backend_version` is `anthropic-http/<crate-ver>+caching=ephemeral` to invalidate stale Salsa cache entries on enable.
+
+    `classify.md` was restructured to put catalogs (`{{COMPONENT_KINDS}}`, `{{LIFECYCLE_SCOPES}}`) above the variable inputs (`{{DIR_RELATIVE}}`, `{{RATIONALE_BUNDLE}}`, `{{MANIFEST_CONTENTS}}`); subcarve.md has its existing stable prose above the variable per-component inputs. Stage1Surface and Stage2Edges are not touched because `BackendRouter` rejects HTTP providers for those prompts.
 
     **OpenAI prompt caching is automatic** — any prompt ≥1024 tokens is cached server-side; `http_openai.rs` needs no code change.
+
+    **Live verification deferred** — no `~/Development/dull/` re-run was performed to observe `cache_read_input_tokens` in the response usage data. Run before relying on the cache for cost reduction.
 
     Remaining map/reduce work:
     1. L8 redesign (5 items in `docs/spikes/2026-05-02-l3-l8-prompt-shape-spike.md`)
@@ -514,12 +518,12 @@ entries:
 - id: backendrouter-rejects-http-providers-for-stage1surface-and-stage2edges
   title: BackendRouter rejects HTTP providers for Stage1Surface and Stage2Edges
   body: |
-    `BackendRouter::new` rejects HTTP providers (`anthropic`, `openai`) when routed to `PromptId::Stage1Surface` or `PromptId::Stage2Edges`. The check fires after provider/model parsing and before any backend construction; failure is `LlmError::Setup` carrying a message that names the prompt label, the suggested filesystem-access providers (`claude-code`, `codex`), and the offending model string.
+    `BackendRouter::new` rejects HTTP providers (`anthropic`, `openai`, `openrouter`) when routed to `PromptId::Stage1Surface` or `PromptId::Stage2Edges`. The check fires after provider/model parsing and before any backend construction; failure is `LlmError::Setup` carrying a message that names the prompt label, the suggested filesystem-access providers (`claude-code`, `codex`), and the offending model string.
 
     **Why:** the rendered surface/edges prompts interpolate only candidate-id and catalog tokens — no file contents — so an HTTP backend (which has no out-of-band filesystem tool) cannot meaningfully extract a surface or synthesise edges. Without the rejection, a config that routes `operations.surface.model: anthropic/...` loads cleanly and produces hallucinated surfaces.
 
-    **Helper:** `reject_http_for_filesystem_required_prompt(prompt_id, provider, model_str)` lives at module level in `crates/atlas-llm/src/router.rs`. The HTTP-providers list is duplicated from `config.rs::validate`'s `HTTP_PROVIDERS` constant; consolidate if a third caller arrives.
+    **Helper:** `reject_http_for_filesystem_required_prompt(prompt_id, provider, model_str)` lives at module level in `crates/atlas-llm/src/router.rs`. The HTTP-providers list is now `pub const HTTP_PROVIDERS` in `crates/atlas-llm/src/config.rs`, used by both the router rejection and `AtlasConfig::validate` (api_key + max_tokens checks). When a fourth HTTP provider lands, add it once to that constant.
 
     **Test escape hatch:** `BackendRouter::from_dispatch_table` (cfg-test) bypasses this check, so router unit tests that wire arbitrary `TestBackend` instances per `PromptId` are unaffected.
 
-    **Future relaxation:** if HTTP backends gain a tool-use loop (filesystem Read/Glob/Grep returning to atlas-cli), the rejection becomes too strict — it can be loosened per-provider once a backend declares filesystem-access capability.
+    **Future relaxation:** if HTTP backends gain a tool-use loop (filesystem Read/Glob/Grep returning to atlas-cli), the rejection becomes too strict — it can be loosened per-provider once a backend declares filesystem-access capability. A `LlmBackend::supports_filesystem()` capability flag is the natural shape.

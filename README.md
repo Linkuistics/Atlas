@@ -128,6 +128,25 @@ Common flags:
 
 `atlas index --help` prints the full surface.
 
+### LLM providers
+
+Per-operation routing lives in `.atlas/config.yaml` (created by `atlas init`).
+Each operation's `model:` is a `<provider>/<model-id>` string. Atlas
+ships with these providers:
+
+- `claude-code/<model>` — Claude Code CLI subprocess (full agent, filesystem tools).
+- `codex/<model>` — OpenAI Codex CLI subprocess (full agent, filesystem tools).
+- `anthropic/<model>` — Anthropic Messages HTTP API. Ephemeral prompt caching is on by default.
+- `openai/<model>` — OpenAI Chat Completions HTTP API.
+- `openrouter/<provider>/<model>` — [OpenRouter](https://openrouter.ai) aggregated HTTP API
+  speaking the OpenAI Chat Completions wire format. Model ids carry an extra
+  slash; the rest of the string passes verbatim to OpenRouter (e.g.
+  `openrouter/anthropic/claude-sonnet-4-6`).
+
+HTTP providers (`anthropic`, `openai`, `openrouter`) currently service only
+`Classify` and `Subcarve`; `Stage1Surface` and `Stage2Edges` need filesystem
+access and require a subprocess provider until the tool-use loop lands.
+
 ### Pre-seeding subsystems
 
 A *subsystem* is a named group of components with hand-drawn boundaries.
