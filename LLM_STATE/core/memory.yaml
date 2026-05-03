@@ -480,13 +480,13 @@ entries:
 - id: l8-redesign-uses-per-subdir-l3-classify-plus-deterministic-rust-reduce
   title: 'L8 map/reduce: per-subdir L3 + deterministic reduce (implemented)'
   body: |
-    **Implemented (2026-05-04).** L8's `compute_decision` runs `map_reduce_subcarve` on the `Recurse | AskLlm` policy branches: enumerate immediate sub-dirs of each `path_segment`, filter pin-suppressed names (raw + slug), call `is_component(db, workspace, dir)` per sub-dir, reduce — `should_subcarve = any verdict.is_boundary`, `sub_dirs = [dir for verdict.is_boundary]`. Modularity hint becomes a logged prior; verdicts win.
+    **Implemented.** L8's `compute_decision` runs `map_reduce_subcarve` on the `Recurse | AskLlm` policy branches: enumerate immediate sub-dirs of each `path_segment`, filter pin-suppressed names (raw + slug), call `is_component(db, workspace, dir)` per sub-dir, reduce — `should_subcarve = any verdict.is_boundary`, `sub_dirs = [dir for verdict.is_boundary]`. Modularity hint becomes a logged prior; verdicts win.
 
     **Map step uses the existing L3 cascade**: pin → deterministic → LLM via `db.call_llm_cached`. The L3 LLM call now routes through the engine's `LlmResponseCache` (previously bypassed it via `backend.call`); this was a correctness fix surfaced by the `pipeline_integration` no-op-re-run tests after the redesign — without it, the map step re-fired every L3 fallback on each re-run.
 
     **Decommissioned**: `subcarve.md` is no longer rendered. The file remains in `EMBEDDED_PROMPTS` so its `template_sha` keeps contributing to the run-wide fingerprint during the transition; deletion slated for the next release. `build_subcarve_inputs`, `parse_subcarve_response`, and the `subcarve.md` row in the bidirectional `prompt_token_coverage` matrix are gone. The `EMBEDDED_SUBCARVE_PROMPT` const and its public re-export from `atlas-engine` are removed.
 
-    **Concurrency**: serial today (single-threaded `for` loop). Bounded concurrency (rayon or Tokio + Semaphore) is a follow-up; Salsa 0.26 supports parallel tracked-query execution and `LlmResponseCache` is thread-safe.
+    **Concurrency**: bounded via rayon, implemented. `run_map_step` uses `par_iter().map_with(cloned_db, ...).collect()` on a private thread pool sized to `map_concurrency`. Plumbed end-to-end: `AtlasDatabase` getter/setter, `FixedpointConfig`, `IndexConfig`, `--map-concurrency` CLI flag. Wall-time ≤5 min criterion on a 74-component monorepo cannot be verified without a live HTTP backend run. Cross-ref: `Salsa 0.26 AtlasDatabase clone works as rayon map_with seed`, `rayon IndexedParallelIterator map_with collect preserves input order`.
 
     **Quality bar limitation**: enumeration is one level deep. A library at `crates/foo/` whose interesting boundary is `crates/foo/src/auth, src/billing` does not surface via this design — the only immediate sub-dir is `src`, which classifies as non-component. A future iteration can descend through "container" dirs (`src`, `lib`, `app`); tracked as a follow-up.
 
@@ -502,12 +502,12 @@ entries:
 
     **OpenAI prompt caching is automatic** — any prompt ≥1024 tokens is cached server-side; `http_openai.rs` needs no code change.
 
-    **Map/reduce status (2026-05-04):**
+    **Map/reduce status:**
     1. **L8 redesign — DONE.** `map_reduce_subcarve` lands in `l8_recurse.rs`. Spec: `docs/superpowers/specs/2026-05-04-l8-map-reduce-design.md`. Subcarve prompt no longer rendered.
     2. **Routing Classify through HTTP — config-only, ready.** Flip `.atlas/config.yaml` `operations.classify.model: anthropic/...`.
     3. **Cache hit-rate verification — DEFERRED.** Run dull at depth 1 with `anthropic/claude-haiku-4-5` for `classify` and observe `cache_read_input_tokens` in usage data.
     4. **Goldens/eval re-run — DEFERRED.** Pending the cache-hit-rate run.
-    5. **Bounded concurrency — DEFERRED.** Map step is currently serial; rayon or Tokio + Semaphore is the obvious next step. Salsa 0.26 supports parallel tracked queries and `LlmResponseCache` is thread-safe.
+    5. **Bounded concurrency — DONE.** rayon `map_with` on a private thread pool; `map_concurrency` plumbed end-to-end. Wall-time verification deferred (needs live HTTP backend run; `dull` depth-1 is pin-saturated).
 
     **Subcarve-prompt rendering is no longer load-bearing.** `defaults/prompts/subcarve.md` stays in `EMBEDDED_PROMPTS` for fingerprint stability and is slated for deletion after one shipped release. Prompt caching on subcarve.md no longer matters; classify.md prompt caching is the only HTTP cache lever now.
 - id: interpolate-env-vars-skips-hash-in-quoted-scalar-silently
@@ -556,3 +556,15 @@ entries:
     `decide_kind_only` in `subcarve_policy.rs` returns `Some(Stop)` for leaf-like kinds (CLI, app, service, proc-macro, docker, installer, scripts, spec/docs/config repos, external, non-component) and `Some(Recurse)` for Workspace, allowing `compute_decision` in `l8_recurse` to skip seam_density/modularity_hint/cliques_touching_id computation entirely for those kinds. Library kinds return `None` and still require `modularity_hint` before `decide` can determine their depth cap.
 
     Two regression tests in `l8_recurse::tests` use `RecordingBackend` (records every `PromptId` received): `max_depth_zero_skips_all_l5_surface_calls_on_library_kind` and `cli_kind_skips_all_llm_calls_under_normal_max_depth`.
+- id: rayon-indexedparalleliterator-map-with-collect-preserves-input-order
+  title: rayon IndexedParallelIterator map_with collect preserves input order
+  body: |
+    `par_iter().map_with(...).collect()` from rayon's `IndexedParallelIterator` preserves input order deterministically — no manual post-sort needed. The order guarantee comes from `IndexedParallelIterator`, not from generic `ParallelIterator`; only indexed iterators (slices, ranges, vecs) provide it. Determinism is covered by `map_step_is_deterministic_across_concurrency_settings` in the Atlas test suite.
+- id: salsa-0-26-atlasdatabase-clone-works-as-rayon-map-with-seed
+  title: Salsa 0.26 AtlasDatabase clone works as rayon map_with seed
+  body: |
+    Salsa 0.26's `&Database` is `!Send`, blocking direct rayon use. Passing a cloned `AtlasDatabase` as the `map_with` seed resolves this: clones share the memoised query graph and `LlmResponseCache` but each thread gets its own `ZalsaLocal`. Pattern: `pool.install(|| par_iter.map_with(db.clone(), |db, item| ...).collect())`.
+- id: catch-unwind-assertunwindsafe-isolates-panics-in-rayon-map-step
+  title: catch_unwind(AssertUnwindSafe) isolates panics in rayon map step
+  body: |
+    `classify_with_panic_isolation` wraps each rayon closure in `catch_unwind(AssertUnwindSafe(...))`. A panicking classifier returns `unknown_classification` without poisoning sibling workers. This is safe because `LlmResponseCache`'s Mutex is released before the backend call executes — a panic inside the closure cannot poison the Mutex for other threads.
