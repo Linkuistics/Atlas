@@ -51,6 +51,11 @@ pub enum ConfigError {
     MissingProviderEntry { provider: String },
     #[error("providers.{provider}.api_key is empty after interpolation")]
     EmptyApiKey { provider: String },
+    #[error(
+        "`params.max_tokens` is required for HTTP-provider operation `{operation}` — \
+         add a positive integer under `params:` in .atlas/config.yaml"
+    )]
+    MissingMaxTokens { operation: String },
 }
 
 pub(crate) fn interpolate_env_vars(s: &str) -> Result<String, ConfigError> {
@@ -129,19 +134,17 @@ impl AtlasConfig {
             return Err(ConfigError::MissingDefaultModel);
         }
 
-        let all_models = std::iter::once(&self.defaults.model).chain(
-            [
-                self.operations.classify.as_ref(),
-                self.operations.subcarve.as_ref(),
-                self.operations.surface.as_ref(),
-                self.operations.edges.as_ref(),
-            ]
-            .into_iter()
-            .flatten()
-            .map(|op| &op.model),
-        );
-
         const HTTP_PROVIDERS: &[&str] = &["anthropic", "openai"];
+
+        let overrides: [(&str, Option<&OperationConfig>); 4] = [
+            ("classify", self.operations.classify.as_ref()),
+            ("subcarve", self.operations.subcarve.as_ref()),
+            ("surface", self.operations.surface.as_ref()),
+            ("edges", self.operations.edges.as_ref()),
+        ];
+
+        let all_models = std::iter::once(&self.defaults.model)
+            .chain(overrides.iter().filter_map(|(_, op)| op.map(|o| &o.model)));
 
         for model in all_models {
             let provider = model.split('/').next().unwrap_or("");
@@ -158,6 +161,34 @@ impl AtlasConfig {
                 }
             }
         }
+
+        let check_max_tokens = |label: &str, op: &OperationConfig| -> Result<(), ConfigError> {
+            let provider = op.model.split('/').next().unwrap_or("");
+            if !HTTP_PROVIDERS.contains(&provider) {
+                return Ok(());
+            }
+            let has_positive_max_tokens = op
+                .params
+                .get("max_tokens")
+                .and_then(Value::as_u64)
+                .is_some_and(|n| n > 0);
+            if !has_positive_max_tokens {
+                return Err(ConfigError::MissingMaxTokens {
+                    operation: label.to_string(),
+                });
+            }
+            Ok(())
+        };
+
+        for (name, op_opt) in &overrides {
+            if let Some(op) = op_opt {
+                check_max_tokens(name, op)?;
+            }
+        }
+        if overrides.iter().any(|(_, op)| op.is_none()) {
+            check_max_tokens("defaults", &self.defaults)?;
+        }
+
         Ok(())
     }
 
@@ -343,5 +374,56 @@ operations:
     fn claude_code_provider_needs_no_providers_entry() {
         let f = write_config("defaults:\n  model: \"claude-code/claude-sonnet-4-6\"\n");
         AtlasConfig::load(f.path()).expect("should succeed — claude-code needs no credentials");
+    }
+
+    #[test]
+    fn load_rejects_anthropic_without_max_tokens() {
+        std::env::set_var("_ATLAS_TEST_KEY_HTTP_NO_MAX", "sk-test");
+        let f = write_config(
+            "providers:\n  anthropic:\n    api_key: \"${_ATLAS_TEST_KEY_HTTP_NO_MAX}\"\n\
+             defaults:\n  model: \"anthropic/claude-sonnet-4-6\"\n",
+        );
+        let err = AtlasConfig::load(f.path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::MissingMaxTokens { operation } if operation == "defaults"
+        ));
+        std::env::remove_var("_ATLAS_TEST_KEY_HTTP_NO_MAX");
+    }
+
+    #[test]
+    fn load_accepts_anthropic_with_default_max_tokens() {
+        std::env::set_var("_ATLAS_TEST_KEY_DEFAULT_MAX", "sk-test");
+        let f = write_config(
+            "providers:\n  anthropic:\n    api_key: \"${_ATLAS_TEST_KEY_DEFAULT_MAX}\"\n\
+             defaults:\n  model: \"anthropic/claude-sonnet-4-6\"\n  params:\n    max_tokens: 4096\n",
+        );
+        let config = AtlasConfig::load(f.path()).expect("defaults max_tokens must satisfy check");
+        assert_eq!(config.defaults.params["max_tokens"], 4096);
+        std::env::remove_var("_ATLAS_TEST_KEY_DEFAULT_MAX");
+    }
+
+    #[test]
+    fn load_accepts_anthropic_with_per_op_max_tokens() {
+        std::env::set_var("_ATLAS_TEST_KEY_PER_OP_MAX", "sk-test");
+        let f = write_config(
+            "providers:\n  anthropic:\n    api_key: \"${_ATLAS_TEST_KEY_PER_OP_MAX}\"\n\
+             defaults:\n  model: \"claude-code/claude-sonnet-4-6\"\n\
+             operations:\n  classify:\n    model: \"anthropic/claude-haiku-4-5\"\n    params:\n      max_tokens: 1024\n",
+        );
+        let config = AtlasConfig::load(f.path())
+            .expect("per-op max_tokens for the only HTTP operation must satisfy check");
+        assert_eq!(
+            config.operations.classify.as_ref().unwrap().params["max_tokens"],
+            1024
+        );
+        std::env::remove_var("_ATLAS_TEST_KEY_PER_OP_MAX");
+    }
+
+    #[test]
+    fn load_accepts_claude_code_without_max_tokens() {
+        let f = write_config("defaults:\n  model: \"claude-code/claude-sonnet-4-6\"\n");
+        AtlasConfig::load(f.path())
+            .expect("subprocess providers do not require max_tokens validation");
     }
 }

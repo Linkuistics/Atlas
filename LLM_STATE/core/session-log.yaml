@@ -572,3 +572,14 @@ sessions:
     What this suggests trying next: land `validate-params-max-tokens-at-config-load-for-http-providers` (HIGH priority) to surface the config error explicitly; then re-run dull at depth 1 with a real LLM budget to populate L5 surfaces and L6 edges; then author the golden against actual outputs.
 
     Key learnings: `prompt::render`'s silent key-drop behaviour makes bidirectional coverage tests essential at every build_*_inputs / template boundary — not just forward (template → builder) but also inverse (builder → template).
+- id: session-45
+  timestamp: 2026-05-03T10:51:56Z
+  phase: work
+  body: |
+    ### Session 45 (2026-05-03T10:51:56Z) — Validate params.max_tokens at config load for HTTP providers
+
+    - **Attempted:** Extend `AtlasConfig::validate` in `crates/atlas-llm/src/config.rs` to reject at config-load time any HTTP-provider operation (`anthropic`, `openai`) that lacks a positive-integer `params.max_tokens`.
+    - **What worked:** Implementation complete and all four required unit tests pass. `cargo test -p atlas-llm` is green across all 113 tests (16 existing config tests unaffected). `cargo clippy -p atlas-llm --no-deps` is clean. Live test against a dull-style config (anthropic provider, no max_tokens) produces a clear actionable error at startup before any pipeline work runs.
+    - **What didn't:** Nothing significant. One semantic subtlety surfaced: the task spec said "Else if defaults has params.max_tokens → ok" but runtime `BackendRouter` reads `op.params` whole-cloth without merging per-key from defaults. Validation was adjusted to mirror runtime exactly — an override block with a `params:` field but no `max_tokens` is rejected even if `defaults.params.max_tokens` exists. This is safer than accepting a config that runtime would reject.
+    - **Key learnings:** Collapsing three guards (presence, type, positivity) into `get("max_tokens").and_then(Value::as_u64).is_some_and(|n| n > 0)` is idiomatic; a string-typed or zero or missing value all fail uniformly. The `overrides.iter().any(|(_, op)| op.is_none())` guard for the defaults check correctly handles partial override configs.
+    - **What this suggests next:** `surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing` is the remaining complementary fix — closes the second silent-failure layer. After that `hand-author-second-golden-for-merged-monorepo` unblocks, then `verify-atlas-v1-success-criteria-end-to-end` follows.

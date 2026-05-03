@@ -2,7 +2,7 @@ tasks:
 - id: validate-params-max-tokens-at-config-load-for-http-providers
   title: Validate params.max_tokens at config load for HTTP providers
   category: infra
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: HIGH.** `AtlasConfig::validate` accepts HTTP-provider operations that omit `params.max_tokens`, but `AnthropicHttpBackend::call` requires it (see `crates/atlas-llm/src/http_anthropic.rs:72-82`) and errors with `LlmError::Setup` on every call. Combined with L5/L6's silent-error swallow (separate task), this produces a config that loads cleanly, runs to completion, and reports zero LLM calls — with no observable failure signal.
@@ -48,6 +48,56 @@ tasks:
     - `cargo test -p atlas-llm` covers all four unit tests above.
     - A live run with the dull config above fails at `atlas index` startup with a clear actionable error, not at the silent-no-call summary.
     - The error message names the operation and points at the `params.max_tokens` field in `.atlas/config.yaml`.
+  results: |
+    ## What was done
+
+    Extended `AtlasConfig::validate` in `crates/atlas-llm/src/config.rs` to fail at config-load time when an HTTP-provider operation (`anthropic` or `openai`) lacks a positive-integer `params.max_tokens`.
+
+    Implementation shape:
+
+    - New `ConfigError::MissingMaxTokens { operation: String }` variant. Display message names the operation and points at `.atlas/config.yaml`.
+    - `validate()` walks each defined per-operation override first, then falls back to checking `defaults` if any prompt slot would inherit it. The error label is the specific operation name (`classify` / `subcarve` / `surface` / `edges`) when an override is broken, or `defaults` when the global block is the failing point — so users see a label that pinpoints where the fix goes.
+    - HTTP-provider check uses `op.params.get("max_tokens").and_then(Value::as_u64).is_some_and(|n| n > 0)` — three concerns (presence, integer type, positivity) collapsed into one expression. A string-typed or zero or missing value all fail uniformly.
+    - Subprocess providers (`claude-code`, `codex`) are deliberately exempt — they don't read `max_tokens` from `params`.
+
+    ## Tests
+
+    All four required unit tests added to `config.rs::tests`:
+
+    - `load_rejects_anthropic_without_max_tokens` — defaults model anthropic, no max_tokens anywhere → `MissingMaxTokens { operation: "defaults" }`.
+    - `load_accepts_anthropic_with_default_max_tokens` — defaults has `max_tokens: 4096` → loads.
+    - `load_accepts_anthropic_with_per_op_max_tokens` — defaults uses subprocess (`claude-code`), classify override is anthropic with max_tokens → loads (only HTTP slot has max_tokens, others are exempt).
+    - `load_accepts_claude_code_without_max_tokens` — pure subprocess config → loads.
+
+    `cargo test -p atlas-llm` passes 113 tests; new four are all green and the existing 16 config tests still pass.
+
+    `cargo clippy -p atlas-llm --no-deps` is clean.
+
+    ## Live verification
+
+    Wrote a dull-style config (anthropic provider, no max_tokens) to a tempdir and ran `atlas index` against it. Got:
+
+    ```
+    atlas: failed to load <path>/.atlas/config.yaml: `params.max_tokens` is required for HTTP-provider operation `defaults` — add a positive integer under `params:` in .atlas/config.yaml
+    ```
+
+    This is the exit criterion: clear, actionable, names the operation, points at the config file, raised at startup before any pipeline / LLM work runs (`AtlasConfig::load` is invoked at `crates/atlas-cli/src/main.rs:181`, well before `BackendRouter::new`).
+
+    ## What this unblocks
+
+    - `dull-depth-1-skips-llm-path-due-to-dense-pin-coverage` memory entry explicitly identifies this fix as the gating prerequisite for meaningful `dull` cross-target evaluation.
+    - `hand-author-second-golden-for-merged-monorepo` (currently `blocked`) lists this task as one of two dependencies. The second blocker (`surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing`) is still open — that one is the upstream-on-the-pipeline-side defense; this fix is the upstream-on-the-config-side defense. They are complementary; this one alone catches the specific scenario observed against `~/Development/dull/`.
+    - `verify-atlas-v1-success-criteria-end-to-end` (also blocked) becomes one task closer to runnable.
+
+    ## Caveats / out-of-scope
+
+    - Runtime resolution semantics unchanged: `BackendRouter` still reads `op.params` whole-cloth (no per-key merge of override.params into defaults.params). Validation now mirrors that exactly — if a user defines an override block with a `params:` field that omits `max_tokens` while `defaults.params.max_tokens` is set, runtime would fail; validation now also rejects this. (This came up while interpreting the task spec's "Else if defaults has params.max_tokens" line. Mirroring runtime is the safer semantic; otherwise validation passing while runtime fails is exactly the silent-failure pattern this task is fixing.)
+    - `init.rs` template still ships `max_tokens` lines as commented examples — the task explicitly defers a template change pending this fix landing first. A follow-up could uncomment `max_tokens` in the example HTTP-provider blocks now that validation enforces it.
+
+    ## What this suggests next
+
+    - Tackling `surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing` next would close the second silent-failure layer described in `missing-params-max-tokens-causes-three-silent-llm-failure-layers`. Together with this fix, the `0 LLM calls / 0 tokens / N components written` pattern observed against `dull` would be impossible.
+    - After both land, `hand-author-second-golden-for-merged-monorepo` unblocks, then `verify-atlas-v1-success-criteria-end-to-end` follows.
 - id: surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing
   title: Surface L5/L6/L8 setup errors instead of silently swallowing
   category: infra

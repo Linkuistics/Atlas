@@ -1,17 +1,11 @@
-id: session-44
-timestamp: 2026-05-03T10:22:50Z
+id: session-45
+timestamp: 2026-05-03T10:51:56Z
 phase: work
 body: |
-  ### Session 44 (2026-05-03T10:22:50Z) — Fix prompt-token drop bug; scaffold override schema_version; add bidirectional coverage tests
+  ### Session 45 (2026-05-03T10:51:56Z) — Validate params.max_tokens at config load for HTTP providers
 
-  - Attempted to run dull (`~/Development/dull/`) as the second golden target for cross-target validation. A depth-0 smoke run succeeded (105 components, 0 LLM calls, 7 min wall), and a depth-1 calibration run produced identical output — pin coverage was so dense that all classify/subcarve decisions short-circuited deterministically, so the LLM path was never exercised.
-  - Discovered three blockers preventing meaningful LLM evaluation on dull, all now filed as new backlog tasks.
-  - Fixed two of the three blockers in source:
-    1. **`atlas init` scaffolded invalid override files**: `components.overrides.yaml` and `subsystems.overrides.yaml` had `schema_version` commented out, causing `atlas validate-overrides` to fail immediately on freshly-init'd repos. Fixed by activating `schema_version: 1` in both templates in `crates/atlas-cli/src/init.rs`. Regression test `freshly_init_overrides_pass_validate_overrides` added to `crates/atlas-cli/tests/init_cmd.rs`.
-    2. **L3/L8 prompt-token coverage bug (silent data drop)**: `classify.md` and `subcarve.md` had no `{{TOKEN}}` placeholders for the per-call candidate fields supplied by `build_llm_inputs` / `build_subcarve_inputs`. The `prompt::render` engine silently drops keys with no matching template placeholder, so every HTTP-routed classify/subcarve call was sending prompts with zero candidate context. Fixed by rewriting both prompts to interpolate `{{DIR_RELATIVE}}`, `{{RATIONALE_BUNDLE}}`, `{{MANIFEST_CONTENTS}}` (classify) and `{{COMPONENT_ID}}`, `{{COMPONENT_KIND}}`, `{{COMPONENT_PATHS}}`, `{{STRUCTURAL_SIGNALS}}`, `{{EDGE_NEIGHBOURHOOD}}`, `{{PIN_SUPPRESSED_CHILDREN}}` (subcarve); and upper-casing the corresponding keys in `build_llm_inputs`. Bidirectional token-coverage tests added in `l3_classify.rs` and `l8_recurse.rs` (forward: template refs must be in builder; inverse: builder keys must appear in template).
-  - Third blocker (three layers of silent LLM-failure absorption when `params.max_tokens` is absent from config) left as filed tasks; not fixed in this phase.
-  - `hand-author-second-golden-for-merged-monorepo` set to `blocked` — exit criteria (golden authoring + metric scoring) require the three discovered bugs to land first.
-
-  What this suggests trying next: land `validate-params-max-tokens-at-config-load-for-http-providers` (HIGH priority) to surface the config error explicitly; then re-run dull at depth 1 with a real LLM budget to populate L5 surfaces and L6 edges; then author the golden against actual outputs.
-
-  Key learnings: `prompt::render`'s silent key-drop behaviour makes bidirectional coverage tests essential at every build_*_inputs / template boundary — not just forward (template → builder) but also inverse (builder → template).
+  - **Attempted:** Extend `AtlasConfig::validate` in `crates/atlas-llm/src/config.rs` to reject at config-load time any HTTP-provider operation (`anthropic`, `openai`) that lacks a positive-integer `params.max_tokens`.
+  - **What worked:** Implementation complete and all four required unit tests pass. `cargo test -p atlas-llm` is green across all 113 tests (16 existing config tests unaffected). `cargo clippy -p atlas-llm --no-deps` is clean. Live test against a dull-style config (anthropic provider, no max_tokens) produces a clear actionable error at startup before any pipeline work runs.
+  - **What didn't:** Nothing significant. One semantic subtlety surfaced: the task spec said "Else if defaults has params.max_tokens → ok" but runtime `BackendRouter` reads `op.params` whole-cloth without merging per-key from defaults. Validation was adjusted to mirror runtime exactly — an override block with a `params:` field but no `max_tokens` is rejected even if `defaults.params.max_tokens` exists. This is safer than accepting a config that runtime would reject.
+  - **Key learnings:** Collapsing three guards (presence, type, positivity) into `get("max_tokens").and_then(Value::as_u64).is_some_and(|n| n > 0)` is idiomatic; a string-typed or zero or missing value all fail uniformly. The `overrides.iter().any(|(_, op)| op.is_none())` guard for the defaults check correctly handles partial override configs.
+  - **What this suggests next:** `surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing` is the remaining complementary fix — closes the second silent-failure layer. After that `hand-author-second-golden-for-merged-monorepo` unblocks, then `verify-atlas-v1-success-criteria-end-to-end` follows.
