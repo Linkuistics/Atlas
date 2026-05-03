@@ -162,14 +162,16 @@ entries:
   body: |
     `llm-cache.json` co-mingles per-prompt responses with fingerprint metadata in a single flat file. A v2 split — one file per prompt type, or content-sha keying — would reduce diff size and isolate cache invalidation to fingerprint-only changes.
 - id: l5-l6-tests-include-template-token-coverage-check
-  title: 'Template coverage: L3/L8 bidirectional, L5/L6 forward-only'
+  title: All four LLM prompts have bidirectional token-coverage tests
   body: |
-    All LLM-adjacent prompts (L3, L5, L6, L8) need two-direction coverage tests:
+    All LLM-adjacent prompts (L3, L5, L6, L8) have bidirectional token-coverage tests:
 
     - **Forward** — every `{{TOKEN}}` in the template maps to a `build_inputs` key. Catches `TemplateSyntax` panics.
-    - **Inverse** — every `build_inputs` key is referenced in the template. Catches silent-data-drop: a builder field with no matching template token is dropped by `prompt::render`. This was the L3/L8 bug (classify.md and subcarve.md were missing every per-call token).
+    - **Inverse** — every `build_inputs` key is referenced in the template. Catches silent-data-drop: a builder field with no matching template token is dropped by `prompt::render`.
 
-    **L3** (`classify_prompt_token_coverage_is_bidirectional`) and **L8** (`subcarve_prompt_token_coverage_is_bidirectional`): bidirectional + verbatim rendered-prompt assertion. **L5** and **L6**: forward-only via `collect_template_tokens` helper; inverse not yet covered.
+    All four prompts are covered bidirectionally in a single `prompt_token_coverage.rs` test that iterates a `cases()` vec. Each layer exposes a parameterless stub builder for the matrix.
+
+    **`cache_only_keys` exception:** builder fields used purely for cache-key fingerprinting (not referenced in the template) must be declared in `Case::cache_only_keys` to suppress the inverse-direction failure. Current example: `COMPONENT_CONTENT_SHAS` in L5 — baked into builder output to reshape cache keys on file-content change, but never mentioned in the prompt.
 
     `collect_template_tokens` is duplicated in 4 test modules; extract to a shared crate if a fifth layer arrives. Build-time generalization (`prompt-template-token-coverage-check-build-time`) must include the inverse direction.
 - id: prompt-drift-tests-against-ravel-lite-are-invalid
@@ -441,7 +443,9 @@ entries:
   body: |
     `atlas init` creates `.atlas/config.yaml`, `components.overrides.yaml`, and `subsystems.overrides.yaml` with inline documentation comments. Files that already exist are silently skipped, making the command idempotent.
 
-    `schema_version: 1` must be active (not commented out) in the scaffolded override templates. Commented-out `schema_version` causes `atlas validate-overrides` to fail immediately on freshly-init'd repos. Regression test: `freshly_init_overrides_pass_validate_overrides` in `crates/atlas-cli/tests/init_cmd.rs`.
+    `schema_version: 1` must be active (not commented out) in the scaffolded override templates. Commented-out `schema_version` causes `atlas validate-overrides` to fail immediately on freshly-init'd repos.
+
+    `params: max_tokens: 4096` is active (not commented out) under `defaults:` in the scaffolded `config.yaml`. This prevents `MissingMaxTokens` config-load errors when users flip to an HTTP provider without editing params. Regression test: `freshly_init_overrides_pass_validate_overrides` and a HTTP-provider-flip test in `crates/atlas-cli/tests/init_cmd.rs`.
 - id: simplebackend-is-the-fixture-for-subsystem-integration-tests
   title: SimpleBackend is the fixture for subsystem integration tests
   body: |
