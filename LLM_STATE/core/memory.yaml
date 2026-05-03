@@ -168,7 +168,7 @@ entries:
     All LLM-adjacent prompts (L3, L5, L6, L8, and any new layer) require template-token coverage tests. Two directions matter:
 
     - **Forward** — every `{{TOKEN}}` in the template must map to a key in the `build_inputs` result. Catches `TemplateSyntax` panics.
-    - **Inverse** — every key in the `build_inputs` result must be referenced by a `{{TOKEN}}` in the template. Catches the silent-data-drop failure where a builder field has no matching template token, gets dropped by `prompt::render`, and leaves the LLM with no input. This was the L3/L8 bug uncovered 2026-05-03 (classify.md and subcarve.md were missing every per-call token).
+    - **Inverse** — every key in the `build_inputs` result must be referenced by a `{{TOKEN}}` in the template. Catches the silent-data-drop failure where a builder field has no matching template token, gets dropped by `prompt::render`, and leaves the LLM with no input. This was the L3/L8 bug (classify.md and subcarve.md were missing every per-call token).
 
     Current coverage:
 
@@ -448,6 +448,8 @@ entries:
   title: atlas init scaffolds config files; skips existing
   body: |
     `atlas init` creates `.atlas/config.yaml`, `components.overrides.yaml`, and `subsystems.overrides.yaml` with inline documentation comments. Files that already exist are silently skipped, making the command idempotent.
+
+    `schema_version: 1` must be active (not commented out) in the scaffolded override templates. Commented-out `schema_version` causes `atlas validate-overrides` to fail immediately on freshly-init'd repos. Regression test: `freshly_init_overrides_pass_validate_overrides` in `crates/atlas-cli/tests/init_cmd.rs`.
 - id: simplebackend-is-the-fixture-for-subsystem-integration-tests
   title: SimpleBackend is the fixture for subsystem integration tests
   body: |
@@ -504,3 +506,13 @@ entries:
     **Why:** Three paper-cut and correctness fixes landed in the same cycle; first-run UX is now clean. Cutting a minor version before external testing reduces "is this a known bug?" noise in early feedback.
 
     **How to apply:** When preparing for external monorepo testing, check whether a release tag has been cut since this entry was written. If not, consider whether tagging v1.3.1 first is worthwhile.
+- id: dull-depth-1-skips-llm-path-due-to-dense-pin-coverage
+  title: dull depth-1 skips LLM path due to dense pin coverage
+  body: |
+    `dull` depth-1 calibration produces output identical to depth-0: pin coverage is dense enough that all classify/subcarve decisions short-circuit deterministically, so the LLM call path is never exercised. `dull` cannot serve as a cross-target LLM validator in its current state.
+
+    Exit criteria for meaningful dull evaluation (authoring goldens + metric scoring) require three pipeline blockers to land first. Two are fixed (init schema_version fix; L3/L8 prompt-token fix). One remains: `validate-params-max-tokens-at-config-load-for-http-providers`.
+- id: missing-params-max-tokens-causes-three-silent-llm-failure-layers
+  title: Missing params.max_tokens causes three silent LLM failure layers
+  body: |
+    When `params.max_tokens` is absent from config for HTTP-routed providers, three layers of failure absorption prevent the error from surfacing. The backlog task `validate-params-max-tokens-at-config-load-for-http-providers` tracks the fix: validate and hard-error at config load time before any LLM calls start.
