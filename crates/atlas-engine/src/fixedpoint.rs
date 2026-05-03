@@ -28,7 +28,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::db::{AtlasDatabase, DEFAULT_MAX_DEPTH};
+use crate::db::{AtlasDatabase, DEFAULT_MAP_CONCURRENCY, DEFAULT_MAX_DEPTH};
 use crate::l4_tree::all_components;
 use crate::l8_recurse::subcarve_decision;
 
@@ -49,6 +49,10 @@ pub struct FixedpointConfig {
     /// Optional progress sink. When `None`, the driver runs silently
     /// (current behaviour — preserved for engine tests and the harness).
     pub progress: Option<std::sync::Arc<dyn crate::progress::ProgressSink>>,
+    /// Bound on parallel `is_component` calls inside L8's map step.
+    /// `1` forces serial execution; defaults to
+    /// [`DEFAULT_MAP_CONCURRENCY`].
+    pub map_concurrency: usize,
 }
 
 impl std::fmt::Debug for FixedpointConfig {
@@ -57,6 +61,7 @@ impl std::fmt::Debug for FixedpointConfig {
             .field("max_depth", &self.max_depth)
             .field("hard_cap", &self.hard_cap)
             .field("progress", &self.progress.is_some())
+            .field("map_concurrency", &self.map_concurrency)
             .finish()
     }
 }
@@ -67,6 +72,7 @@ impl Default for FixedpointConfig {
             max_depth: DEFAULT_MAX_DEPTH,
             hard_cap: FIXEDPOINT_HARD_CAP,
             progress: None,
+            map_concurrency: DEFAULT_MAP_CONCURRENCY,
         }
     }
 }
@@ -83,6 +89,7 @@ pub struct FixedpointResult {
 pub fn run_fixedpoint(db: &mut AtlasDatabase, config: FixedpointConfig) -> FixedpointResult {
     let sink = config.progress.clone();
     db.set_max_depth(config.max_depth);
+    db.set_map_concurrency(config.map_concurrency);
     db.set_fixedpoint_iteration_count(0);
 
     let mut back_edge: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();

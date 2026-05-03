@@ -38,16 +38,18 @@
 //! release cycle.
 
 use std::collections::BTreeSet;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use atlas_index::{ComponentEntry, PathSegment, PinValue};
+use rayon::prelude::*;
 
 use crate::db::{AtlasDatabase, Workspace};
 use crate::l4_tree::all_components;
 use crate::l7_structural::{cliques, modularity_hint, seam_density, Clique};
 use crate::subcarve_policy::{decide, decide_kind_only, PolicyDecision, SubcarveSignals};
-use crate::types::ComponentKind;
+use crate::types::{Classification, ComponentKind};
 
 /// Min-k for clique search feeding [`SubcarveSignals::cliques_touching`].
 /// 3 matches the design §4.1 wording ("triangles of mutual reference are
@@ -254,11 +256,17 @@ fn map_reduce_subcarve(
         return SubcarveDecision::stopped("no eligible immediate sub-directories");
     }
 
+    // Map step. Verdicts are produced in the same order as `candidates`
+    // regardless of `map_concurrency`, so the reduce step below assembles
+    // a deterministic `sub_dirs` whether the closures ran serially or
+    // across a rayon thread pool — `par_iter().map().collect()` is
+    // ordered by `IndexedParallelIterator`.
+    let verdicts = run_map_step(db, workspace, &candidates, db.map_concurrency());
+
     let mut sub_dirs: Vec<PathBuf> = Vec::new();
     let mut accepted_summaries: Vec<String> = Vec::new();
     let mut rejected = 0usize;
-    for abs_dir in &candidates {
-        let classification = crate::l3_classify::is_component(db, workspace, abs_dir.clone());
+    for (abs_dir, classification) in candidates.iter().zip(verdicts.iter()) {
         if classification.is_boundary {
             let rel = abs_dir.strip_prefix(&workspace_root).unwrap_or(abs_dir);
             sub_dirs.push(rel.to_path_buf());
@@ -286,6 +294,79 @@ fn map_reduce_subcarve(
         should_subcarve,
         sub_dirs,
         rationale,
+    }
+}
+
+/// Run [`crate::l3_classify::is_component`] on each candidate. With
+/// `map_concurrency == 1` this is a plain serial loop. With `> 1` the
+/// closures execute on a private rayon thread pool sized to that bound,
+/// keeping the parallelism budget per-driver-run rather than relying on
+/// rayon's process-wide global pool.
+///
+/// Salsa 0.26's `&Database` is not `Sync` because `ZalsaLocal` (the
+/// per-handle thread-local query state) holds `UnsafeCell` data, so the
+/// parallel path uses [`rayon::iter::ParallelIterator::map_with`] with a
+/// cloned database handle. Clones share the underlying Salsa storage —
+/// each worker gets its own `ZalsaLocal` but reads through the same
+/// memoised query graph and the same `LlmResponseCache`.
+///
+/// Each call is wrapped in [`classify_with_panic_isolation`] so a
+/// panicked classifier degrades to a non-boundary `unknown` verdict for
+/// that one sub-dir without poisoning the whole map step.
+fn run_map_step(
+    db: &AtlasDatabase,
+    workspace: Workspace,
+    candidates: &[PathBuf],
+    map_concurrency: usize,
+) -> Vec<Arc<Classification>> {
+    if map_concurrency <= 1 || candidates.len() <= 1 {
+        return candidates
+            .iter()
+            .map(|abs_dir| classify_with_panic_isolation(db, workspace, abs_dir))
+            .collect();
+    }
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(map_concurrency)
+        .thread_name(|i| format!("atlas-l8-map-{i}"))
+        .build()
+        .expect("rayon thread pool construction is infallible at sane sizes");
+    // `&AtlasDatabase` is `!Send` (ZalsaLocal is `!Sync`), so the seed
+    // for `map_with` is cloned here in the calling thread and moved into
+    // the install closure. Each worker then `Clone`s the seed once and
+    // reuses that handle for every item it processes — Salsa requires
+    // per-thread handles, but they share the underlying memoised storage.
+    let seed_db = db.clone();
+    pool.install(move || {
+        candidates
+            .par_iter()
+            .map_with(seed_db, |db_handle, abs_dir| {
+                classify_with_panic_isolation(db_handle, workspace, abs_dir)
+            })
+            .collect()
+    })
+}
+
+/// Wrap an L3 classification call so a panic inside a single map closure
+/// (LLM backend bug, deserialiser surprise, etc.) does not abort the
+/// whole rayon task or poison sibling closures. On panic the candidate
+/// is recorded as a non-boundary "unknown" verdict — the same shape L3
+/// already produces on a backend error — and the rationale captures
+/// which sub-dir failed.
+fn classify_with_panic_isolation(
+    db: &AtlasDatabase,
+    workspace: Workspace,
+    abs_dir: &Path,
+) -> Arc<Classification> {
+    let dir = abs_dir.to_path_buf();
+    match catch_unwind(AssertUnwindSafe(|| {
+        crate::l3_classify::is_component(db, workspace, dir)
+    })) {
+        Ok(classification) => classification,
+        Err(_) => Arc::new(crate::l3_classify::unknown_classification(format!(
+            "L8 map step panicked classifying {}",
+            path_to_forward_slash(abs_dir),
+        ))),
     }
 }
 
@@ -634,6 +715,69 @@ mod tests {
             decision.rationale.contains("L3 verdicts"),
             "rationale should record map-step verdicts; got: {}",
             decision.rationale
+        );
+    }
+
+    /// Build a library crate with four immediate sub-directories so
+    /// the L8 map step has more than one candidate — necessary to
+    /// exercise the rayon-backed parallel path (the serial fast-path
+    /// short-circuits for `candidates.len() <= 1`).
+    fn build_lib_with_four_subdirs(root: &Path, name: &str) {
+        let dir = root.join(name);
+        for sub in ["src", "examples", "tests", "benches"] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\nname = \"{name}\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("src").join("lib.rs"), "// lib\n").unwrap();
+        std::fs::write(dir.join("examples").join("e1.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(dir.join("tests").join("int.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(dir.join("benches").join("b1.rs"), "fn main() {}\n").unwrap();
+    }
+
+    #[test]
+    fn map_step_is_deterministic_across_concurrency_settings() {
+        // The "byte-identical sub_dirs at concurrency=1 vs concurrency=8"
+        // exit criterion from the task spec. Different `map_concurrency`
+        // values drive different code paths inside `run_map_step`
+        // (serial loop vs rayon `par_iter().map_with(...)`), but the
+        // observable `SubcarveDecision` must be equal — same
+        // `should_subcarve`, same `sub_dirs` ordering, same rationale.
+        let serial = {
+            let (db, _backend, _tmp) =
+                db_with_single_crate(|root| build_lib_with_four_subdirs(root, "lib"));
+            db.set_map_concurrency(1);
+            let id = all_components(&db)
+                .iter()
+                .find(|c| !c.deleted)
+                .unwrap()
+                .id
+                .clone();
+            subcarve_decision(&db, id)
+        };
+
+        let parallel = {
+            let (db, _backend, _tmp) =
+                db_with_single_crate(|root| build_lib_with_four_subdirs(root, "lib"));
+            db.set_map_concurrency(8);
+            let id = all_components(&db)
+                .iter()
+                .find(|c| !c.deleted)
+                .unwrap()
+                .id
+                .clone();
+            subcarve_decision(&db, id)
+        };
+
+        assert_eq!(
+            serial, parallel,
+            "L8 map step output must not depend on map_concurrency \
+             (serial path vs rayon par_iter path)"
         );
     }
 

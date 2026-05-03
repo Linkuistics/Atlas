@@ -14,6 +14,7 @@ component-ontology = { workspace = true }
 globset = { workspace = true }
 ignore = { workspace = true }
 petgraph = { workspace = true }
+rayon = { workspace = true }
 salsa = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

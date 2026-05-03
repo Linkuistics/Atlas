@@ -358,7 +358,7 @@ tasks:
 - id: bounded-concurrency-for-l8-map-step-rayon-or-tokio-semaphore
   title: Bounded concurrency for L8 map step (rayon or Tokio + Semaphore)
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: MEDIUM.** Follow-up to the L8 map/reduce redesign (`map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis`). The map step in `l8_recurse::map_reduce_subcarve` currently calls `is_component(db, workspace, dir)` in a serial `for` loop. With HTTP-routed Classify, each map call is ~1s; on a 74-component first iteration with say 10 immediate sub-dirs each, that's ~12 min serial.
@@ -385,6 +385,91 @@ tasks:
 
     - Memory: `tokencounter-charge-uses-cas-loop-on-atomicu64` — the CAS lock-free counter is what makes this safe today.
     - Spec: `docs/superpowers/specs/2026-05-04-l8-map-reduce-design.md` § Concurrency.
+  results: |
+    ## Outcome
+
+    Bounded concurrency for L8's map step landed via a `rayon` thread pool
+    sized to `FixedpointConfig.map_concurrency` (default 8). Each parallel
+    worker holds its own `AtlasDatabase` clone — Salsa 0.26's `&Database`
+    is `!Send` (because `ZalsaLocal` holds `UnsafeCell` data), so per-thread
+    cloned handles are the canonical Salsa parallelism pattern. Clones
+    share the underlying memoised query graph and `LlmResponseCache`.
+
+    `map_concurrency` is exposed end-to-end:
+
+    - `AtlasDatabase` getter/setter (mirrors `max_depth` pattern).
+    - `FixedpointConfig::map_concurrency` (default `DEFAULT_MAP_CONCURRENCY = 8`).
+    - `IndexConfig::map_concurrency` plumbed from `--map-concurrency` CLI flag.
+
+    `map_concurrency = 1` falls back to the original serial loop. A
+    `candidates.len() <= 1` guard also short-circuits to serial since the
+    rayon pool overhead is wasted on a single candidate.
+
+    ## Determinism + panic isolation
+
+    - **Determinism.** Verified by `l8_recurse::tests::map_step_is_deterministic_across_concurrency_settings`,
+      which builds a lib crate with four immediate sub-dirs (`src`,
+      `examples`, `tests`, `benches`) and asserts `SubcarveDecision`
+      equality between `map_concurrency=1` and `map_concurrency=8`.
+      `par_iter().map_with(...).collect()` preserves input order under
+      `IndexedParallelIterator`, so no manual post-sort is needed.
+    - **Panic isolation.** Each closure wraps `is_component` in
+      `std::panic::catch_unwind(AssertUnwindSafe(...))` and synthesises
+      `unknown_classification("L8 map step panicked classifying …")` on
+      panic. `LlmResponseCache::call_cached` releases its `Mutex` around
+      the backend call, so a panic in one closure can't poison siblings.
+
+    ## Cache + correctness invariants preserved
+
+    - L3 calls still route through `db.call_llm_cached` — parallel callers
+      may double-fetch the same key on first miss, but responses are equal
+      by the `LlmBackend` invariant so this is at most one redundant call,
+      not a correctness hole.
+    - `LlmFingerprint` is unchanged — no fingerprint key updates needed.
+    - All 26 test groups in the workspace pass (203 atlas-engine, plus the
+      rest). `cargo clippy --workspace --all-targets` is clean.
+
+    ## Files touched
+
+    - `Cargo.toml` (workspace), `crates/atlas-engine/Cargo.toml` — add `rayon = "1"`.
+    - `crates/atlas-engine/src/db.rs` — `DEFAULT_MAP_CONCURRENCY`, field, getter/setter.
+    - `crates/atlas-engine/src/fixedpoint.rs` — `FixedpointConfig.map_concurrency`,
+      Debug/Default updates, `db.set_map_concurrency` in `run_fixedpoint`.
+    - `crates/atlas-engine/src/l3_classify.rs` — `unknown_classification` made `pub(crate)`.
+    - `crates/atlas-engine/src/l8_recurse.rs` — `run_map_step` and
+      `classify_with_panic_isolation`, plus the new determinism test.
+    - `crates/atlas-engine/src/lib.rs` — re-export `DEFAULT_MAP_CONCURRENCY`.
+    - `crates/atlas-cli/src/main.rs` — `--map-concurrency` clap flag.
+    - `crates/atlas-cli/src/pipeline.rs` — plumb through `IndexConfig` to `FixedpointConfig`.
+    - `README.md` — flag table entry.
+    - `docs/superpowers/specs/2026-05-04-l8-map-reduce-design.md` —
+      Concurrency section updated to "implemented" and corrected (the
+      prior `LlmResponseCache uses AtomicU64 CAS` claim was wrong; it
+      uses `Mutex`, but releases its lock around the backend call).
+
+    ## Wall-time impact (not measured here)
+
+    The exit criterion ("≤5 min for a 74-component first iteration on a
+    real monorepo") was already reachable serially when each map call is
+    HTTP (~1s round-trip). Parallel execution drops the ceiling to roughly
+    `serial_total / map_concurrency` minus rayon overhead. Cache hit-rate
+    verification on `dull` at depth 1 with `anthropic/claude-haiku-4-5`
+    remains a separate deferred follow-up under
+    `anthropichttpbackend-already-implemented-...` memory.
+
+    ## What this suggests next
+
+    - **Tune-down hook for rate-limited providers.** With
+      `--map-concurrency` exposed, an external user hitting Anthropic's
+      per-account rate limit can drop to 2–4 without code changes.
+      `BackendRouter` could grow a `recommended_map_concurrency` hint
+      per provider as a future ergonomic.
+    - **Cache hit-rate verification.** Now unblocked since the parallel
+      path is in place. The deferred dull-at-depth-1 run with Haiku should
+      exercise both prompt caching and rayon concurrency.
+    - **L8 quality bar.** The "library with `src/auth/` and `src/billing/`"
+      one-level-enumeration limitation is unchanged by this work; descending
+      through container dirs (`src`, `lib`, `app`) remains a separate task.
 - id: drop-vestigial-seam-density-cliques-touching-from-subcarvesignals
   title: Drop vestigial seam_density/cliques_touching from SubcarveSignals
   category: infra

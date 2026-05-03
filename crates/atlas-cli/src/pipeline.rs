@@ -76,6 +76,9 @@ pub struct IndexConfig {
     pub root: PathBuf,
     pub output_dir: PathBuf,
     pub max_depth: u32,
+    /// Bound on parallel `is_component` calls inside L8's map step.
+    /// Plumbed through to [`atlas_engine::FixedpointConfig::map_concurrency`].
+    pub map_concurrency: usize,
     pub recarve: bool,
     pub dry_run: bool,
     pub respect_gitignore: bool,
@@ -98,6 +101,7 @@ impl IndexConfig {
             root,
             output_dir,
             max_depth: atlas_engine::DEFAULT_MAX_DEPTH,
+            map_concurrency: atlas_engine::DEFAULT_MAP_CONCURRENCY,
             recarve: false,
             dry_run: false,
             respect_gitignore: true,
@@ -210,6 +214,7 @@ pub fn run_index(
     let sink: Arc<dyn atlas_engine::ProgressSink> = reporter.clone();
     let fp_config = FixedpointConfig {
         max_depth: config.max_depth,
+        map_concurrency: config.map_concurrency,
         progress: Some(sink.clone()),
         ..FixedpointConfig::default()
     };

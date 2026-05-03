@@ -39,7 +39,9 @@ pub mod types;
 #[cfg(test)]
 mod prompt_token_coverage;
 
-pub use db::{AtlasDatabase, ExecutedEvent, File, Workspace, DEFAULT_MAX_DEPTH};
+pub use db::{
+    AtlasDatabase, ExecutedEvent, File, Workspace, DEFAULT_MAP_CONCURRENCY, DEFAULT_MAX_DEPTH,
+};
 pub use defaults::{
     parse as parse_component_kinds_yaml, parse_embedded as parse_embedded_component_kinds_yaml,
     render_kinds_for_prompt, render_lifecycle_scopes_for_prompt, ComponentKindsYaml,

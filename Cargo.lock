@@ -120,6 +120,7 @@ dependencies = [
  "globset",
  "ignore",
  "petgraph",
+ "rayon",
  "salsa",
  "serde",
  "serde_json",

@@ -118,10 +118,20 @@ pub struct AtlasDatabase {
     /// on each back-edge pass. Zero before the driver runs; reset
     /// explicitly when a caller wants a fresh count.
     fixedpoint_iterations: Arc<Mutex<u32>>,
+    /// Bound on parallel `is_component` calls in L8's map step. Lives
+    /// outside Salsa storage for the same reason as `max_depth`. A value
+    /// of 1 forces serial execution (preserving the pre-rayon path).
+    map_concurrency: Arc<Mutex<usize>>,
 }
 
 /// Default value for [`AtlasDatabase::max_depth`]. Mirrors design §8.2.
 pub const DEFAULT_MAX_DEPTH: u32 = 8;
+
+/// Default bound on parallel L8 map calls. 8 matches the spec's
+/// "start with 8 in flight" recommendation and is conservative
+/// against Anthropic / OpenAI per-account rate limits while still
+/// delivering a meaningful speedup over serial execution.
+pub const DEFAULT_MAP_CONCURRENCY: usize = 8;
 
 impl AtlasDatabase {
     /// Construct a database seeded with an LLM backend, a root path,
@@ -155,6 +165,7 @@ impl AtlasDatabase {
             llm_cache: LlmResponseCache::new(),
             max_depth: Arc::new(Mutex::new(DEFAULT_MAX_DEPTH)),
             fixedpoint_iterations: Arc::new(Mutex::new(0)),
+            map_concurrency: Arc::new(Mutex::new(DEFAULT_MAP_CONCURRENCY)),
         };
         let workspace = Workspace::new(
             &db,
@@ -310,6 +321,23 @@ impl AtlasDatabase {
 
     pub fn set_max_depth(&self, value: u32) {
         *self.max_depth.lock().expect("max_depth poisoned") = value;
+    }
+
+    /// Bound on parallel `is_component` calls in L8's map step.
+    /// 0 is normalised to 1 — nothing else clamps the value.
+    pub fn map_concurrency(&self) -> usize {
+        let raw = *self
+            .map_concurrency
+            .lock()
+            .expect("map_concurrency poisoned");
+        raw.max(1)
+    }
+
+    pub fn set_map_concurrency(&self, value: usize) {
+        *self
+            .map_concurrency
+            .lock()
+            .expect("map_concurrency poisoned") = value.max(1);
     }
 
     /// Number of fixedpoint iterations recorded by the most recent

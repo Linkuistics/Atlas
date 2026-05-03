@@ -121,6 +121,7 @@ Common flags:
 | `--budget <N>` | LLM token budget; required unless `--no-budget` is passed. |
 | `--no-budget` | Skip the budget check (local development only). |
 | `--max-depth <N>` | Cap L8 sub-carve recursion. `0` = top-level only. |
+| `--map-concurrency <N>` | Parallel `is_component` calls in L8's map step. `1` = serial. Default 8. |
 | `--recarve` | Discard prior `components.yaml` so rename-match cannot anchor stale ids. |
 | `--dry-run` | Compute outputs but do not write them. |
 | `--model <id>` | Override the Claude model id; defaults to `$ATLAS_LLM_MODEL` or built-in. |

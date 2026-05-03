@@ -72,6 +72,13 @@ struct IndexArgs {
     #[arg(long, default_value_t = atlas_engine::DEFAULT_MAX_DEPTH)]
     max_depth: u32,
 
+    /// Bound on parallel `is_component` calls in L8's map step.
+    /// 1 = serial. Defaults to `atlas_engine::DEFAULT_MAP_CONCURRENCY`
+    /// (8). Tune lower against rate-limited HTTP providers; higher when
+    /// the configured backend is local or unrate-limited.
+    #[arg(long, default_value_t = atlas_engine::DEFAULT_MAP_CONCURRENCY)]
+    map_concurrency: usize,
+
     /// Force L4 to reconsider boundaries — discards prior
     /// `components.yaml` so rename-match does not anchor allocations
     /// to stale ids.
@@ -184,6 +191,7 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
     let mut index_config = atlas_cli::IndexConfig::new(root);
     index_config.output_dir = output_dir;
     index_config.max_depth = args.max_depth;
+    index_config.map_concurrency = args.map_concurrency;
     index_config.recarve = args.recarve;
     index_config.dry_run = args.dry_run;
     index_config.respect_gitignore = !args.no_gitignore;

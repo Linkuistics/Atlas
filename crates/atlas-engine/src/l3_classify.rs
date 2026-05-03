@@ -444,7 +444,11 @@ fn parse_llm_response(value: Value) -> Result<Classification, String> {
     })
 }
 
-fn unknown_classification(reason: String) -> Classification {
+/// Weakest possible "unknown" verdict — non-component, weak evidence,
+/// `is_boundary: false`. Used as the L3 fallback when the LLM call or
+/// response parse fails, and re-used by L8 to synthesise a verdict
+/// when a per-subdir map call panics.
+pub(crate) fn unknown_classification(reason: String) -> Classification {
     Classification {
         kind: ComponentKind::NonComponent,
         language: None,

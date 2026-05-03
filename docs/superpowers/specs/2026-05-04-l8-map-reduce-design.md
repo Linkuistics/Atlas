@@ -118,18 +118,38 @@ for the map step.
 
 ## Concurrency
 
-The current implementation is **serial**: the map step calls
-`is_component` in a `for` loop over `candidates`. Bounded concurrency
-(rayon parallel iterator with a configurable pool size, or a Tokio
-runtime with a `Semaphore`) is a follow-up — Salsa 0.26 supports
-parallel tracked-query execution and the `LlmResponseCache` is already
-thread-safe via `AtomicU64` CAS, so the engine layer is ready.
+**Bounded concurrency is implemented (2026-05-04).** The map step uses
+a private `rayon` thread pool sized to `FixedpointConfig.map_concurrency`
+(default 8, exposed via `--map-concurrency` on the CLI). Each candidate's
+`is_component` call runs on a worker thread that holds its own clone of
+`AtlasDatabase` — Salsa 0.26's `&Database` is `!Send` because
+`ZalsaLocal` (per-handle thread-local query state) holds `UnsafeCell`
+data, so per-thread cloned handles are the canonical Salsa parallelism
+pattern. Clones share the underlying memoised query graph and the same
+`LlmResponseCache` (which is `Mutex`-guarded but releases its lock
+around the backend call, so a panic in the backend cannot poison
+sibling threads).
+
+`map_concurrency = 1` forces the original serial loop. A
+`candidates.len() <= 1` guard also short-circuits to serial — the rayon
+overhead is wasted on a single-candidate map.
+
+Determinism: `par_iter().map_with(...).collect()` preserves input order,
+so the output `sub_dirs` are byte-identical between serial and parallel
+paths. `l8_recurse::tests::map_step_is_deterministic_across_concurrency_settings`
+exercises this on a four-subdir lib fixture.
+
+Panic isolation: each map closure wraps `is_component` in
+`std::panic::catch_unwind(AssertUnwindSafe(...))` and synthesises
+`unknown_classification` ("L8 map step panicked classifying …") on a
+panic. Sibling closures continue.
 
 The wall-time exit criterion (≤5 min for a 74-component first
-iteration on a real monorepo) is reachable with serial map calls
-when each call is HTTP (~1s round-trip) versus agent (~20s+ with tool
-exploration). Concurrency is the lever for further speedup, not a
-correctness requirement.
+iteration on a real monorepo) was reachable with serial map calls when
+each call is HTTP (~1s round-trip); with the new parallel path the
+ceiling drops to roughly `serial_total / map_concurrency` minus pool
+overhead, leaving headroom for rate-limited HTTP providers (tune
+`--map-concurrency` lower to stay under per-account ceilings).
 
 ## Quality bar
 
