@@ -82,6 +82,60 @@ tasks:
     - `crates/atlas-engine/src/l8_recurse.rs` — bidirectional token-coverage test for subcarve.
 
     dull's `.atlas/config.yaml` was also flipped from `claude-code/...` to `anthropic/...` defaults — that change lives outside this repo's tree.
+- id: audit-atlas-cli-against-llm-friendly-cli-design-guide
+  title: Audit Atlas CLI against LLM-friendly CLI design guide
+  category: infra
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** Audit Atlas's CLI surface (`atlas`, all subcommands, all flags, all output formats) against the LLM-friendly CLI design guide at `~/Development/Ravel-Lite/defaults/fixed-memory/cli-tool-design.md`. Produce a punch-list of findings, prioritised by ROI per the guide's own ordering (structured output > examples in --help > actionable errors > flag consistency > exit codes > defaults > non-TTY behaviour > capabilities).
+
+    ## Why
+
+    Atlas is increasingly invoked by other agents (Ravel-Lite tooling, future Uplift/Redeveloper consumers, ad-hoc evaluation runs in subagents). Friction in the CLI surface — missing `--json`, prose-only output, vague errors, undocumented exit codes — costs tokens and produces flaky agent loops. The guide is opinionated and ordered by impact; follow its ordering rather than re-deriving it.
+
+    ## Scope
+
+    ### Discovery (read-only audit)
+
+    Walk every code path that produces user-facing output:
+
+    - `atlas --help` and every subcommand's `--help`.
+    - `atlas index` — the primary data-producing command. Outputs three YAMLs + `llm-cache.json`. Stdout summary line. Stderr progress.
+    - `atlas validate-overrides` — error reporting on malformed config / overrides.
+    - `atlas init` — scaffold output.
+    - `atlas --version` — version output, `--json` form?
+    - Error paths: missing config, missing API key, invalid model string, budget exhausted, filesystem-required prompt routed to HTTP (the new `LlmError::Setup` from `BackendRouter`), `LlmError::Invocation`, `LlmError::Schema`.
+    - Exit codes: which subcommands emit which codes for which conditions.
+
+    For each surface, score against the guide's audit checklist (lines 208–252 of `cli-tool-design.md`). Each "no" is a finding.
+
+    ### Output
+
+    A markdown report at `evaluation/results/cli-audit-<date>.md` with:
+
+    - One section per audit-checklist subheading (Output, Help, Errors, Conventions, Behaviour, Discoverability).
+    - Each finding tagged `[blocker]` / `[high]` / `[medium]` / `[low]` per the guide's ROI ordering.
+    - A prioritised remediation backlog at the bottom — each entry small enough to be its own follow-up backlog task.
+    - Explicit "out of scope for v1" calls where appropriate (e.g. `atlas capabilities` is "optional but valuable" — don't block v1 sign-off on it).
+
+    ### Out of scope
+
+    - Implementing fixes. This task ends at the report; remediation work spawns separate backlog tasks per the report's recommendations.
+    - Auditing Ravel-Lite or other linkuistics CLIs.
+    - Reworking the YAML output schemas — they are separately governed by the components/externals/related-components contracts.
+
+    ## Exit criteria
+
+    - `evaluation/results/cli-audit-<date>.md` exists, walks every guide audit-checklist item against Atlas's current CLI, and identifies findings.
+    - Each finding is prioritised per the guide's ROI ordering (structured output > examples > errors > consistency > etc.).
+    - A short follow-up backlog of 3–8 remediation tasks is proposed in the report's final section. The user reviews and decides which to file.
+    - Atlas v1 sign-off (`verify-atlas-v1-success-criteria-end-to-end`) cross-references the report so anyone reading the v1 announcement understands what is and is not LLM-friendly today.
+
+    ## References
+
+    - Guide: `~/Development/Ravel-Lite/defaults/fixed-memory/cli-tool-design.md`. Treat the audit checklist (lines 208–252) and the anti-patterns list (lines 256–268) as load-bearing.
+    - The guide's own remediation order (lines 271–284) — "Add `--json` everywhere it's missing" first, "stabilise the JSON schema" second, "rewrite error messages" third — is the recommended order for any follow-up tasks the report spawns.
 - id: verify-atlas-v1-success-criteria-end-to-end
   title: Verify Atlas v1 success criteria end-to-end
   category: eval
@@ -189,77 +243,6 @@ tasks:
     ## Why MEDIUM (was LOW)
 
     The 2026-05-03 incident demonstrated that the inverse-direction failure mode was real, shipped, and caused an entire L3 LLM-fallback / L8 subcarve regression. The infrastructure prevents recurrence on the next prompt addition (the map/reduce L8 redesign will introduce `PromptId::ClassifySubdir` or similar — that's the natural moment for this check to exist).
-- id: reject-http-providers-for-stage1surface-and-stage2edges-in-backendrouter
-  title: Reject HTTP providers for Stage1Surface and Stage2Edges in BackendRouter
-  category: infra
-  status: done
-  dependencies: []
-  description: |
-    **Priority: MEDIUM.** L5 surface extraction is currently routable to any provider via `.atlas/config.yaml` operation overrides — including HTTP providers (`anthropic/*`, `openai/*`). But HTTP backends have no filesystem-access tool: the LLM receives only the rendered prompt template, which for `stage1-surface.md` interpolates only `COMPONENT_ID`, `COMPONENT_PATHS`, and `CATALOG_COMPONENTS`. No file contents reach the LLM. The HTTP-routed L5 cannot meaningfully extract a component's API surface — it can only reason about names.
-
-    ## Why this matters
-
-    Memory `anthropichttpbackend-already-implemented-map-reduce-scope-is-narrower-than-task-description-implies` and the design spec for the map/reduce architectural shift both note: "Per-component surface extraction (L5 Stage1Surface): keep agentic — extracting an API surface needs to read source files, but the scope is bounded to one component's tree." The architectural intent is clear: L3 and L8 are per-candidate fixed-shape classification (HTTP-suitable); L5 needs filesystem access (agentic-only); L6 needs cross-component context (agentic, broadly-contextual).
-
-    Today's config router treats L5 routing as a free choice. A user who routes everything to HTTP for cost gets a config that loads cleanly, runs to completion, and produces empty / hallucinated surfaces.
-
-    ## Two paths (decide during implementation)
-
-    1. **Enforce in routing layer.** `BackendRouter` rejects HTTP providers for `Stage1Surface` and `Stage2Edges` at construction time. Surfaces a clear error: "stage1-surface requires a filesystem-access provider (claude-code, codex); HTTP providers (anthropic, openai) cannot be used here."
-
-    2. **Redesign stage1-surface for content-shipping.** Bound the candidate's source tree to a few KB of content (top-N files by extension, manifest snippets, etc.) and ship those in the rendered prompt. Lose the agentic exploration capability but make the prompt provider-agnostic. Bigger surface area; non-trivial spike before commit.
-
-    Recommendation: option 1 in the short term, option 2 as a longer-horizon spike. Option 1 codifies the architectural intent immediately; option 2 is a real broadening of supported providers.
-
-    ## Cross-references
-
-    - `enable-anthropic-prompt-caching-in-anthropichttpbackend` — orthogonal but related (caching applies to whatever provider is in use).
-    - `map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis` — the parent task that introduced per-prompt routing. This task formalises one routing constraint that the parent's design doc assumed but didn't enforce.
-
-    ## Exit criteria (for option 1)
-
-    - `BackendRouter` construction fails with a clear error when `Stage1Surface` or `Stage2Edges` is routed to an HTTP provider.
-    - Unit test: a config with `operations.surface.model: anthropic/...` fails to load (or fails to construct the router).
-    - Unit test: same config with `operations.surface.model: claude-code/...` succeeds.
-    - Memory note added documenting the routing constraint.
-  results: |
-    **Done.** Implemented option 1 from the task description: `BackendRouter::new` rejects HTTP providers for `Stage1Surface` and `Stage2Edges` at construction time, before any backend is built.
-
-    ## Implementation
-
-    `crates/atlas-llm/src/router.rs`:
-
-    - Added module-level helper `reject_http_for_filesystem_required_prompt(prompt_id, provider, model_str) -> Result<(), LlmError>`. Returns `Ok(())` for non-HTTP providers and for `Classify`/`Subcarve` regardless of provider; returns `Err(LlmError::Setup(...))` for HTTP-on-`Stage1Surface`/`Stage2Edges`. Error message names the prompt label (`stage1-surface` / `stage2-edges`), the suggested filesystem-access providers (`claude-code`, `codex`), and the offending model string.
-    - Called the helper inside `BackendRouter::new`'s loop, after provider parsing, before the per-provider `match`. Rejection short-circuits before any subprocess construction, so the HTTP-rejection path is purely synchronous and env-independent.
-
-    ## Tests added (5; all in `router::tests`)
-
-    - `rejects_anthropic_for_stage1_surface` — helper returns `Setup` and message contains the three expected strings.
-    - `rejects_openai_for_stage2_edges` — helper returns `Setup` and message contains prompt label + model.
-    - `accepts_http_for_classify_and_subcarve` — `{Classify, Subcarve}` × `{anthropic, openai}` all pass.
-    - `accepts_filesystem_providers_for_all_prompts` — all four `PromptId`s × `{claude-code, codex}` all pass.
-    - `router_construction_rejects_http_routed_surface` — end-to-end through `BackendRouter::new` with an anthropic-only `AtlasConfig` that falls through `defaults` to `Stage1Surface`. Verifies wiring of the helper into the constructor; uses anthropic for `Classify` and `Subcarve` first to avoid touching the `claude` binary.
-
-    The "claude-code on surface succeeds" exit-criterion test (named in the task) is intentionally not added — `ClaudeCodeBackend::new` runs `capture_claude_version()`, so any positive test that actually constructs the router with claude-code requires a working `claude` binary. Existing router tests handle this by routing through `from_dispatch_table` (cfg-test escape hatch); the same pattern is followed here. The negative end-to-end test plus the helper-level positive tests give equivalent coverage without subprocess dependency.
-
-    ## Verification
-
-    - `cargo test -p atlas-llm` — 118 passing (5 new + 113 existing).
-    - `cargo test --workspace` — 474 passing across all crates, no failures, no regressions.
-    - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
-    - `cargo fmt --check -p atlas-llm` — clean.
-
-    ## Memory
-
-    Added `backendrouter-rejects-http-providers-for-stage1surface-and-stage2edges` documenting the constraint, the helper location, the test escape hatch, and the future-relaxation path (HTTP tool-use loop).
-
-    ## Source-file changes left for analyse-work to commit
-
-    - `crates/atlas-llm/src/router.rs` — helper + call site + 5 unit tests.
-
-    ## Follow-up suggested by the user during this phase
-
-    User raised that HTTP backends could service `Stage1Surface`/`Stage2Edges` if they gained filesystem tool-use, and noted this would be generally useful beyond Atlas. Adding a new backlog task for it as the final action of this phase. Once that lands, the rejection in `reject_http_for_filesystem_required_prompt` would need to become per-backend-capability (e.g., gated on a "supports filesystem tools" flag the backend declares), not unconditional on `provider in HTTP_PROVIDERS`.
 - id: enable-anthropic-prompt-caching-in-anthropichttpbackend
   title: Enable Anthropic prompt caching in AnthropicHttpBackend
   category: feature
@@ -661,57 +644,3 @@ tasks:
     - Cache fingerprint encodes "tools enabled" + tool-set hash; existing zero-LLM-call no-op re-runs remain byte-identical.
     - Live end-to-end: `atlas index ~/Development/dull/` with `surface` routed to `anthropic/...` (tools enabled) produces non-empty surfaces and edge proposals; metrics within 5pp of the same run on `claude-code/...`.
     - Memory note added documenting the design and the routing-relaxation that follows.
-- id: audit-atlas-cli-against-llm-friendly-cli-design-guide
-  title: Audit Atlas CLI against LLM-friendly CLI design guide
-  category: infra
-  status: not_started
-  dependencies: []
-  description: |
-    **Priority: MEDIUM.** Audit Atlas's CLI surface (`atlas`, all subcommands, all flags, all output formats) against the LLM-friendly CLI design guide at `~/Development/Ravel-Lite/defaults/fixed-memory/cli-tool-design.md`. Produce a punch-list of findings, prioritised by ROI per the guide's own ordering (structured output > examples in --help > actionable errors > flag consistency > exit codes > defaults > non-TTY behaviour > capabilities).
-
-    ## Why
-
-    Atlas is increasingly invoked by other agents (Ravel-Lite tooling, future Uplift/Redeveloper consumers, ad-hoc evaluation runs in subagents). Friction in the CLI surface — missing `--json`, prose-only output, vague errors, undocumented exit codes — costs tokens and produces flaky agent loops. The guide is opinionated and ordered by impact; follow its ordering rather than re-deriving it.
-
-    ## Scope
-
-    ### Discovery (read-only audit)
-
-    Walk every code path that produces user-facing output:
-
-    - `atlas --help` and every subcommand's `--help`.
-    - `atlas index` — the primary data-producing command. Outputs three YAMLs + `llm-cache.json`. Stdout summary line. Stderr progress.
-    - `atlas validate-overrides` — error reporting on malformed config / overrides.
-    - `atlas init` — scaffold output.
-    - `atlas --version` — version output, `--json` form?
-    - Error paths: missing config, missing API key, invalid model string, budget exhausted, filesystem-required prompt routed to HTTP (the new `LlmError::Setup` from `BackendRouter`), `LlmError::Invocation`, `LlmError::Schema`.
-    - Exit codes: which subcommands emit which codes for which conditions.
-
-    For each surface, score against the guide's audit checklist (lines 208–252 of `cli-tool-design.md`). Each "no" is a finding.
-
-    ### Output
-
-    A markdown report at `evaluation/results/cli-audit-<date>.md` with:
-
-    - One section per audit-checklist subheading (Output, Help, Errors, Conventions, Behaviour, Discoverability).
-    - Each finding tagged `[blocker]` / `[high]` / `[medium]` / `[low]` per the guide's ROI ordering.
-    - A prioritised remediation backlog at the bottom — each entry small enough to be its own follow-up backlog task.
-    - Explicit "out of scope for v1" calls where appropriate (e.g. `atlas capabilities` is "optional but valuable" — don't block v1 sign-off on it).
-
-    ### Out of scope
-
-    - Implementing fixes. This task ends at the report; remediation work spawns separate backlog tasks per the report's recommendations.
-    - Auditing Ravel-Lite or other linkuistics CLIs.
-    - Reworking the YAML output schemas — they are separately governed by the components/externals/related-components contracts.
-
-    ## Exit criteria
-
-    - `evaluation/results/cli-audit-<date>.md` exists, walks every guide audit-checklist item against Atlas's current CLI, and identifies findings.
-    - Each finding is prioritised per the guide's ROI ordering (structured output > examples > errors > consistency > etc.).
-    - A short follow-up backlog of 3–8 remediation tasks is proposed in the report's final section. The user reviews and decides which to file.
-    - Atlas v1 sign-off (`verify-atlas-v1-success-criteria-end-to-end`) cross-references the report so anyone reading the v1 announcement understands what is and is not LLM-friendly today.
-
-    ## References
-
-    - Guide: `~/Development/Ravel-Lite/defaults/fixed-memory/cli-tool-design.md`. Treat the audit checklist (lines 208–252) and the anti-patterns list (lines 256–268) as load-bearing.
-    - The guide's own remediation order (lines 271–284) — "Add `--json` everywhere it's missing" first, "stabilise the JSON schema" second, "rewrite error messages" third — is the recommended order for any follow-up tasks the report spawns.
