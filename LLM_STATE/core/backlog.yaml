@@ -1,82 +1,9 @@
 tasks:
-- id: surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing
-  title: Surface L5/L6/L8 setup errors instead of silently swallowing
-  category: infra
-  status: done
-  dependencies: []
-  description: |
-    **Priority: HIGH.** L5 surface and L6 edges silently swallow `LlmError` into a `SurfaceRecord { notes: "LLM call failed: ..." }` (and the equivalent for edges), but those notes never appear in `components.yaml` because the L9 projection's `ComponentEntry` schema doesn't include a surface field. Combined with the cache `call_count` only counting hits/misses (not errors), this produces "0 LLM calls" pipeline summaries when in fact every call failed.
-
-    ## Concrete failure mode
-
-    Discovered 2026-05-03. With dull's config missing `params.max_tokens`, every L5 / L6 call returned `LlmError::Setup`. The L5 path at `l5_surface.rs:75-87` constructs a `SurfaceRecord { notes: "LLM call failed: ..." }` and returns it. Pipeline.rs:250 then discards the result with `let _ = atlas_engine::surface_of(...)`, the L9 projection emits `components.yaml` without surface fields, and the user sees: 105 components, 0 LLM calls, 0 tokens, no error.
-
-    The "0 LLM calls" line is technically correct — `LlmResponseCache::call_count` increments only on cache misses (memory: `llmresponsecache-call-count-increments-on-cache-misses-only`), and errors short-circuit before the increment. But for the user, "0 LLM calls" reads as "no work needed" when the actual meaning is "every call attempted, every call failed".
-
-    ## Fix shape (multiple options; pick during implementation)
-
-    1. **Counter for errors.** Add `LlmResponseCache::error_count` parallel to `call_count`. Pipeline summary reports both. "0 LLM calls · 105 errors" is unambiguous.
-
-    2. **Surface error notes into components.yaml.** Extend `ComponentEntry` (in `atlas-index`) with an optional `surface_error: Option<String>` and serialise it. The user sees per-component error notes in their output.
-
-    3. **Propagate setup errors instead of swallowing.** Distinguish recoverable errors (BudgetExhausted, transient HTTP failure) from configuration errors (Setup). Setup errors should propagate up and abort the run. Memory `budgetsentinel-is-only-reliable-budget-exhaustion-detection-path` documents the original soft-fail design intent — this fix tightens it without breaking the budget-exhaustion contract.
-
-    Recommendation: do (1) + (3). (2) adds a schema field that's mostly empty in healthy runs.
-
-    ## Tests
-
-    - A test that drives an HTTP backend without `max_tokens` (or simulates `LlmError::Setup`) and asserts the pipeline either propagates the error (option 3) or reports a non-zero error count in the summary (option 1).
-    - A test that confirms `LlmError::BudgetExhausted` continues to be soft-fail (preserves existing behaviour).
-
-    ## Cross-references
-
-    - `prompt-template-token-coverage-check-build-time` — tests would not have caught this either, since coverage checks run at build time, not against a real backend.
-    - `enable-anthropic-prompt-caching-in-anthropichttpbackend` — once caching lands, error visibility becomes more important (silent errors are easier to mask when a cache might also be silent).
-
-    ## Exit criteria
-
-    - A configuration error (e.g., `LlmError::Setup`) on the L5/L6/L8 path either aborts the run or reports a non-zero error count in the pipeline summary.
-    - BudgetExhausted continues to soft-fail (verified by an existing or new test).
-    - The dull config-without-max_tokens scenario fails loudly, not silently.
-  results: |
-    ## What was done
-
-    Implemented options (1) + (3) from the task brief.
-
-    **(1) Cache error counter.**
-    - `LlmResponseCache` gains `error_count` parallel to `call_count` (`crates/atlas-engine/src/llm_cache.rs`). On cache miss, a successful backend response increments `call_count`; an `Err` increments `error_count`. `clear()` resets both.
-    - `IndexSummary.llm_errors` and the `format_summary` banner now report the error count, so a future "report and continue" mode has accurate numbers.
-
-    **(3) Setup-error abort.**
-    - `BudgetSentinel` was extended to track `LlmError::Setup` alongside `LlmError::BudgetExhausted` (`crates/atlas-cli/src/backend.rs`). New methods `was_setup_failed()` and `first_setup_message()`.
-    - `IndexError::SetupFailed(String)` added (`crates/atlas-cli/src/pipeline.rs`). The pipeline checks the sentinel twice — once after the fixedpoint (catches L3/L8 setup errors) and once after the L9 projection walk (catches L5/L6 setup errors emitted during `surface_of` / `all_proposed_edges`). Either trip aborts before any writes.
-    - `main.rs` maps the new variant to exit code 3 with a user-facing message.
-
-    ## What worked
-
-    - `cargo test -p atlas-engine --lib llm_cache` — 7/7 pass, including new `error_count_increments_on_backend_error_and_call_count_does_not`.
-    - `cargo test -p atlas-cli --test pipeline_integration` — 17/17 pass, including new `setup_error_aborts_pipeline_and_writes_no_outputs`, `budget_exhausted_does_not_alias_setup_failed_error`, `summary_reports_llm_errors_for_cache_miss_failures`.
-    - `cargo test --workspace` — only the **pre-existing** `l3_ambiguous_candidate_calls_llm_fallback` failure remains (verified to fail on baseline before my changes via `git stash` + retest). Every other test in the workspace passes.
-    - `cargo clippy -p atlas-engine -p atlas-cli --all-targets -- -D warnings` — clean.
-
-    ## What didn't work / was deliberately skipped
-
-    - Did **not** thread `Result<…, LlmError>` through `surface_of` / `all_proposed_edges` / `subcarve_decision`. The sticky-flag sentinel approach reuses the existing `BudgetSentinel` pattern and avoids invasive signature churn. The L5/L6/L8 sites still produce their fallback `notes:`/empty/`stopped` records; the pipeline gates on the sentinel before those records reach disk.
-    - Did **not** implement option (2) (per-component `surface_error: Option<String>` field on `ComponentEntry`). The brief recommended skipping it because the field would be empty in healthy runs.
-    - The L5 in-engine path at `l5_surface.rs:75-87` still constructs a `SurfaceRecord { notes: "LLM call failed: ..." }` on `Err`. That string is now never emitted to disk on a setup failure (pipeline aborts), and remains correct for transient `Invocation`/`Parse` errors that we still want to soft-fail through.
-
-    ## What this suggests next
-
-    - The original blocker for `hand-author-second-golden-for-merged-monorepo` is now lifted, but per the user's note we already have `dull` as a second golden — so the natural next task is `verify-atlas-v1-success-criteria-end-to-end` against `dull`, which depends on this fix.
-    - Memory entry to add: "BudgetSentinel tracks both BudgetExhausted and Setup; pipeline gates twice (post-fixedpoint, post-L9-walk)" — supersedes the earlier `budgetsentinel-is-only-reliable-budget-exhaustion-detection-path` note (which should be updated to reflect the broadened responsibility).
-    - The pre-existing `l3_ambiguous_candidate_calls_llm_fallback` failure should be triaged separately — out of scope here but worth surfacing.
-    - Consider promoting `LlmResponseCache::error_count` into a non-fatal "errors observed during run" reporter for transient errors: today the surfacing only fires on Setup, but transient `Invocation` or `Parse` errors are still silently absorbed. A follow-up could decide whether to fail or warn-on-stderr based on count thresholds.
 - id: hand-author-second-golden-for-merged-monorepo
   title: Hand-author synthetic second golden for cross-target validation
   category: eval
   status: not_started
-  dependencies:
-  - surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing
+  dependencies: []
   description: |
     **Priority: MEDIUM.** Required for success criterion 6 (cross-target generalisation).
 
@@ -205,6 +132,28 @@ tasks:
     - All six criteria pass or have documented follow-up tasks (criterion 5 may be deferred pending Ravel-Lite M5).
     - Sign-off report committed to the Atlas repo.
     - An announcement-ready short summary written (optional) as `README-v1.md` documenting what Atlas v1 does and does not do.
+- id: investigate-l3-ambiguous-candidate-calls-llm-fallback-test-failure
+  title: Investigate l3_ambiguous_candidate_calls_llm_fallback test failure
+  category: infra
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** The `l3_ambiguous_candidate_calls_llm_fallback` test has been failing as a pre-existing failure independent of the current changes. Mentioned in the `surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing` results cycle: "The pre-existing `l3_ambiguous_candidate_calls_llm_fallback` failure should be triaged separately — out of scope here but worth surfacing."
+
+    ## What to do
+
+    1. Run: `cargo test -p atlas-engine --lib l3_ambiguous_candidate_calls_llm_fallback -- --nocapture`
+    2. Determine root cause: is this a test-fixture mismatch introduced by recent `build_llm_inputs` key-casing changes, a prompt-rendering regression, or a deeper logic failure?
+    3. Fix if straightforward; open a follow-up if the fix requires significant rework.
+
+    ## Context
+
+    This test was confirmed failing on the `surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing` baseline via `git stash` + retest — every other test passed; only this one was pre-existing. The recent L3 `build_llm_inputs` key upper-casing fix (classify.md token alignment) updated TestBackend fixture inputs; if the `l3_ambiguous_candidate_calls_llm_fallback` fixture was not updated in sync, it may be a simple fixture mismatch.
+
+    ## Exit criteria
+
+    - `cargo test -p atlas-engine --lib l3_ambiguous_candidate_calls_llm_fallback` passes.
+    - No other L3 tests regress.
 - id: prompt-template-token-coverage-check-build-time
   title: Prompt-template token coverage check (build-time)
   category: infra
