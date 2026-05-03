@@ -10,19 +10,22 @@ manifest.
 
 ## Inputs
 
-You are given a JSON object with these fields:
+The candidate this call concerns:
 
-- `dir_relative` — path of the candidate directory relative to the
-  repository root.
-- `rationale_bundle` — per-candidate signals collected by the engine:
-  - `manifests` — paths to manifest files at or near `dir_relative`.
-  - `is_git_root` — whether a `.git` marker sits at this directory.
-  - `doc_headings` — ATX headings from any README-like file at or
-    under `dir_relative`.
-  - `shebangs` — interpreter strings from any shebang-prefixed scripts
-    at or under `dir_relative`.
-- `manifest_contents` — the first few kilobytes of each manifest,
-  keyed by path.
+- **Directory (relative to repo root):** `{{DIR_RELATIVE}}`
+- **Rationale bundle** — per-candidate signals collected by the engine
+  (`manifests`, `is_git_root`, `doc_headings`, `shebangs`):
+
+```json
+{{RATIONALE_BUNDLE}}
+```
+
+- **Manifest contents** — the first few kilobytes of each manifest,
+  keyed by path:
+
+```json
+{{MANIFEST_CONTENTS}}
+```
 
 ## Output
 

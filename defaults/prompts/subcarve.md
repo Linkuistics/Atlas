@@ -32,27 +32,42 @@ deterministic opinion; your judgement decides.
 
 ## Inputs
 
-You receive a JSON object with these fields:
+The component this call concerns:
 
-- `COMPONENT_ID` — the component under consideration.
-- `COMPONENT_KIND` — its declared kind (one of Atlas's kinds;
-  treated opaquely here).
-- `COMPONENT_PATHS` — the directory paths the component covers,
-  relative to the repository root.
-- `STRUCTURAL_SIGNALS` — object with:
-  - `seam_density` — ratio of internal edges to external edges
-    (higher = more isolated).
-  - `modularity_hint` — `null` when the engine has no hint; otherwise
-    an object with `partition_a`, `partition_b`, `cross_edges`,
-    `total_internal_edges`.
-  - `cliques_touching` — maximal cliques (size ≥ 3) involving this
-    component, as lists of member ids.
-  - `current_depth` / `max_depth` — recursion depth book-keeping.
-- `EDGE_NEIGHBOURHOOD` — edges touching this component (may be
-  empty on the first iteration of the fixedpoint).
-- `PIN_SUPPRESSED_CHILDREN` — ids the user has explicitly pinned as
-  *not* children of this component. Do not re-propose directories
-  that would re-create these ids.
+- **Component id:** `{{COMPONENT_ID}}`
+- **Declared kind** (one of Atlas's kinds; treated opaquely here):
+  `{{COMPONENT_KIND}}`
+- **Paths** the component covers, relative to the repository root:
+
+```json
+{{COMPONENT_PATHS}}
+```
+
+- **Structural signals** — `seam_density` (internal-vs-external edge
+  ratio; higher = more isolated), `modularity_hint` (`null` when the
+  engine has no hint; otherwise an object with `partition_a`,
+  `partition_b`, `cross_edges`, `total_internal_edges`),
+  `cliques_touching` (maximal cliques of size ≥ 3 involving this
+  component), and `current_depth` / `max_depth`:
+
+```json
+{{STRUCTURAL_SIGNALS}}
+```
+
+- **Edge neighbourhood** — edges touching this component (may be empty
+  on the first iteration of the fixedpoint):
+
+```json
+{{EDGE_NEIGHBOURHOOD}}
+```
+
+- **Pin-suppressed children** — ids the user has explicitly pinned as
+  *not* children of this component. Do not re-propose directories that
+  would re-create these ids:
+
+```json
+{{PIN_SUPPRESSED_CHILDREN}}
+```
 
 ## Output
 

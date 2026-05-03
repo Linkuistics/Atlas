@@ -74,3 +74,28 @@ fn freshly_init_config_loads_without_setting_env_vars() {
         .expect("freshly init'd config must load without env vars set");
     assert_eq!(config.defaults.model, "claude-code/claude-sonnet-4-6");
 }
+
+#[test]
+fn freshly_init_overrides_pass_validate_overrides() {
+    let dir = TempDir::new().unwrap();
+    Command::cargo_bin("atlas")
+        .unwrap()
+        .args(["init", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    // `atlas init` followed immediately by `atlas validate-overrides`
+    // must succeed: the scaffolded override files have to parse against
+    // the loader's schema_version contract.
+    Command::cargo_bin("atlas")
+        .unwrap()
+        .args([
+            "validate-overrides",
+            dir.path()
+                .join(".atlas/components.overrides.yaml")
+                .to_str()
+                .unwrap(),
+        ])
+        .assert()
+        .success();
+}

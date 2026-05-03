@@ -591,4 +591,113 @@ mod tests {
         let comps = vec![entry("root", None)];
         assert_eq!(compute_depth(&comps, "nope"), 0);
     }
+
+    #[test]
+    fn subcarve_prompt_token_coverage_is_bidirectional() {
+        // Every `{{TOKEN}}` in subcarve.md must be supplied by
+        // build_subcarve_inputs (forward) AND every key
+        // build_subcarve_inputs supplies must be referenced by a
+        // `{{TOKEN}}` in subcarve.md (inverse). The inverse direction
+        // catches the silent-data-drop failure: a builder field with no
+        // matching template token is dropped by `prompt::render`,
+        // leaving the LLM with no component context for the subcarve
+        // decision.
+        let entry = ComponentEntry {
+            id: "demo".into(),
+            parent: None,
+            kind: "rust-library".into(),
+            lifecycle_roles: Vec::new(),
+            language: None,
+            build_system: None,
+            role: None,
+            path_segments: vec![atlas_index::PathSegment {
+                path: std::path::PathBuf::from("crates/demo"),
+                content_sha: "0".repeat(64),
+            }],
+            manifests: Vec::new(),
+            doc_anchors: Vec::new(),
+            evidence_grade: component_ontology::EvidenceGrade::Strong,
+            evidence_fields: Vec::new(),
+            rationale: String::new(),
+            deleted: false,
+        };
+        let signals = SubcarveSignals {
+            kind: ComponentKind::RustLibrary,
+            current_depth: 0,
+            max_depth: 8,
+            seam_density: 0.0,
+            modularity_hint: None,
+            cliques_touching: Vec::new(),
+            pin_suppressed_children: Vec::new(),
+        };
+        let inputs = build_subcarve_inputs(&entry, &signals);
+        let object = inputs.as_object().expect("inputs must be a JSON object");
+        let supplied: std::collections::HashSet<String> = object.keys().cloned().collect();
+        let referenced: std::collections::HashSet<String> =
+            collect_template_tokens(EMBEDDED_SUBCARVE_PROMPT)
+                .into_iter()
+                .collect();
+
+        for token in &referenced {
+            assert!(
+                supplied.contains(token),
+                "subcarve.md references `{{{{{token}}}}}` but \
+                 build_subcarve_inputs does not populate key `{token}`"
+            );
+        }
+        for key in &supplied {
+            assert!(
+                referenced.contains(key),
+                "build_subcarve_inputs supplies key `{key}` but \
+                 subcarve.md does not reference `{{{{{key}}}}}` — \
+                 the value will be silently dropped by prompt::render, \
+                 leaving the LLM without that input"
+            );
+        }
+
+        let mut tokens = std::collections::BTreeMap::new();
+        for (key, value) in object {
+            let rendered = match value {
+                serde_json::Value::String(s) => s.clone(),
+                other => serde_json::to_string(other).unwrap_or_default(),
+            };
+            tokens.insert(key.clone(), rendered);
+        }
+        let rendered = atlas_llm::prompt::render(EMBEDDED_SUBCARVE_PROMPT, &tokens)
+            .expect("subcarve.md must render with build_subcarve_inputs output");
+
+        assert!(
+            rendered.contains("demo"),
+            "rendered subcarve prompt must contain component id; \
+             got prompt without it (length={})",
+            rendered.len()
+        );
+    }
+
+    /// Extract every `{{TOKEN}}` name referenced in `template`, using
+    /// the same grammar as `atlas_llm::prompt::render`: `{{TOKEN}}`
+    /// substitutes, `{{{{` and `}}}}` are literal-brace escapes.
+    fn collect_template_tokens(template: &str) -> Vec<String> {
+        let mut tokens = Vec::new();
+        let mut rest = template;
+        while !rest.is_empty() {
+            if let Some(body) = rest.strip_prefix("{{{{") {
+                rest = body;
+                continue;
+            }
+            if let Some(body) = rest.strip_prefix("}}}}") {
+                rest = body;
+                continue;
+            }
+            if let Some(body) = rest.strip_prefix("{{") {
+                let end = body.find("}}").expect("template must close `{{`");
+                tokens.push(body[..end].trim().to_string());
+                rest = &body[end + 2..];
+                continue;
+            }
+            let ch = rest.chars().next().unwrap();
+            rest = &rest[ch.len_utf8()..];
+        }
+        tokens
+    }
 }

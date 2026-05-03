@@ -54,7 +54,9 @@ defaults:
 const COMPONENTS_OVERRIDES_TEMPLATE: &str = r#"# components.overrides.yaml
 # Pin, suppress, or add components to override Atlas's automatic classification.
 # Changes here persist across re-runs; Atlas never overwrites this file.
-#
+
+schema_version: 1
+
 # --- Pin a component field ---
 # pins:
 #   my-lib:
@@ -77,7 +79,9 @@ const SUBSYSTEMS_OVERRIDES_TEMPLATE: &str = r#"# subsystems.overrides.yaml
 # Membership forms:
 #   - Glob (contains / or *): matches component paths
 #   - Id (no / or *): matches exact component ids
-#
+
+schema_version: 1
+
 # subsystems:
 # - id: auth
 #   role: "Authentication and authorisation boundary"

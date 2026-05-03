@@ -2,7 +2,8 @@ tasks:
 - id: hand-author-second-golden-for-merged-monorepo
   title: Hand-author synthetic second golden for cross-target validation
   category: eval
-  status: not_started
+  status: blocked
+  blocked_reason: Depth-1+ LLM run silently no-ops on dull; needs validate-params-max-tokens-at-config-load + surface-l5-l6-l8-setup-errors landed first. See Results.
   dependencies: []
   description: |
     **Priority: MEDIUM.** Required for success criterion 6 (cross-target generalisation).
@@ -52,7 +53,36 @@ tasks:
     - Both goldens' metrics meet their individual targets AND cross-target gap ≤ 5pp.
     - Report HTML shows both targets with trend lines.
   results: |
-    Repurposed in triage (2026-04-25): merged monorepo target is third-party and unavailable. Task pivoted to synthetic second target from `~/Development/` per option 2 in the blocked-cycle recommendation. Prior blocked-cycle context: `component-ontology` at `linkuistics/atlas-contracts` SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` matches Ravel-Lite's ontology surface 1:1; M2 migration is a pure import-path swap once Ravel-Lite is quiescent.
+    **2026-05-03 work phase: setup + bug-discovery, not authoring.** dull (`~/Development/dull/`) was selected and validated as the second target — multi-language monorepo (~90 components per the user's hand-curated `.atlas/components.overrides.yaml`, spanning Rust/C#/Dart/Flutter/TypeScript/Python/Docker), structurally distinct from `~/Development/`. A smoke run completed at depth 0 (`105 components, 0 LLM calls, 7min wall`), and a calibration run at depth 1 produced identical output. Pin coverage is so dense that all classifications and subcarves short-circuit deterministically, which is functionally correct but means the LLM path was not exercised in this phase.
+
+    ## Three blockers discovered (all filed as new backlog tasks)
+
+    1. **`atlas init` scaffolds invalid override files.** `subsystems.overrides.yaml` and `components.overrides.yaml` shipped with `schema_version` commented out, so `atlas validate-overrides` failed immediately on a freshly-init'd repo. Fixed in this phase: `crates/atlas-cli/src/init.rs` templates now include active `schema_version: 1`; new regression test `freshly_init_overrides_pass_validate_overrides` covers the validate path.
+
+    2. **L3/L8 prompt-token coverage bug.** `defaults/prompts/classify.md` and `subcarve.md` interpolated only catalog tokens (`COMPONENT_KINDS`, `LIFECYCLE_SCOPES`); the per-candidate fields supplied by `build_llm_inputs` and `build_subcarve_inputs` had no matching `{{TOKEN}}` placeholders and were silently dropped by `prompt::render`. The HTTP backend therefore sent classify/subcarve prompts with no candidate context. Fixed in this phase: classify.md and subcarve.md now interpolate every per-call input; `build_llm_inputs` keys upper-cased to match; bidirectional token-coverage tests added in `l3_classify.rs` and `l8_recurse.rs`. Memory `l5-l6-tests-include-template-token-coverage-check` rewritten to reflect bidirectional L3/L8 + forward-only L5/L6 state.
+
+    3. **Three layers of silent LLM-failure absorption.** When dull's HTTP-routed config omits `params.max_tokens`, every L5/L6/L8 call errors with `LlmError::Setup`, L5 swallows the error into a `SurfaceRecord { notes: ... }`, the cache `call_count` doesn't tick (errors short-circuit before increment), and the `ComponentEntry` schema has no surface field — so the user sees `0 LLM calls, 0 errors, 0 tokens` with no observable failure. Filed as three separate backlog tasks: `validate-params-max-tokens-at-config-load-for-http-providers`, `surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing`, `reject-http-providers-for-stage1surface-and-stage2edges-in-backendrouter`.
+
+    ## Other work landed in this phase
+
+    - Memory entry on `AnthropicHttpBackend` corrected — the prior note claimed prompt caching was enabled; verified that no `cache_control` is set on the request body. Updated to reflect actual state.
+    - Backlog task `enable-anthropic-prompt-caching-in-anthropichttpbackend` added with the prefix-cache design (split static prefix at `{{COMPONENT_KINDS}}`/`{{LIFECYCLE_SCOPES}}` boundaries, mark `cache_control: ephemeral`, ~1024-token minimum).
+    - Backlog task `prompt-template-token-coverage-check-build-time` rewritten — inverse-direction failure mode is now first-class (was punted as "harmless"); priority bumped LOW → MEDIUM.
+
+    ## Status of this task
+
+    **Blocked**, not failed. The exit-criteria work (golden authoring + metric scoring + cross-target gap) is unblocked once the three discovered bugs land — the architectural prerequisites are now visible. Without them, depth-1+ runs on dull silently no-op on the LLM path; cross-target metrics would be meaningless. Recommend: do `validate-params-max-tokens-at-config-load-for-http-providers` (HIGH) first, then re-run dull at depth 1 with a real LLM budget (~$5–15) to populate L5 surfaces and L6 edges, then author the golden against actual outputs.
+
+    ## Source-file changes left for analyse-work to commit
+
+    - `crates/atlas-cli/src/init.rs` — schema_version active in both override templates.
+    - `crates/atlas-cli/tests/init_cmd.rs` — new test `freshly_init_overrides_pass_validate_overrides`.
+    - `defaults/prompts/classify.md` — added per-call `{{DIR_RELATIVE}}` / `{{RATIONALE_BUNDLE}}` / `{{MANIFEST_CONTENTS}}` interpolation.
+    - `defaults/prompts/subcarve.md` — added per-call `{{COMPONENT_ID}}` / `{{COMPONENT_KIND}}` / `{{COMPONENT_PATHS}}` / `{{STRUCTURAL_SIGNALS}}` / `{{EDGE_NEIGHBOURHOOD}}` / `{{PIN_SUPPRESSED_CHILDREN}}` interpolation.
+    - `crates/atlas-engine/src/l3_classify.rs` — `build_llm_inputs` keys upper-cased; bidirectional token-coverage test replacing the older forward-only render-check.
+    - `crates/atlas-engine/src/l8_recurse.rs` — bidirectional token-coverage test for subcarve.
+
+    dull's `.atlas/config.yaml` was also flipped from `claude-code/...` to `anthropic/...` defaults — that change lives outside this repo's tree.
 - id: verify-atlas-v1-success-criteria-end-to-end
   title: Verify Atlas v1 success criteria end-to-end
   category: eval
@@ -320,48 +350,235 @@ tasks:
   status: not_started
   dependencies: []
   description: |
-    **Priority: LOW.** Defensive infrastructure to prevent recurrence of the bug surfaced by the L3/L8 prompt-shape spike (2026-05-02).
+    **Priority: MEDIUM.** Defensive infrastructure that prevents recurrence of two distinct prompt/builder mismatch bugs (2026-05-02 and 2026-05-03).
 
     ## Context
 
-    `defaults/prompts/classify.md` referenced `{{COMPONENT_KINDS}}` and `{{LIFECYCLE_SCOPES}}` for over a year without ever being supplied — `l3_classify.rs::build_llm_inputs` forgot to inject them. `prompt::render` errored with `unknown token`, `classify_via_llm` swallowed the error into `unknown_classification("LLM call failed: ...")`, and every ambiguous L3 LLM-fallback candidate silently downgraded to `is_boundary: false`. The bug stayed hidden because:
+    Two related bugs have shipped and been fixed in 2026:
 
-    - Deterministic rules cover most production candidates, so the LLM-fallback path rarely fired.
-    - L3 unit tests use `TestBackend`, which never invokes `prompt::render`.
-    - Cross-prompt asymmetry was invisible — L5 and L6 had analogous tokens (`{{CATALOG_COMPONENTS}}`, `{{ONTOLOGY_KINDS}}`) wired correctly, but nothing ties the four prompts to a shared contract.
+    1. **Forward-direction (2026-05-02 spike).** `defaults/prompts/classify.md` referenced `{{COMPONENT_KINDS}}` and `{{LIFECYCLE_SCOPES}}` for over a year without ever being supplied — `l3_classify.rs::build_llm_inputs` forgot to inject them. `prompt::render` errored with `unknown token`; `classify_via_llm` swallowed the error into `unknown_classification("LLM call failed: ...")`; every ambiguous L3 LLM-fallback candidate silently downgraded to `is_boundary: false`.
 
-    The spike fixed L3 (commit landed via the analyse-work phase that follows the spike's work phase) and added a regression test specific to classify.md. This task adds the *general* contract.
+    2. **Inverse-direction (2026-05-03).** The L3 fix added the catalog tokens but `build_llm_inputs` was *also* supplying `dir_relative`, `rationale_bundle`, `manifest_contents` for which classify.md had no `{{TOKEN}}` placeholders. `prompt::render` silently dropped those fields; the LLM received only the catalog and instructions with no per-candidate context. L8 subcarve.md had the same shape — `build_subcarve_inputs` supplied six tokens (`COMPONENT_ID`, `COMPONENT_KIND`, `COMPONENT_PATHS`, `STRUCTURAL_SIGNALS`, `EDGE_NEIGHBOURHOOD`, `PIN_SUPPRESSED_CHILDREN`) but the template referenced none of them.
+
+    Both bugs hid behind:
+
+    - High pin coverage in test targets, so LLM-fallback rarely fired.
+    - Deterministic rules covering most candidates with manifests / .git markers / standard layouts.
+    - `TestBackend` keying on the full `LlmRequest`, so test fixtures never invoked `prompt::render` end-to-end against the real templates.
+
+    The 2026-05-03 fix added bidirectional in-crate tests (`classify_prompt_token_coverage_is_bidirectional` in `l3_classify.rs`, `subcarve_prompt_token_coverage_is_bidirectional` in `l8_recurse.rs`). This task generalises that contract.
 
     ## Goal
 
-    Make the next vocab divergence fail at build time, not at the first cache-miss LLM call in production.
+    Make either failure mode fail at build/test time before a new prompt can ship — and treat the inverse direction as a first-class failure mode, not a "harmless" footnote. The inverse direction is in fact the more dangerous case: the forward direction errors loudly via `TemplateSyntax`, the inverse direction silently strips data.
 
     ## Scope
 
-    A single test (or `build.rs` check, depending on engineering taste — the test lives in atlas-cli or atlas-engine; build.rs lives in either) that:
+    A single test (or `build.rs` check) that:
 
     1. Reads every `defaults/prompts/*.md` template at compile/test time.
-    2. Extracts every `{{TOKEN}}` referenced (the same regex `prompt::render` walks).
+    2. Extracts every `{{TOKEN}}` referenced (matching the grammar `prompt::render` walks).
     3. For each prompt, knows the engine builder that produces its `LlmRequest.inputs` JSON — `build_llm_inputs` (L3), `build_subcarve_inputs` (L8), `build_inputs` (L5), `build_inputs` (L6).
     4. Calls each builder with a minimal but realistic stub component / candidate / surface input.
-    5. Asserts the union of top-level keys produced by the builder is a superset of the tokens the corresponding template references.
+    5. Asserts **bidirectional set equality** between the builder's output keys and the template's referenced tokens. The check fails loudly with a message naming:
+       - the prompt
+       - the missing token (forward) or the dropped builder field (inverse)
+       - the builder that should have supplied / referenced it
 
-    Builder hooks already exist as `pub(crate) fn build_*_inputs_for_tests` (L5, L8) so they can be reached from a sibling test file. L3 currently has no such hook; one would need to be added (`pub(crate) fn build_llm_inputs_for_tests`) that wraps `build_llm_inputs` with stub args.
-
-    The check should fail loudly with a message naming the prompt, the missing token, and the builder that should have supplied it — not just "tokens differ" which is unactionable.
+    Builder hooks already exist as `pub(crate) fn build_*_inputs_for_tests` (L5, L8). L3 needs one too (`pub(crate) fn build_llm_inputs_for_tests`) wrapping `build_llm_inputs` with stub args.
 
     ## Out of scope
 
-    - Validating *values* of tokens (the existing `l5_l6_tests_include_template_token_coverage_check` memory describes the per-prompt template-token coverage check that L5 and L6 already do — this task generalises it to all four prompts and builds the cross-cutting contract).
+    - Validating *values* of tokens.
     - Validating that response shapes match the prompts' declared output schemas (a different bug class).
-    - Catching the inverse direction (a builder field that no prompt references) — harmless, doesn't degrade behaviour.
 
     ## Exit criteria
 
-    - A single test (or build check) that fails with a clear message when any prompt references a token its builder does not supply.
-    - The test passes today (post-spike fix).
+    - A single test (or build check) that fails with a clear message when any prompt references a token its builder does not supply, OR when any builder supplies a key its prompt does not reference.
+    - The test passes today (post-2026-05-03 fix).
     - Documented in the relevant `tests/` README or as a top-of-file doc comment so a future contributor adding a prompt knows to extend the matrix.
 
-    ## Why low priority
+    ## Why MEDIUM (was LOW)
 
-    The acute bug is fixed. The infrastructure prevents recurrence but doesn't unblock anything. Right work for a quiet hour or as part of the map/reduce task that introduces new prompts (`PromptId::ClassifySubdir` or similar — that work is the natural moment to make this check exist before a new prompt can ship without input-key coverage).
+    The 2026-05-03 incident demonstrated that the inverse-direction failure mode was real, shipped, and caused an entire L3 LLM-fallback / L8 subcarve regression. The infrastructure prevents recurrence on the next prompt addition (the map/reduce L8 redesign will introduce `PromptId::ClassifySubdir` or similar — that's the natural moment for this check to exist).
+- id: enable-anthropic-prompt-caching-in-anthropichttpbackend
+  title: Enable Anthropic prompt caching in AnthropicHttpBackend
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** Enable Anthropic prompt caching in `AnthropicHttpBackend` to cut input-token costs on the L3/L8/L5/L6 LLM paths.
+
+    ## Context
+
+    `crates/atlas-llm/src/http_anthropic.rs:84-88` currently builds a single `messages: [{role: user, content: rendered}]` body with no `cache_control` markers. A prior memory entry incorrectly claimed caching was enabled; the code does not enable it. This task closes that gap.
+
+    OpenAI's HTTP backend (`http_openai.rs`) does **not** need code changes — OpenAI's prompt caching is automatic for prompts ≥ 1024 tokens. The Claude Code subprocess backend is out of scope for this task.
+
+    ## What's cacheable in Atlas's prompts
+
+    The four templates (`defaults/prompts/{classify,subcarve,stage1-surface,stage2-edges}.md`) split naturally into:
+
+    - **Stable prefix** — the template body up to and including catalog interpolations (`{{COMPONENT_KINDS}}`, `{{LIFECYCLE_SCOPES}}`, `{{ONTOLOGY_KINDS}}`, `{{CATALOG_COMPONENTS}}`). These tokens depend only on `defaults/component-kinds.yaml` + ontology, not per-candidate inputs, so the rendered prefix is byte-identical across all calls within a run. Several hundred lines per template — well above the 1024-token Sonnet cacheable minimum.
+    - **Variable suffix** — per-candidate fields (`{{COMPONENT_ID}}`, `{{COMPONENT_PATHS}}`, etc., where present) plus any per-call inputs that get interpolated.
+
+    ## Approach
+
+    Two implementation paths; pick during implementation:
+
+    1. **Renderer split.** Modify `prompt::render` (or add a sibling `render_split`) to emit `(stable_prefix, variable_suffix)`. Templates declare a marker (e.g. a comment line `<!-- CACHE_BOUNDARY -->`) that splits them. `AnthropicHttpBackend` sends two content blocks:
+       ```json
+       "messages": [{
+         "role": "user",
+         "content": [
+           {"type": "text", "text": "<prefix>", "cache_control": {"type": "ephemeral"}},
+           {"type": "text", "text": "<suffix>"}
+         ]
+       }]
+       ```
+    2. **Two-template files.** Split each template into `<name>.prefix.md` and `<name>.suffix.md`. Renderer interpolates each; backend sends two blocks. Simpler logic in code, more files in `defaults/prompts/`.
+
+    Recommendation: option 1. Keeps templates in one file each; explicit boundary marker is self-documenting.
+
+    ## Pricing math
+
+    Anthropic cache write is 1.25× normal input cost; cache read is 0.10× normal input cost. Break-even is roughly one re-use beyond the write. Atlas issues O(N) classify calls per index run where N = unpinned candidates, plus O(M) surface and one batch edge call. The catalog prefix is byte-equal across every classify call — re-use rate is high once L3 traffic is non-trivial.
+
+    ## Out of scope
+
+    - OpenAI HTTP backend changes (caching is automatic).
+    - Claude Code subprocess caching (separate backend; subprocess CLI may not expose cache controls).
+    - Cache TTL extension to 1h (default 5m is fine for Atlas's run shape).
+
+    ## Exit criteria
+
+    - `AnthropicHttpBackend` sends a two-block user message with `cache_control: ephemeral` on the prefix block.
+    - A unit test asserts the request body shape (mock the `client.post` call or use a deserialisation round-trip).
+    - A live end-to-end run on `~/Development/dull/` shows non-zero `cache_read_input_tokens` in Anthropic response usage data after the second-onwards LLM call.
+    - Memory note `anthropichttpbackend-already-implemented-map-reduce-scope-is-narrower-than-task-description-implies` updated or replaced — caching is now genuinely enabled.
+
+    ## Risks
+
+    - Cache-key fingerprinting: `LlmFingerprint::backend_version` should incorporate "caching=on" to keep the Salsa cache sound across versions where caching changes the wire format.
+    - Prefix drift: if a template-token in the cached prefix gets renamed but the marker stays put, the prefix changes silently. Add a build-time check that the rendered prefix shape matches the declared cacheable token set.
+- id: validate-params-max-tokens-at-config-load-for-http-providers
+  title: Validate params.max_tokens at config load for HTTP providers
+  category: infra
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: HIGH.** `AtlasConfig::validate` accepts HTTP-provider operations that omit `params.max_tokens`, but `AnthropicHttpBackend::call` requires it (see `crates/atlas-llm/src/http_anthropic.rs:72-82`) and errors with `LlmError::Setup` on every call. Combined with L5/L6's silent-error swallow (separate task), this produces a config that loads cleanly, runs to completion, and reports zero LLM calls — with no observable failure signal.
+
+    ## How it surfaces
+
+    Discovered 2026-05-03 while testing against `~/Development/dull/`. User's config:
+
+    ```yaml
+    providers:
+      anthropic:
+        api_key: ${ANTHROPIC_API_KEY}
+    defaults:
+      model: anthropic/claude-sonnet-4-6
+    ```
+
+    `atlas index` reports `0 LLM calls · 0 tokens · 105 components written`. Outputs landed but every L5/L6/L8 LLM call errored at the `params.max_tokens` check, returned via the soft-fail SurfaceRecord path, and never reached the cache. User has no signal anything is wrong.
+
+    ## Fix
+
+    Extend `AtlasConfig::validate` (`crates/atlas-llm/src/config.rs:127-162`) to walk every operation that resolves to an HTTP provider (`anthropic`, `openai`) and assert its `params.max_tokens` is set as a positive integer. Resolution order: per-operation override > defaults. So:
+
+    - If the resolved operation has `params.max_tokens` → ok.
+    - Else if defaults has `params.max_tokens` → ok.
+    - Else → `ConfigError::MissingMaxTokens { operation: "classify" }` (new variant).
+
+    Subprocess providers (`claude-code`, `codex`) don't need this check — they don't read max_tokens from params.
+
+    ## Tests
+
+    - Unit: `load_rejects_anthropic_without_max_tokens` — config with `defaults.model: anthropic/...` and no `params.max_tokens` fails to load.
+    - Unit: `load_accepts_anthropic_with_default_max_tokens` — same model with `defaults.params.max_tokens: 4096` loads.
+    - Unit: `load_accepts_anthropic_with_per_op_max_tokens` — defaults missing max_tokens but operation override has it, loads.
+    - Unit: `load_accepts_claude_code_without_max_tokens` — subprocess provider doesn't need the check.
+
+    ## Out of scope
+
+    - Default `max_tokens` for HTTP providers — explicit-required is safer than a guessed default.
+    - `init.rs` template change to ship `max_tokens` — depend on this fix landing first; an init template that includes max_tokens but no validation lets users still drift.
+
+    ## Exit criteria
+
+    - `cargo test -p atlas-llm` covers all four unit tests above.
+    - A live run with the dull config above fails at `atlas index` startup with a clear actionable error, not at the silent-no-call summary.
+    - The error message names the operation and points at the `params.max_tokens` field in `.atlas/config.yaml`.
+- id: surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing
+  title: Surface L5/L6/L8 setup errors instead of silently swallowing
+  category: infra
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: HIGH.** L5 surface and L6 edges silently swallow `LlmError` into a `SurfaceRecord { notes: "LLM call failed: ..." }` (and the equivalent for edges), but those notes never appear in `components.yaml` because the L9 projection's `ComponentEntry` schema doesn't include a surface field. Combined with the cache `call_count` only counting hits/misses (not errors), this produces "0 LLM calls" pipeline summaries when in fact every call failed.
+
+    ## Concrete failure mode
+
+    Discovered 2026-05-03. With dull's config missing `params.max_tokens`, every L5 / L6 call returned `LlmError::Setup`. The L5 path at `l5_surface.rs:75-87` constructs a `SurfaceRecord { notes: "LLM call failed: ..." }` and returns it. Pipeline.rs:250 then discards the result with `let _ = atlas_engine::surface_of(...)`, the L9 projection emits `components.yaml` without surface fields, and the user sees: 105 components, 0 LLM calls, 0 tokens, no error.
+
+    The "0 LLM calls" line is technically correct — `LlmResponseCache::call_count` increments only on cache misses (memory: `llmresponsecache-call-count-increments-on-cache-misses-only`), and errors short-circuit before the increment. But for the user, "0 LLM calls" reads as "no work needed" when the actual meaning is "every call attempted, every call failed".
+
+    ## Fix shape (multiple options; pick during implementation)
+
+    1. **Counter for errors.** Add `LlmResponseCache::error_count` parallel to `call_count`. Pipeline summary reports both. "0 LLM calls · 105 errors" is unambiguous.
+
+    2. **Surface error notes into components.yaml.** Extend `ComponentEntry` (in `atlas-index`) with an optional `surface_error: Option<String>` and serialise it. The user sees per-component error notes in their output.
+
+    3. **Propagate setup errors instead of swallowing.** Distinguish recoverable errors (BudgetExhausted, transient HTTP failure) from configuration errors (Setup). Setup errors should propagate up and abort the run. Memory `budgetsentinel-is-only-reliable-budget-exhaustion-detection-path` documents the original soft-fail design intent — this fix tightens it without breaking the budget-exhaustion contract.
+
+    Recommendation: do (1) + (3). (2) adds a schema field that's mostly empty in healthy runs.
+
+    ## Tests
+
+    - A test that drives an HTTP backend without `max_tokens` (or simulates `LlmError::Setup`) and asserts the pipeline either propagates the error (option 3) or reports a non-zero error count in the summary (option 1).
+    - A test that confirms `LlmError::BudgetExhausted` continues to be soft-fail (preserves existing behaviour).
+
+    ## Cross-references
+
+    - `prompt-template-token-coverage-check-build-time` — tests would not have caught this either, since coverage checks run at build time, not against a real backend.
+    - `enable-anthropic-prompt-caching-in-anthropichttpbackend` — once caching lands, error visibility becomes more important (silent errors are easier to mask when a cache might also be silent).
+
+    ## Exit criteria
+
+    - A configuration error (e.g., `LlmError::Setup`) on the L5/L6/L8 path either aborts the run or reports a non-zero error count in the pipeline summary.
+    - BudgetExhausted continues to soft-fail (verified by an existing or new test).
+    - The dull config-without-max_tokens scenario fails loudly, not silently.
+- id: reject-http-providers-for-stage1surface-and-stage2edges-in-backendrouter
+  title: Reject HTTP providers for Stage1Surface and Stage2Edges in BackendRouter
+  category: infra
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** L5 surface extraction is currently routable to any provider via `.atlas/config.yaml` operation overrides — including HTTP providers (`anthropic/*`, `openai/*`). But HTTP backends have no filesystem-access tool: the LLM receives only the rendered prompt template, which for `stage1-surface.md` interpolates only `COMPONENT_ID`, `COMPONENT_PATHS`, and `CATALOG_COMPONENTS`. No file contents reach the LLM. The HTTP-routed L5 cannot meaningfully extract a component's API surface — it can only reason about names.
+
+    ## Why this matters
+
+    Memory `anthropichttpbackend-already-implemented-map-reduce-scope-is-narrower-than-task-description-implies` and the design spec for the map/reduce architectural shift both note: "Per-component surface extraction (L5 Stage1Surface): keep agentic — extracting an API surface needs to read source files, but the scope is bounded to one component's tree." The architectural intent is clear: L3 and L8 are per-candidate fixed-shape classification (HTTP-suitable); L5 needs filesystem access (agentic-only); L6 needs cross-component context (agentic, broadly-contextual).
+
+    Today's config router treats L5 routing as a free choice. A user who routes everything to HTTP for cost gets a config that loads cleanly, runs to completion, and produces empty / hallucinated surfaces.
+
+    ## Two paths (decide during implementation)
+
+    1. **Enforce in routing layer.** `BackendRouter` rejects HTTP providers for `Stage1Surface` and `Stage2Edges` at construction time. Surfaces a clear error: "stage1-surface requires a filesystem-access provider (claude-code, codex); HTTP providers (anthropic, openai) cannot be used here."
+
+    2. **Redesign stage1-surface for content-shipping.** Bound the candidate's source tree to a few KB of content (top-N files by extension, manifest snippets, etc.) and ship those in the rendered prompt. Lose the agentic exploration capability but make the prompt provider-agnostic. Bigger surface area; non-trivial spike before commit.
+
+    Recommendation: option 1 in the short term, option 2 as a longer-horizon spike. Option 1 codifies the architectural intent immediately; option 2 is a real broadening of supported providers.
+
+    ## Cross-references
+
+    - `enable-anthropic-prompt-caching-in-anthropichttpbackend` — orthogonal but related (caching applies to whatever provider is in use).
+    - `map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis` — the parent task that introduced per-prompt routing. This task formalises one routing constraint that the parent's design doc assumed but didn't enforce.
+
+    ## Exit criteria (for option 1)
+
+    - `BackendRouter` construction fails with a clear error when `Stage1Surface` or `Stage2Edges` is routed to an HTTP provider.
+    - Unit test: a config with `operations.surface.model: anthropic/...` fails to load (or fails to construct the router).
+    - Unit test: same config with `operations.surface.model: claude-code/...` succeeds.
+    - Memory note added documenting the routing constraint.

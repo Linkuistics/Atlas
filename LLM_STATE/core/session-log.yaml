@@ -555,3 +555,20 @@ sessions:
     - **End-to-end coverage:** `crates/atlas-cli/tests/init_cmd.rs` gained `freshly_init_config_loads_without_setting_env_vars` — runs `atlas init`, then calls `AtlasConfig::load` with no env vars set, asserts success and correct default model. This is the direct regression test for the reported bug.
     - **What this suggests next:** First-run UX is now clean. `verify-atlas-v1-success-criteria-end-to-end` is the natural next eval task; it would catch any similar first-run breakage on a real codebase. A v1.3.1 cut may also be warranted given the accumulated post-v1.3.0 fixes.
     - **Known limitation:** The `find_yaml_comment_start` heuristic does not model quoted strings. A `${VAR}` inside a quoted YAML scalar that also contains ` # ` would be incorrectly treated as a comment. No Atlas template ships such a value; a code comment documents the limitation and the remediation path.
+- id: session-44
+  timestamp: 2026-05-03T10:22:50Z
+  phase: work
+  body: |
+    ### Session 44 (2026-05-03T10:22:50Z) — Fix prompt-token drop bug; scaffold override schema_version; add bidirectional coverage tests
+
+    - Attempted to run dull (`~/Development/dull/`) as the second golden target for cross-target validation. A depth-0 smoke run succeeded (105 components, 0 LLM calls, 7 min wall), and a depth-1 calibration run produced identical output — pin coverage was so dense that all classify/subcarve decisions short-circuited deterministically, so the LLM path was never exercised.
+    - Discovered three blockers preventing meaningful LLM evaluation on dull, all now filed as new backlog tasks.
+    - Fixed two of the three blockers in source:
+      1. **`atlas init` scaffolded invalid override files**: `components.overrides.yaml` and `subsystems.overrides.yaml` had `schema_version` commented out, causing `atlas validate-overrides` to fail immediately on freshly-init'd repos. Fixed by activating `schema_version: 1` in both templates in `crates/atlas-cli/src/init.rs`. Regression test `freshly_init_overrides_pass_validate_overrides` added to `crates/atlas-cli/tests/init_cmd.rs`.
+      2. **L3/L8 prompt-token coverage bug (silent data drop)**: `classify.md` and `subcarve.md` had no `{{TOKEN}}` placeholders for the per-call candidate fields supplied by `build_llm_inputs` / `build_subcarve_inputs`. The `prompt::render` engine silently drops keys with no matching template placeholder, so every HTTP-routed classify/subcarve call was sending prompts with zero candidate context. Fixed by rewriting both prompts to interpolate `{{DIR_RELATIVE}}`, `{{RATIONALE_BUNDLE}}`, `{{MANIFEST_CONTENTS}}` (classify) and `{{COMPONENT_ID}}`, `{{COMPONENT_KIND}}`, `{{COMPONENT_PATHS}}`, `{{STRUCTURAL_SIGNALS}}`, `{{EDGE_NEIGHBOURHOOD}}`, `{{PIN_SUPPRESSED_CHILDREN}}` (subcarve); and upper-casing the corresponding keys in `build_llm_inputs`. Bidirectional token-coverage tests added in `l3_classify.rs` and `l8_recurse.rs` (forward: template refs must be in builder; inverse: builder keys must appear in template).
+    - Third blocker (three layers of silent LLM-failure absorption when `params.max_tokens` is absent from config) left as filed tasks; not fixed in this phase.
+    - `hand-author-second-golden-for-merged-monorepo` set to `blocked` — exit criteria (golden authoring + metric scoring) require the three discovered bugs to land first.
+
+    What this suggests trying next: land `validate-params-max-tokens-at-config-load-for-http-providers` (HIGH priority) to surface the config error explicitly; then re-run dull at depth 1 with a real LLM budget to populate L5 surfaces and L6 edges; then author the golden against actual outputs.
+
+    Key learnings: `prompt::render`'s silent key-drop behaviour makes bidirectional coverage tests essential at every build_*_inputs / template boundary — not just forward (template → builder) but also inverse (builder → template).

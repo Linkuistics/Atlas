@@ -163,14 +163,22 @@ entries:
   body: |
     `llm-cache.json` co-mingles per-prompt responses with fingerprint metadata in a single flat file. Not urgent — byte-identity on no-op re-runs works. A v2 refactor (one file per prompt type, or content-sha keying) would produce smaller diffs and cheaper cache invalidation on fingerprint-only changes. Surface if the file grows large or diffs are hard to review.
 - id: l5-l6-tests-include-template-token-coverage-check
-  title: Prompt template token coverage tests required for all LLM layers
+  title: Prompt template token coverage tests are bidirectional for L3/L8, forward-only for L5/L6
   body: |
-    All LLM-adjacent prompts (L3, L5, L6, and any new layer) require template-token coverage tests: collect all `{{TOKEN}}` placeholders from the rendered prompt and assert each maps to a key in the `build_inputs` result. This catches `TemplateSyntax` panics at test time rather than at the first real LLM call.
+    All LLM-adjacent prompts (L3, L5, L6, L8, and any new layer) require template-token coverage tests. Two directions matter:
 
-    L3: `classify_prompt_renders_with_build_llm_inputs` at `l3_classify.rs:571` — calls `prompt::render` against the real `classify.md` template with real `build_llm_inputs` output.
-    L5/L6: `collect_template_tokens` helper + assert loop in `l5_surface.rs` and `l6_edges.rs`.
+    - **Forward** — every `{{TOKEN}}` in the template must map to a key in the `build_inputs` result. Catches `TemplateSyntax` panics.
+    - **Inverse** — every key in the `build_inputs` result must be referenced by a `{{TOKEN}}` in the template. Catches the silent-data-drop failure where a builder field has no matching template token, gets dropped by `prompt::render`, and leaves the LLM with no input. This was the L3/L8 bug uncovered 2026-05-03 (classify.md and subcarve.md were missing every per-call token).
 
-    Build-time generalisation to all four prompts is a pending backlog task (`prompt-template-token-coverage-check-build-time`).
+    Current coverage:
+
+    - **L3** (`classify_prompt_token_coverage_is_bidirectional` in `l3_classify.rs`): bidirectional + asserts the rendered prompt contains the candidate `dir_relative` value verbatim.
+    - **L8** (`subcarve_prompt_token_coverage_is_bidirectional` in `l8_recurse.rs`): bidirectional + asserts the rendered prompt contains the component id.
+    - **L5** (`l5_surface.rs`) and **L6** (`l6_edges.rs`): forward-only via `collect_template_tokens` helper. Inverse direction not yet covered.
+
+    Each test module duplicates a small `collect_template_tokens` helper rather than extracting it to a shared crate; trade is fine for four tests but extract if a fifth layer arrives.
+
+    Build-time generalisation to all four prompts is a pending backlog task (`prompt-template-token-coverage-check-build-time`) — its scope must include the inverse direction.
 - id: prompt-drift-tests-against-ravel-lite-are-invalid
   title: Prompt drift tests against Ravel-Lite are invalid
   body: |
@@ -470,13 +478,17 @@ entries:
 - id: anthropichttpbackend-already-implemented-map-reduce-scope-is-narrower-than-task-description-implies
   title: AnthropicHttpBackend already implemented; map/reduce scope is narrower than task description implies
   body: |
-    `AnthropicHttpBackend` is already fully implemented at `crates/atlas-llm/src/http_anthropic.rs` and wired through `BackendRouter` (`router.rs`) with provider/model selection driven by `.atlas/config.yaml` operation overrides. Prompt caching is enabled and structured JSON output validation is in place.
+    `AnthropicHttpBackend` is fully implemented at `crates/atlas-llm/src/http_anthropic.rs` and wired through `BackendRouter` (`router.rs`) with provider/model selection driven by `.atlas/config.yaml` operation overrides. Structured JSON output validation is in place.
+
+    **Prompt caching is NOT enabled.** The current implementation builds a single `messages: [{role: user, content: rendered}]` body with no `cache_control` blocks (verified at `http_anthropic.rs:84-88` on 2026-05-03). A separate backlog task (`enable-anthropic-prompt-caching-in-anthropichttpbackend`) tracks the work.
+
+    **OpenAI prompt caching is automatic** — OpenAI caches any prompt ≥ 1024 tokens server-side without an opt-in marker. `http_openai.rs` therefore needs no code change for caching.
 
     The map/reduce task description treats `AnthropicHttpBackend` as a deliverable ("New AnthropicHttpBackend in crates/atlas-llm/...") — but the infrastructure is already there. The task's remaining work is:
 
     1. The map/reduce L8 redesign (5 action items in `docs/spikes/2026-05-02-l3-l8-prompt-shape-spike.md`)
     2. Routing `PromptId::Classify` through `AnthropicHttpBackend` via the `.atlas/config.yaml` operation-override key (config-only change, no Rust diff)
-    3. Cache hit-rate verification after the backend swap
+    3. Cache hit-rate verification after the backend swap (depends on the prompt-caching task above)
     4. Goldens/eval re-run
 
     The backend infrastructure scope items in the task description can be treated as done.
