@@ -87,7 +87,8 @@ tasks:
   title: Audit Atlas CLI against LLM-friendly CLI design guide
   category: infra
   status: not_started
-  dependencies: []
+  dependencies:
+  - verify-atlas-v1-success-criteria-end-to-end
   description: |
     **Priority: MEDIUM.** Audit Atlas's CLI surface (`atlas`, all subcommands, all flags, all output formats) against the LLM-friendly CLI design guide at `~/Development/Ravel-Lite/defaults/fixed-memory/cli-tool-design.md`. Produce a punch-list of findings, prioritised by ROI per the guide's own ordering (structured output > examples in --help > actionable errors > flag consistency > exit codes > defaults > non-TTY behaviour > capabilities).
 
@@ -311,103 +312,6 @@ tasks:
     - Cache fingerprint encodes "tools enabled" + tool-set hash; existing zero-LLM-call no-op re-runs remain byte-identical.
     - Live end-to-end: `atlas index ~/Development/dull/` with `surface` routed to `anthropic/...` (tools enabled) produces non-empty surfaces and edge proposals; metrics within 5pp of the same run on `claude-code/...`.
     - Memory note added documenting the design and the routing-relaxation that follows.
-- id: skip-l8-structural-signal-computation-when-policy-will-stop
-  title: Skip L8 structural-signal computation when policy will Stop
-  category: feature
-  status: done
-  dependencies: []
-  description: |
-    **Priority: LOW (perf polish).** `l8_recurse::compute_decision` unconditionally computes `seam_density(db, id)`, `modularity_hint(db, id)`, and `cliques_touching_id(db, id)` BEFORE the policy decides. For components whose policy decision is `Stop` (the universal depth guard, all leaf-like kinds, externals), the structural signals are wasted compute — and worse, `seam_density` transitively pulls L5 `surface_of` LLM calls via the `edge_graph` → `all_proposed_edges` chain.
-
-    Surfaced during the L8 map/reduce smoke run on `~/Development/dull/`: a `--max-depth 0 --dry-run` invocation made live ClaudeCodeBackend calls because every component's `compute_decision` eagerly evaluated `seam_density` even though the policy was about to return `Stop`.
-
-    ## Fix
-
-    Reorder `compute_decision` so the universal-depth guard and the kind-based stop check fire before any structural signal is read:
-
-    ```rust
-    let kind = ComponentKind::parse(&entry.kind).unwrap_or(ComponentKind::NonComponent);
-    let current_depth = compute_depth(&components, id);
-    let max_depth = db.max_depth();
-
-    if current_depth >= max_depth {
-        return SubcarveDecision::stopped(...);
-    }
-    if let PolicyDecision::Stop = decide_kind_only(kind) {
-        return SubcarveDecision::stopped(...);
-    }
-
-    // only now: compute structural signals
-    let seam_density_value = ...;
-    ```
-
-    `decide_kind_only(kind)` is the kind-arm of the policy that doesn't require structural signals — it stops on `RustCli`, `Spec`, `External`, etc. without looking at `modularity_hint`.
-
-    ## Exit criteria
-
-    - `compute_decision` skips `seam_density` / `modularity_hint` / `cliques_touching_id` for components whose policy is `Stop`.
-    - A regression test asserts that a fixture with all-pinned-CLI components produces zero L5 `surface_of` calls under `--max-depth 0`.
-    - Wall-time on dull at `--max-depth 0` drops to filesystem-walk-only (single-digit minutes vs the current many-minutes when the cache is cold).
-
-    ## Out of scope
-
-    - Restructuring the policy itself.
-    - Caching structural signals more aggressively.
-  results: |
-    ## What was done
-
-    - Extracted `subcarve_policy::decide_kind_only(kind) -> Option<PolicyDecision>` as a kind-only fast-path. Every kind except the library family returns `Some(verdict)`; library kinds return `None` because their depth cap depends on `modularity_hint`. The full `decide(&signals)` now defers to `decide_kind_only` after the universal depth cap, so the policy table is no longer duplicated.
-    - Reordered `l8_recurse::compute_decision` so the cheap guards (universal depth cap + kind-only verdict) fire **before** `seam_density`, `modularity_hint`, `cliques_touching_id`, or `pin_suppressed_children_of` are read. Workspace short-circuits to its members-via-manifests decision in the same fast path; structural signals are computed only for library kinds.
-    - Added two regression tests in `l8_recurse::tests` using a new test-local `RecordingBackend` that wraps `TestBackend` and records every `call` it observes:
-      - `max_depth_zero_skips_all_l5_surface_calls_on_library_kind` — proves the depth guard fires before any `Stage1Surface` traffic.
-      - `cli_kind_skips_all_llm_calls_under_normal_max_depth` — proves the kind-only fast-path skips the LLM entirely for `RustCli` even at the default `--max-depth`.
-
-    ## What worked
-
-    - All 12 `l8_recurse` unit tests + all 12 `subcarve_policy` unit tests pass.
-    - Full `cargo test --workspace`: 488 passed, 0 failed (4 pre-existing ignored e2e tests requiring a real `claude` binary).
-    - `cargo clippy -p atlas-engine --lib --tests -- -D warnings` is clean.
-    - `rustfmt` clean on both modified files.
-
-    ## What didn't
-
-    - Nothing material. The `Some(PolicyDecision::AskLlm)` arm in `compute_decision`'s fast-path match is `unreachable!()` rather than a compile-time guarantee — the type system can't prove that `decide_kind_only` never returns `AskLlm`. Acceptable given how small the policy module is, but a tighter return type (`Option<KindOnlyVerdict>` with only `Stop`/`Recurse`) would lock this if it ever drifts.
-
-    ## Suggested next
-
-    - **Confirm the perf win on `~/Development/dull/`.** The original report describes many-minute cold-cache runs at `--max-depth 0`. A follow-up smoke run should drop to filesystem-walk-only (single-digit seconds). Worth recording as an eval baseline.
-    - **Audit library-kind eager evaluation.** Even after this fix, library kinds still compute all four structural signals before `decide(&signals)` may return `Stop` (when `current_depth >= cap`). That's a smaller wedge — the cap is at most `LIBRARY_DEFAULT_DEPTH_CAP=3` — but the same predicate-hoist trick applies if it shows up on a profile.
-    - **Audit `SubcarveSignals` for vestigial fields.** `subcarve_policy::decide` only ever reads `kind`, `current_depth`, `max_depth`, and `modularity_hint`. The `seam_density` and `cliques_touching` fields are computed in `compute_decision` but never consulted — the same compute-and-throw-away wedge this task fixed for stop kinds, but inside the library path. Either wire them into the policy or drop them from the struct.
-- id: bounded-concurrency-for-l8-map-step-rayon-or-tokio-semaphore
-  title: Bounded concurrency for L8 map step (rayon or Tokio + Semaphore)
-  category: feature
-  status: not_started
-  dependencies: []
-  description: |
-    **Priority: MEDIUM.** Follow-up to the L8 map/reduce redesign (`map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis`). The map step in `l8_recurse::map_reduce_subcarve` currently calls `is_component(db, workspace, dir)` in a serial `for` loop. With HTTP-routed Classify, each map call is ~1s; on a 74-component first iteration with say 10 immediate sub-dirs each, that's ~12 min serial.
-
-    ## Why
-
-    Map calls are independent and idempotent. Salsa 0.26 supports parallel tracked-query execution, and `LlmResponseCache` is already thread-safe via `AtomicU64` CAS. The infrastructure is ready — what's missing is the parallel iterator at the call site.
-
-    ## Scope
-
-    - **Pick a runtime.** Rayon's parallel iterator is the simplest fit because L8 is a sync function called from a sync fixedpoint driver; Tokio + Semaphore is alternative but pulls async into a currently-sync layer.
-    - **Bound the concurrency.** Start with 8 in flight; expose as `FixedpointConfig.map_concurrency` so the CLI can tune. Avoid hammering Anthropic / OpenAI rate limits.
-    - **Preserve determinism.** Output `sub_dirs` ordering must match the serial path. Sort the verdicts deterministically before assembling the final `Vec<PathBuf>`.
-    - **Error isolation.** A panic in one map call must not poison sibling calls. Capture per-subdir errors into the `unknown_classification` path that already exists in L3 — same fallback behaviour as today, just wrapped.
-
-    ## Exit criteria
-
-    - `map_reduce_subcarve` runs N parallel `is_component` calls bounded by `map_concurrency`.
-    - Wall-time on dull at depth 1 with a real LLM budget is ≤ 5 min on a freshly-uncached run (the `map-reduce-llm-architecture-...` task's exit criterion).
-    - All existing engine tests still pass (no flake from concurrent Salsa access).
-    - A new test demonstrates that the same fixture produces byte-identical `sub_dirs` under `map_concurrency = 1` and `map_concurrency = 8`.
-
-    ## Cross-references
-
-    - Memory: `tokencounter-charge-uses-cas-loop-on-atomicu64` — the CAS lock-free counter is what makes this safe today.
-    - Spec: `docs/superpowers/specs/2026-05-04-l8-map-reduce-design.md` § Concurrency.
 - id: prompt-template-token-coverage-check-at-build-time
   title: Prompt template token-coverage check at build time
   category: infra
@@ -451,3 +355,92 @@ tasks:
 
     - Memory: `l5-l6-tests-include-template-token-coverage-check` — current runtime coverage shape and `cache_only_keys` mechanism.
     - `crates/atlas-engine/src/prompt_token_coverage.rs` — current implementation to supersede or augment.
+- id: bounded-concurrency-for-l8-map-step-rayon-or-tokio-semaphore
+  title: Bounded concurrency for L8 map step (rayon or Tokio + Semaphore)
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** Follow-up to the L8 map/reduce redesign (`map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis`). The map step in `l8_recurse::map_reduce_subcarve` currently calls `is_component(db, workspace, dir)` in a serial `for` loop. With HTTP-routed Classify, each map call is ~1s; on a 74-component first iteration with say 10 immediate sub-dirs each, that's ~12 min serial.
+
+    ## Why
+
+    Map calls are independent and idempotent. Salsa 0.26 supports parallel tracked-query execution, and `LlmResponseCache` is already thread-safe via `AtomicU64` CAS. The infrastructure is ready — what's missing is the parallel iterator at the call site.
+
+    ## Scope
+
+    - **Pick a runtime.** Rayon's parallel iterator is the simplest fit because L8 is a sync function called from a sync fixedpoint driver; Tokio + Semaphore is alternative but pulls async into a currently-sync layer.
+    - **Bound the concurrency.** Start with 8 in flight; expose as `FixedpointConfig.map_concurrency` so the CLI can tune. Avoid hammering Anthropic / OpenAI rate limits.
+    - **Preserve determinism.** Output `sub_dirs` ordering must match the serial path. Sort the verdicts deterministically before assembling the final `Vec<PathBuf>`.
+    - **Error isolation.** A panic in one map call must not poison sibling calls. Capture per-subdir errors into the `unknown_classification` path that already exists in L3 — same fallback behaviour as today, just wrapped.
+
+    ## Exit criteria
+
+    - `map_reduce_subcarve` runs N parallel `is_component` calls bounded by `map_concurrency`.
+    - Wall-time on dull at depth 1 with a real LLM budget is ≤ 5 min on a freshly-uncached run (the `map-reduce-llm-architecture-...` task's exit criterion).
+    - All existing engine tests still pass (no flake from concurrent Salsa access).
+    - A new test demonstrates that the same fixture produces byte-identical `sub_dirs` under `map_concurrency = 1` and `map_concurrency = 8`.
+
+    ## Cross-references
+
+    - Memory: `tokencounter-charge-uses-cas-loop-on-atomicu64` — the CAS lock-free counter is what makes this safe today.
+    - Spec: `docs/superpowers/specs/2026-05-04-l8-map-reduce-design.md` § Concurrency.
+- id: drop-vestigial-seam-density-cliques-touching-from-subcarvesignals
+  title: Drop vestigial seam_density/cliques_touching from SubcarveSignals
+  category: infra
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: LOW (cleanup).** `seam_density` and `cliques_touching` in `SubcarveSignals` are computed in `l8_recurse::compute_decision` on every library-kind component path but are never read by `subcarve_policy::decide`. `modularity_hint` is the only structural signal that feeds into depth-cap logic.
+
+    ## Fix
+
+    Drop `seam_density` and `cliques_touching` from `SubcarveSignals` entirely. The L8 map/reduce redesign makes them vestigial — the map step calls `is_component` per sub-dir (L3 classify) and the reduce step uses those verdicts, not seam density. Wiring them into policy decisions is deferred as out of scope.
+
+    ## Scope
+
+    - Remove `seam_density` and `cliques_touching` fields from `SubcarveSignals`.
+    - Remove their computation from `compute_decision` in `l8_recurse.rs`.
+    - Update any tests referencing the removed fields.
+    - Ensure `subcarve_policy::decide` still compiles and all tests pass.
+
+    ## Exit criteria
+
+    - `SubcarveSignals` no longer contains `seam_density` or `cliques_touching`.
+    - `cargo test --workspace` passes with no new failures.
+    - `cargo clippy` clean.
+
+    ## References
+
+    - Memory: `seam-density-modularity-hint-uninformative-on-fixedpoint-iteration-0`
+    - Surfaced in results of `skip-l8-structural-signal-computation-when-policy-will-stop`
+- id: confirm-l8-perf-win-on-dull-at-max-depth-0
+  title: Confirm L8 perf win on dull at --max-depth 0
+  category: eval
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: LOW (eval baseline).** After `skip-l8-structural-signal-computation-when-policy-will-stop` landed, the original bug described many-minute cold-cache runs at `--max-depth 0` because `seam_density` was eagerly evaluated before the depth guard fired. The fix should drop wall-time to filesystem-walk-only (single-digit seconds). This smoke run confirms the fix and records a baseline for future regressions.
+
+    ## What to do
+
+    1. Delete `.atlas/llm-cache.json` to ensure a cold cache.
+    2. Run: `atlas index ~/Development/dull/ --max-depth 0`
+    3. Record wall time and LLM call count from the summary.
+    4. Document result in `evaluation/results/<date>-dull-depth0-perf.md`.
+
+    ## Expected outcome
+
+    - Wall time: single-digit seconds (filesystem walk only).
+    - LLM calls: 0 (all components short-circuit via depth guard or kind-only policy).
+    - Component count: ~105 (consistent with prior pinned run).
+
+    ## Exit criteria
+
+    - Smoke run completed and result documented.
+    - Wall time is single-digit seconds; if not, open a new investigation task.
+
+    ## References
+
+    - Done task: `skip-l8-structural-signal-computation-when-policy-will-stop`
+    - Memory: `decide-kind-only-skips-structural-signals-for-stop-workspace`
