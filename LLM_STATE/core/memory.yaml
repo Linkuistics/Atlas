@@ -130,7 +130,7 @@ entries:
   body: |
     TestBackend caches canned responses keyed by the full serialised LlmRequest. Any field difference produces a cache miss and triggers an unexpected LLM call. All TestBackend fixture inputs must be byte-identical to what the production driver builds.
 
-    Corollary: fixtures pre-dating a `build_llm_inputs` bug contain inputs matching the broken state, so tests pass while masking the bug. When fixing `build_llm_inputs`, audit all TestBackend fixture inputs and update them to match the corrected output.
+    Corollary: any change to `build_llm_inputs` output shape — whether fixing a bug or an intentional key rename (e.g. casing: `dir_relative` → `DIR_RELATIVE`, `rationale_bundle` → `RATIONALE_BUNDLE`, `manifest_contents` → `MANIFEST_CONTENTS`) — must be mirrored in every TestBackend fixture that constructs a matching `LlmRequest`. A helper or macro that assembles fixture inputs from the same source-of-truth as the production function would prevent this class of drift.
 - id: seam-density-modularity-hint-uninformative-on-fixedpoint-iteration-0
   title: seam_density/modularity_hint uninformative on fixedpoint iteration 0
   body: |
