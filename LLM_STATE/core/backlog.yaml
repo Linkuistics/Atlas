@@ -83,6 +83,56 @@ tasks:
     - `crates/atlas-engine/src/l8_recurse.rs` — bidirectional token-coverage test for subcarve.
 
     dull's `.atlas/config.yaml` was also flipped from `claude-code/...` to `anthropic/...` defaults — that change lives outside this repo's tree.
+- id: verify-atlas-v1-success-criteria-end-to-end
+  title: Verify Atlas v1 success criteria end-to-end
+  category: eval
+  status: not_started
+  dependencies:
+  - hand-author-second-golden-for-merged-monorepo
+  description: |
+    **Priority: HIGH.** Signs off v1.
+
+    **Design reference:** §10.3 success criteria 1–6.
+
+    ## Scope
+
+    Execute each of the six v1 success criteria from §10.3 in order, document results in `evaluation/results/v1-signoff-<date>.md`:
+
+    1. Run `atlas index /Users/antony/Development/` on a clean checkout. Assert coverage ≥ 0.9, spurious ≤ 0.1 against the golden.
+    2. Re-run with no file changes. Assert 0 LLM calls (check the CLI's summary output) and byte-identical `components.yaml`.
+    3. Touch one source file in one component. Re-run. Assert LLM call count equals exactly the affected component's `surface_of` plus its edge-neighbour count for edges. Log the numbers for future reference.
+    4. Add a pin to `components.overrides.yaml` for one component (e.g., pin `role: my-custom-role`). Delete `components.yaml`. Re-run. Assert the pin appears in the regenerated `components.yaml` without human intervention.
+    5. Run Ravel-Lite's `related-components` workflow against Atlas-produced YAMLs. Assert it runs to completion without schema errors.
+    6. Run against the synthetic second target selected and evaluated in `hand-author-second-golden-for-merged-monorepo`. Assert coverage/spurious/kind/edge metrics are within 5 percentage points of the `~/Development/` run on each axis.
+
+    ### Cross-plan dependency
+
+    Criterion 5 cannot run until **Ravel-Lite's M5 migration** (`Migration M5: consume Atlas via atlas-index` in Ravel-Lite's backlog, formerly `ravel-lite-migration-m5-consume-atlas-via-atlas-index` in Atlas's) is complete. M5 lives in Ravel-Lite's plan, not Atlas's, so it cannot be expressed as a structural dependency here. Before starting this task, confirm M5 is `done` in Ravel-Lite by running:
+
+    ```
+    ravel-lite state backlog list /Users/antony/Development/Ravel-Lite/LLM_STATE/core --category migration
+    ```
+
+    If M5 is not done, criterion 5 must be skipped and recorded as "blocked on Ravel-Lite M5" in the sign-off report; the other five criteria can still proceed.
+
+    ### Report
+
+    - `evaluation/results/v1-signoff-<date>.md` contains each criterion, the commands run, the measured values, and pass/fail.
+    - On any failure, the criterion lists the specific gap and what next steps would close it.
+
+    ### Follow-up backlog
+
+    - If any criterion fails by a wide margin, open a new backlog task to investigate. Do not silently move on.
+
+    ## Out of scope
+
+    - Everything in §10.2 (deferred).
+
+    ## Exit criteria
+
+    - All six criteria pass or have documented follow-up tasks (criterion 5 may be deferred pending Ravel-Lite M5).
+    - Sign-off report committed to the Atlas repo.
+    - An announcement-ready short summary written (optional) as `README-v1.md` documenting what Atlas v1 does and does not do.
 - id: audit-atlas-cli-against-llm-friendly-cli-design-guide
   title: Audit Atlas CLI against LLM-friendly CLI design guide
   category: infra
@@ -138,56 +188,6 @@ tasks:
 
     - Guide: `~/Development/Ravel-Lite/defaults/fixed-memory/cli-tool-design.md`. Treat the audit checklist (lines 208–252) and the anti-patterns list (lines 256–268) as load-bearing.
     - The guide's own remediation order (lines 271–284) — "Add `--json` everywhere it's missing" first, "stabilise the JSON schema" second, "rewrite error messages" third — is the recommended order for any follow-up tasks the report spawns.
-- id: verify-atlas-v1-success-criteria-end-to-end
-  title: Verify Atlas v1 success criteria end-to-end
-  category: eval
-  status: not_started
-  dependencies:
-  - hand-author-second-golden-for-merged-monorepo
-  description: |
-    **Priority: HIGH.** Signs off v1.
-
-    **Design reference:** §10.3 success criteria 1–6.
-
-    ## Scope
-
-    Execute each of the six v1 success criteria from §10.3 in order, document results in `evaluation/results/v1-signoff-<date>.md`:
-
-    1. Run `atlas index /Users/antony/Development/` on a clean checkout. Assert coverage ≥ 0.9, spurious ≤ 0.1 against the golden.
-    2. Re-run with no file changes. Assert 0 LLM calls (check the CLI's summary output) and byte-identical `components.yaml`.
-    3. Touch one source file in one component. Re-run. Assert LLM call count equals exactly the affected component's `surface_of` plus its edge-neighbour count for edges. Log the numbers for future reference.
-    4. Add a pin to `components.overrides.yaml` for one component (e.g., pin `role: my-custom-role`). Delete `components.yaml`. Re-run. Assert the pin appears in the regenerated `components.yaml` without human intervention.
-    5. Run Ravel-Lite's `related-components` workflow against Atlas-produced YAMLs. Assert it runs to completion without schema errors.
-    6. Run against the synthetic second target selected and evaluated in `hand-author-second-golden-for-merged-monorepo`. Assert coverage/spurious/kind/edge metrics are within 5 percentage points of the `~/Development/` run on each axis.
-
-    ### Cross-plan dependency
-
-    Criterion 5 cannot run until **Ravel-Lite's M5 migration** (`Migration M5: consume Atlas via atlas-index` in Ravel-Lite's backlog, formerly `ravel-lite-migration-m5-consume-atlas-via-atlas-index` in Atlas's) is complete. M5 lives in Ravel-Lite's plan, not Atlas's, so it cannot be expressed as a structural dependency here. Before starting this task, confirm M5 is `done` in Ravel-Lite by running:
-
-    ```
-    ravel-lite state backlog list /Users/antony/Development/Ravel-Lite/LLM_STATE/core --category migration
-    ```
-
-    If M5 is not done, criterion 5 must be skipped and recorded as "blocked on Ravel-Lite M5" in the sign-off report; the other five criteria can still proceed.
-
-    ### Report
-
-    - `evaluation/results/v1-signoff-<date>.md` contains each criterion, the commands run, the measured values, and pass/fail.
-    - On any failure, the criterion lists the specific gap and what next steps would close it.
-
-    ### Follow-up backlog
-
-    - If any criterion fails by a wide margin, open a new backlog task to investigate. Do not silently move on.
-
-    ## Out of scope
-
-    - Everything in §10.2 (deferred).
-
-    ## Exit criteria
-
-    - All six criteria pass or have documented follow-up tasks (criterion 5 may be deferred pending Ravel-Lite M5).
-    - Sign-off report committed to the Atlas repo.
-    - An announcement-ready short summary written (optional) as `README-v1.md` documenting what Atlas v1 does and does not do.
 - id: run-agent-progress-e2e-integration-test-against-real-claude-binary
   title: Run agent-progress e2e integration test against real claude binary
   category: eval
@@ -355,121 +355,6 @@ tasks:
 
     - Memory: `l5-l6-tests-include-template-token-coverage-check` — current runtime coverage shape and `cache_only_keys` mechanism.
     - `crates/atlas-engine/src/prompt_token_coverage.rs` — current implementation to supersede or augment.
-- id: bounded-concurrency-for-l8-map-step-rayon-or-tokio-semaphore
-  title: Bounded concurrency for L8 map step (rayon or Tokio + Semaphore)
-  category: feature
-  status: done
-  dependencies: []
-  description: |
-    **Priority: MEDIUM.** Follow-up to the L8 map/reduce redesign (`map-reduce-llm-architecture-with-backend-routing-for-context-light-analysis`). The map step in `l8_recurse::map_reduce_subcarve` currently calls `is_component(db, workspace, dir)` in a serial `for` loop. With HTTP-routed Classify, each map call is ~1s; on a 74-component first iteration with say 10 immediate sub-dirs each, that's ~12 min serial.
-
-    ## Why
-
-    Map calls are independent and idempotent. Salsa 0.26 supports parallel tracked-query execution, and `LlmResponseCache` is already thread-safe via `AtomicU64` CAS. The infrastructure is ready — what's missing is the parallel iterator at the call site.
-
-    ## Scope
-
-    - **Pick a runtime.** Rayon's parallel iterator is the simplest fit because L8 is a sync function called from a sync fixedpoint driver; Tokio + Semaphore is alternative but pulls async into a currently-sync layer.
-    - **Bound the concurrency.** Start with 8 in flight; expose as `FixedpointConfig.map_concurrency` so the CLI can tune. Avoid hammering Anthropic / OpenAI rate limits.
-    - **Preserve determinism.** Output `sub_dirs` ordering must match the serial path. Sort the verdicts deterministically before assembling the final `Vec<PathBuf>`.
-    - **Error isolation.** A panic in one map call must not poison sibling calls. Capture per-subdir errors into the `unknown_classification` path that already exists in L3 — same fallback behaviour as today, just wrapped.
-
-    ## Exit criteria
-
-    - `map_reduce_subcarve` runs N parallel `is_component` calls bounded by `map_concurrency`.
-    - Wall-time on dull at depth 1 with a real LLM budget is ≤ 5 min on a freshly-uncached run (the `map-reduce-llm-architecture-...` task's exit criterion).
-    - All existing engine tests still pass (no flake from concurrent Salsa access).
-    - A new test demonstrates that the same fixture produces byte-identical `sub_dirs` under `map_concurrency = 1` and `map_concurrency = 8`.
-
-    ## Cross-references
-
-    - Memory: `tokencounter-charge-uses-cas-loop-on-atomicu64` — the CAS lock-free counter is what makes this safe today.
-    - Spec: `docs/superpowers/specs/2026-05-04-l8-map-reduce-design.md` § Concurrency.
-  results: |
-    ## Outcome
-
-    Bounded concurrency for L8's map step landed via a `rayon` thread pool
-    sized to `FixedpointConfig.map_concurrency` (default 8). Each parallel
-    worker holds its own `AtlasDatabase` clone — Salsa 0.26's `&Database`
-    is `!Send` (because `ZalsaLocal` holds `UnsafeCell` data), so per-thread
-    cloned handles are the canonical Salsa parallelism pattern. Clones
-    share the underlying memoised query graph and `LlmResponseCache`.
-
-    `map_concurrency` is exposed end-to-end:
-
-    - `AtlasDatabase` getter/setter (mirrors `max_depth` pattern).
-    - `FixedpointConfig::map_concurrency` (default `DEFAULT_MAP_CONCURRENCY = 8`).
-    - `IndexConfig::map_concurrency` plumbed from `--map-concurrency` CLI flag.
-
-    `map_concurrency = 1` falls back to the original serial loop. A
-    `candidates.len() <= 1` guard also short-circuits to serial since the
-    rayon pool overhead is wasted on a single candidate.
-
-    ## Determinism + panic isolation
-
-    - **Determinism.** Verified by `l8_recurse::tests::map_step_is_deterministic_across_concurrency_settings`,
-      which builds a lib crate with four immediate sub-dirs (`src`,
-      `examples`, `tests`, `benches`) and asserts `SubcarveDecision`
-      equality between `map_concurrency=1` and `map_concurrency=8`.
-      `par_iter().map_with(...).collect()` preserves input order under
-      `IndexedParallelIterator`, so no manual post-sort is needed.
-    - **Panic isolation.** Each closure wraps `is_component` in
-      `std::panic::catch_unwind(AssertUnwindSafe(...))` and synthesises
-      `unknown_classification("L8 map step panicked classifying …")` on
-      panic. `LlmResponseCache::call_cached` releases its `Mutex` around
-      the backend call, so a panic in one closure can't poison siblings.
-
-    ## Cache + correctness invariants preserved
-
-    - L3 calls still route through `db.call_llm_cached` — parallel callers
-      may double-fetch the same key on first miss, but responses are equal
-      by the `LlmBackend` invariant so this is at most one redundant call,
-      not a correctness hole.
-    - `LlmFingerprint` is unchanged — no fingerprint key updates needed.
-    - All 26 test groups in the workspace pass (203 atlas-engine, plus the
-      rest). `cargo clippy --workspace --all-targets` is clean.
-
-    ## Files touched
-
-    - `Cargo.toml` (workspace), `crates/atlas-engine/Cargo.toml` — add `rayon = "1"`.
-    - `crates/atlas-engine/src/db.rs` — `DEFAULT_MAP_CONCURRENCY`, field, getter/setter.
-    - `crates/atlas-engine/src/fixedpoint.rs` — `FixedpointConfig.map_concurrency`,
-      Debug/Default updates, `db.set_map_concurrency` in `run_fixedpoint`.
-    - `crates/atlas-engine/src/l3_classify.rs` — `unknown_classification` made `pub(crate)`.
-    - `crates/atlas-engine/src/l8_recurse.rs` — `run_map_step` and
-      `classify_with_panic_isolation`, plus the new determinism test.
-    - `crates/atlas-engine/src/lib.rs` — re-export `DEFAULT_MAP_CONCURRENCY`.
-    - `crates/atlas-cli/src/main.rs` — `--map-concurrency` clap flag.
-    - `crates/atlas-cli/src/pipeline.rs` — plumb through `IndexConfig` to `FixedpointConfig`.
-    - `README.md` — flag table entry.
-    - `docs/superpowers/specs/2026-05-04-l8-map-reduce-design.md` —
-      Concurrency section updated to "implemented" and corrected (the
-      prior `LlmResponseCache uses AtomicU64 CAS` claim was wrong; it
-      uses `Mutex`, but releases its lock around the backend call).
-
-    ## Wall-time impact (not measured here)
-
-    The exit criterion ("≤5 min for a 74-component first iteration on a
-    real monorepo") was already reachable serially when each map call is
-    HTTP (~1s round-trip). Parallel execution drops the ceiling to roughly
-    `serial_total / map_concurrency` minus rayon overhead. Cache hit-rate
-    verification on `dull` at depth 1 with `anthropic/claude-haiku-4-5`
-    remains a separate deferred follow-up under
-    `anthropichttpbackend-already-implemented-...` memory.
-
-    ## What this suggests next
-
-    - **Tune-down hook for rate-limited providers.** With
-      `--map-concurrency` exposed, an external user hitting Anthropic's
-      per-account rate limit can drop to 2–4 without code changes.
-      `BackendRouter` could grow a `recommended_map_concurrency` hint
-      per provider as a future ergonomic.
-    - **Cache hit-rate verification.** Now unblocked since the parallel
-      path is in place. The deferred dull-at-depth-1 run with Haiku should
-      exercise both prompt caching and rayon concurrency.
-    - **L8 quality bar.** The "library with `src/auth/` and `src/billing/`"
-      one-level-enumeration limitation is unchanged by this work; descending
-      through container dirs (`src`, `lib`, `app`) remains a separate task.
 - id: drop-vestigial-seam-density-cliques-touching-from-subcarvesignals
   title: Drop vestigial seam_density/cliques_touching from SubcarveSignals
   category: infra
