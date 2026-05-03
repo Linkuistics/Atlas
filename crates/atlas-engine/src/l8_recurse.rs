@@ -46,7 +46,7 @@ use atlas_index::{ComponentEntry, PathSegment, PinValue};
 use crate::db::{AtlasDatabase, Workspace};
 use crate::l4_tree::all_components;
 use crate::l7_structural::{cliques, modularity_hint, seam_density, Clique};
-use crate::subcarve_policy::{decide, PolicyDecision, SubcarveSignals};
+use crate::subcarve_policy::{decide, decide_kind_only, PolicyDecision, SubcarveSignals};
 use crate::types::ComponentKind;
 
 /// Min-k for clique search feeding [`SubcarveSignals::cliques_touching`].
@@ -110,6 +110,48 @@ fn compute_decision(db: &AtlasDatabase, id: &str) -> SubcarveDecision {
     let kind = ComponentKind::parse(&entry.kind).unwrap_or(ComponentKind::NonComponent);
     let current_depth = compute_depth(&components, id);
     let max_depth = db.max_depth();
+
+    // Cheap guards first: the universal depth cap and the kind-only
+    // policy fast-path stop most components without ever touching
+    // `seam_density` / `modularity_hint` / `cliques`. Those signals
+    // transitively pull L5 `surface_of` LLM calls via `edge_graph`, so
+    // computing them eagerly would burn LLM budget on components whose
+    // verdict is already `Stop`.
+    if current_depth >= max_depth {
+        return SubcarveDecision::stopped(&format!(
+            "policy: stop (kind={}, depth={}/{})",
+            entry.kind, current_depth, max_depth
+        ));
+    }
+    match decide_kind_only(kind) {
+        Some(PolicyDecision::Stop) => {
+            return SubcarveDecision::stopped(&format!(
+                "policy: stop (kind={}, depth={}/{})",
+                entry.kind, current_depth, max_depth
+            ));
+        }
+        Some(PolicyDecision::Recurse) => {
+            // Workspace is the only kind that returns Recurse from the
+            // kind-only check. Members surface through L2's manifest
+            // walk, so report `should_subcarve: true` without sub_dirs.
+            debug_assert!(matches!(kind, ComponentKind::Workspace));
+            return SubcarveDecision {
+                should_subcarve: true,
+                sub_dirs: Vec::new(),
+                rationale: "workspace: members discovered via manifests".to_string(),
+            };
+        }
+        // `decide_kind_only` never returns `AskLlm`; the library kinds
+        // it returns `None` for fall through to the structural-signal
+        // path below.
+        Some(PolicyDecision::AskLlm) => {
+            unreachable!("decide_kind_only never returns AskLlm; library kinds must return None")
+        }
+        None => {}
+    }
+
+    // Library kinds: structural signals are required to decide the
+    // depth cap and to feed the map step.
     let seam_density_value = seam_density(db, id.to_string());
     let modularity_hint_value = modularity_hint(db, id.to_string());
     let cliques_touching = cliques_touching_id(db, id);
@@ -130,17 +172,6 @@ fn compute_decision(db: &AtlasDatabase, id: &str) -> SubcarveDecision {
             "policy: stop (kind={}, depth={}/{})",
             entry.kind, current_depth, max_depth
         )),
-        PolicyDecision::Recurse if matches!(kind, ComponentKind::Workspace) => {
-            // Workspace members surface through L2's manifest walk.
-            // Reporting `should_subcarve: true` without sub_dirs tells
-            // the fixedpoint driver "yes, this component may grow"
-            // without adding a bogus carve root.
-            SubcarveDecision {
-                should_subcarve: true,
-                sub_dirs: Vec::new(),
-                rationale: "workspace: members discovered via manifests".to_string(),
-            }
-        }
         PolicyDecision::Recurse | PolicyDecision::AskLlm => {
             map_reduce_subcarve(db, entry, &signals)
         }
@@ -360,7 +391,10 @@ fn build_rationale(
         parts.push(format!("kept: {}", accepted_summaries.join(", ")));
     }
     if modularity_hint_present && !should_subcarve {
-        parts.push("note: modularity_hint suggested a partition but no sub-dir verdict was a boundary".to_string());
+        parts.push(
+            "note: modularity_hint suggested a partition but no sub-dir verdict was a boundary"
+                .to_string(),
+        );
     }
     parts.join("; ")
 }
@@ -377,8 +411,8 @@ mod tests {
     use super::*;
     use crate::db::AtlasDatabase;
     use crate::ingest::seed_filesystem;
-    use atlas_llm::{LlmFingerprint, TestBackend};
-    use std::sync::Arc;
+    use atlas_llm::{LlmFingerprint, PromptId, TestBackend};
+    use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
     fn fingerprint() -> LlmFingerprint {
@@ -462,6 +496,119 @@ mod tests {
             .id
             .clone();
         assert!(!should_subcarve(&db, id));
+    }
+
+    // ---------------------------------------------------------------
+    // Regression: short-circuiting Stop verdicts must skip structural
+    // signal computation. `seam_density` and `modularity_hint`
+    // transitively pull L5 `surface_of` calls via `edge_graph` →
+    // `all_proposed_edges`, so an eager `compute_decision` would burn
+    // the LLM budget on components it has already decided to stop on.
+    // ---------------------------------------------------------------
+
+    /// Backend that records every `call` it receives. Wraps an inner
+    /// `TestBackend` so registered canned responses still flow through;
+    /// used to assert *absence* of LLM traffic on stop-kind components.
+    struct RecordingBackend {
+        inner: TestBackend,
+        calls: Mutex<Vec<PromptId>>,
+    }
+
+    impl RecordingBackend {
+        fn new(fp: LlmFingerprint) -> Self {
+            Self {
+                inner: TestBackend::with_fingerprint(fp),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Vec<PromptId> {
+            self.calls.lock().expect("calls poisoned").clone()
+        }
+    }
+
+    impl atlas_llm::LlmBackend for RecordingBackend {
+        fn call(
+            &self,
+            req: &atlas_llm::LlmRequest,
+        ) -> Result<serde_json::Value, atlas_llm::LlmError> {
+            self.calls
+                .lock()
+                .expect("calls poisoned")
+                .push(req.prompt_template);
+            self.inner.call(req)
+        }
+        fn fingerprint(&self) -> LlmFingerprint {
+            self.inner.fingerprint()
+        }
+    }
+
+    fn db_with_recording_backend(
+        builder: impl FnOnce(&std::path::Path),
+    ) -> (AtlasDatabase, Arc<RecordingBackend>, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        builder(tmp.path());
+        let backend = Arc::new(RecordingBackend::new(fingerprint()));
+        let backend_dyn: Arc<dyn atlas_llm::LlmBackend> = backend.clone();
+        let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
+        seed_filesystem(&mut db, tmp.path(), false).unwrap();
+        (db, backend, tmp)
+    }
+
+    #[test]
+    fn max_depth_zero_skips_all_l5_surface_calls_on_library_kind() {
+        // The universal depth guard fires before any structural-signal
+        // read; with `--max-depth 0`, no Stage1Surface calls should be
+        // issued for the component under decision. A regression here
+        // would mean `seam_density` is being computed eagerly again.
+        let (db, backend, _tmp) = db_with_recording_backend(|root| build_lib_crate(root, "lib"));
+        db.set_max_depth(0);
+        let id = all_components(&db)
+            .iter()
+            .find(|c| !c.deleted)
+            .unwrap()
+            .id
+            .clone();
+
+        let decision = subcarve_decision(&db, id);
+
+        assert!(!decision.should_subcarve);
+        let stage1_calls = backend
+            .calls()
+            .into_iter()
+            .filter(|p| matches!(p, PromptId::Stage1Surface))
+            .count();
+        assert_eq!(
+            stage1_calls,
+            0,
+            "stop-kind decision must not pull L5 surface_of; \
+             observed calls: {:?}",
+            backend.calls()
+        );
+    }
+
+    #[test]
+    fn cli_kind_skips_all_llm_calls_under_normal_max_depth() {
+        // CLI is a Stop kind under the kind-only fast-path. Even with
+        // `--max-depth` allowing recursion, no LLM should be touched.
+        let (db, backend, _tmp) =
+            db_with_recording_backend(|root| build_cli_crate(root, "solo-cli"));
+        let id = all_components(&db)
+            .iter()
+            .find(|c| !c.deleted)
+            .unwrap()
+            .id
+            .clone();
+
+        let decision = subcarve_decision(&db, id);
+
+        assert!(!decision.should_subcarve);
+        assert!(
+            backend.calls().is_empty(),
+            "CLI-kind decision must not call the LLM at all; \
+             observed: {:?}",
+            backend.calls()
+        );
     }
 
     // ---------------------------------------------------------------
@@ -551,10 +698,7 @@ mod tests {
         let mut suppressed = BTreeSet::new();
         suppressed.insert("scripts".to_string());
         assert!(is_pin_suppressed(Path::new("/ws/lib/scripts"), &suppressed));
-        assert!(!is_pin_suppressed(
-            Path::new("/ws/lib/src"),
-            &suppressed
-        ));
+        assert!(!is_pin_suppressed(Path::new("/ws/lib/src"), &suppressed));
     }
 
     #[test]
@@ -571,7 +715,10 @@ mod tests {
             2,
             1,
             3,
-            &["src/auth (rust-library)".to_string(), "src/billing (rust-library)".to_string()],
+            &[
+                "src/auth (rust-library)".to_string(),
+                "src/billing (rust-library)".to_string(),
+            ],
             false,
         );
         assert!(r.contains("kept:"));

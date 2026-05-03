@@ -314,7 +314,7 @@ tasks:
 - id: skip-l8-structural-signal-computation-when-policy-will-stop
   title: Skip L8 structural-signal computation when policy will Stop
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: LOW (perf polish).** `l8_recurse::compute_decision` unconditionally computes `seam_density(db, id)`, `modularity_hint(db, id)`, and `cliques_touching_id(db, id)` BEFORE the policy decides. For components whose policy decision is `Stop` (the universal depth guard, all leaf-like kinds, externals), the structural signals are wasted compute — and worse, `seam_density` transitively pulls L5 `surface_of` LLM calls via the `edge_graph` → `all_proposed_edges` chain.
@@ -353,6 +353,31 @@ tasks:
 
     - Restructuring the policy itself.
     - Caching structural signals more aggressively.
+  results: |
+    ## What was done
+
+    - Extracted `subcarve_policy::decide_kind_only(kind) -> Option<PolicyDecision>` as a kind-only fast-path. Every kind except the library family returns `Some(verdict)`; library kinds return `None` because their depth cap depends on `modularity_hint`. The full `decide(&signals)` now defers to `decide_kind_only` after the universal depth cap, so the policy table is no longer duplicated.
+    - Reordered `l8_recurse::compute_decision` so the cheap guards (universal depth cap + kind-only verdict) fire **before** `seam_density`, `modularity_hint`, `cliques_touching_id`, or `pin_suppressed_children_of` are read. Workspace short-circuits to its members-via-manifests decision in the same fast path; structural signals are computed only for library kinds.
+    - Added two regression tests in `l8_recurse::tests` using a new test-local `RecordingBackend` that wraps `TestBackend` and records every `call` it observes:
+      - `max_depth_zero_skips_all_l5_surface_calls_on_library_kind` — proves the depth guard fires before any `Stage1Surface` traffic.
+      - `cli_kind_skips_all_llm_calls_under_normal_max_depth` — proves the kind-only fast-path skips the LLM entirely for `RustCli` even at the default `--max-depth`.
+
+    ## What worked
+
+    - All 12 `l8_recurse` unit tests + all 12 `subcarve_policy` unit tests pass.
+    - Full `cargo test --workspace`: 488 passed, 0 failed (4 pre-existing ignored e2e tests requiring a real `claude` binary).
+    - `cargo clippy -p atlas-engine --lib --tests -- -D warnings` is clean.
+    - `rustfmt` clean on both modified files.
+
+    ## What didn't
+
+    - Nothing material. The `Some(PolicyDecision::AskLlm)` arm in `compute_decision`'s fast-path match is `unreachable!()` rather than a compile-time guarantee — the type system can't prove that `decide_kind_only` never returns `AskLlm`. Acceptable given how small the policy module is, but a tighter return type (`Option<KindOnlyVerdict>` with only `Stop`/`Recurse`) would lock this if it ever drifts.
+
+    ## Suggested next
+
+    - **Confirm the perf win on `~/Development/dull/`.** The original report describes many-minute cold-cache runs at `--max-depth 0`. A follow-up smoke run should drop to filesystem-walk-only (single-digit seconds). Worth recording as an eval baseline.
+    - **Audit library-kind eager evaluation.** Even after this fix, library kinds still compute all four structural signals before `decide(&signals)` may return `Stop` (when `current_depth >= cap`). That's a smaller wedge — the cap is at most `LIBRARY_DEFAULT_DEPTH_CAP=3` — but the same predicate-hoist trick applies if it shows up on a profile.
+    - **Audit `SubcarveSignals` for vestigial fields.** `subcarve_policy::decide` only ever reads `kind`, `current_depth`, `max_depth`, and `modularity_hint`. The `seam_density` and `cliques_touching` fields are computed in `compute_decision` but never consulted — the same compute-and-throw-away wedge this task fixed for stop kinds, but inside the library path. Either wire them into the policy or drop them from the struct.
 - id: bounded-concurrency-for-l8-map-step-rayon-or-tokio-semaphore
   title: Bounded concurrency for L8 map step (rayon or Tokio + Semaphore)
   category: feature

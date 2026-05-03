@@ -45,15 +45,21 @@ pub enum PolicyDecision {
     AskLlm,
 }
 
-/// Apply the per-kind policy table.
-pub fn decide(signals: &SubcarveSignals) -> PolicyDecision {
-    // Universal cap: --max-depth wins over every per-kind rule. Also
-    // respects the convention that depth is 0-indexed at the root.
-    if signals.current_depth >= signals.max_depth {
-        return PolicyDecision::Stop;
-    }
-
-    match signals.kind {
+/// Kind-only fast-path for the policy. Returns `Some(verdict)` when the
+/// decision can be made from `kind` alone (after the universal depth
+/// cap), or `None` when structural signals are required.
+///
+/// Used by [`crate::l8_recurse::compute_decision`] to short-circuit the
+/// `seam_density` / `modularity_hint` / `cliques` computation when the
+/// verdict is already known — those signals transitively pull L5
+/// `surface_of` LLM calls, so skipping them on every Stop kind takes a
+/// `--max-depth 0 --dry-run` pass from many minutes to filesystem-walk-
+/// only.
+///
+/// Only library kinds return `None`: their depth cap depends on
+/// `modularity_hint`. Every other arm decides from `kind` alone.
+pub fn decide_kind_only(kind: ComponentKind) -> Option<PolicyDecision> {
+    match kind {
         // Leaf-like kinds: one component end-to-end, never carve inside.
         // CLIs, apps, and services own a single entry-point shape;
         // proc-macros, packaging artefacts (docker, installers), and
@@ -74,47 +80,62 @@ pub fn decide(signals: &SubcarveSignals) -> PolicyDecision {
         | ComponentKind::Installer
         | ComponentKind::ShellScripts
         | ComponentKind::SqlScripts
-        | ComponentKind::CodegenTool => PolicyDecision::Stop,
+        | ComponentKind::CodegenTool => Some(PolicyDecision::Stop),
 
         // Documentation and configuration repositories are treated as
         // single components — their internal structure is a directory
         // hierarchy, not a call graph.
         ComponentKind::Spec | ComponentKind::DocsRepo | ComponentKind::ConfigRepo => {
-            PolicyDecision::Stop
+            Some(PolicyDecision::Stop)
         }
 
         // Workspaces trivially contain children (their members). Always
         // recurse; the member directories feed L2 as candidate roots.
-        ComponentKind::Workspace => PolicyDecision::Recurse,
+        ComponentKind::Workspace => Some(PolicyDecision::Recurse),
 
-        // Libraries: recurse up to LIBRARY_DEFAULT_DEPTH_CAP by
-        // default; extend to --max-depth when modularity_hint fires.
-        // Below the cap, route to the LLM for sub-dir identification.
+        // External components live in external-components.yaml; Atlas
+        // does not own their internals. NonComponents have already
+        // been marked `is_boundary: false` and should never reach here.
+        ComponentKind::External | ComponentKind::NonComponent => Some(PolicyDecision::Stop),
+
+        // Libraries: depth cap depends on modularity_hint, so the
+        // verdict needs structural signals.
         ComponentKind::RustLibrary
         | ComponentKind::NodeLibrary
         | ComponentKind::PythonLibrary
         | ComponentKind::DartLibrary
         | ComponentKind::DotnetLibrary
-        | ComponentKind::ReactLibrary => {
-            let cap = if signals.modularity_hint.is_some() {
-                signals.max_depth
-            } else {
-                LIBRARY_DEFAULT_DEPTH_CAP.min(signals.max_depth)
-            };
-            if signals.current_depth >= cap {
-                PolicyDecision::Stop
-            } else if signals.modularity_hint.is_some() {
-                // Hint is clear — recurse deterministically.
-                PolicyDecision::Recurse
-            } else {
-                PolicyDecision::AskLlm
-            }
-        }
+        | ComponentKind::ReactLibrary => None,
+    }
+}
 
-        // External components live in external-components.yaml; Atlas
-        // does not own their internals. NonComponents have already
-        // been marked `is_boundary: false` and should never reach here.
-        ComponentKind::External | ComponentKind::NonComponent => PolicyDecision::Stop,
+/// Apply the per-kind policy table.
+pub fn decide(signals: &SubcarveSignals) -> PolicyDecision {
+    // Universal cap: --max-depth wins over every per-kind rule. Also
+    // respects the convention that depth is 0-indexed at the root.
+    if signals.current_depth >= signals.max_depth {
+        return PolicyDecision::Stop;
+    }
+
+    if let Some(verdict) = decide_kind_only(signals.kind) {
+        return verdict;
+    }
+
+    // Library kinds: recurse up to LIBRARY_DEFAULT_DEPTH_CAP by default;
+    // extend to --max-depth when modularity_hint fires. Below the cap,
+    // route to the LLM for sub-dir identification.
+    let cap = if signals.modularity_hint.is_some() {
+        signals.max_depth
+    } else {
+        LIBRARY_DEFAULT_DEPTH_CAP.min(signals.max_depth)
+    };
+    if signals.current_depth >= cap {
+        PolicyDecision::Stop
+    } else if signals.modularity_hint.is_some() {
+        // Hint is clear — recurse deterministically.
+        PolicyDecision::Recurse
+    } else {
+        PolicyDecision::AskLlm
     }
 }
 

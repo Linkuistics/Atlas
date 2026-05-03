@@ -656,3 +656,15 @@ sessions:
     - **Design spec written**: `docs/superpowers/specs/2026-05-04-l8-map-reduce-design.md` captures the settled architecture.
     - **Two follow-on tasks added** to the backlog: bounded concurrency for the L8 map step (rayon or Tokio semaphore), and skipping L7 structural-signal computation when policy will Stop.
     - **What's next**: the `bounded-concurrency-for-l8-map-step-rayon-or-tokio-semaphore` task unlocks wall-time improvement on large targets like dull; once that lands, the `hand-author-second-golden-for-merged-monorepo` block condition (`0 LLM calls via pin short-circuit`) can be re-tested with HTTP-routed classify at depth 1.
+- id: session-52
+  timestamp: 2026-05-03T14:42:41Z
+  phase: work
+  body: |
+    ### Session 52 (2026-05-03T14:42:41Z) — Skip L8 structural-signal computation on Stop-kind components
+
+    - **Attempted and completed**: hoisted the universal depth-cap check and a new `decide_kind_only` fast-path ahead of all structural-signal computation in `l8_recurse::compute_decision`. Previously, `seam_density`, `modularity_hint`, and `cliques_touching_id` were computed eagerly before any policy check; `seam_density` transitively pulls L5 `surface_of` LLM calls via `edge_graph` → `all_proposed_edges`, burning LLM budget on components whose verdict was already determined by kind or depth.
+    - **`decide_kind_only` extracted in `subcarve_policy.rs`**: returns `Some(Stop)` for all leaf-like kinds (CLI, app, service, proc-macro, docker, installer, scripts, spec/docs/config repos, external, non-component), `Some(Recurse)` for Workspace, and `None` for library kinds (which still need `modularity_hint` to determine their depth cap). The existing `decide(&signals)` now defers to `decide_kind_only` after the universal cap check, eliminating the duplicated match arm.
+    - **Workspace arm hoisted**: the special case for `Workspace` returning `SubcarveDecision` without sub-dirs was moved from the bottom of `compute_decision` into the kind-only fast-path block, so it also bypasses structural-signal computation.
+    - **Two regression tests added** in `l8_recurse::tests` using a new `RecordingBackend` wrapper that records every `PromptId` the LLM receives: `max_depth_zero_skips_all_l5_surface_calls_on_library_kind` (depth guard fires before any `Stage1Surface` traffic) and `cli_kind_skips_all_llm_calls_under_normal_max_depth` (kind-only fast-path skips the LLM entirely for `RustCli`).
+    - **All tests pass**: 488 passed, 0 failed (4 pre-existing ignored e2e tests requiring a live `claude` binary). `cargo clippy` and `rustfmt` both clean.
+    - **What this suggests next**: confirm the perf win with a `--max-depth 0 --dry-run` pass on `~/Development/dull/` (expected: single-digit seconds, down from many minutes). Also audit library-kind eager evaluation (all four signals still computed before `decide(&signals)` can return `Stop` inside the library path) and audit `SubcarveSignals` for vestigial fields (`seam_density`, `cliques_touching` computed but never consulted by `decide`).
