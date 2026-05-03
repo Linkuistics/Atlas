@@ -1,10 +1,100 @@
 tasks:
+- id: validate-params-max-tokens-at-config-load-for-http-providers
+  title: Validate params.max_tokens at config load for HTTP providers
+  category: infra
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: HIGH.** `AtlasConfig::validate` accepts HTTP-provider operations that omit `params.max_tokens`, but `AnthropicHttpBackend::call` requires it (see `crates/atlas-llm/src/http_anthropic.rs:72-82`) and errors with `LlmError::Setup` on every call. Combined with L5/L6's silent-error swallow (separate task), this produces a config that loads cleanly, runs to completion, and reports zero LLM calls — with no observable failure signal.
+
+    ## How it surfaces
+
+    Discovered 2026-05-03 while testing against `~/Development/dull/`. User's config:
+
+    ```yaml
+    providers:
+      anthropic:
+        api_key: ${ANTHROPIC_API_KEY}
+    defaults:
+      model: anthropic/claude-sonnet-4-6
+    ```
+
+    `atlas index` reports `0 LLM calls · 0 tokens · 105 components written`. Outputs landed but every L5/L6/L8 LLM call errored at the `params.max_tokens` check, returned via the soft-fail SurfaceRecord path, and never reached the cache. User has no signal anything is wrong.
+
+    ## Fix
+
+    Extend `AtlasConfig::validate` (`crates/atlas-llm/src/config.rs:127-162`) to walk every operation that resolves to an HTTP provider (`anthropic`, `openai`) and assert its `params.max_tokens` is set as a positive integer. Resolution order: per-operation override > defaults. So:
+
+    - If the resolved operation has `params.max_tokens` → ok.
+    - Else if defaults has `params.max_tokens` → ok.
+    - Else → `ConfigError::MissingMaxTokens { operation: "classify" }` (new variant).
+
+    Subprocess providers (`claude-code`, `codex`) don't need this check — they don't read max_tokens from params.
+
+    ## Tests
+
+    - Unit: `load_rejects_anthropic_without_max_tokens` — config with `defaults.model: anthropic/...` and no `params.max_tokens` fails to load.
+    - Unit: `load_accepts_anthropic_with_default_max_tokens` — same model with `defaults.params.max_tokens: 4096` loads.
+    - Unit: `load_accepts_anthropic_with_per_op_max_tokens` — defaults missing max_tokens but operation override has it, loads.
+    - Unit: `load_accepts_claude_code_without_max_tokens` — subprocess provider doesn't need the check.
+
+    ## Out of scope
+
+    - Default `max_tokens` for HTTP providers — explicit-required is safer than a guessed default.
+    - `init.rs` template change to ship `max_tokens` — depend on this fix landing first; an init template that includes max_tokens but no validation lets users still drift.
+
+    ## Exit criteria
+
+    - `cargo test -p atlas-llm` covers all four unit tests above.
+    - A live run with the dull config above fails at `atlas index` startup with a clear actionable error, not at the silent-no-call summary.
+    - The error message names the operation and points at the `params.max_tokens` field in `.atlas/config.yaml`.
+- id: surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing
+  title: Surface L5/L6/L8 setup errors instead of silently swallowing
+  category: infra
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: HIGH.** L5 surface and L6 edges silently swallow `LlmError` into a `SurfaceRecord { notes: "LLM call failed: ..." }` (and the equivalent for edges), but those notes never appear in `components.yaml` because the L9 projection's `ComponentEntry` schema doesn't include a surface field. Combined with the cache `call_count` only counting hits/misses (not errors), this produces "0 LLM calls" pipeline summaries when in fact every call failed.
+
+    ## Concrete failure mode
+
+    Discovered 2026-05-03. With dull's config missing `params.max_tokens`, every L5 / L6 call returned `LlmError::Setup`. The L5 path at `l5_surface.rs:75-87` constructs a `SurfaceRecord { notes: "LLM call failed: ..." }` and returns it. Pipeline.rs:250 then discards the result with `let _ = atlas_engine::surface_of(...)`, the L9 projection emits `components.yaml` without surface fields, and the user sees: 105 components, 0 LLM calls, 0 tokens, no error.
+
+    The "0 LLM calls" line is technically correct — `LlmResponseCache::call_count` increments only on cache misses (memory: `llmresponsecache-call-count-increments-on-cache-misses-only`), and errors short-circuit before the increment. But for the user, "0 LLM calls" reads as "no work needed" when the actual meaning is "every call attempted, every call failed".
+
+    ## Fix shape (multiple options; pick during implementation)
+
+    1. **Counter for errors.** Add `LlmResponseCache::error_count` parallel to `call_count`. Pipeline summary reports both. "0 LLM calls · 105 errors" is unambiguous.
+
+    2. **Surface error notes into components.yaml.** Extend `ComponentEntry` (in `atlas-index`) with an optional `surface_error: Option<String>` and serialise it. The user sees per-component error notes in their output.
+
+    3. **Propagate setup errors instead of swallowing.** Distinguish recoverable errors (BudgetExhausted, transient HTTP failure) from configuration errors (Setup). Setup errors should propagate up and abort the run. Memory `budgetsentinel-is-only-reliable-budget-exhaustion-detection-path` documents the original soft-fail design intent — this fix tightens it without breaking the budget-exhaustion contract.
+
+    Recommendation: do (1) + (3). (2) adds a schema field that's mostly empty in healthy runs.
+
+    ## Tests
+
+    - A test that drives an HTTP backend without `max_tokens` (or simulates `LlmError::Setup`) and asserts the pipeline either propagates the error (option 3) or reports a non-zero error count in the summary (option 1).
+    - A test that confirms `LlmError::BudgetExhausted` continues to be soft-fail (preserves existing behaviour).
+
+    ## Cross-references
+
+    - `prompt-template-token-coverage-check-build-time` — tests would not have caught this either, since coverage checks run at build time, not against a real backend.
+    - `enable-anthropic-prompt-caching-in-anthropichttpbackend` — once caching lands, error visibility becomes more important (silent errors are easier to mask when a cache might also be silent).
+
+    ## Exit criteria
+
+    - A configuration error (e.g., `LlmError::Setup`) on the L5/L6/L8 path either aborts the run or reports a non-zero error count in the pipeline summary.
+    - BudgetExhausted continues to soft-fail (verified by an existing or new test).
+    - The dull config-without-max_tokens scenario fails loudly, not silently.
 - id: hand-author-second-golden-for-merged-monorepo
   title: Hand-author synthetic second golden for cross-target validation
   category: eval
   status: blocked
   blocked_reason: Depth-1+ LLM run silently no-ops on dull; needs validate-params-max-tokens-at-config-load + surface-l5-l6-l8-setup-errors landed first. See Results.
-  dependencies: []
+  dependencies:
+  - validate-params-max-tokens-at-config-load-for-http-providers
+  - surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing
   description: |
     **Priority: MEDIUM.** Required for success criterion 6 (cross-target generalisation).
 
@@ -461,94 +551,6 @@ tasks:
 
     - Cache-key fingerprinting: `LlmFingerprint::backend_version` should incorporate "caching=on" to keep the Salsa cache sound across versions where caching changes the wire format.
     - Prefix drift: if a template-token in the cached prefix gets renamed but the marker stays put, the prefix changes silently. Add a build-time check that the rendered prefix shape matches the declared cacheable token set.
-- id: validate-params-max-tokens-at-config-load-for-http-providers
-  title: Validate params.max_tokens at config load for HTTP providers
-  category: infra
-  status: not_started
-  dependencies: []
-  description: |
-    **Priority: HIGH.** `AtlasConfig::validate` accepts HTTP-provider operations that omit `params.max_tokens`, but `AnthropicHttpBackend::call` requires it (see `crates/atlas-llm/src/http_anthropic.rs:72-82`) and errors with `LlmError::Setup` on every call. Combined with L5/L6's silent-error swallow (separate task), this produces a config that loads cleanly, runs to completion, and reports zero LLM calls — with no observable failure signal.
-
-    ## How it surfaces
-
-    Discovered 2026-05-03 while testing against `~/Development/dull/`. User's config:
-
-    ```yaml
-    providers:
-      anthropic:
-        api_key: ${ANTHROPIC_API_KEY}
-    defaults:
-      model: anthropic/claude-sonnet-4-6
-    ```
-
-    `atlas index` reports `0 LLM calls · 0 tokens · 105 components written`. Outputs landed but every L5/L6/L8 LLM call errored at the `params.max_tokens` check, returned via the soft-fail SurfaceRecord path, and never reached the cache. User has no signal anything is wrong.
-
-    ## Fix
-
-    Extend `AtlasConfig::validate` (`crates/atlas-llm/src/config.rs:127-162`) to walk every operation that resolves to an HTTP provider (`anthropic`, `openai`) and assert its `params.max_tokens` is set as a positive integer. Resolution order: per-operation override > defaults. So:
-
-    - If the resolved operation has `params.max_tokens` → ok.
-    - Else if defaults has `params.max_tokens` → ok.
-    - Else → `ConfigError::MissingMaxTokens { operation: "classify" }` (new variant).
-
-    Subprocess providers (`claude-code`, `codex`) don't need this check — they don't read max_tokens from params.
-
-    ## Tests
-
-    - Unit: `load_rejects_anthropic_without_max_tokens` — config with `defaults.model: anthropic/...` and no `params.max_tokens` fails to load.
-    - Unit: `load_accepts_anthropic_with_default_max_tokens` — same model with `defaults.params.max_tokens: 4096` loads.
-    - Unit: `load_accepts_anthropic_with_per_op_max_tokens` — defaults missing max_tokens but operation override has it, loads.
-    - Unit: `load_accepts_claude_code_without_max_tokens` — subprocess provider doesn't need the check.
-
-    ## Out of scope
-
-    - Default `max_tokens` for HTTP providers — explicit-required is safer than a guessed default.
-    - `init.rs` template change to ship `max_tokens` — depend on this fix landing first; an init template that includes max_tokens but no validation lets users still drift.
-
-    ## Exit criteria
-
-    - `cargo test -p atlas-llm` covers all four unit tests above.
-    - A live run with the dull config above fails at `atlas index` startup with a clear actionable error, not at the silent-no-call summary.
-    - The error message names the operation and points at the `params.max_tokens` field in `.atlas/config.yaml`.
-- id: surface-l5-l6-l8-setup-errors-instead-of-silently-swallowing
-  title: Surface L5/L6/L8 setup errors instead of silently swallowing
-  category: infra
-  status: not_started
-  dependencies: []
-  description: |
-    **Priority: HIGH.** L5 surface and L6 edges silently swallow `LlmError` into a `SurfaceRecord { notes: "LLM call failed: ..." }` (and the equivalent for edges), but those notes never appear in `components.yaml` because the L9 projection's `ComponentEntry` schema doesn't include a surface field. Combined with the cache `call_count` only counting hits/misses (not errors), this produces "0 LLM calls" pipeline summaries when in fact every call failed.
-
-    ## Concrete failure mode
-
-    Discovered 2026-05-03. With dull's config missing `params.max_tokens`, every L5 / L6 call returned `LlmError::Setup`. The L5 path at `l5_surface.rs:75-87` constructs a `SurfaceRecord { notes: "LLM call failed: ..." }` and returns it. Pipeline.rs:250 then discards the result with `let _ = atlas_engine::surface_of(...)`, the L9 projection emits `components.yaml` without surface fields, and the user sees: 105 components, 0 LLM calls, 0 tokens, no error.
-
-    The "0 LLM calls" line is technically correct — `LlmResponseCache::call_count` increments only on cache misses (memory: `llmresponsecache-call-count-increments-on-cache-misses-only`), and errors short-circuit before the increment. But for the user, "0 LLM calls" reads as "no work needed" when the actual meaning is "every call attempted, every call failed".
-
-    ## Fix shape (multiple options; pick during implementation)
-
-    1. **Counter for errors.** Add `LlmResponseCache::error_count` parallel to `call_count`. Pipeline summary reports both. "0 LLM calls · 105 errors" is unambiguous.
-
-    2. **Surface error notes into components.yaml.** Extend `ComponentEntry` (in `atlas-index`) with an optional `surface_error: Option<String>` and serialise it. The user sees per-component error notes in their output.
-
-    3. **Propagate setup errors instead of swallowing.** Distinguish recoverable errors (BudgetExhausted, transient HTTP failure) from configuration errors (Setup). Setup errors should propagate up and abort the run. Memory `budgetsentinel-is-only-reliable-budget-exhaustion-detection-path` documents the original soft-fail design intent — this fix tightens it without breaking the budget-exhaustion contract.
-
-    Recommendation: do (1) + (3). (2) adds a schema field that's mostly empty in healthy runs.
-
-    ## Tests
-
-    - A test that drives an HTTP backend without `max_tokens` (or simulates `LlmError::Setup`) and asserts the pipeline either propagates the error (option 3) or reports a non-zero error count in the summary (option 1).
-    - A test that confirms `LlmError::BudgetExhausted` continues to be soft-fail (preserves existing behaviour).
-
-    ## Cross-references
-
-    - `prompt-template-token-coverage-check-build-time` — tests would not have caught this either, since coverage checks run at build time, not against a real backend.
-    - `enable-anthropic-prompt-caching-in-anthropichttpbackend` — once caching lands, error visibility becomes more important (silent errors are easier to mask when a cache might also be silent).
-
-    ## Exit criteria
-
-    - A configuration error (e.g., `LlmError::Setup`) on the L5/L6/L8 path either aborts the run or reports a non-zero error count in the pipeline summary.
-    - BudgetExhausted continues to soft-fail (verified by an existing or new test).
-    - The dull config-without-max_tokens scenario fails loudly, not silently.
 - id: reject-http-providers-for-stage1surface-and-stage2edges-in-backendrouter
   title: Reject HTTP providers for Stage1Surface and Stage2Edges in BackendRouter
   category: infra
