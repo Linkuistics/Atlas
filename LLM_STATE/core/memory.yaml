@@ -441,6 +441,8 @@ entries:
   title: CodexBackend is a full subprocess driver; peer of ClaudeCodeBackend
   body: |
     `CodexBackend` is fully implemented in `crates/atlas-llm/src/codex.rs` (no longer a stub). It mirrors `ClaudeCodeBackend`: subprocess spawn, stream-JSON parse via `codex_stream.rs`, fingerprint + observer wiring. Fixtures at `crates/atlas-llm/tests/fixtures/codex-stream/` (simple-classify, with-tools, turn-failed). HTTP-400 upstream errors map to `LlmError::Invocation`. 17 unit tests pass; live construction test against `codex-cli 0.125.0` verified.
+
+    `workspace_path` is plumbed through `BackendRouter::new` into `CodexBackend` but `Command::current_dir` is not yet called — the cwd bug exists and is deferred. Apply the same one-line fix as `ClaudeCodeBackend`. Cross-ref: `subprocess-backends-require-explicit-workspace-path-for-current-dir`.
 - id: atlas-init-scaffolds-config-files-skips-existing
   title: atlas init scaffolds config files; skips existing
   body: |
@@ -612,3 +614,7 @@ entries:
   title: v1 criterion 6 requires structural stability not 5pp metrics
   body: |
     v1 criterion 6 in `verify-atlas-v1-success-criteria-end-to-end` requires structural stability (7/8 structural-stability checks PASS on a full no-overrides run), not a "metrics within 5pp" threshold. The 5pp bar was replaced after the dull cross-target run showed structural coverage is the meaningful signal at this stage.
+- id: subprocess-backends-require-explicit-workspace-path-for-current-dir
+  title: Subprocess backends require explicit workspace_path for current_dir
+  body: |
+    `ClaudeCodeBackend::new(model, prompts, workspace)` passes `workspace_path: PathBuf` and calls `Command::current_dir(workspace_path)` on every spawned subprocess. Without this, relative paths in `claude -p` output resolve against the CLI's cwd, not the indexed workspace root. Every future subprocess backend that exposes filesystem tools must receive `workspace_path` and call `current_dir`.
