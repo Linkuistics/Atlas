@@ -115,7 +115,7 @@ tasks:
 - id: fix-claudecodebackend-subprocess-cwd-to-workspace-root
   title: Fix ClaudeCodeBackend subprocess cwd to workspace root
   category: feature
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: MEDIUM.** `ClaudeCodeBackend` currently inherits the cwd of the `atlas` process when spawning `claude -p` subprocesses. During the 2026-05-04 dull `--no-overrides` run, this caused `claude -p` to search Atlas's tree for surface evidence on dull components — the wrong workspace. The workaround was to run `atlas` from `~/Development/dull/` rather than `~/Development/Atlas/`, but this is fragile and unintuitive.
@@ -156,6 +156,103 @@ tasks:
 
     - Deviation #2 in `evaluation/results/2026-05-04-dull-no-pins/notes.md` — workaround used during the dull run.
     - `crates/atlas-llm/src/claude_code.rs` — subprocess spawn site.
+  results: |
+    ## What was done
+
+    `ClaudeCodeBackend` now sets the spawned `claude -p` subprocess cwd to
+    the indexed workspace root, eliminating the "invoke `atlas` from the
+    target workspace" workaround used during the 2026-05-04 dull
+    `--no-overrides` run.
+
+    Plumbing:
+
+    - `ClaudeCodeBackend` gained a `workspace_path: PathBuf` field, taken in
+      `new(model_id, prompts_dir, workspace_path)`. The spawn site in
+      `LlmBackend::call` now calls `.current_dir(&self.workspace_path)`
+      immediately before `.spawn()`. A `pub fn workspace_path(&self) -> &Path`
+      getter exposes the field for assertions.
+    - `BackendRouter::new` gained a `workspace_path: &Path` parameter and
+      passes it through to `ClaudeCodeBackend::new` for the `claude-code`
+      provider arm.
+    - `build_production_backend_with_counter` (atlas-cli) gained a
+      `workspace_path: &Path` parameter and forwards it to
+      `BackendRouter::new`.
+    - `main.rs` passes `&index_config.root` (already canonicalised) to the
+      backend builder. Reading the path back from `index_config` avoids
+      cloning `root` after it is moved into `IndexConfig::new`.
+    - `evaluation/results/2026-05-04-dull-no-pins/notes.md` updated: the
+      follow-up note for the workaround is now marked *fixed*, with a
+      one-paragraph description of the resolution.
+
+    Five files modified — `claude_code.rs`, `router.rs`, `backend.rs`,
+    `main.rs`, and the dull notes. No generated files; `.gitignore`
+    required no changes.
+
+    ## What worked
+
+    - `cargo build -p atlas-llm -p atlas-cli` clean after threading the new
+      parameter through call sites.
+    - `cargo test --workspace` — all suites pass (no failures across 161+
+      unit tests in atlas-llm, 65 in atlas-cli, plus integration tests).
+      The two non-test call sites (`router.rs` test fixture, `main.rs`)
+      and the two test-only call sites (`construction_succeeds_when_claude_is_on_path`,
+      `call_roundtrips_json_response` in `claude_code.rs`) now build their
+      fixtures with a per-test tempdir for the workspace path.
+    - `cargo clippy --workspace --all-targets` clean.
+    - The new `workspace_path()` getter is assertion-tested inside the
+      existing `ATLAS_LLM_RUN_CLAUDE_TESTS=1`-gated integration test
+      `construction_succeeds_when_claude_is_on_path`, so the field-stored
+      invariant has a coverage point even though `Command` cwd cannot be
+      observed without spawning the real binary.
+
+    ## What did NOT work / scope deferred
+
+    - Unit-testing the `.current_dir` call without spawning `claude` is not
+      possible with the current test infrastructure — there is no `Command`
+      mock layer. The task's exit criteria explicitly accepted "document
+      the invariant with a code comment and a manual verification step" as
+      an alternative; the doc comment on `ClaudeCodeBackend::new` records
+      the invariant, the gated integration test exercises the field, and
+      the manual-verification step (run `atlas index ~/Development/dull/`
+      from `~/Development/Atlas/` and confirm dull surfaces appear in
+      `components.yaml`) is preserved as the acceptance check for the next
+      end-to-end run.
+    - **`CodexBackend` has the same bug.** `Command::new("codex")` at
+      `crates/atlas-llm/src/codex.rs:146` also omits `.current_dir(...)`.
+      Fixing it is now a one-line change because `workspace_path` is
+      already threaded into `BackendRouter::new`. I scoped this work to
+      ClaudeCodeBackend per the task description; the remaining codex fix
+      is a small follow-up backlog item (see below).
+
+    ## Verification status
+
+    - Build: ✅ `cargo build -p atlas-llm -p atlas-cli`.
+    - Tests: ✅ `cargo test --workspace` (0 failures workspace-wide).
+    - Lint: ✅ `cargo clippy --workspace --all-targets`.
+    - Manual end-to-end: ⏳ deferred — requires a live `atlas index`
+      invocation against an external workspace and a dirty parent cwd.
+      Best run alongside the next `verify-atlas-v1-success-criteria-end-to-end`
+      attempt, which already includes a no-overrides dull run from a
+      non-workspace cwd.
+
+    ## What this suggests next
+
+    1. **Add a follow-up backlog task: "Apply the same cwd fix to CodexBackend".**
+       One-line change: `.current_dir(&self.workspace_path)` on the
+       `Command::new("codex")` builder, plus add `workspace_path` to
+       `CodexBackend::new` and pass through from the router's
+       `"codex" => { ... }` arm. The plumbing `workspace_path: &Path`
+       parameter on `BackendRouter::new` is already in place.
+    2. **Re-run `verify-atlas-v1-success-criteria-end-to-end`** from
+       `~/Development/Atlas/` (or any non-workspace cwd) once the codex
+       fix lands. The "wrong cwd" workaround note in the dull artifacts
+       is now marked *fixed* but has not yet been observed live.
+    3. **Memory candidate:** the multi-arg `ClaudeCodeBackend::new(model,
+       prompts, workspace)` signature is now load-bearing — every
+       subprocess backend that spawns a CLI tool with filesystem tools
+       needs an explicit workspace cwd. Consider hoisting the `workspace_path`
+       parameter to a trait-level concern (e.g. a `SubprocessBackend` super
+       trait) the next time a third subprocess backend is added.
 - id: filesystem-tool-use-loop-for-http-llm-backends-provider-agnostic
   title: Filesystem tool-use loop for HTTP LLM backends (provider-agnostic)
   category: feature
@@ -534,3 +631,37 @@ tasks:
     - `evaluation/results/2026-05-04-dull-depth0-perf.md` — new, full audit and recommendation.
 
     No engine or CLI source changed in this phase.
+- id: apply-workspace-cwd-fix-to-codexbackend
+  title: Apply workspace cwd fix to CodexBackend
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: LOW.** `CodexBackend` has the same subprocess cwd bug that was fixed in `ClaudeCodeBackend` during session 61: `Command::new("codex")` at `crates/atlas-llm/src/codex.rs:146` omits `.current_dir(...)`, so Codex's filesystem tools resolve paths against the cwd of the parent `atlas` process rather than the indexed workspace.
+
+    ## Design (settled in session 61)
+
+    The fix is a one-line change because `workspace_path` is already threaded into `BackendRouter::new` (session 61 added the `workspace_path: &std::path::Path` parameter). Steps:
+
+    1. Add `workspace_path: PathBuf` field to `CodexBackend`.
+    2. Add `workspace_path: impl Into<PathBuf>` parameter to `CodexBackend::new`.
+    3. Call `.current_dir(&self.workspace_path)` on the `Command` builder at `crates/atlas-llm/src/codex.rs:146` (the `Command::new("codex")` spawn site).
+    4. In `BackendRouter::new`'s `"codex" => { ... }` arm (`crates/atlas-llm/src/router.rs`), pass `workspace_path` to `CodexBackend::new`.
+    5. Add a `pub fn workspace_path(&self) -> &Path` getter for test assertions.
+    6. Update any test fixtures that call `CodexBackend::new` directly to supply a tempdir as the workspace path.
+
+    ## Reference
+
+    - Session 61 applied the identical pattern to `ClaudeCodeBackend` — see `crates/atlas-llm/src/claude_code.rs` for the exact before/after.
+    - `crates/atlas-llm/src/router.rs` — `BackendRouter::new` already has `workspace_path: &std::path::Path`; the codex arm just needs to forward it.
+    - Deviation #2 in `evaluation/results/2026-05-04-dull-no-pins/notes.md` — the ClaudeCodeBackend entry is marked *fixed*; a similar note can be appended for CodexBackend once this lands.
+
+    ## Dependencies
+
+    None — `workspace_path` plumbing already exists in `BackendRouter::new`.
+
+    ## Exit criteria
+
+    - `cargo build --workspace` clean.
+    - `cargo test --workspace` 0 failures.
+    - `cargo clippy --workspace --all-targets` clean.

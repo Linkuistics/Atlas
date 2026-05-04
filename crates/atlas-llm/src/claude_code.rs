@@ -29,6 +29,7 @@ pub const DEFAULT_MODEL_ID: &str = "claude-sonnet-4-6";
 pub struct ClaudeCodeBackend {
     model_id: String,
     prompts_dir: PathBuf,
+    workspace_path: PathBuf,
     version: String,
     template_sha: [u8; 32],
     ontology_sha: [u8; 32],
@@ -36,25 +37,37 @@ pub struct ClaudeCodeBackend {
 }
 
 impl ClaudeCodeBackend {
-    /// Construct a backend bound to the given model id and prompt
-    /// directory. Runs `claude --version` eagerly so a missing or
-    /// broken `claude` binary fails construction, not the first
-    /// call.
+    /// Construct a backend bound to the given model id, prompt
+    /// directory, and workspace path. Runs `claude --version` eagerly
+    /// so a missing or broken `claude` binary fails construction, not
+    /// the first call.
+    ///
+    /// `workspace_path` is set as the cwd of every spawned `claude -p`
+    /// subprocess so the Read/Grep/Glob/Bash tools resolve paths
+    /// against the user-specified workspace, not the cwd of the parent
+    /// `atlas` process.
     pub fn new(
         model_id: impl Into<String>,
         prompts_dir: impl Into<PathBuf>,
+        workspace_path: impl Into<PathBuf>,
     ) -> Result<Self, LlmError> {
         let model_id = model_id.into();
         let prompts_dir = prompts_dir.into();
+        let workspace_path = workspace_path.into();
         let version = capture_claude_version()?;
         Ok(Self {
             model_id,
             prompts_dir,
+            workspace_path,
             version,
             template_sha: [0u8; 32],
             ontology_sha: [0u8; 32],
             observer: None,
         })
+    }
+
+    pub fn workspace_path(&self) -> &Path {
+        &self.workspace_path
     }
 
     /// Populate the `template_sha` / `ontology_sha` fields that
@@ -223,6 +236,7 @@ impl LlmBackend for ClaudeCodeBackend {
             .arg("--verbose")
             .arg("--model")
             .arg(&self.model_id)
+            .current_dir(&self.workspace_path)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -507,8 +521,10 @@ mod tests {
             return;
         }
         let prompts = tempfile::tempdir().unwrap();
-        ClaudeCodeBackend::new(DEFAULT_MODEL_ID, prompts.path())
+        let workspace = tempfile::tempdir().unwrap();
+        let backend = ClaudeCodeBackend::new(DEFAULT_MODEL_ID, prompts.path(), workspace.path())
             .expect("claude binary should be discoverable");
+        assert_eq!(backend.workspace_path(), workspace.path());
     }
 
     #[test]
@@ -533,7 +549,9 @@ mod tests {
             std::fs::write(prompts.path().join(prompt_template_filename(id)), "stub").unwrap();
         }
 
-        let backend = ClaudeCodeBackend::new(DEFAULT_MODEL_ID, prompts.path()).unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let backend =
+            ClaudeCodeBackend::new(DEFAULT_MODEL_ID, prompts.path(), workspace.path()).unwrap();
         let req = LlmRequest {
             prompt_template: PromptId::Classify,
             inputs: json!({}),

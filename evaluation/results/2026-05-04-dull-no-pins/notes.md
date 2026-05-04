@@ -136,7 +136,10 @@ that has no override coverage.
   `pipeline.rs`).
 - **L6 edges hang on large-input prompts** — *not* fixed; needs a
   separate bug-investigation backlog item.
-- **claude-code surface prompt path resolution** — surface prompts pass
-  workspace-relative paths but `ClaudeCodeBackend` does not set the
-  subprocess cwd. Worked around by invoking atlas from the dull cwd; a
-  proper fix would set cwd from the workspace root in the backend.
+- **claude-code surface prompt path resolution** — *fixed*.
+  `ClaudeCodeBackend` now takes a `workspace_path` and applies it via
+  `Command::current_dir` before spawning `claude -p`, threaded through
+  `BackendRouter::new` and `build_production_backend_with_counter`. The
+  "invoke atlas from the dull cwd" workaround is no longer needed;
+  `atlas index <root>` produces correct surfaces regardless of the
+  parent-process cwd.

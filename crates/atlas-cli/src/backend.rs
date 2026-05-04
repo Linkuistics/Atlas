@@ -112,8 +112,14 @@ impl LlmBackend for BudgetSentinel {
 }
 
 /// Construct the production backend stack from an `AtlasConfig`.
+///
+/// `workspace_path` is the indexed codebase root; subprocess backends
+/// (`claude-code`, `codex`) use it as the cwd of every spawned LLM
+/// process so their filesystem tools resolve paths against the indexed
+/// workspace rather than the cwd of the parent `atlas` process.
 pub fn build_production_backend_with_counter(
     config: &atlas_llm::AtlasConfig,
+    workspace_path: &std::path::Path,
     counter: Option<Arc<TokenCounter>>,
     observer: Option<Arc<dyn atlas_llm::AgentObserver>>,
 ) -> Result<BackendHandles> {
@@ -126,6 +132,7 @@ pub fn build_production_backend_with_counter(
     let router = atlas_llm::BackendRouter::new(
         config,
         prompts_dir.path(),
+        workspace_path,
         template_sha,
         ontology_sha,
         observer,

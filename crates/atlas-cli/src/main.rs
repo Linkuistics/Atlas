@@ -231,6 +231,7 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
 
     let handles = atlas_cli::backend::build_production_backend_with_counter(
         &atlas_config,
+        &index_config.root,
         counter.clone(),
         observer,
     )

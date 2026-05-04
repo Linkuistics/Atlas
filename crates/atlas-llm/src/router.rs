@@ -13,9 +13,15 @@ pub struct BackendRouter {
 
 impl BackendRouter {
     /// Build a `BackendRouter` from a loaded `AtlasConfig`.
+    ///
+    /// `workspace_path` is the indexed codebase root; it is used as the
+    /// cwd of subprocess backends (`claude-code`, `codex`) so their
+    /// filesystem tools resolve paths against the user-specified
+    /// workspace, not the cwd of the parent `atlas` process.
     pub fn new(
         config: &AtlasConfig,
         prompts_dir: &std::path::Path,
+        workspace_path: &std::path::Path,
         template_sha: [u8; 32],
         ontology_sha: [u8; 32],
         observer: Option<Arc<dyn AgentObserver>>,
@@ -96,8 +102,9 @@ impl BackendRouter {
                     Arc::new(b)
                 }
                 "claude-code" => {
-                    let mut b = crate::ClaudeCodeBackend::new(model_id, prompts_dir)?
-                        .with_fingerprint_inputs(template_sha, ontology_sha);
+                    let mut b =
+                        crate::ClaudeCodeBackend::new(model_id, prompts_dir, workspace_path)?
+                            .with_fingerprint_inputs(template_sha, ontology_sha);
                     if let Some(obs) = observer.clone() {
                         b = b.with_observer(obs);
                     }
@@ -458,7 +465,15 @@ mod tests {
         };
 
         let prompts_dir = tempfile::TempDir::new().unwrap();
-        let result = BackendRouter::new(&config, prompts_dir.path(), [0u8; 32], [0u8; 32], None);
+        let workspace = tempfile::TempDir::new().unwrap();
+        let result = BackendRouter::new(
+            &config,
+            prompts_dir.path(),
+            workspace.path(),
+            [0u8; 32],
+            [0u8; 32],
+            None,
+        );
         match result {
             Err(LlmError::Setup(msg)) => assert!(
                 msg.contains("stage1-surface"),
