@@ -118,13 +118,13 @@ entries:
   body: |
     L6 `all_proposed_edges` and `candidate_edges_for` share a single cache key (the full component-pair input batch). One LLM call covers all pairs, but a single component input change invalidates the entire batch's cached result.
 - id: l5-l6-llm-calls-must-route-through-call-llm-cached-not-backend-call-directly
-  title: All engine LLM calls (L3/L5/L6/L8 map step) must route through call_llm_cached
+  title: Engine LLM calls must route through call_llm_cached
   body: |
     All LLM-adjacent queries in `atlas-engine` must route through `AtlasDatabase::call_llm_cached(&self, req)` rather than calling `backend.call()` directly. This wrapper consults `LlmResponseCache` before hitting the backend and records the response keyed by `(LlmFingerprint, PromptId, canonical-JSON(inputs))`. Bypassing `call_llm_cached` silently skips the cache, causing redundant LLM calls and breaking the "zero LLM calls on no-op re-run" exit criterion.
 
-    **Coverage as of 2026-05-04:** L3 (`l3_classify::classify_via_llm`), L5 (`l5_surface::surface_of`), L6 (`l6_edges::all_proposed_edges` / `candidate_edges_for`). L8 itself no longer issues an LLM call directly under map/reduce — its map step calls `is_component`, which routes through the cache via L3.
+    **Coverage:** L3 (`l3_classify::classify_via_llm`), L5 (`l5_surface::surface_of`), L6 (`l6_edges::all_proposed_edges` / `candidate_edges_for`). L8 itself no longer issues an LLM call directly under map/reduce — its map step calls `is_component`, which routes through the cache via L3.
 
-    **Trap fixed in this cycle:** L3 previously bypassed `call_llm_cached` and called `db.backend().call()` directly. With the L8 map/reduce redesign that calls `is_component` per sub-dir, the bypass turned into an N×-amplified cache miss on every re-run. `pipeline_integration::second_run_on_unchanged_fixture_is_byte_identical` is the regression test.
+    L3 bypassing `call_llm_cached` and calling `db.backend().call()` directly turns into N×-amplified cache misses under L8 map/reduce. `pipeline_integration::second_run_on_unchanged_fixture_is_byte_identical` is the regression test.
 - id: back-edge-inputs-stored-as-workspace-fields-not-tracked-queries
   title: Back-edge inputs stored as Workspace fields not tracked queries
   body: |
@@ -208,9 +208,9 @@ entries:
 - id: m2-migration-is-pure-import-path-swap
   title: M2 migration is pure import-path swap
   body: |
-    `component-ontology` at `linkuistics/atlas-contracts` SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` matches Ravel-Lite's `src/ontology/mod.rs` public surface 1:1. The migration (M2/M4/M5) is a pure import-path swap with no API churn; use **local path deps** (`path = "../atlas-contracts/crates/component-ontology"`), not git+rev refs.
+    `component-ontology` at `linkuistics/atlas-contracts` SHA `337c54368eb1393f2c3f8839a5e9042ce72cf964` matches Ravel-Lite's `src/ontology/mod.rs` public surface 1:1. The migration is a pure import-path swap with no API churn; use **local path deps** (`path = "../atlas-contracts/crates/component-ontology"`), not git+rev refs.
 
-    The task lives in **Ravel-Lite's** backlog (not Atlas's): `ravel-lite state backlog list /Users/antony/Development/Ravel-Lite/LLM_STATE/core --category migration`. Atlas's `verify-atlas-v1-success-criteria-end-to-end` criterion 5 is gated on Ravel-Lite's M5.
+    Atlas's `verify-atlas-v1-success-criteria-end-to-end` criterion 5 is gated on Ravel-Lite completing its component-ontology migration.
 - id: atlas-tap-publish-requires-linkuistics-homebrew-taps-formula-dir
   title: Atlas tap publish requires linkuistics/homebrew-taps Formula/ dir
   body: |
@@ -469,56 +469,49 @@ entries:
   body: |
     `l3_classify.rs::build_llm_inputs` must inject `COMPONENT_KINDS` and `LIFECYCLE_SCOPES` using `render_kinds_for_prompt` / `render_lifecycle_scopes_for_prompt`. Missing both caused `prompt::render` to silently error; `classify_via_llm` swallowed it; every LLM-fallback candidate returned `is_boundary: false`. Fix at `l3_classify.rs:317`, matching the L5/L6 pattern. Cross-ref: `l5-l6-tests-include-template-token-coverage-check`.
 - id: l3-classify-is-go-for-per-candidate-http-backend-config-only-change
-  title: L3 classify is GO for per-candidate HTTP backend; config-only change
+  title: L3 classify uses candidate-only context; HTTP switch is config-only
   body: |
     `build_llm_inputs` supplies only candidate-scoped context. Switching L3 from `claude-code` to `anthropic` backend is a one-line `.atlas/config.yaml` change. No prompt engineering needed for the per-candidate HTTP switch.
 - id: l8-redesign-uses-per-subdir-l3-classify-plus-deterministic-rust-reduce
-  title: 'L8 map/reduce: per-subdir L3 + deterministic reduce (implemented)'
+  title: L8 map/reduce uses per-subdir L3 + deterministic reduce
   body: |
-    **Implemented.** L8's `compute_decision` runs `map_reduce_subcarve` on the `Recurse | AskLlm` policy branches: enumerate immediate sub-dirs of each `path_segment`, filter pin-suppressed names (raw + slug), call `is_component(db, workspace, dir)` per sub-dir, reduce — `should_subcarve = any verdict.is_boundary`, `sub_dirs = [dir for verdict.is_boundary]`. Modularity hint becomes a logged prior; verdicts win.
+    L8's `compute_decision` runs `map_reduce_subcarve` on the `Recurse | AskLlm` policy branches: enumerate immediate sub-dirs of each `path_segment`, filter pin-suppressed names (raw + slug), call `is_component(db, workspace, dir)` per sub-dir, reduce — `should_subcarve = any verdict.is_boundary`, `sub_dirs = [dir for verdict.is_boundary]`. Modularity hint becomes a logged prior; verdicts win.
 
-    **Map step uses the existing L3 cascade**: pin → deterministic → LLM via `db.call_llm_cached`. The L3 LLM call now routes through the engine's `LlmResponseCache` (previously bypassed it via `backend.call`); this was a correctness fix surfaced by the `pipeline_integration` no-op-re-run tests after the redesign — without it, the map step re-fired every L3 fallback on each re-run.
+    **Map step uses the existing L3 cascade:** pin → deterministic → LLM via `db.call_llm_cached`. L3 routes through the engine's `LlmResponseCache`; bypassing it turns into N×-amplified cache misses on every re-run. `pipeline_integration::second_run_on_unchanged_fixture_is_byte_identical` is the regression test.
 
-    **Decommissioned**: `subcarve.md` is no longer rendered. The file remains in `EMBEDDED_PROMPTS` so its `template_sha` keeps contributing to the run-wide fingerprint during the transition; deletion slated for the next release. `build_subcarve_inputs`, `parse_subcarve_response`, and the `subcarve.md` row in the bidirectional `prompt_token_coverage` matrix are gone. The `EMBEDDED_SUBCARVE_PROMPT` const and its public re-export from `atlas-engine` are removed.
+    **subcarve.md is no longer rendered.** The file stays in `EMBEDDED_PROMPTS` so its `template_sha` contributes to the run-wide fingerprint during the transition; slated for deletion after one shipped release. `build_subcarve_inputs`, `parse_subcarve_response`, and the `subcarve.md` row in the bidirectional `prompt_token_coverage` matrix are gone.
 
-    **Concurrency**: bounded via rayon, implemented. `run_map_step` uses `par_iter().map_with(cloned_db, ...).collect()` on a private thread pool sized to `map_concurrency`. Plumbed end-to-end: `AtlasDatabase` getter/setter, `FixedpointConfig`, `IndexConfig`, `--map-concurrency` CLI flag. Wall-time ≤5 min criterion on a 74-component monorepo cannot be verified without a live HTTP backend run. Cross-ref: `Salsa 0.26 AtlasDatabase clone works as rayon map_with seed`, `rayon IndexedParallelIterator map_with collect preserves input order`.
+    **Concurrency:** bounded via rayon. `run_map_step` uses `par_iter().map_with(cloned_db, ...).collect()` on a private thread pool sized to `map_concurrency`. Plumbed end-to-end: `AtlasDatabase` getter/setter, `FixedpointConfig`, `IndexConfig`, `--map-concurrency` CLI flag. Cross-ref: `Salsa 0.26 AtlasDatabase clone works as rayon map_with seed`, `rayon IndexedParallelIterator map_with collect preserves input order`.
 
-    **Quality bar limitation**: enumeration is one level deep. A library at `crates/foo/` whose interesting boundary is `crates/foo/src/auth, src/billing` does not surface via this design — the only immediate sub-dir is `src`, which classifies as non-component. A future iteration can descend through "container" dirs (`src`, `lib`, `app`); tracked as a follow-up.
+    **Quality bar limitation:** enumeration is one level deep. A library at `crates/foo/` whose interesting boundary is `crates/foo/src/auth, src/billing` does not surface — the only immediate sub-dir is `src`, which classifies as non-component. A future iteration can descend through "container" dirs (`src`, `lib`, `app`).
 
     Spec: `docs/superpowers/specs/2026-05-04-l8-map-reduce-design.md`. Spike: `docs/spikes/2026-05-02-l3-l8-prompt-shape-spike.md`.
 - id: anthropichttpbackend-already-implemented-map-reduce-scope-is-narrower-than-task-description-implies
-  title: AnthropicHttpBackend ephemeral prompt caching enabled for Classify/Subcarve
+  title: AnthropicHttpBackend implements ephemeral prompt caching for Classify
   body: |
     `AnthropicHttpBackend` is implemented at `crates/atlas-llm/src/http_anthropic.rs` and wired through `BackendRouter` with provider/model routing from `.atlas/config.yaml`. Structured JSON output validation is in place.
 
-    **Prompt caching enabled (ephemeral)** for `Classify` and `Subcarve` prompts. Templates declare a `<!-- CACHE_BOUNDARY -->` marker on its own line; `prompt::render_split` returns `(prefix, Option<suffix>)`; the backend sends `messages[0].content` as a two-block array with `cache_control: {type: ephemeral}` on the prefix block when the marker is present. Backend `fingerprint().backend_version` is `anthropic-http/<crate-ver>+caching=ephemeral` to invalidate stale Salsa cache entries on enable.
+    **Prompt caching (ephemeral):** enabled for `Classify` and `Subcarve` prompts. Templates declare a `<!-- CACHE_BOUNDARY -->` marker on its own line; `prompt::render_split` returns `(prefix, Option<suffix>)`; the backend sends `messages[0].content` as a two-block array with `cache_control: {type: ephemeral}` on the prefix block when the marker is present. `fingerprint().backend_version` is `anthropic-http/<crate-ver>+caching=ephemeral` to invalidate stale Salsa cache entries on enable.
 
-    `classify.md` was restructured to put catalogs (`{{COMPONENT_KINDS}}`, `{{LIFECYCLE_SCOPES}}`) above the variable inputs (`{{DIR_RELATIVE}}`, `{{RATIONALE_BUNDLE}}`, `{{MANIFEST_CONTENTS}}`); subcarve.md has its existing stable prose above the variable per-component inputs. Stage1Surface and Stage2Edges are not touched because `BackendRouter` rejects HTTP providers for those prompts.
+    `classify.md` places catalogs (`{{COMPONENT_KINDS}}`, `{{LIFECYCLE_SCOPES}}`) above variable inputs (`{{DIR_RELATIVE}}`, `{{RATIONALE_BUNDLE}}`, `{{MANIFEST_CONTENTS}}`); `subcarve.md` has stable prose above per-component variable inputs. `Stage1Surface` and `Stage2Edges` are not touched; `BackendRouter` rejects HTTP providers for those prompts.
 
     **OpenAI prompt caching is automatic** — any prompt ≥1024 tokens is cached server-side; `http_openai.rs` needs no code change.
 
-    **Map/reduce status:**
-    1. **L8 redesign — DONE.** `map_reduce_subcarve` lands in `l8_recurse.rs`. Spec: `docs/superpowers/specs/2026-05-04-l8-map-reduce-design.md`. Subcarve prompt no longer rendered.
-    2. **Routing Classify through HTTP — config-only, ready.** Flip `.atlas/config.yaml` `operations.classify.model: anthropic/...`.
-    3. **Cache hit-rate verification — DEFERRED.** Run dull at depth 1 with `anthropic/claude-haiku-4-5` for `classify` and observe `cache_read_input_tokens` in usage data.
-    4. **Goldens/eval re-run — DEFERRED.** Pending the cache-hit-rate run.
-    5. **Bounded concurrency — DONE.** rayon `map_with` on a private thread pool; `map_concurrency` plumbed end-to-end. Wall-time verification deferred (needs live HTTP backend run; `dull` depth-1 is pin-saturated).
-
-    **Subcarve-prompt rendering is no longer load-bearing.** `defaults/prompts/subcarve.md` stays in `EMBEDDED_PROMPTS` for fingerprint stability and is slated for deletion after one shipped release. Prompt caching on subcarve.md no longer matters; classify.md prompt caching is the only HTTP cache lever now.
+    Routing `Classify` through HTTP is a one-line `.atlas/config.yaml` change. `defaults/prompts/subcarve.md` stays in `EMBEDDED_PROMPTS` for fingerprint stability pending deletion after one shipped release.
 - id: interpolate-env-vars-skips-hash-in-quoted-scalar-silently
   title: interpolate_env_vars skips hash-in-quoted-scalar silently
   body: |
     `find_yaml_comment_start` does not model quoted YAML strings. A `${VAR}` inside a quoted scalar that also contains ` # ` is incorrectly skipped as a comment and not interpolated. No Atlas template ships such a value; a code comment documents the remediation path.
 - id: post-v1-3-0-surface-is-release-ready-consider-v1-3-1-before-external-monorepo-test
-  title: Cut v1.3.1 before external monorepo test to reduce noise
+  title: Cut v1.3.1 before external monorepo test; v1.3.0 correctness is clean
   body: |
     v1.3.0 includes three correctness fixes: env-var comment-skip, L3 token-injection, CodexBackend. First-run UX is clean. Cut v1.3.1 before external monorepo testing to reduce "is this a known bug?" noise in early feedback.
 - id: dull-depth-1-skips-llm-path-due-to-dense-pin-coverage
   title: dull pin coverage is high but not total; L3 fires on gap
   body: |
-    `dull` `components.overrides.yaml` declares 83 pinned ids, but Atlas's L1/L2 enumeration finds at least two unpinned candidates that fall through to L3 LLM Classify under cold cache: `session-recording-server/policy_api` and `shared-backend/Dull.SqlcDal/sql_sanitizer`. The pin coverage is *high* but not *total*, so cold-cache runs at any depth fire L3 LLM calls on the gap.
+    `dull` `components.overrides.yaml` declares 83 pinned ids, but Atlas's L1/L2 enumeration finds at least two unpinned candidates that fall through to L3 LLM Classify under cold cache: `session-recording-server/policy_api` and `shared-backend/Dull.SqlcDal/sql_sanitizer`. Pin coverage is high but not total; cold-cache runs at any depth fire L3 LLM calls on the gap.
 
-    A previously-recorded "0 LLM calls, 7min" observation was warm-cache (cache hits on every candidate), not a true cold-cache baseline. L8 perf smoke on dull is blocked until the pin gap is closed. Run `atlas index ~/Development/dull/ --no-overrides` to bypass `components.overrides.yaml` entirely, forcing L3 LLM calls on all enumerated candidates; use that output as the structural cross-target reference for v1 sign-off.
+    "0 LLM calls, 7min" runs on dull are warm-cache (cache hits on every candidate), not a true cold-cache baseline. Run `atlas index ~/Development/dull/ --no-overrides` to bypass `components.overrides.yaml` entirely, forcing L3 LLM calls on all enumerated candidates; use that output as the structural cross-target reference for v1 sign-off.
 
     Cross-ref: `atlas-index no-overrides flag bypasses pin loading`, `evaluation/results/2026-05-04-dull-depth0-perf.md` (full audit and recommendation).
 - id: missing-params-max-tokens-causes-three-silent-llm-failure-layers
@@ -580,23 +573,15 @@ entries:
 
     Cross-ref: `dull pin coverage is high but not total; L3 fires on gap`.
 - id: indicatif-drops-non-tty-output-regardless-of-progressmode
-  title: indicatif drops non-TTY output regardless of ProgressMode
+  title: indicatif suppresses all output on non-TTY stderr silently
   body: |
-    indicatif drops all output on non-TTY stderr regardless of ProgressMode. `ProgressDrawTarget::stderr()` becomes a no-draw target when stderr is not a TTY (`draw_target.rs:167-169`); `multi.println` and bar `set_message` are both no-ops silently — even under `ProgressMode::Always`. Fix: track `plain_stderr: bool` in `Reporter`; route through `eprintln!` when `drawing && !stderr_is_tty`. `ProgressEvent` variants that update only via `set_msg` (Started, Phase, IterStart, Subcarve, Surface) still lack a plain-mode fallback and remain invisible on piped stderr.
+    indicatif suppresses all output — including `MultiProgress::println` and bar `set_message` — on non-TTY stderr, regardless of `ProgressMode`. This is baked into `DrawTarget` (`draw_target.rs:167-169`) and is not surfaced as an error. `ProgressMode::Always` does not override it.
+
+    Fix: `plain_stderr: bool` in `Reporter`, set true iff `drawing && !stderr_is_tty`; route through `eprintln!` in plain mode. Applied to `AgentObserver::on_event`, `ProgressEvent::IterEnd`, and `ProgressEvent::Finished` in `crates/atlas-cli/src/progress.rs`.
+
+    Remaining gap: `ProgressEvent::Started`, `Phase`, `IterStart`, `Subcarve`, `Surface` still route only through `set_msg` and produce no output in `Always + non-TTY` mode.
 
     Cross-ref: `reporter-agent-mounted-is-tracked-in-state-not-derived-from-indicatif`.
-- id: indicatif-suppresses-drawing-including-println-when-stderr-is-not-a-tty
-  title: indicatif suppresses drawing including println when stderr is not a TTY
-  body: |
-    indicatif suppresses all drawing — including `MultiProgress::println` — when the underlying terminal is not a TTY, even when `ProgressDrawTarget::stderr()` is explicitly passed. This is baked into indicatif's draw-target abstraction (`draw_target.rs:167-169`) and is not surfaced as a visible error.
-
-    Consequence: any code that wires a `--progress` flag via indicatif will be silently ineffective when stderr is piped (CI, assert_cmd tests, shell pipelines). The `drawing: true` path through `Reporter` does not guarantee any output to non-TTY stderr.
-
-    Fix pattern: add a `plain_stderr: bool` flag set true iff `drawing && !stderr_is_tty`. In plain mode, emit via `eprintln!` directly instead of routing through indicatif's `set_message` / `multi.println`. This was applied to `AgentObserver::on_event`, `ProgressEvent::IterEnd`, and `ProgressEvent::Finished` handlers in `crates/atlas-cli/src/progress.rs`.
-
-    Remaining gap: `ProgressEvent::Started`, `Phase`, `IterStart`, `Subcarve`, `Surface` still route only through `set_msg` (indicatif bar state) and produce no output in `Always + non-TTY` mode. These would need parallel `eprintln!` emission to give CI consumers per-phase scrollback.
-
-    Cross-ref: `assert_cmd real-binary tests must be gated behind ATLAS_LLM_RUN_CLAUDE_TESTS=1` — the gating env var is both the budget guard and the CI-pipe guard; it is the same guard hiding TTY-related regressions.
 - id: sandboxedfilesystem-check-path-double-canonicalises-to-catch-symlink-escapes
   title: SandboxedFilesystem::check_path double-canonicalises to catch symlink escapes
   body: |
