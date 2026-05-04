@@ -1,4 +1,95 @@
 tasks:
+- id: cross-target-validation-on-dull-via-no-overrides-smoke
+  title: Cross-target validation on dull via --no-overrides smoke
+  category: eval
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: HIGH.** Replaces `hand-author-second-golden-for-merged-monorepo` (deleted). Goal: unblock v1 sign-off criterion 6 (cross-target generalisation) without hand-authoring a second golden. Uses a new `--no-overrides` CLI flag to force every candidate through Atlas's full classification path on a real workspace, captures the resulting outputs as the cross-target reference, and replaces criterion 6's metric-comparison bar with a structural-stability bar.
+
+    ## Why this replaces the hand-authored-golden approach
+
+    Hand-authoring a 100+-component golden by reading source and choosing boundaries is high-cost and high-judgement work. It's also recursive: a hand-authored golden for cross-target validation only tests Atlas if Atlas disagrees with the author — and the author's reading of the codebase is itself error-prone. A pin-disabled smoke run on a real workspace (a) exercises every layer of the pipeline end-to-end, (b) produces outputs that can be diffed across runs to detect regressions, and (c) is cheap enough to repeat.
+
+    The unmet condition for criterion 6 ("metrics within 5pp on each axis") becomes a structural-stability bar: pipeline completes without errors, output schema validates, surfaces and edges are populated for ≥80% of components. Quality measurement against a hand-authored ground truth is dropped.
+
+    ## Scope
+
+    ### Stage 1 — Implement `--no-overrides`
+
+    Add a CLI flag to `atlas index` that, when set:
+
+    - Skips loading `components.overrides.yaml` and `subsystems.overrides.yaml` from the output dir.
+    - Logs a one-line warning at startup that overrides are disabled.
+    - Cache fingerprint encodes "overrides disabled" so cache entries do not bleed between with/without runs.
+    - Files on disk are untouched — flag-only behaviour, not destructive.
+
+    Tests:
+    - Unit: `pipeline.rs` loads no overrides when flag is set, regardless of file presence.
+    - Integration: a fixture with non-trivial pins, run with and without `--no-overrides`, produces different L3 verdicts (deterministic short-circuit vs. LLM-fallback / kind-only path).
+
+    Estimated size: ~30-50 lines + 2 tests.
+
+    ### Stage 2 — Cost-controlled live run on dull
+
+    Edit `~/Development/dull/.atlas/config.yaml`:
+
+    - `providers.anthropic.api_key: ${ANTHROPIC_API_KEY}` (env var must be set).
+    - `operations.classify.model: anthropic/claude-haiku-4-5`, `params.max_tokens: 1024` — Haiku via HTTP with prompt caching on the kind-catalogue prefix.
+    - `operations.surface.model: claude-code/claude-sonnet-4-6` — Sonnet for cost; Opus is overkill for surface extraction.
+    - `operations.edges.model: claude-code/claude-sonnet-4-6` — same reasoning.
+
+    Run sequence:
+
+    1. Calibration: `atlas index ~/Development/dull/ --no-overrides --max-depth 1 --budget 50000`. Read summary; verify call count and token spend project reasonably to full depth.
+    2. Full run: `atlas index ~/Development/dull/ --no-overrides --budget 200000`. Capture wall time and final summary.
+
+    Cost envelope (rough):
+
+    | Layer | Calls | Per-call | Subtotal |
+    |---|---|---|---|
+    | L3 Classify (Haiku/HTTP, prefix-cached) | ~100 | $0.001-$0.005 | $0.10-$0.50 |
+    | L5 Surface (Sonnet/claude-code) | ~100 | $0.05-$0.30 | $5-$30 |
+    | L6 Edges (Sonnet/claude-code) | 1 batch | $0.50-$2.00 | $0.50-$2.00 |
+    | **Total** | | | **~$5-$35** |
+
+    ### Stage 3 — Capture outputs as cross-target reference
+
+    - Stash `components.yaml`, `external-components.yaml`, `related-components.yaml`, `subsystems.yaml`, and `llm-cache.json` under `Atlas/evaluation/results/<date>-dull-no-pins/`.
+    - Author `notes.md` documenting: model routing used, budget consumed, wall time, llm-cache.json size, any errors observed, structural metrics (component count, % with non-empty surfaces, edge count).
+    - Header `notes.md` with "captured run output, NOT authoritative ground truth — Atlas's own verdicts at this run".
+
+    ### Stage 4 — Soften v1 sign-off criterion 6
+
+    Update `verify-atlas-v1-success-criteria-end-to-end` description to replace criterion 6 with a structural-stability bar:
+
+    - Pipeline completes without `LlmError::Setup` or `LlmError::BudgetExhausted`.
+    - ≥10 components emitted (sanity floor).
+    - All four output YAMLs schema-validate via `atlas validate-overrides` or equivalent.
+    - ≥80% of components have non-empty surface entries.
+    - L6 edges file is non-empty (a workspace with 100 components and 0 inferred edges signals an L6 failure).
+
+    The original "metrics within 5pp" bar is dropped from v1; if a hand-authored golden materialises later, the metric bar can be reintroduced as a v1.x.
+
+    ## Exit criteria
+
+    - `--no-overrides` flag implemented, tested, and behind a fingerprint guard.
+    - One full run on dull captured under `evaluation/results/<date>-dull-no-pins/` with `notes.md`.
+    - All four structural-stability checks pass on that run.
+    - `verify-atlas-v1-success-criteria-end-to-end` description updated to reference the captured run as criterion-6 evidence.
+
+    ## Out of scope
+
+    - Hand-authoring a golden. Explicitly not done in this task.
+    - Performance optimisation.
+    - Migrating L5/L6 to HTTP (separate task: `filesystem-tool-use-loop-for-http-llm-backends-provider-agnostic`).
+
+    ## References
+
+    - Predecessor results: `evaluation/results/2026-05-04-dull-depth0-perf.md` (the analysis that surfaced the dull pin gap and motivated this approach).
+    - Memory: `dull-depth-1-skips-llm-path-due-to-dense-pin-coverage` (corrected; "high but not total").
+    - Memory: `backendrouter-rejects-http-providers-for-stage1surface-and-stage2edges` (why surface/edges stay on claude-code).
+    - Memory: `anthropichttpbackend-already-implemented-...` (HTTP prompt caching for Classify is already on).
 - id: verify-atlas-v1-success-criteria-end-to-end
   title: Verify Atlas v1 success criteria end-to-end
   category: eval
@@ -298,94 +389,3 @@ tasks:
     - `evaluation/results/2026-05-04-dull-depth0-perf.md` — new, full audit and recommendation.
 
     No engine or CLI source changed in this phase.
-- id: cross-target-validation-on-dull-via-no-overrides-smoke
-  title: Cross-target validation on dull via --no-overrides smoke
-  category: eval
-  status: not_started
-  dependencies: []
-  description: |
-    **Priority: HIGH.** Replaces `hand-author-second-golden-for-merged-monorepo` (deleted). Goal: unblock v1 sign-off criterion 6 (cross-target generalisation) without hand-authoring a second golden. Uses a new `--no-overrides` CLI flag to force every candidate through Atlas's full classification path on a real workspace, captures the resulting outputs as the cross-target reference, and replaces criterion 6's metric-comparison bar with a structural-stability bar.
-
-    ## Why this replaces the hand-authored-golden approach
-
-    Hand-authoring a 100+-component golden by reading source and choosing boundaries is high-cost and high-judgement work. It's also recursive: a hand-authored golden for cross-target validation only tests Atlas if Atlas disagrees with the author — and the author's reading of the codebase is itself error-prone. A pin-disabled smoke run on a real workspace (a) exercises every layer of the pipeline end-to-end, (b) produces outputs that can be diffed across runs to detect regressions, and (c) is cheap enough to repeat.
-
-    The unmet condition for criterion 6 ("metrics within 5pp on each axis") becomes a structural-stability bar: pipeline completes without errors, output schema validates, surfaces and edges are populated for ≥80% of components. Quality measurement against a hand-authored ground truth is dropped.
-
-    ## Scope
-
-    ### Stage 1 — Implement `--no-overrides`
-
-    Add a CLI flag to `atlas index` that, when set:
-
-    - Skips loading `components.overrides.yaml` and `subsystems.overrides.yaml` from the output dir.
-    - Logs a one-line warning at startup that overrides are disabled.
-    - Cache fingerprint encodes "overrides disabled" so cache entries do not bleed between with/without runs.
-    - Files on disk are untouched — flag-only behaviour, not destructive.
-
-    Tests:
-    - Unit: `pipeline.rs` loads no overrides when flag is set, regardless of file presence.
-    - Integration: a fixture with non-trivial pins, run with and without `--no-overrides`, produces different L3 verdicts (deterministic short-circuit vs. LLM-fallback / kind-only path).
-
-    Estimated size: ~30-50 lines + 2 tests.
-
-    ### Stage 2 — Cost-controlled live run on dull
-
-    Edit `~/Development/dull/.atlas/config.yaml`:
-
-    - `providers.anthropic.api_key: ${ANTHROPIC_API_KEY}` (env var must be set).
-    - `operations.classify.model: anthropic/claude-haiku-4-5`, `params.max_tokens: 1024` — Haiku via HTTP with prompt caching on the kind-catalogue prefix.
-    - `operations.surface.model: claude-code/claude-sonnet-4-6` — Sonnet for cost; Opus is overkill for surface extraction.
-    - `operations.edges.model: claude-code/claude-sonnet-4-6` — same reasoning.
-
-    Run sequence:
-
-    1. Calibration: `atlas index ~/Development/dull/ --no-overrides --max-depth 1 --budget 50000`. Read summary; verify call count and token spend project reasonably to full depth.
-    2. Full run: `atlas index ~/Development/dull/ --no-overrides --budget 200000`. Capture wall time and final summary.
-
-    Cost envelope (rough):
-
-    | Layer | Calls | Per-call | Subtotal |
-    |---|---|---|---|
-    | L3 Classify (Haiku/HTTP, prefix-cached) | ~100 | $0.001-$0.005 | $0.10-$0.50 |
-    | L5 Surface (Sonnet/claude-code) | ~100 | $0.05-$0.30 | $5-$30 |
-    | L6 Edges (Sonnet/claude-code) | 1 batch | $0.50-$2.00 | $0.50-$2.00 |
-    | **Total** | | | **~$5-$35** |
-
-    ### Stage 3 — Capture outputs as cross-target reference
-
-    - Stash `components.yaml`, `external-components.yaml`, `related-components.yaml`, `subsystems.yaml`, and `llm-cache.json` under `Atlas/evaluation/results/<date>-dull-no-pins/`.
-    - Author `notes.md` documenting: model routing used, budget consumed, wall time, llm-cache.json size, any errors observed, structural metrics (component count, % with non-empty surfaces, edge count).
-    - Header `notes.md` with "captured run output, NOT authoritative ground truth — Atlas's own verdicts at this run".
-
-    ### Stage 4 — Soften v1 sign-off criterion 6
-
-    Update `verify-atlas-v1-success-criteria-end-to-end` description to replace criterion 6 with a structural-stability bar:
-
-    - Pipeline completes without `LlmError::Setup` or `LlmError::BudgetExhausted`.
-    - ≥10 components emitted (sanity floor).
-    - All four output YAMLs schema-validate via `atlas validate-overrides` or equivalent.
-    - ≥80% of components have non-empty surface entries.
-    - L6 edges file is non-empty (a workspace with 100 components and 0 inferred edges signals an L6 failure).
-
-    The original "metrics within 5pp" bar is dropped from v1; if a hand-authored golden materialises later, the metric bar can be reintroduced as a v1.x.
-
-    ## Exit criteria
-
-    - `--no-overrides` flag implemented, tested, and behind a fingerprint guard.
-    - One full run on dull captured under `evaluation/results/<date>-dull-no-pins/` with `notes.md`.
-    - All four structural-stability checks pass on that run.
-    - `verify-atlas-v1-success-criteria-end-to-end` description updated to reference the captured run as criterion-6 evidence.
-
-    ## Out of scope
-
-    - Hand-authoring a golden. Explicitly not done in this task.
-    - Performance optimisation.
-    - Migrating L5/L6 to HTTP (separate task: `filesystem-tool-use-loop-for-http-llm-backends-provider-agnostic`).
-
-    ## References
-
-    - Predecessor results: `evaluation/results/2026-05-04-dull-depth0-perf.md` (the analysis that surfaced the dull pin gap and motivated this approach).
-    - Memory: `dull-depth-1-skips-llm-path-due-to-dense-pin-coverage` (corrected; "high but not total").
-    - Memory: `backendrouter-rejects-http-providers-for-stage1surface-and-stage2edges` (why surface/edges stay on claude-code).
-    - Memory: `anthropichttpbackend-already-implemented-...` (HTTP prompt caching for Classify is already on).
