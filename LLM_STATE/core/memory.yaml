@@ -542,7 +542,7 @@ entries:
 
     **Test escape hatch:** `BackendRouter::from_dispatch_table` (cfg-test) bypasses this check, so router unit tests that wire arbitrary `TestBackend` instances per `PromptId` are unaffected.
 
-    **Future relaxation:** if HTTP backends gain a tool-use loop (filesystem Read/Glob/Grep returning to atlas-cli), the rejection becomes too strict — it can be loosened per-provider once a backend declares filesystem-access capability. A `LlmBackend::supports_filesystem()` capability flag is the natural shape.
+    **Future relaxation:** `LlmBackend::supports_filesystem_tools()` capability flag is now live (default-false; subprocess backends override to true; wrappers delegate). When HTTP backends gain a filesystem tool-use loop, loosen the rejection per-provider by checking `supports_filesystem_tools()` rather than hard-coding the provider list. Cross-ref: `LlmBackend::supports_filesystem_tools() gates tool-use loops`.
 - id: openrouter-uses-openaihttpbackend-with-base-url-and-provider-label-fingerprint
   title: OpenRouter uses OpenAiHttpBackend with_base_url and provider_label fingerprint
   body: |
@@ -597,3 +597,17 @@ entries:
     Remaining gap: `ProgressEvent::Started`, `Phase`, `IterStart`, `Subcarve`, `Surface` still route only through `set_msg` (indicatif bar state) and produce no output in `Always + non-TTY` mode. These would need parallel `eprintln!` emission to give CI consumers per-phase scrollback.
 
     Cross-ref: `assert_cmd real-binary tests must be gated behind ATLAS_LLM_RUN_CLAUDE_TESTS=1` — the gating env var is both the budget guard and the CI-pipe guard; it is the same guard hiding TTY-related regressions.
+- id: sandboxedfilesystem-check-path-double-canonicalises-to-catch-symlink-escapes
+  title: SandboxedFilesystem::check_path double-canonicalises to catch symlink escapes
+  body: |
+    `SandboxedFilesystem::check_path` performs two distinct validation passes: first, a string-level check rejecting absolute paths and `..` segments; second, a `canonicalize` call that resolves symlinks on the result. The double-canonicalise step is required because a crafted path can pass the `..`-segment filter while a symlink resolves outside the sandbox root.
+- id: toolbudget-uses-atomicu64-for-lock-free-concurrent-tool-dispatch
+  title: ToolBudget uses AtomicU64 for lock-free concurrent tool dispatch
+  body: |
+    `ToolBudget` tracks cumulative bytes (`read_file`) and result counts (`glob`, `grep`) via `AtomicU64`, allowing it to be shared across concurrent tool dispatch without a mutex. Pattern mirrors `TokenCounter::charge`. Cross-ref: `tokencounter-charge-uses-cas-loop-on-atomicu64`.
+- id: llmbackend-supports-filesystem-tools-gates-tool-use-loops
+  title: LlmBackend::supports_filesystem_tools() gates tool-use loops
+  body: |
+    `LlmBackend::supports_filesystem_tools() -> bool` is a default-false method on the `LlmBackend` trait. `ClaudeCodeBackend` and `CodexBackend` override to `true`; wrapper backends (`BudgetedBackend`, `BudgetSentinel`, `ProgressBackend`) delegate to their inner. `BackendRouter` uses any-of semantics and exposes `backend_for(PromptId)` for per-prompt capability checks.
+
+    Cross-ref: `backendrouter-rejects-http-providers-for-stage1surface-and-stage2edges` — the "future relaxation" capability flag shape is now live as `supports_filesystem_tools()`.
