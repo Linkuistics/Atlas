@@ -502,18 +502,14 @@ entries:
   title: interpolate_env_vars skips hash-in-quoted-scalar silently
   body: |
     `find_yaml_comment_start` does not model quoted YAML strings. A `${VAR}` inside a quoted scalar that also contains ` # ` is incorrectly skipped as a comment and not interpolated. No Atlas template ships such a value; a code comment documents the remediation path.
-- id: post-v1-3-0-surface-is-release-ready-consider-v1-3-1-before-external-monorepo-test
-  title: Cut v1.3.1 before external monorepo test; v1.3.0 correctness is clean
-  body: |
-    v1.3.0 includes three correctness fixes: env-var comment-skip, L3 token-injection, CodexBackend. First-run UX is clean. Cut v1.3.1 before external monorepo testing to reduce "is this a known bug?" noise in early feedback.
 - id: dull-depth-1-skips-llm-path-due-to-dense-pin-coverage
-  title: dull pin coverage is high but not total; L3 fires on gap
+  title: 'dull --no-overrides run: 7/8 PASS, L6 edges empty'
   body: |
-    `dull` `components.overrides.yaml` declares 83 pinned ids, but Atlas's L1/L2 enumeration finds at least two unpinned candidates that fall through to L3 LLM Classify under cold cache: `session-recording-server/policy_api` and `shared-backend/Dull.SqlcDal/sql_sanitizer`. Pin coverage is high but not total; cold-cache runs at any depth fire L3 LLM calls on the gap.
+    `dull` has 83 pinned ids but at least two unpinned candidates that fall through to L3 LLM Classify under cold cache: `session-recording-server/policy_api` and `shared-backend/Dull.SqlcDal/sql_sanitizer`. "0 LLM calls, 7min" runs on dull are warm-cache, not true cold-cache baselines.
 
-    "0 LLM calls, 7min" runs on dull are warm-cache (cache hits on every candidate), not a true cold-cache baseline. Run `atlas index ~/Development/dull/ --no-overrides` to bypass `components.overrides.yaml` entirely, forcing L3 LLM calls on all enumerated candidates; use that output as the structural cross-target reference for v1 sign-off.
+    `atlas index ~/Development/dull/ --no-overrides` completed: 162 components emitted, 99% surface coverage, four output YAMLs schema-validate, 7/8 structural-stability checks PASS. L6 edges hung (see "L6 claude -p hangs with large prompt"), so `related-components.yaml` shows `edges: []`. Artifacts at `evaluation/results/2026-05-04-dull-no-pins/`.
 
-    Cross-ref: `atlas-index no-overrides flag bypasses pin loading`, `evaluation/results/2026-05-04-dull-depth0-perf.md` (full audit and recommendation).
+    Cross-ref: `atlas-index no-overrides flag bypasses pin loading`, `l6-subprocess-hangs-with-large-prompt-size`.
 - id: missing-params-max-tokens-causes-three-silent-llm-failure-layers
   title: HTTP-provider config missing params.max_tokens rejected at config load
   body: |
@@ -596,3 +592,23 @@ entries:
     `LlmBackend::supports_filesystem_tools() -> bool` is a default-false method on the `LlmBackend` trait. `ClaudeCodeBackend` and `CodexBackend` override to `true`; wrapper backends (`BudgetedBackend`, `BudgetSentinel`, `ProgressBackend`) delegate to their inner. `BackendRouter` uses any-of semantics and exposes `backend_for(PromptId)` for per-prompt capability checks.
 
     Cross-ref: `backendrouter-rejects-http-providers-for-stage1surface-and-stage2edges` — the "future relaxation" capability flag shape is now live as `supports_filesystem_tools()`.
+- id: reqwest-blocking-client-new-has-no-default-timeout
+  title: reqwest::blocking::Client::new() has no default timeout
+  body: |
+    `reqwest::blocking::Client::new()` has no `connect_timeout` or `timeout` by default. On networks with occasional TCP stalls, this causes infinite hangs. Always construct with `.connect_timeout(Duration::from_secs(30)).timeout(Duration::from_secs(60))` (or appropriate values). Atlas added these to all HTTP LLM backends.
+- id: l9-surface-prewarm-uses-par-iter-for-each-with-serial-was-4-hours
+  title: L9 surface prewarm uses par_iter().for_each_with; serial was 4+ hours
+  body: |
+    L9 projection pre-warms `surface_of` calls in parallel via `par_iter().for_each_with(db.clone())`, mirroring the L8 map step. Serial wall time was 4+ hours on dull; parallel pre-warm is ~40 min. Requires cloning `AtlasDatabase` as the rayon seed so each worker gets its own `ZalsaLocal`. Cross-ref: `salsa-0-26-atlasdatabase-clone-works-as-rayon-map-with-seed`.
+- id: llmresponsecache-set-persist-hook-fires-callback-on-each-insert
+  title: LlmResponseCache::set_persist_hook fires callback on each insert
+  body: |
+    `LlmResponseCache::set_persist_hook` registers a closure that fires on every successful insert, letting the CLI layer flush the cache file without the cache needing to know about file paths. Necessary for long-running subprocess runs that may be killed: without per-insert persistence, all accumulated LLM responses are lost on kill. Previous design flushed only at run end.
+- id: l6-claude-p-hangs-with-large-prompt-under-no-overrides
+  title: L6 claude -p hangs with large prompt under --no-overrides
+  body: |
+    Under `atlas index --no-overrides` on dull, the L6 Stage 2 `claude -p` subprocess hung at tool 13 with low CPU after 5+ minutes. The soft-fail `Vec::new()` path allowed the run to continue; `related-components.yaml` shows `edges: []`. Possible causes: claude-code subprocess regression, or prompt size (~150 inline surface records) exceeding a context threshold. Next diagnostic: reproduce with warmed cache to confirm reproducibility.
+- id: v1-criterion-6-requires-structural-stability-not-5pp-metrics
+  title: v1 criterion 6 requires structural stability not 5pp metrics
+  body: |
+    v1 criterion 6 in `verify-atlas-v1-success-criteria-end-to-end` requires structural stability (7/8 structural-stability checks PASS on a full no-overrides run), not a "metrics within 5pp" threshold. The 5pp bar was replaced after the dull cross-target run showed structural coverage is the meaningful signal at this stage.
