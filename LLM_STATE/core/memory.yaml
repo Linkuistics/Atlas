@@ -136,13 +136,11 @@ entries:
 
     Corollary: any change to `build_llm_inputs` output shape — whether fixing a bug or an intentional key rename (e.g. casing: `dir_relative` → `DIR_RELATIVE`, `rationale_bundle` → `RATIONALE_BUNDLE`, `manifest_contents` → `MANIFEST_CONTENTS`) — must be mirrored in every TestBackend fixture that constructs a matching `LlmRequest`. A helper or macro that assembles fixture inputs from the same source-of-truth as the production function would prevent this class of drift.
 - id: seam-density-modularity-hint-uninformative-on-fixedpoint-iteration-0
-  title: seam_density/cliques_touching are vestigial SubcarveSignals fields
+  title: modularity_hint is the sole SubcarveSignals structural signal
   body: |
-    `seam_density` and `cliques_touching` in `SubcarveSignals` are computed but never consulted by `decide`. `modularity_hint` is the only structural signal that feeds into depth-cap logic for library kinds.
+    `seam_density` and `cliques_touching` have been removed from `SubcarveSignals` and from `compute_decision`. `modularity_hint` is now the only structural signal and the sole input to depth-cap logic for library kinds.
 
-    On fixedpoint iteration 0, `modularity_hint` is also uninformative (returns `None`; < 4 descendants), so no structural signal is meaningful on the first pass.
-
-    Library-kind `compute_decision` still computes all four signals eagerly before `decide` can return `Stop` — seam_density/cliques_touching elimination is deferred cleanup.
+    On fixedpoint iteration 0, `modularity_hint` is uninformative (returns `None`; < 4 descendants), so no structural signal affects the first-pass decision.
 - id: no-op-re-run-byte-identity-needs-cache-persistence-stable-generated-at
   title: No-op re-run byte-identity needs cache persistence + stable generated_at
   body: |
@@ -553,7 +551,7 @@ entries:
 - id: decide-kind-only-skips-structural-signals-for-stop-workspace
   title: decide_kind_only skips structural signals for Stop/Workspace
   body: |
-    `decide_kind_only` in `subcarve_policy.rs` returns `Some(Stop)` for leaf-like kinds (CLI, app, service, proc-macro, docker, installer, scripts, spec/docs/config repos, external, non-component) and `Some(Recurse)` for Workspace, allowing `compute_decision` in `l8_recurse` to skip seam_density/modularity_hint/cliques_touching_id computation entirely for those kinds. Library kinds return `None` and still require `modularity_hint` before `decide` can determine their depth cap.
+    `decide_kind_only` in `subcarve_policy.rs` returns `Some(Stop)` for leaf-like kinds (CLI, app, service, proc-macro, docker, installer, scripts, spec/docs/config repos, external, non-component) and `Some(Recurse)` for Workspace, allowing `compute_decision` in `l8_recurse` to skip `modularity_hint` computation entirely for those kinds. Library kinds return `None` and still require `modularity_hint` before `decide` can determine their depth cap.
 
     Two regression tests in `l8_recurse::tests` use `RecordingBackend` (records every `PromptId` received): `max_depth_zero_skips_all_l5_surface_calls_on_library_kind` and `cli_kind_skips_all_llm_calls_under_normal_max_depth`.
 - id: rayon-indexedparalleliterator-map-with-collect-preserves-input-order
