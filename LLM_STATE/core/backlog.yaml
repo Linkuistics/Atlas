@@ -274,29 +274,6 @@ tasks:
 
     - Guide: `~/Development/Ravel-Lite/defaults/fixed-memory/cli-tool-design.md`. Treat the audit checklist (lines 208–252) and the anti-patterns list (lines 256–268) as load-bearing.
     - The guide's own remediation order (lines 271–284) — "Add `--json` everywhere it's missing" first, "stabilise the JSON schema" second, "rewrite error messages" third — is the recommended order for any follow-up tasks the report spawns.
-- id: run-agent-progress-e2e-integration-test-against-real-claude-binary
-  title: Run agent-progress e2e integration test against real claude binary
-  category: eval
-  status: not_started
-  dependencies: []
-  description: |
-    **Priority: LOW.** The agent-progress e2e integration test (`cargo test -p atlas-cli --test agent_observer_e2e`) skips silently by default. Running it once with `ATLAS_LLM_RUN_CLAUDE_TESTS=1` would close the loop on the full streaming pipeline: `ClaudeCodeBackend` → `parse_stream` → `AgentObserver` → `Reporter` agent sub-line.
-
-    ## What to do
-
-    1. Run: `ATLAS_LLM_RUN_CLAUDE_TESTS=1 cargo test -p atlas-cli --test agent_observer_e2e -- --nocapture`
-    2. Verify the test passes end-to-end.
-    3. If it fails, investigate and fix before marking done.
-    4. Estimated cost: ~$0.05 USD, ~30–90 s.
-
-    ## Context
-
-    The agent sub-line feature (shipped in the prior cycle) is verified only by parser-level fixture tests and `Reporter` rendering unit tests. The full integration path (real `claude -p --output-format stream-json --verbose` invocation → JSONL parse → `AgentEvent` emission → `Reporter` sub-line mount/refresh/unmount) has not been exercised end-to-end since implementation.
-
-    ## Exit criteria
-
-    - Test passes under `ATLAS_LLM_RUN_CLAUDE_TESTS=1`.
-    - No regressions in other `atlas-cli` tests.
 - id: filesystem-tool-use-loop-for-http-llm-backends-provider-agnostic
   title: Filesystem tool-use loop for HTTP LLM backends (provider-agnostic)
   category: feature
@@ -398,6 +375,29 @@ tasks:
     - Cache fingerprint encodes "tools enabled" + tool-set hash; existing zero-LLM-call no-op re-runs remain byte-identical.
     - Live end-to-end: `atlas index ~/Development/dull/` with `surface` routed to `anthropic/...` (tools enabled) produces non-empty surfaces and edge proposals; metrics within 5pp of the same run on `claude-code/...`.
     - Memory note added documenting the design and the routing-relaxation that follows.
+- id: run-agent-progress-e2e-integration-test-against-real-claude-binary
+  title: Run agent-progress e2e integration test against real claude binary
+  category: eval
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: LOW.** The agent-progress e2e integration test (`cargo test -p atlas-cli --test agent_observer_e2e`) skips silently by default. Running it once with `ATLAS_LLM_RUN_CLAUDE_TESTS=1` would close the loop on the full streaming pipeline: `ClaudeCodeBackend` → `parse_stream` → `AgentObserver` → `Reporter` agent sub-line.
+
+    ## What to do
+
+    1. Run: `ATLAS_LLM_RUN_CLAUDE_TESTS=1 cargo test -p atlas-cli --test agent_observer_e2e -- --nocapture`
+    2. Verify the test passes end-to-end.
+    3. If it fails, investigate and fix before marking done.
+    4. Estimated cost: ~$0.05 USD, ~30–90 s.
+
+    ## Context
+
+    The agent sub-line feature (shipped in the prior cycle) is verified only by parser-level fixture tests and `Reporter` rendering unit tests. The full integration path (real `claude -p --output-format stream-json --verbose` invocation → JSONL parse → `AgentEvent` emission → `Reporter` sub-line mount/refresh/unmount) has not been exercised end-to-end since implementation.
+
+    ## Exit criteria
+
+    - Test passes under `ATLAS_LLM_RUN_CLAUDE_TESTS=1`.
+    - No regressions in other `atlas-cli` tests.
 - id: confirm-l8-perf-win-on-dull-at-max-depth-0
   title: Confirm L8 perf win on dull at --max-depth 0
   category: eval
