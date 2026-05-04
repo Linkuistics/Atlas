@@ -618,3 +618,11 @@ entries:
   title: Subprocess backends require explicit workspace_path for current_dir
   body: |
     `ClaudeCodeBackend::new(model, prompts, workspace)` passes `workspace_path: PathBuf` and calls `Command::current_dir(workspace_path)` on every spawned subprocess. Without this, relative paths in `claude -p` output resolve against the CLI's cwd, not the indexed workspace root. Every future subprocess backend that exposes filesystem tools must receive `workspace_path` and call `current_dir`.
+- id: subprocess-backends-require-explicit-workspace-cwd-on-command-builder
+  title: Subprocess backends require explicit workspace cwd on Command builder
+  body: |
+    Every subprocess backend that spawns a CLI tool with filesystem access (Read, Grep, Glob, Bash) must set an explicit workspace cwd via `.current_dir(&self.workspace_path)` on the `Command` builder. Without it, subprocess tools resolve paths against the parent `atlas` process cwd, which produces wrong surfaces when `atlas` is invoked from any directory other than the target workspace.
+
+    Pattern established in `ClaudeCodeBackend::new(model_id, prompts_dir, workspace_path)` (session 61). `BackendRouter::new` already carries `workspace_path: &std::path::Path` so any new subprocess backend can be wired trivially.
+
+    Design note: if a third subprocess backend is ever added, consider hoisting `workspace_path` to a `SubprocessBackend` supertrait or a shared `SubprocessConfig` struct to make the invariant impossible to miss. The current two backends (`ClaudeCodeBackend`, `CodexBackend` once fixed) document the invariant via a `pub fn workspace_path(&self) -> &Path` getter used in integration tests.
