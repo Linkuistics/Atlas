@@ -65,11 +65,14 @@ pub struct LlmResponseCache {
     inner: Arc<Mutex<Inner>>,
 }
 
+type PersistHook = Arc<dyn Fn(&LlmResponseCache) + Send + Sync>;
+
 #[derive(Default)]
 struct Inner {
     entries: HashMap<LlmCacheKey, Arc<Value>>,
     call_count: u64,
     error_count: u64,
+    persist_hook: Option<PersistHook>,
 }
 
 impl LlmResponseCache {
@@ -130,10 +133,26 @@ impl LlmResponseCache {
             }
         };
         let value = Arc::new(value);
-        let mut inner = self.inner.lock().expect("llm cache poisoned");
-        inner.call_count += 1;
-        inner.entries.insert(key, value.clone());
+        let hook = {
+            let mut inner = self.inner.lock().expect("llm cache poisoned");
+            inner.call_count += 1;
+            inner.entries.insert(key, value.clone());
+            inner.persist_hook.clone()
+        };
+        if let Some(hook) = hook {
+            hook(self);
+        }
         Ok(value)
+    }
+
+    /// Register a callback invoked after every successful cache insert.
+    /// Drivers (atlas-cli) use this to persist the cache as work proceeds —
+    /// without it, an aborted run loses every response since the start.
+    pub fn set_persist_hook<F>(&self, hook: F)
+    where
+        F: Fn(&LlmResponseCache) + Send + Sync + 'static,
+    {
+        self.inner.lock().expect("llm cache poisoned").persist_hook = Some(Arc::new(hook));
     }
 
     pub fn clear(&self) {

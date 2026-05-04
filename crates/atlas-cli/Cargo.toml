@@ -22,6 +22,7 @@ atlas-llm = { path = "../atlas-llm" }
 clap = { workspace = true }
 component-ontology = { workspace = true }
 indicatif = { workspace = true }
+rayon = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

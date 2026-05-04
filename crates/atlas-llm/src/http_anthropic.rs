@@ -32,7 +32,11 @@ impl AnthropicHttpBackend {
             prompts_dir: prompts_dir.into(),
             template_sha,
             ontology_sha,
-            client: reqwest::blocking::Client::new(),
+            client: reqwest::blocking::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .expect("default reqwest client should build"),
         }
     }
 

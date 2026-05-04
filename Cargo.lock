@@ -101,6 +101,7 @@ dependencies = [
  "component-ontology",
  "indicatif",
  "predicates",
+ "rayon",
  "serde",
  "serde_json",
  "serde_yaml",

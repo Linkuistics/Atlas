@@ -212,6 +212,14 @@ pub fn run_index(
     let mut db = AtlasDatabase::new(backend.clone(), config.root.clone(), fingerprint.clone());
     let cache_path = config.output_dir.join("llm-cache.json");
     cache_io::load_into(&cache_path, db.llm_cache());
+    {
+        let cache_path = cache_path.clone();
+        let save_lock = std::sync::Arc::new(std::sync::Mutex::new(()));
+        db.llm_cache().set_persist_hook(move |cache| {
+            let _guard = save_lock.lock().expect("cache persist lock poisoned");
+            let _ = cache_io::save_from(&cache_path, cache);
+        });
+    }
     seed_filesystem_excluding(
         &mut db,
         &config.root,
@@ -294,15 +302,45 @@ pub fn run_index(
             bad
         )));
     }
+    // surface_of is the run's slowest LLM-driven query on claude-code-only
+    // stacks — each call is a heavy subprocess. Demanding them serially over
+    // ~100 components turns the L9 pre-warm into hours. Mirror L8's map step
+    // (`l8_recurse::run_map_step`): per-worker `db` clones via `map_with`,
+    // because `&AtlasDatabase` is `!Send` (Salsa's `ZalsaLocal` is `!Sync`).
     let n = live_components.len() as u64;
-    for (i, comp) in live_components.iter().enumerate() {
-        reporter.on_event(ProgressEvent::Surface {
-            component_id: comp.id.clone(),
-            relpath: atlas_engine::relpath_of(comp),
-            k: (i as u64) + 1,
-            n,
+    let map_concurrency = config.map_concurrency.max(1);
+    if map_concurrency <= 1 || live_components.len() <= 1 {
+        for (i, comp) in live_components.iter().enumerate() {
+            reporter.on_event(ProgressEvent::Surface {
+                component_id: comp.id.clone(),
+                relpath: atlas_engine::relpath_of(comp),
+                k: (i as u64) + 1,
+                n,
+            });
+            let _ = atlas_engine::surface_of(&db, comp.id.clone());
+        }
+    } else {
+        use rayon::prelude::*;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let progress = AtomicU64::new(0);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(map_concurrency)
+            .thread_name(|i| format!("atlas-l5-prewarm-{i}"))
+            .build()
+            .expect("rayon thread pool construction is infallible at sane sizes");
+        let seed_db = db.clone();
+        pool.install(|| {
+            live_components.par_iter().for_each_with(seed_db, |db_handle, comp| {
+                let k = progress.fetch_add(1, Ordering::Relaxed) + 1;
+                reporter.on_event(ProgressEvent::Surface {
+                    component_id: comp.id.clone(),
+                    relpath: atlas_engine::relpath_of(comp),
+                    k,
+                    n,
+                });
+                let _ = atlas_engine::surface_of(db_handle, comp.id.clone());
+            });
         });
-        let _ = atlas_engine::surface_of(&db, comp.id.clone());
     }
     let prompt_shas = config.prompt_shas.clone().unwrap_or_default();
     let mut components_file =

@@ -45,7 +45,11 @@ impl OpenAiHttpBackend {
             ontology_sha,
             base_url: OPENAI_DEFAULT_URL.to_string(),
             provider_label: "openai".to_string(),
-            client: reqwest::blocking::Client::new(),
+            client: reqwest::blocking::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .expect("default reqwest client should build"),
         }
     }
 

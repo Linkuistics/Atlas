@@ -1,0 +1,4100 @@
+schema_version: 1
+externals:
+- id: crate:aes
+  kind: external
+  language: rust
+  purl: pkg:cargo/aes@=0.6.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/formats/cms/Cargo.toml
+  - connector-lib/formats/pkcs5/Cargo.toml
+  evidence_grade: strong
+- id: crate:agent-api
+  kind: external
+  language: rust
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  evidence_grade: strong
+- id: crate:agent-core
+  kind: external
+  language: rust
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  evidence_grade: strong
+- id: crate:agent-db
+  kind: external
+  language: rust
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  evidence_grade: strong
+- id: crate:agent-proc-macro
+  kind: external
+  language: rust
+  discovered_from:
+  - agent/rust-client/agent-api/Cargo.toml
+  evidence_grade: strong
+- id: crate:agent-tasks
+  kind: external
+  language: rust
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  evidence_grade: strong
+- id: crate:ansi_term
+  kind: external
+  language: rust
+  purl: pkg:cargo/ansi_term@=0.12
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:anstyle
+  kind: external
+  language: rust
+  purl: pkg:cargo/anstyle@=1.0.2
+  discovered_from:
+  - connector-lib/formats/tls_codec/Cargo.toml
+  evidence_grade: strong
+- id: crate:anstyle-parse
+  kind: external
+  language: rust
+  purl: pkg:cargo/anstyle-parse@=0.2.1
+  discovered_from:
+  - connector-lib/formats/tls_codec/Cargo.toml
+  evidence_grade: strong
+- id: crate:anyhow
+  kind: external
+  language: rust
+  purl: pkg:cargo/anyhow@1.0.99
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/benches/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client-glutin/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-rdpsnd-native/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-server/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-testsuite-core/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-testsuite-extra/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/ffi/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/xtask/Cargo.toml
+  - mfa-proxy-api/Cargo.toml
+  - shared-backend/Dull.SqlcDal/sql_sanitizer/Cargo.toml
+  - shared-rust/dull-event-queue/Cargo.toml
+  - tools/dev_setup/Cargo.toml
+  evidence_grade: strong
+- id: crate:arbitrary
+  kind: external
+  language: rust
+  purl: pkg:cargo/arbitrary@1.2
+  discovered_from:
+  - connector-lib/formats/const-oid/Cargo.toml
+  - connector-lib/formats/der/Cargo.toml
+  - connector-lib/formats/spki/Cargo.toml
+  - connector-lib/formats/tls_codec/Cargo.toml
+  - connector-lib/formats/x509-cert/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-connector/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-fuzzing/Cargo.toml
+  evidence_grade: strong
+- id: crate:arc-swap
+  kind: external
+  language: rust
+  purl: pkg:cargo/arc-swap@1.7.1
+  discovered_from:
+  - session-recording-client/Cargo.toml
+  evidence_grade: strong
+- id: crate:array-concat
+  kind: external
+  language: rust
+  purl: pkg:cargo/array-concat@0.5
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-testsuite-core/Cargo.toml
+  evidence_grade: strong
+- id: crate:async-signature
+  kind: external
+  language: rust
+  purl: pkg:cargo/async-signature@=0.6.0-pre.1
+  discovered_from:
+  - connector-lib/formats/x509-cert/Cargo.toml
+  evidence_grade: strong
+- id: crate:async-trait
+  kind: external
+  language: rust
+  purl: pkg:cargo/async-trait@=0.1.57
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/benches/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-dvc-pipe-proxy/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-server/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-testsuite-extra/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  - mfa-proxy-api/Cargo.toml
+  - shared-rust/dull-event-queue/Cargo.toml
+  evidence_grade: strong
+- id: crate:async_io_stream
+  kind: external
+  language: rust
+  purl: pkg:cargo/async_io_stream@^0.3
+  discovered_from:
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:atomic-option
+  kind: external
+  language: rust
+  purl: pkg:cargo/atomic-option@=0.1.2
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  evidence_grade: strong
+- id: crate:axum
+  kind: external
+  language: rust
+  purl: pkg:cargo/axum@0.8
+  discovered_from:
+  - mfa-proxy-api/Cargo.toml
+  evidence_grade: strong
+- id: crate:axum-reverse-proxy
+  kind: external
+  language: rust
+  purl: pkg:cargo/axum-reverse-proxy@1.1.1
+  discovered_from:
+  - mfa-proxy-api/Cargo.toml
+  evidence_grade: strong
+- id: crate:axum-test
+  kind: external
+  language: rust
+  purl: pkg:cargo/axum-test@18.4
+  discovered_from:
+  - mfa-proxy-api/Cargo.toml
+  evidence_grade: strong
+- id: crate:backon
+  kind: external
+  language: rust
+  purl: pkg:cargo/backon@1.6
+  discovered_from:
+  - mfa-proxy-api/Cargo.toml
+  - shared-rust/dull-event-queue/Cargo.toml
+  evidence_grade: strong
+- id: crate:backtrace
+  kind: external
+  language: rust
+  purl: pkg:cargo/backtrace@0.3
+  discovered_from:
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:base16ct
+  kind: external
+  language: rust
+  purl: pkg:cargo/base16ct@0.2
+  discovered_from:
+  - connector-lib/formats/sec1/Cargo.toml
+  - connector-lib/formats/serdect/Cargo.toml
+  evidence_grade: strong
+- id: crate:base32
+  kind: external
+  language: rust
+  purl: pkg:cargo/base32@0.5
+  discovered_from:
+  - connector-lib/formats/base32ct/Cargo.toml
+  evidence_grade: strong
+- id: crate:base64
+  kind: external
+  language: rust
+  purl: pkg:cargo/base64@=0.13.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - connector-lib/formats/base64ct/Cargo.toml
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-mstsgu/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  - tools/fake_connection_generator/Cargo.toml
+  evidence_grade: strong
+- id: crate:base64ct
+  kind: external
+  language: rust
+  purl: pkg:cargo/base64ct@=1.6.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - connector-lib/formats/pem-rfc7468/Cargo.toml
+  - connector-lib/formats/spki/Cargo.toml
+  evidence_grade: strong
+- id: crate:bincode
+  kind: external
+  language: rust
+  purl: pkg:cargo/bincode@1
+  discovered_from:
+  - agent/rust-client/ipc-channel/Cargo.toml
+  - connector-lib/formats/serdect/Cargo.toml
+  - mfa-proxy-api/Cargo.toml
+  - shared-rust/dull-event-queue/Cargo.toml
+  evidence_grade: strong
+- id: crate:bit_field
+  kind: external
+  language: rust
+  purl: pkg:cargo/bit_field@0.10
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-egfx/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-graphics/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-pdu/Cargo.toml
+  evidence_grade: strong
+- id: crate:bitflags
+  kind: external
+  language: rust
+  purl: pkg:cargo/bitflags@2.9
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-ainput/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-cliprdr/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-egfx/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-graphics/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-mstsgu/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-pdu/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-rdpdr/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-rdpsnd/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-svc/Cargo.toml
+  evidence_grade: strong
+- id: crate:bitvec
+  kind: external
+  language: rust
+  purl: pkg:cargo/bitvec@1.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-graphics/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-input/Cargo.toml
+  evidence_grade: strong
+- id: crate:block-modes
+  kind: external
+  language: rust
+  purl: pkg:cargo/block-modes@=0.7.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  evidence_grade: strong
+- id: crate:bmp
+  kind: external
+  language: rust
+  purl: pkg:cargo/bmp@0.5
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-graphics/Cargo.toml
+  evidence_grade: strong
+- id: crate:bollard
+  kind: external
+  language: rust
+  purl: pkg:cargo/bollard@0.19
+  discovered_from:
+  - evm-docker-controller/Cargo.toml
+  evidence_grade: strong
+- id: crate:bytemuck
+  kind: external
+  language: rust
+  purl: pkg:cargo/bytemuck@1.24
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-graphics/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-rdpsnd-native/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-str/Cargo.toml
+  evidence_grade: strong
+- id: crate:byteorder
+  kind: external
+  language: rust
+  purl: pkg:cargo/byteorder@1.5
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-graphics/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-pdu/Cargo.toml
+  evidence_grade: strong
+- id: crate:bytes
+  kind: external
+  language: rust
+  purl: pkg:cargo/bytes@=1.11.1
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/formats/der/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-async/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-blocking/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-server/Cargo.toml
+  evidence_grade: strong
+- id: crate:bytesize
+  kind: external
+  language: rust
+  purl: pkg:cargo/bytesize@2.3
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/benches/Cargo.toml
+  evidence_grade: strong
+- id: crate:cached
+  kind: external
+  language: rust
+  purl: pkg:cargo/cached@=0.44.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  evidence_grade: strong
+- id: crate:cbc
+  kind: external
+  language: rust
+  purl: pkg:cargo/cbc@=0.2.0-pre
+  discovered_from:
+  - connector-lib/formats/cms/Cargo.toml
+  - connector-lib/formats/pkcs5/Cargo.toml
+  evidence_grade: strong
+- id: crate:cbindgen
+  kind: external
+  language: rust
+  purl: pkg:cargo/cbindgen@=0.26.0
+  discovered_from:
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:chacha20poly1305
+  kind: external
+  language: rust
+  purl: pkg:cargo/chacha20poly1305@=0.7.1
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  evidence_grade: strong
+- id: crate:chrono
+  kind: external
+  language: rust
+  purl: pkg:cargo/chrono@0.4
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - docker-evm-rdp/launcher-web-entrypoint/Cargo.toml
+  - evm-docker-controller/Cargo.toml
+  - evm-launcher-agent/Cargo.toml
+  - evm-process-monitor/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client-glutin/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  - session-recording-client/Cargo.toml
+  - session-recording-server/policy_api/Cargo.toml
+  evidence_grade: strong
+- id: crate:ciborium
+  kind: external
+  language: rust
+  purl: pkg:cargo/ciborium@0.2
+  discovered_from:
+  - connector-lib/formats/serdect/Cargo.toml
+  evidence_grade: strong
+- id: crate:cipher
+  kind: external
+  language: rust
+  purl: pkg:cargo/cipher@=0.5.0-pre.4
+  discovered_from:
+  - connector-lib/formats/cms/Cargo.toml
+  evidence_grade: strong
+- id: crate:clap
+  kind: external
+  language: rust
+  purl: pkg:cargo/clap@=4.3.23
+  discovered_from:
+  - connector-lib/formats/tls_codec/Cargo.toml
+  - evm-docker-controller/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client-glutin/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-replay-client/Cargo.toml
+  - session-recording-client/Cargo.toml
+  - shared-backend/Dull.SqlcDal/sql_sanitizer/Cargo.toml
+  - shared-backend/model_generation/Cargo.toml
+  - tools/dev_setup/Cargo.toml
+  - tools/fake_connection_generator/Cargo.toml
+  evidence_grade: strong
+- id: crate:clap_lex
+  kind: external
+  language: rust
+  purl: pkg:cargo/clap_lex@=0.5.0
+  discovered_from:
+  - connector-lib/formats/tls_codec/Cargo.toml
+  evidence_grade: strong
+- id: crate:cmpv2
+  kind: external
+  language: rust
+  purl: pkg:cargo/cmpv2@=0.3.0-pre
+  discovered_from:
+  - connector-lib/formats/x509-tsp/Cargo.toml
+  evidence_grade: strong
+- id: crate:cms
+  kind: external
+  language: rust
+  purl: pkg:cargo/cms@=0.3.0-pre
+  discovered_from:
+  - connector-lib/formats/crmf/Cargo.toml
+  - connector-lib/formats/pkcs12/Cargo.toml
+  - connector-lib/formats/x509-tsp/Cargo.toml
+  evidence_grade: strong
+- id: crate:config
+  kind: external
+  language: rust
+  purl: pkg:cargo/config@0.15
+  discovered_from:
+  - mfa-proxy-api/Cargo.toml
+  evidence_grade: strong
+- id: crate:console
+  kind: external
+  language: rust
+  purl: pkg:cargo/console@0.16.1
+  discovered_from:
+  - tools/dev_setup/Cargo.toml
+  evidence_grade: strong
+- id: crate:console_error_panic_hook
+  kind: external
+  language: rust
+  purl: pkg:cargo/console_error_panic_hook@0.1
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/iron-remote-desktop/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:const-oid
+  kind: external
+  language: rust
+  purl: pkg:cargo/const-oid@=0.10.0-pre.2
+  discovered_from:
+  - connector-lib/formats/cmpv2/Cargo.toml
+  - connector-lib/formats/cms/Cargo.toml
+  - connector-lib/formats/crmf/Cargo.toml
+  - connector-lib/formats/der/Cargo.toml
+  - connector-lib/formats/pkcs1/Cargo.toml
+  - connector-lib/formats/pkcs12/Cargo.toml
+  - connector-lib/formats/x509-cert/Cargo.toml
+  - connector-lib/formats/x509-ocsp/Cargo.toml
+  evidence_grade: strong
+- id: crate:convert_case
+  kind: external
+  language: rust
+  purl: pkg:cargo/convert_case@0.5.0
+  discovered_from:
+  - connector-lib/formats/const-oid/oiddbgen/Cargo.toml
+  evidence_grade: strong
+- id: crate:cpal
+  kind: external
+  language: rust
+  purl: pkg:cargo/cpal@0.17
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-rdpsnd-native/Cargo.toml
+  evidence_grade: strong
+- id: crate:criterion
+  kind: external
+  language: rust
+  purl: pkg:cargo/criterion@0.5
+  discovered_from:
+  - connector-lib/formats/tls_codec/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-bench/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-bulk/Cargo.toml
+  evidence_grade: strong
+- id: crate:crmf
+  kind: external
+  language: rust
+  purl: pkg:cargo/crmf@=0.3.0-pre
+  discovered_from:
+  - connector-lib/formats/cmpv2/Cargo.toml
+  evidence_grade: strong
+- id: crate:crossbeam-channel
+  kind: external
+  language: rust
+  purl: pkg:cargo/crossbeam-channel@0.5
+  discovered_from:
+  - agent/rust-client/ipc-channel/Cargo.toml
+  - session-recording-client/Cargo.toml
+  evidence_grade: strong
+- id: crate:crossbeam-queue
+  kind: external
+  language: rust
+  purl: pkg:cargo/crossbeam-queue@=0.3.1
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:crossbeam-utils
+  kind: external
+  language: rust
+  purl: pkg:cargo/crossbeam-utils@0.8
+  discovered_from:
+  - agent/rust-client/ipc-channel/Cargo.toml
+  evidence_grade: strong
+- id: crate:crossfire
+  kind: external
+  language: rust
+  purl: pkg:cargo/crossfire@=0.1.4
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:ctrlc
+  kind: external
+  language: rust
+  purl: pkg:cargo/ctrlc@=3.1.8
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  evidence_grade: strong
+- id: crate:deadpool-postgres
+  kind: external
+  language: rust
+  purl: pkg:cargo/deadpool-postgres@0.14.1
+  discovered_from:
+  - session-recording-server/policy_api/Cargo.toml
+  evidence_grade: strong
+- id: crate:der
+  kind: external
+  language: rust
+  purl: pkg:cargo/der@=0.8.0-pre.0
+  discovered_from:
+  - connector-lib/formats/cmpv2/Cargo.toml
+  - connector-lib/formats/cms/Cargo.toml
+  - connector-lib/formats/crmf/Cargo.toml
+  - connector-lib/formats/gss-api/Cargo.toml
+  - connector-lib/formats/pkcs1/Cargo.toml
+  - connector-lib/formats/pkcs12/Cargo.toml
+  - connector-lib/formats/pkcs5/Cargo.toml
+  - connector-lib/formats/pkcs8/Cargo.toml
+  - connector-lib/formats/sec1/Cargo.toml
+  - connector-lib/formats/spki/Cargo.toml
+  - connector-lib/formats/x509-cert/Cargo.toml
+  - connector-lib/formats/x509-ocsp/Cargo.toml
+  - connector-lib/formats/x509-tsp/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-rdcleanpath/Cargo.toml
+  evidence_grade: strong
+- id: crate:der-parser
+  kind: external
+  language: rust
+  purl: pkg:cargo/der-parser@10.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-pdu/Cargo.toml
+  evidence_grade: strong
+- id: crate:der_derive
+  kind: external
+  language: rust
+  purl: pkg:cargo/der_derive@=0.8.0-pre.0
+  discovered_from:
+  - connector-lib/formats/der/Cargo.toml
+  evidence_grade: strong
+- id: crate:des
+  kind: external
+  language: rust
+  purl: pkg:cargo/des@=0.9.0-pre.0
+  discovered_from:
+  - connector-lib/formats/pkcs5/Cargo.toml
+  evidence_grade: strong
+- id: crate:digest
+  kind: external
+  language: rust
+  purl: pkg:cargo/digest@0.11.0-pre.8
+  discovered_from:
+  - connector-lib/formats/pkcs12/Cargo.toml
+  - connector-lib/formats/x509-ocsp/Cargo.toml
+  evidence_grade: strong
+- id: crate:diplomat
+  kind: external
+  language: rust
+  purl: pkg:cargo/diplomat@0.7
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/ffi/Cargo.toml
+  evidence_grade: strong
+- id: crate:diplomat-runtime
+  kind: external
+  language: rust
+  purl: pkg:cargo/diplomat-runtime@0.7
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/ffi/Cargo.toml
+  evidence_grade: strong
+- id: crate:dirs
+  kind: external
+  language: rust
+  purl: pkg:cargo/dirs@6.0.0
+  discovered_from:
+  - tools/dev_setup/Cargo.toml
+  evidence_grade: strong
+- id: crate:dotenv
+  kind: external
+  language: rust
+  purl: pkg:cargo/dotenv@=0.15.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  evidence_grade: strong
+- id: crate:dotenvy
+  kind: external
+  language: rust
+  purl: pkg:cargo/dotenvy@0.15.7
+  discovered_from:
+  - tools/dev_setup/Cargo.toml
+  evidence_grade: strong
+- id: crate:ecdsa
+  kind: external
+  language: rust
+  purl: pkg:cargo/ecdsa@=0.17.0-pre.5
+  discovered_from:
+  - connector-lib/formats/cms/Cargo.toml
+  - connector-lib/formats/x509-cert/Cargo.toml
+  evidence_grade: strong
+- id: crate:embed-manifest
+  kind: external
+  language: rust
+  purl: pkg:cargo/embed-manifest@1.4.0
+  discovered_from:
+  - evm-launcher-agent/Cargo.toml
+  evidence_grade: strong
+- id: crate:env_logger
+  kind: external
+  language: rust
+  purl: pkg:cargo/env_logger@0.10.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  evidence_grade: strong
+- id: crate:exitcode
+  kind: external
+  language: rust
+  purl: pkg:cargo/exitcode@1.1
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client-glutin/Cargo.toml
+  evidence_grade: strong
+- id: crate:expect-test
+  kind: external
+  language: rust
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-graphics/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-pdu/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-testsuite-core/Cargo.toml
+  evidence_grade: strong
+- id: crate:fake
+  kind: external
+  language: rust
+  purl: pkg:cargo/fake@4.4
+  discovered_from:
+  - mfa-proxy-api/Cargo.toml
+  - shared-rust/dull-event-queue/Cargo.toml
+  evidence_grade: strong
+- id: crate:fern
+  kind: external
+  language: rust
+  purl: pkg:cargo/fern@=0.6.2
+  discovered_from:
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:flagset
+  kind: external
+  language: rust
+  purl: pkg:cargo/flagset@0.4.5
+  discovered_from:
+  - connector-lib/formats/der/Cargo.toml
+  evidence_grade: strong
+- id: crate:flutter_rust_bridge
+  kind: external
+  language: rust
+  purl: pkg:cargo/flutter_rust_bridge@=2.11.1
+  discovered_from:
+  - connector-lib/Cargo.toml
+  - session-recording-client/Cargo.toml
+  evidence_grade: strong
+- id: crate:fnv
+  kind: external
+  language: rust
+  purl: pkg:cargo/fnv@1.0.3
+  discovered_from:
+  - agent/rust-client/ipc-channel/Cargo.toml
+  evidence_grade: strong
+- id: crate:futures
+  kind: external
+  language: rust
+  purl: pkg:cargo/futures@0.3
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - agent/rust-client/ipc-channel/Cargo.toml
+  - connector-lib/Cargo.toml
+  - docker-evm-rdp/launcher-web-entrypoint/Cargo.toml
+  - evm-launcher-agent/Cargo.toml
+  - evm-process-monitor/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  - mfa-proxy-api/Cargo.toml
+  - shared-backend/model_generation/Cargo.toml
+  - shared-rust/dull-event-queue/Cargo.toml
+  evidence_grade: strong
+- id: crate:futures-channel
+  kind: external
+  language: rust
+  purl: pkg:cargo/futures-channel@0.3
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  evidence_grade: strong
+- id: crate:futures-core-preview
+  kind: external
+  language: rust
+  purl: pkg:cargo/futures-core-preview@0.2.3
+  discovered_from:
+  - frontend/apps/launcher-web/rust/common/Cargo.toml
+  evidence_grade: strong
+- id: crate:futures-test
+  kind: external
+  language: rust
+  purl: pkg:cargo/futures-test@0.3
+  discovered_from:
+  - agent/rust-client/ipc-channel/Cargo.toml
+  evidence_grade: strong
+- id: crate:futures-util
+  kind: external
+  language: rust
+  purl: pkg:cargo/futures-util@0.3
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/iron-remote-desktop/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client-glutin/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-futures/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-mstsgu/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-tls/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  - frontend/apps/launcher-web/rust/common/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:getrandom
+  kind: external
+  language: rust
+  purl: pkg:cargo/getrandom@0.2
+  discovered_from:
+  - connector-lib/formats/cms/Cargo.toml
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  evidence_grade: strong
+- id: crate:getrandom2
+  kind: external
+  language: rust
+  purl: pkg:cargo/getrandom2@0.2
+  discovered_from:
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  evidence_grade: strong
+- id: crate:getrandom4
+  kind: external
+  language: rust
+  purl: pkg:cargo/getrandom4@0.4.0-rc.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  evidence_grade: strong
+- id: crate:git-version
+  kind: external
+  language: rust
+  purl: pkg:cargo/git-version@=0.3.4
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - evm-launcher-agent/Cargo.toml
+  evidence_grade: strong
+- id: crate:globset
+  kind: external
+  language: rust
+  purl: pkg:cargo/globset@0.4
+  discovered_from:
+  - shared-backend/Dull.SqlcDal/sql_sanitizer/Cargo.toml
+  evidence_grade: strong
+- id: crate:gloo-net
+  kind: external
+  language: rust
+  purl: pkg:cargo/gloo-net@0.6
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  evidence_grade: strong
+- id: crate:gloo-timers
+  kind: external
+  language: rust
+  purl: pkg:cargo/gloo-timers@0.3
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  evidence_grade: strong
+- id: crate:glow
+  kind: external
+  language: rust
+  purl: pkg:cargo/glow@0.12
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-glutin-renderer/Cargo.toml
+  evidence_grade: strong
+- id: crate:glutin
+  kind: external
+  language: rust
+  purl: pkg:cargo/glutin@0.29
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client-glutin/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-glutin-renderer/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-replay-client/Cargo.toml
+  evidence_grade: strong
+- id: crate:google-fcm1
+  kind: external
+  language: rust
+  purl: pkg:cargo/google-fcm1@7.0
+  discovered_from:
+  - mfa-proxy-api/Cargo.toml
+  evidence_grade: strong
+- id: crate:handlebars
+  kind: external
+  language: rust
+  purl: pkg:cargo/handlebars@5.1.2
+  discovered_from:
+  - shared-backend/model_generation/Cargo.toml
+  evidence_grade: strong
+- id: crate:hex
+  kind: external
+  language: rust
+  purl: pkg:cargo/hex@=0.4.3
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-testsuite-core/Cargo.toml
+  evidence_grade: strong
+- id: crate:hex-literal
+  kind: external
+  language: rust
+  purl: pkg:cargo/hex-literal@0.4
+  discovered_from:
+  - connector-lib/formats/cmpv2/Cargo.toml
+  - connector-lib/formats/cms/Cargo.toml
+  - connector-lib/formats/const-oid/Cargo.toml
+  - connector-lib/formats/der/Cargo.toml
+  - connector-lib/formats/gss-api/Cargo.toml
+  - connector-lib/formats/pkcs1/Cargo.toml
+  - connector-lib/formats/pkcs12/Cargo.toml
+  - connector-lib/formats/pkcs5/Cargo.toml
+  - connector-lib/formats/pkcs8/Cargo.toml
+  - connector-lib/formats/sec1/Cargo.toml
+  - connector-lib/formats/serdect/Cargo.toml
+  - connector-lib/formats/spki/Cargo.toml
+  - connector-lib/formats/x509-cert/Cargo.toml
+  - connector-lib/formats/x509-ocsp/Cargo.toml
+  - connector-lib/formats/x509-tsp/Cargo.toml
+  evidence_grade: strong
+- id: crate:hmac
+  kind: external
+  language: rust
+  purl: pkg:cargo/hmac@=0.11.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:http-body-util
+  kind: external
+  language: rust
+  purl: pkg:cargo/http-body-util@0.1
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - docker-evm-rdp/launcher-web-entrypoint/Cargo.toml
+  - evm-docker-controller/Cargo.toml
+  - evm-process-monitor/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-mstsgu/Cargo.toml
+  - mfa-proxy-api/Cargo.toml
+  - session-recording-server/policy_api/Cargo.toml
+  evidence_grade: strong
+- id: crate:hybrid-array
+  kind: external
+  language: rust
+  purl: pkg:cargo/hybrid-array@0.2.0-rc.8
+  discovered_from:
+  - connector-lib/formats/sec1/Cargo.toml
+  evidence_grade: strong
+- id: crate:hyper
+  kind: external
+  language: rust
+  purl: pkg:cargo/hyper@=1.4.1
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - docker-evm-rdp/launcher-web-entrypoint/Cargo.toml
+  - evm-docker-controller/Cargo.toml
+  - evm-process-monitor/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-mstsgu/Cargo.toml
+  - session-recording-server/policy_api/Cargo.toml
+  evidence_grade: strong
+- id: crate:hyper-util
+  kind: external
+  language: rust
+  purl: pkg:cargo/hyper-util@0.1
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - docker-evm-rdp/launcher-web-entrypoint/Cargo.toml
+  - evm-docker-controller/Cargo.toml
+  - evm-process-monitor/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-mstsgu/Cargo.toml
+  - session-recording-server/policy_api/Cargo.toml
+  evidence_grade: strong
+- id: crate:ignore
+  kind: external
+  language: rust
+  purl: pkg:cargo/ignore@0.4
+  discovered_from:
+  - shared-backend/Dull.SqlcDal/sql_sanitizer/Cargo.toml
+  evidence_grade: strong
+- id: crate:image
+  kind: external
+  language: rust
+  purl: pkg:cargo/image@0.25.10
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:include_dir
+  kind: external
+  language: rust
+  purl: pkg:cargo/include_dir@0.7.4
+  discovered_from:
+  - tools/dev_setup/Cargo.toml
+  evidence_grade: strong
+- id: crate:indicatif
+  kind: external
+  language: rust
+  purl: pkg:cargo/indicatif@0.18.0
+  discovered_from:
+  - tools/dev_setup/Cargo.toml
+  evidence_grade: strong
+- id: crate:inquire
+  kind: external
+  language: rust
+  purl: pkg:cargo/inquire@0.9
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  - tools/dev_setup/Cargo.toml
+  evidence_grade: strong
+- id: crate:ipc-channel
+  kind: external
+  language: rust
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:ironrdp
+  kind: external
+  language: rust
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client-glutin/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-glutin-renderer/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-replay-client/Cargo.toml
+  evidence_grade: strong
+- id: crate:ironrdp-glutin-renderer
+  kind: external
+  language: rust
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-replay-client/Cargo.toml
+  evidence_grade: strong
+- id: crate:ironrdp-tls
+  kind: external
+  language: rust
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client-glutin/Cargo.toml
+  evidence_grade: strong
+- id: crate:itertools
+  kind: external
+  language: rust
+  purl: pkg:cargo/itertools@0.14
+  discovered_from:
+  - evm-docker-controller/Cargo.toml
+  evidence_grade: strong
+- id: crate:js-sys
+  kind: external
+  language: rust
+  purl: pkg:cargo/js-sys@0.3
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:keycloak
+  kind: external
+  language: rust
+  purl: pkg:cargo/keycloak@26.4.0
+  discovered_from:
+  - tools/dev_setup/Cargo.toml
+  evidence_grade: strong
+- id: crate:lazy_static
+  kind: external
+  language: rust
+  purl: pkg:cargo/lazy_static@=1.4.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - agent/rust-client/ipc-channel/Cargo.toml
+  - connector-lib/Cargo.toml
+  - connector-lib/formats/x509-ocsp/Cargo.toml
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  evidence_grade: strong
+- id: crate:libc
+  kind: external
+  language: rust
+  purl: pkg:cargo/libc@0.2.12
+  discovered_from:
+  - agent/rust-client/ipc-channel/Cargo.toml
+  - agent/rust-client/nss_module/Cargo.toml
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:libfuzzer-sys
+  kind: external
+  language: rust
+  purl: pkg:cargo/libfuzzer-sys@0.4
+  discovered_from:
+  - connector-lib/formats/tls_codec/fuzz/Cargo.toml
+  - connector-lib/formats/x509-cert/fuzz/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/fuzz/Cargo.toml
+  evidence_grade: strong
+- id: crate:local-ip-address
+  kind: external
+  language: rust
+  purl: pkg:cargo/local-ip-address@=0.5.7
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:log
+  kind: external
+  language: rust
+  purl: pkg:cargo/log@=0.4.17
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-mstsgu/Cargo.toml
+  evidence_grade: strong
+- id: crate:md5
+  kind: external
+  language: rust
+  purl: pkg:cargo/md5@0.10
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-pdu/Cargo.toml
+  evidence_grade: strong
+- id: crate:netstat2
+  kind: external
+  language: rust
+  purl: pkg:cargo/netstat2@=0.9.1
+  discovered_from:
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:nix
+  kind: external
+  language: rust
+  purl: pkg:cargo/nix@0.31.2
+  discovered_from:
+  - evm-docker-controller/Cargo.toml
+  evidence_grade: strong
+- id: crate:num-bigint
+  kind: external
+  language: rust
+  purl: pkg:cargo/num-bigint@0.4
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-pdu/Cargo.toml
+  evidence_grade: strong
+- id: crate:num-derive
+  kind: external
+  language: rust
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-ainput/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-graphics/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-pdu/Cargo.toml
+  evidence_grade: strong
+- id: crate:num-integer
+  kind: external
+  language: rust
+  purl: pkg:cargo/num-integer@0.1
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-pdu/Cargo.toml
+  evidence_grade: strong
+- id: crate:num-traits
+  kind: external
+  language: rust
+  purl: pkg:cargo/num-traits@=0.2.15
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-ainput/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-graphics/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-pdu/Cargo.toml
+  evidence_grade: strong
+- id: crate:obfstr
+  kind: external
+  language: rust
+  purl: pkg:cargo/obfstr@=0.4.4
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  evidence_grade: strong
+- id: crate:once_cell
+  kind: external
+  language: rust
+  purl: pkg:cargo/once_cell@=1.18.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:open
+  kind: external
+  language: rust
+  purl: pkg:cargo/open@5.3.2
+  discovered_from:
+  - tools/dev_setup/Cargo.toml
+  evidence_grade: strong
+- id: crate:openh264
+  kind: external
+  language: rust
+  purl: pkg:cargo/openh264@0.9
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-egfx/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-glutin-renderer/Cargo.toml
+  - session-recording-client/Cargo.toml
+  evidence_grade: strong
+- id: crate:opus2
+  kind: external
+  language: rust
+  purl: pkg:cargo/opus2@0.4
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-rdpsnd-native/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:p12
+  kind: external
+  language: rust
+  purl: pkg:cargo/p12@=0.2.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:p256
+  kind: external
+  language: rust
+  purl: pkg:cargo/p256@=0.14.0-pre.0
+  discovered_from:
+  - connector-lib/formats/cms/Cargo.toml
+  - connector-lib/formats/x509-cert/Cargo.toml
+  evidence_grade: strong
+- id: crate:paste
+  kind: external
+  language: rust
+  purl: pkg:cargo/paste@1
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-testsuite-core/Cargo.toml
+  evidence_grade: strong
+- id: crate:pbkdf2
+  kind: external
+  language: rust
+  purl: pkg:cargo/pbkdf2@=0.7.5
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/formats/pkcs5/Cargo.toml
+  evidence_grade: strong
+- id: crate:pem-rfc7468
+  kind: external
+  language: rust
+  purl: pkg:cargo/pem-rfc7468@=1.0.0-pre.0
+  discovered_from:
+  - connector-lib/formats/cms/Cargo.toml
+  - connector-lib/formats/der/Cargo.toml
+  evidence_grade: strong
+- id: crate:pest
+  kind: external
+  language: rust
+  purl: pkg:cargo/pest@=2.8.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:picky
+  kind: external
+  language: rust
+  purl: pkg:cargo/picky@=7.0.0-rc.22
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-connector/Cargo.toml
+  evidence_grade: strong
+- id: crate:picky-asn1-der
+  kind: external
+  language: rust
+  purl: pkg:cargo/picky-asn1-der@0.5
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-connector/Cargo.toml
+  evidence_grade: strong
+- id: crate:picky-asn1-x509
+  kind: external
+  language: rust
+  purl: pkg:cargo/picky-asn1-x509@0.15
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-connector/Cargo.toml
+  evidence_grade: strong
+- id: crate:pico-args
+  kind: external
+  language: rust
+  purl: pkg:cargo/pico-args@0.5.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/benches/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/xtask/Cargo.toml
+  evidence_grade: strong
+- id: crate:pin-project
+  kind: external
+  language: rust
+  purl: pkg:cargo/pin-project@=1.1.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:pkcs1
+  kind: external
+  language: rust
+  purl: pkg:cargo/pkcs1@0.7
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-pdu/Cargo.toml
+  evidence_grade: strong
+- id: crate:pkcs5
+  kind: external
+  language: rust
+  purl: pkg:cargo/pkcs5@=0.8.0-pre.0
+  discovered_from:
+  - connector-lib/formats/cms/Cargo.toml
+  - connector-lib/formats/pkcs12/Cargo.toml
+  - connector-lib/formats/pkcs8/Cargo.toml
+  evidence_grade: strong
+- id: crate:pkcs8
+  kind: external
+  language: rust
+  purl: pkg:cargo/pkcs8@=0.11.0-pre.0
+  discovered_from:
+  - connector-lib/formats/pkcs1/Cargo.toml
+  - connector-lib/formats/pkcs12/Cargo.toml
+  - connector-lib/formats/sec1/Cargo.toml
+  evidence_grade: strong
+- id: crate:png
+  kind: external
+  language: rust
+  purl: pkg:cargo/png@0.18
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-cliprdr-format/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-testsuite-core/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:postgres
+  kind: external
+  language: rust
+  purl: pkg:cargo/postgres@0.19.7
+  discovered_from:
+  - tools/fake_connection_generator/Cargo.toml
+  evidence_grade: strong
+- id: crate:pretty_assertions
+  kind: external
+  language: rust
+  purl: pkg:cargo/pretty_assertions@1.4
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-testsuite-core/Cargo.toml
+  evidence_grade: strong
+- id: crate:privdrop
+  kind: external
+  language: rust
+  purl: pkg:cargo/privdrop@0.5.6
+  discovered_from:
+  - evm-docker-controller/Cargo.toml
+  evidence_grade: strong
+- id: crate:proc-exit
+  kind: external
+  language: rust
+  purl: pkg:cargo/proc-exit@2
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  evidence_grade: strong
+- id: crate:proc-macro2
+  kind: external
+  language: rust
+  purl: pkg:cargo/proc-macro2@1.0.69
+  discovered_from:
+  - agent/rust-client/agent-proc-macro/Cargo.toml
+  - connector-lib/formats/const-oid/oiddbgen/Cargo.toml
+  - connector-lib/formats/der/derive/Cargo.toml
+  - connector-lib/formats/tls_codec/derive/Cargo.toml
+  evidence_grade: strong
+- id: crate:proptest
+  kind: external
+  language: rust
+  purl: pkg:cargo/proptest@1.2
+  discovered_from:
+  - connector-lib/formats/base32ct/Cargo.toml
+  - connector-lib/formats/base64ct/Cargo.toml
+  - connector-lib/formats/der/Cargo.toml
+  - connector-lib/formats/serdect/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-testsuite-core/Cargo.toml
+  evidence_grade: strong
+- id: crate:qoicoubeh
+  kind: external
+  language: rust
+  purl: pkg:cargo/qoicoubeh@0.5
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-server/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-session/Cargo.toml
+  evidence_grade: strong
+- id: crate:quote
+  kind: external
+  language: rust
+  purl: pkg:cargo/quote@1.0.33
+  discovered_from:
+  - agent/rust-client/agent-proc-macro/Cargo.toml
+  - connector-lib/formats/const-oid/oiddbgen/Cargo.toml
+  - connector-lib/formats/der/derive/Cargo.toml
+  - connector-lib/formats/tls_codec/derive/Cargo.toml
+  evidence_grade: strong
+- id: crate:rand
+  kind: external
+  language: rust
+  purl: pkg:cargo/rand@=0.8.3
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - agent/rust-client/ipc-channel/Cargo.toml
+  - connector-lib/Cargo.toml
+  - connector-lib/formats/cms/Cargo.toml
+  - connector-lib/formats/x509-cert/Cargo.toml
+  - connector-lib/formats/x509-ocsp/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-connector/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp/Cargo.toml
+  - mfa-proxy-api/Cargo.toml
+  - shared-rust/dull-event-queue/Cargo.toml
+  - tools/fake_connection_generator/Cargo.toml
+  evidence_grade: strong
+- id: crate:rand_core
+  kind: external
+  language: rust
+  purl: pkg:cargo/rand_core@0.6.4
+  discovered_from:
+  - connector-lib/formats/pkcs5/Cargo.toml
+  - connector-lib/formats/pkcs8/Cargo.toml
+  - connector-lib/formats/x509-ocsp/Cargo.toml
+  evidence_grade: strong
+- id: crate:raw-window-handle
+  kind: external
+  language: rust
+  purl: pkg:cargo/raw-window-handle@0.6
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  evidence_grade: strong
+- id: crate:rayon
+  kind: external
+  language: rust
+  purl: pkg:cargo/rayon@=1.10.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - connector-lib/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-server/Cargo.toml
+  - shared-backend/Dull.SqlcDal/sql_sanitizer/Cargo.toml
+  - tools/dev_setup/Cargo.toml
+  evidence_grade: strong
+- id: crate:rayon-core
+  kind: external
+  language: rust
+  purl: pkg:cargo/rayon-core@=1.12.1
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:rcgen
+  kind: external
+  language: rust
+  purl: pkg:cargo/rcgen@=0.8.10
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  evidence_grade: strong
+- id: crate:redis
+  kind: external
+  language: rust
+  purl: pkg:cargo/redis@1.0
+  discovered_from:
+  - shared-rust/dull-event-queue/Cargo.toml
+  evidence_grade: strong
+- id: crate:regex
+  kind: external
+  language: rust
+  purl: pkg:cargo/regex@=1.9.6
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/formats/const-oid/oiddbgen/Cargo.toml
+  - connector-lib/formats/tls_codec/Cargo.toml
+  - shared-backend/Dull.SqlcDal/sql_sanitizer/Cargo.toml
+  evidence_grade: strong
+- id: crate:reqwest
+  kind: external
+  language: rust
+  purl: pkg:cargo/reqwest@0.12
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-tokio/Cargo.toml
+  - mfa-proxy-api/Cargo.toml
+  - tools/dev_setup/Cargo.toml
+  evidence_grade: strong
+- id: crate:resize
+  kind: external
+  language: rust
+  purl: pkg:cargo/resize@0.8
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:rgb
+  kind: external
+  language: rust
+  purl: pkg:cargo/rgb@0.8
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:ring
+  kind: external
+  language: rust
+  purl: pkg:cargo/ring@=0.17.13
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  evidence_grade: strong
+- id: crate:ringbuffer
+  kind: external
+  language: rust
+  purl: pkg:cargo/ringbuffer@=0.15.0
+  discovered_from:
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:rml_rtmp
+  kind: external
+  language: rust
+  purl: pkg:cargo/rml_rtmp@0.8.0
+  discovered_from:
+  - session-recording-client/Cargo.toml
+  evidence_grade: strong
+- id: crate:rmp-serde
+  kind: external
+  language: rust
+  purl: pkg:cargo/rmp-serde@1
+  discovered_from:
+  - connector-lib/formats/serdect/Cargo.toml
+  evidence_grade: strong
+- id: crate:rsa
+  kind: external
+  language: rust
+  purl: pkg:cargo/rsa@=0.10.0-pre.1
+  discovered_from:
+  - connector-lib/formats/cms/Cargo.toml
+  - connector-lib/formats/x509-cert/Cargo.toml
+  - connector-lib/formats/x509-ocsp/Cargo.toml
+  evidence_grade: strong
+- id: crate:rstest
+  kind: external
+  language: rust
+  purl: pkg:cargo/rstest@0.19
+  discovered_from:
+  - connector-lib/formats/x509-cert/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-testsuite-core/Cargo.toml
+  evidence_grade: strong
+- id: crate:rusqlite
+  kind: external
+  language: rust
+  purl: pkg:cargo/rusqlite@=0.27.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - agent/rust-client/nss_module/Cargo.toml
+  evidence_grade: strong
+- id: crate:rust_decimal
+  kind: external
+  language: rust
+  purl: pkg:cargo/rust_decimal@=1.29.1
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  evidence_grade: strong
+- id: crate:rustls
+  kind: external
+  language: rust
+  purl: pkg:cargo/rustls@=0.19.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-tls/Cargo.toml
+  - mfa-proxy-api/Cargo.toml
+  evidence_grade: strong
+- id: crate:rustls-native-certs
+  kind: external
+  language: rust
+  purl: pkg:cargo/rustls-native-certs@=0.6.2
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - docker-evm-rdp/launcher-web-entrypoint/Cargo.toml
+  - evm-process-monitor/Cargo.toml
+  - session-recording-server/policy_api/Cargo.toml
+  evidence_grade: strong
+- id: crate:rustls-pemfile
+  kind: external
+  language: rust
+  purl: pkg:cargo/rustls-pemfile@2.2.0
+  discovered_from:
+  - docker-evm-rdp/launcher-web-entrypoint/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-server/Cargo.toml
+  evidence_grade: strong
+- id: crate:rustls-pki-types
+  kind: external
+  language: rust
+  purl: pkg:cargo/rustls-pki-types@1.14.0
+  discovered_from:
+  - docker-evm-rdp/launcher-web-entrypoint/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-tls/Cargo.toml
+  evidence_grade: strong
+- id: crate:rusttype
+  kind: external
+  language: rust
+  purl: pkg:cargo/rusttype@0.9.3
+  discovered_from:
+  - session-recording-client/Cargo.toml
+  evidence_grade: strong
+- id: crate:scrypt
+  kind: external
+  language: rust
+  purl: pkg:cargo/scrypt@=0.12.0-pre.0
+  discovered_from:
+  - connector-lib/formats/pkcs5/Cargo.toml
+  evidence_grade: strong
+- id: crate:secrecy
+  kind: external
+  language: rust
+  purl: pkg:cargo/secrecy@0.10
+  discovered_from:
+  - mfa-proxy-api/Cargo.toml
+  evidence_grade: strong
+- id: crate:semver
+  kind: external
+  language: rust
+  purl: pkg:cargo/semver@=0.11.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-testsuite-extra/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  evidence_grade: strong
+- id: crate:serde
+  kind: external
+  language: rust
+  purl: pkg:cargo/serde@=1.0.123
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - agent/rust-client/ipc-channel/Cargo.toml
+  - connector-lib/Cargo.toml
+  - connector-lib/formats/serdect/Cargo.toml
+  - connector-lib/formats/tai64/Cargo.toml
+  - connector-lib/formats/tls_codec/Cargo.toml
+  - connector-lib/formats/x509-cert/test-support/Cargo.toml
+  - docker-evm-rdp/launcher-web-entrypoint/Cargo.toml
+  - evm-docker-controller/Cargo.toml
+  - evm-launcher-agent/Cargo.toml
+  - evm-process-monitor/Cargo.toml
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - mfa-proxy-api/Cargo.toml
+  - session-recording-server/policy_api/Cargo.toml
+  - shared-backend/model_generation/Cargo.toml
+  - tools/dev_setup/Cargo.toml
+  evidence_grade: strong
+- id: crate:serde-aux
+  kind: external
+  language: rust
+  purl: pkg:cargo/serde-aux@=2.1.1
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - mfa-proxy-api/Cargo.toml
+  evidence_grade: strong
+- id: crate:serde-json-core
+  kind: external
+  language: rust
+  purl: pkg:cargo/serde-json-core@0.5
+  discovered_from:
+  - connector-lib/formats/serdect/Cargo.toml
+  evidence_grade: strong
+- id: crate:serde_derive
+  kind: external
+  language: rust
+  purl: pkg:cargo/serde_derive@=1.0.123
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:serde_json
+  kind: external
+  language: rust
+  purl: pkg:cargo/serde_json@=1.0.62
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - connector-lib/formats/serdect/Cargo.toml
+  - connector-lib/formats/x509-cert/test-support/Cargo.toml
+  - docker-evm-rdp/launcher-web-entrypoint/Cargo.toml
+  - evm-docker-controller/Cargo.toml
+  - evm-launcher-agent/Cargo.toml
+  - evm-process-monitor/Cargo.toml
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - mfa-proxy-api/Cargo.toml
+  - session-recording-server/policy_api/Cargo.toml
+  - shared-backend/model_generation/Cargo.toml
+  - tools/dev_setup/Cargo.toml
+  evidence_grade: strong
+- id: crate:serde_qs
+  kind: external
+  language: rust
+  purl: pkg:cargo/serde_qs@0.13.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  evidence_grade: strong
+- id: crate:serde_repr
+  kind: external
+  language: rust
+  purl: pkg:cargo/serde_repr@=0.1.6
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:serde_urlencoded
+  kind: external
+  language: rust
+  purl: pkg:cargo/serde_urlencoded@=0.7.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - evm-docker-controller/Cargo.toml
+  - session-recording-server/policy_api/Cargo.toml
+  evidence_grade: strong
+- id: crate:serdect
+  kind: external
+  language: rust
+  purl: pkg:cargo/serdect@=0.3.0-pre.0
+  discovered_from:
+  - connector-lib/formats/sec1/Cargo.toml
+  evidence_grade: strong
+- id: crate:serial_test
+  kind: external
+  language: rust
+  purl: pkg:cargo/serial_test@=0.5.1
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  evidence_grade: strong
+- id: crate:sha1
+  kind: external
+  language: rust
+  purl: pkg:cargo/sha1@=0.11.0-pre.3
+  discovered_from:
+  - connector-lib/formats/cms/Cargo.toml
+  - connector-lib/formats/pkcs5/Cargo.toml
+  - connector-lib/formats/x509-cert/Cargo.toml
+  - connector-lib/formats/x509-ocsp/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-pdu/Cargo.toml
+  evidence_grade: strong
+- id: crate:sha2
+  kind: external
+  language: rust
+  purl: pkg:cargo/sha2@=0.9.3
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - connector-lib/formats/cms/Cargo.toml
+  - connector-lib/formats/pkcs12/Cargo.toml
+  - connector-lib/formats/pkcs5/Cargo.toml
+  - connector-lib/formats/spki/Cargo.toml
+  - connector-lib/formats/x509-cert/Cargo.toml
+  - connector-lib/formats/x509-ocsp/Cargo.toml
+  evidence_grade: strong
+- id: crate:sha3
+  kind: external
+  language: rust
+  purl: pkg:cargo/sha3@=0.11.0-pre.3
+  discovered_from:
+  - connector-lib/formats/cms/Cargo.toml
+  evidence_grade: strong
+- id: crate:signature
+  kind: external
+  language: rust
+  purl: pkg:cargo/signature@=2.3.0-pre.3
+  discovered_from:
+  - connector-lib/formats/cms/Cargo.toml
+  - connector-lib/formats/x509-cert/Cargo.toml
+  - connector-lib/formats/x509-ocsp/Cargo.toml
+  evidence_grade: strong
+- id: crate:slab
+  kind: external
+  language: rust
+  purl: pkg:cargo/slab@0.4
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-dvc/Cargo.toml
+  evidence_grade: strong
+- id: crate:smallvec
+  kind: external
+  language: rust
+  purl: pkg:cargo/smallvec@1.15
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-input/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  evidence_grade: strong
+- id: crate:socket2
+  kind: external
+  language: rust
+  purl: pkg:cargo/socket2@0.4.7
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:softbuffer
+  kind: external
+  language: rust
+  purl: pkg:cargo/softbuffer@0.4
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:spki
+  kind: external
+  language: rust
+  purl: pkg:cargo/spki@=0.8.0-pre.0
+  discovered_from:
+  - connector-lib/formats/cmpv2/Cargo.toml
+  - connector-lib/formats/cms/Cargo.toml
+  - connector-lib/formats/crmf/Cargo.toml
+  - connector-lib/formats/gss-api/Cargo.toml
+  - connector-lib/formats/pkcs1/Cargo.toml
+  - connector-lib/formats/pkcs12/Cargo.toml
+  - connector-lib/formats/pkcs5/Cargo.toml
+  - connector-lib/formats/pkcs8/Cargo.toml
+  - connector-lib/formats/x509-cert/Cargo.toml
+  - connector-lib/formats/x509-ocsp/Cargo.toml
+  evidence_grade: strong
+- id: crate:sqlparser
+  kind: external
+  language: rust
+  purl: pkg:cargo/sqlparser@0.50.0
+  discovered_from:
+  - shared-backend/model_generation/Cargo.toml
+  evidence_grade: strong
+- id: crate:sspi
+  kind: external
+  language: rust
+  purl: pkg:cargo/sspi@0.19
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client-glutin/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-connector/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/ffi/Cargo.toml
+  evidence_grade: strong
+- id: crate:stable-eyre
+  kind: external
+  language: rust
+  purl: pkg:cargo/stable-eyre@=0.2.2
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:structopt
+  kind: external
+  language: rust
+  purl: pkg:cargo/structopt@=0.3.21
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  evidence_grade: strong
+- id: crate:subtle
+  kind: external
+  language: rust
+  purl: pkg:cargo/subtle@2
+  discovered_from:
+  - connector-lib/formats/pkcs8/Cargo.toml
+  - connector-lib/formats/sec1/Cargo.toml
+  evidence_grade: strong
+- id: crate:syn
+  kind: external
+  language: rust
+  purl: pkg:cargo/syn@1.0.109
+  discovered_from:
+  - agent/rust-client/agent-proc-macro/Cargo.toml
+  - connector-lib/formats/const-oid/oiddbgen/Cargo.toml
+  - connector-lib/formats/der/derive/Cargo.toml
+  - connector-lib/formats/tls_codec/derive/Cargo.toml
+  evidence_grade: strong
+- id: crate:sysinfo
+  kind: external
+  language: rust
+  purl: pkg:cargo/sysinfo@=0.29.11
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  evidence_grade: strong
+- id: crate:tap
+  kind: external
+  language: rust
+  purl: pkg:cargo/tap@1
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-pdu/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  evidence_grade: strong
+- id: crate:temp-env
+  kind: external
+  language: rust
+  purl: pkg:cargo/temp-env@0.3
+  discovered_from:
+  - mfa-proxy-api/Cargo.toml
+  evidence_grade: strong
+- id: crate:tempfile
+  kind: external
+  language: rust
+  purl: pkg:cargo/tempfile@3.4
+  discovered_from:
+  - agent/rust-client/ipc-channel/Cargo.toml
+  - connector-lib/formats/pkcs1/Cargo.toml
+  - connector-lib/formats/pkcs8/Cargo.toml
+  - connector-lib/formats/sec1/Cargo.toml
+  - connector-lib/formats/spki/Cargo.toml
+  - connector-lib/formats/x509-cert/Cargo.toml
+  - connector-lib/formats/x509-cert/test-support/Cargo.toml
+  - shared-backend/Dull.SqlcDal/sql_sanitizer/Cargo.toml
+  evidence_grade: strong
+- id: crate:thiserror
+  kind: external
+  language: rust
+  purl: pkg:cargo/thiserror@2
+  discovered_from:
+  - evm-docker-controller/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-glutin-renderer/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-pdu/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/ffi/Cargo.toml
+  - session-recording-server/policy_api/Cargo.toml
+  evidence_grade: strong
+- id: crate:time
+  kind: external
+  language: rust
+  purl: pkg:cargo/time@0.3.4
+  discovered_from:
+  - connector-lib/formats/der/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  - shared-backend/model_generation/Cargo.toml
+  evidence_grade: strong
+- id: crate:tinyjson
+  kind: external
+  language: rust
+  purl: pkg:cargo/tinyjson@2.5
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/xtask/Cargo.toml
+  evidence_grade: strong
+- id: crate:tls_codec
+  kind: external
+  language: rust
+  purl: pkg:cargo/tls_codec@0.4.0
+  discovered_from:
+  - connector-lib/formats/x509-cert/Cargo.toml
+  evidence_grade: strong
+- id: crate:tokio
+  kind: external
+  language: rust
+  purl: pkg:cargo/tokio@1
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - connector-lib/formats/x509-cert/Cargo.toml
+  - docker-evm-rdp/launcher-web-entrypoint/Cargo.toml
+  - evm-docker-controller/Cargo.toml
+  - evm-launcher-agent/Cargo.toml
+  - evm-process-monitor/Cargo.toml
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/benches/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client-glutin/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-dvc-pipe-proxy/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-mstsgu/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-server/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-testsuite-extra/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-tls/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-tokio/Cargo.toml
+  - frontend/apps/launcher-web/rust/common/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  - mfa-proxy-api/Cargo.toml
+  - session-recording-server/policy_api/Cargo.toml
+  - shared-backend/model_generation/Cargo.toml
+  - shared-rust/dull-event-queue/Cargo.toml
+  - tools/dev_setup/Cargo.toml
+  evidence_grade: strong
+- id: crate:tokio-native-tls
+  kind: external
+  language: rust
+  purl: pkg:cargo/tokio-native-tls@0.3
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-tls/Cargo.toml
+  evidence_grade: strong
+- id: crate:tokio-postgres
+  kind: external
+  language: rust
+  purl: pkg:cargo/tokio-postgres@=0.7.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - session-recording-server/policy_api/Cargo.toml
+  - shared-backend/model_generation/Cargo.toml
+  evidence_grade: strong
+- id: crate:tokio-rustls
+  kind: external
+  language: rust
+  purl: pkg:cargo/tokio-rustls@=0.22.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - docker-evm-rdp/launcher-web-entrypoint/Cargo.toml
+  - evm-docker-controller/Cargo.toml
+  - evm-process-monitor/Cargo.toml
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-server/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-tls/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp/Cargo.toml
+  - session-recording-server/policy_api/Cargo.toml
+  evidence_grade: strong
+- id: crate:tokio-stream
+  kind: external
+  language: rust
+  purl: pkg:cargo/tokio-stream@0.1.15
+  discovered_from:
+  - shared-backend/model_generation/Cargo.toml
+  - shared-rust/dull-event-queue/Cargo.toml
+  evidence_grade: strong
+- id: crate:tokio-tungstenite
+  kind: external
+  language: rust
+  purl: pkg:cargo/tokio-tungstenite@=0.27.0
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-mstsgu/Cargo.toml
+  evidence_grade: strong
+- id: crate:tokio-util
+  kind: external
+  language: rust
+  purl: pkg:cargo/tokio-util@0.7
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client-glutin/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-mstsgu/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-tls/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:toml
+  kind: external
+  language: rust
+  purl: pkg:cargo/toml@0.8
+  discovered_from:
+  - connector-lib/formats/serdect/Cargo.toml
+  - evm-docker-controller/Cargo.toml
+  evidence_grade: strong
+- id: crate:tower
+  kind: external
+  language: rust
+  purl: pkg:cargo/tower@0.5
+  discovered_from:
+  - mfa-proxy-api/Cargo.toml
+  evidence_grade: strong
+- id: crate:tower-http
+  kind: external
+  language: rust
+  purl: pkg:cargo/tower-http@0.6.8
+  discovered_from:
+  - mfa-proxy-api/Cargo.toml
+  evidence_grade: strong
+- id: crate:tracing
+  kind: external
+  language: rust
+  purl: pkg:cargo/tracing@^0.1
+  discovered_from:
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/benches/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/iron-remote-desktop/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-acceptor/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-async/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-blocking/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client-glutin/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-cliprdr-native/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-cliprdr/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-connector/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-displaycontrol/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-dvc-pipe-proxy/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-dvc/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-echo/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-egfx/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-glutin-renderer/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-propertyset/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-rdpdr/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-rdpsnd-native/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-rdpsnd/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-replay-client/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-server/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-session/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-testsuite-extra/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/ffi/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  - mfa-proxy-api/Cargo.toml
+  - shared-rust/dull-event-queue/Cargo.toml
+  evidence_grade: strong
+- id: crate:tracing-subscriber
+  kind: external
+  language: rust
+  purl: pkg:cargo/tracing-subscriber@0.3
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/benches/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/iron-remote-desktop/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client-glutin/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-rdpsnd-native/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-replay-client/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-testsuite-extra/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/ffi/Cargo.toml
+  - mfa-proxy-api/Cargo.toml
+  evidence_grade: strong
+- id: crate:tracing-wasm
+  kind: external
+  language: rust
+  purl: pkg:cargo/tracing-wasm@0.2.1
+  discovered_from:
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:tracing-web
+  kind: external
+  language: rust
+  purl: pkg:cargo/tracing-web@0.1
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/iron-remote-desktop/Cargo.toml
+  evidence_grade: strong
+- id: crate:transport
+  kind: external
+  language: rust
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  evidence_grade: strong
+- id: crate:tray-icon
+  kind: external
+  language: rust
+  purl: pkg:cargo/tray-icon@0.19.1
+  discovered_from:
+  - evm-launcher-agent/Cargo.toml
+  evidence_grade: strong
+- id: crate:trybuild
+  kind: external
+  language: rust
+  purl: pkg:cargo/trybuild@1
+  discovered_from:
+  - connector-lib/formats/tls_codec/derive/Cargo.toml
+  evidence_grade: strong
+- id: crate:url
+  kind: external
+  language: rust
+  purl: pkg:cargo/url@=2.2.1
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - connector-lib/Cargo.toml
+  - docker-evm-rdp/launcher-web-entrypoint/Cargo.toml
+  - evm-process-monitor/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-connector/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-tokio/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  evidence_grade: strong
+- id: crate:uuid
+  kind: external
+  language: rust
+  purl: pkg:cargo/uuid@=0.8.2
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - agent/rust-client/ipc-channel/Cargo.toml
+  - connector-lib/Cargo.toml
+  - docker-evm-rdp/launcher-web-entrypoint/Cargo.toml
+  - evm-docker-controller/Cargo.toml
+  - evm-process-monitor/Cargo.toml
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-mstsgu/Cargo.toml
+  - session-recording-server/policy_api/Cargo.toml
+  - tools/fake_connection_generator/Cargo.toml
+  evidence_grade: strong
+- id: crate:visibility
+  kind: external
+  language: rust
+  purl: pkg:cargo/visibility@0.1
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-cliprdr/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-server/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-testsuite-core/Cargo.toml
+  evidence_grade: strong
+- id: crate:walkdir
+  kind: external
+  language: rust
+  purl: pkg:cargo/walkdir@=2.3.2
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  evidence_grade: strong
+- id: crate:wasm-bindgen
+  kind: external
+  language: rust
+  purl: pkg:cargo/wasm-bindgen@0.2.93
+  discovered_from:
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/iron-remote-desktop/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:wasm-bindgen-futures
+  kind: external
+  language: rust
+  purl: pkg:cargo/wasm-bindgen-futures@0.4.33
+  discovered_from:
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:wasm-bindgen-test
+  kind: external
+  language: rust
+  purl: pkg:cargo/wasm-bindgen-test@0.3.13
+  discovered_from:
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:wasm-timer
+  kind: external
+  language: rust
+  purl: pkg:cargo/wasm-timer@0.2.5
+  discovered_from:
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:wasmtimer
+  kind: external
+  language: rust
+  purl: pkg:cargo/wasmtimer@0.4.3
+  discovered_from:
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  evidence_grade: strong
+- id: crate:web-sys
+  kind: external
+  language: rust
+  purl: pkg:cargo/web-sys@0.3
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/iron-remote-desktop/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:whirlpool
+  kind: external
+  language: rust
+  purl: pkg:cargo/whirlpool@=0.11.0-pre.2
+  discovered_from:
+  - connector-lib/formats/pkcs12/Cargo.toml
+  evidence_grade: strong
+- id: crate:whoami
+  kind: external
+  language: rust
+  purl: pkg:cargo/whoami@2.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  evidence_grade: strong
+- id: crate:widestring
+  kind: external
+  language: rust
+  purl: pkg:cargo/widestring@1.1.0
+  discovered_from:
+  - evm-launcher-agent/Cargo.toml
+  - evm-process-monitor/Cargo.toml
+  - session-recording-client/Cargo.toml
+  evidence_grade: strong
+- id: crate:winapi
+  kind: external
+  language: rust
+  purl: pkg:cargo/winapi@0.3.9
+  discovered_from:
+  - evm-process-monitor/Cargo.toml
+  evidence_grade: strong
+- id: crate:windows-service
+  kind: external
+  language: rust
+  purl: pkg:cargo/windows-service@0.7.0
+  discovered_from:
+  - evm-process-monitor/Cargo.toml
+  evidence_grade: strong
+- id: crate:windows-sys
+  kind: external
+  language: rust
+  purl: pkg:cargo/windows-sys@=0.60.2
+  discovered_from:
+  - agent/rust-client/Cargo.toml
+  - agent/rust-client/agent-api/Cargo.toml
+  - agent/rust-client/agent-core/Cargo.toml
+  - agent/rust-client/agent-db/Cargo.toml
+  - agent/rust-client/agent-tasks/Cargo.toml
+  - evm-launcher-agent/Cargo.toml
+  evidence_grade: strong
+- id: crate:winit
+  kind: external
+  language: rust
+  purl: pkg:cargo/winit@0.29
+  discovered_from:
+  - evm-launcher-agent/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  evidence_grade: strong
+- id: crate:ws_stream_wasm
+  kind: external
+  language: rust
+  purl: pkg:cargo/ws_stream_wasm@^0.7
+  discovered_from:
+  - frontend/apps/launcher-web/rust/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:x509-cert
+  kind: external
+  language: rust
+  purl: pkg:cargo/x509-cert@=0.3.0-pre
+  discovered_from:
+  - connector-lib/formats/cmpv2/Cargo.toml
+  - connector-lib/formats/cms/Cargo.toml
+  - connector-lib/formats/crmf/Cargo.toml
+  - connector-lib/formats/gss-api/Cargo.toml
+  - connector-lib/formats/pkcs12/Cargo.toml
+  - connector-lib/formats/x509-cert/fuzz/Cargo.toml
+  - connector-lib/formats/x509-ocsp/Cargo.toml
+  - connector-lib/formats/x509-tsp/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-client/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-pdu/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-server/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-tls/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-web/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:x509-parser
+  kind: external
+  language: rust
+  purl: pkg:cargo/x509-parser@=0.10.0
+  discovered_from:
+  - docker-evm-rdp/launcher-web-entrypoint/Cargo.toml
+  - frontend/apps/launcher-web/rust/webrdp/Cargo.toml
+  evidence_grade: strong
+- id: crate:xshell
+  kind: external
+  language: rust
+  purl: pkg:cargo/xshell@0.2
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/xtask/Cargo.toml
+  evidence_grade: strong
+- id: crate:yuv
+  kind: external
+  language: rust
+  purl: pkg:cargo/yuv@0.8
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-graphics/Cargo.toml
+  evidence_grade: strong
+- id: crate:zeroize
+  kind: external
+  language: rust
+  purl: pkg:cargo/zeroize@1.8.1
+  discovered_from:
+  - connector-lib/formats/cms/Cargo.toml
+  - connector-lib/formats/der/Cargo.toml
+  - connector-lib/formats/pkcs12/Cargo.toml
+  - connector-lib/formats/sec1/Cargo.toml
+  - connector-lib/formats/serdect/Cargo.toml
+  - connector-lib/formats/tai64/Cargo.toml
+  - connector-lib/formats/tls_codec/Cargo.toml
+  evidence_grade: strong
+- id: crate:zstd-safe
+  kind: external
+  language: rust
+  purl: pkg:cargo/zstd-safe@7.2
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-server/Cargo.toml
+  - frontend/apps/launcher-web/rust/IronRDP/crates/ironrdp-session/Cargo.toml
+  evidence_grade: strong
+- id: npm:@codemirror/lang-json
+  kind: external
+  language: javascript
+  purl: pkg:npm/@codemirror/lang-json@^6.0.2
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:@dull/config
+  kind: external
+  language: javascript
+  purl: pkg:npm/@dull/config@workspace:*
+  discovered_from:
+  - frontend/apps/index-page/package.json
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/flags/package.json
+  - frontend/packages/form/package.json
+  - frontend/packages/generic/package.json
+  - frontend/packages/icons/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@dull/flags
+  kind: external
+  language: javascript
+  purl: pkg:npm/@dull/flags@workspace:*
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:@dull/form
+  kind: external
+  language: javascript
+  purl: pkg:npm/@dull/form@workspace:*
+  discovered_from:
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:@dull/generic
+  kind: external
+  language: javascript
+  purl: pkg:npm/@dull/generic@workspace:*
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/flags/package.json
+  evidence_grade: strong
+- id: npm:@dull/icons
+  kind: external
+  language: javascript
+  purl: pkg:npm/@dull/icons@workspace:*
+  discovered_from:
+  - frontend/apps/index-page/package.json
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@dull/shared
+  kind: external
+  language: javascript
+  purl: pkg:npm/@dull/shared@workspace:*
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:@dull/ui
+  kind: external
+  language: javascript
+  purl: pkg:npm/@dull/ui@workspace:*
+  discovered_from:
+  - frontend/apps/index-page/package.json
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/form/package.json
+  - frontend/packages/shared/package.json
+  evidence_grade: strong
+- id: npm:@emotion/react
+  kind: external
+  language: javascript
+  purl: pkg:npm/@emotion/react@^11.11.1
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:@emotion/styled
+  kind: external
+  language: javascript
+  purl: pkg:npm/@emotion/styled@^11.11.0
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:@eslint/eslintrc
+  kind: external
+  language: javascript
+  purl: pkg:npm/@eslint/eslintrc@^3.3.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop-rdp/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  evidence_grade: strong
+- id: npm:@eslint/js
+  kind: external
+  language: javascript
+  purl: pkg:npm/@eslint/js@^9.21.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop-rdp/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  - frontend/packages/config/package.json
+  evidence_grade: strong
+- id: npm:@fontsource-variable/inter
+  kind: external
+  language: javascript
+  purl: pkg:npm/@fontsource-variable/inter@^5.2.8
+  discovered_from:
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@fontsource/poppins
+  kind: external
+  language: javascript
+  purl: pkg:npm/@fontsource/poppins@^5.2.7
+  discovered_from:
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@hey-api/openapi-ts
+  kind: external
+  language: javascript
+  purl: pkg:npm/@hey-api/openapi-ts@^0.83.1
+  discovered_from:
+  - frontend/packages/launcher-api-client/package.json
+  - frontend/packages/realm-api-client/package.json
+  - frontend/packages/secure-portal-api-client/package.json
+  evidence_grade: strong
+- id: npm:@hey-api/vite-plugin
+  kind: external
+  language: javascript
+  purl: pkg:npm/@hey-api/vite-plugin@^0.2.0
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:@ladle/react
+  kind: external
+  language: javascript
+  purl: pkg:npm/@ladle/react@^5.0.0
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@lambdatest/smartui-cli
+  kind: external
+  language: javascript
+  purl: pkg:npm/@lambdatest/smartui-cli@^4.1.55
+  discovered_from:
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@material-design-icons/font
+  kind: external
+  language: javascript
+  purl: pkg:npm/@material-design-icons/font@^0.14.2
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:@microsoft/signalr
+  kind: external
+  language: javascript
+  purl: pkg:npm/@microsoft/signalr@^8.0.7
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:@mui/icons-material
+  kind: external
+  language: javascript
+  purl: pkg:npm/@mui/icons-material@^7.3.4
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:@mui/lab
+  kind: external
+  language: javascript
+  purl: pkg:npm/@mui/lab@^5.0.0-alpha.177
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:@mui/material
+  kind: external
+  language: javascript
+  purl: pkg:npm/@mui/material@^7.3.4
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:@mui/system
+  kind: external
+  language: javascript
+  purl: pkg:npm/@mui/system@^7.3.2
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:@mui/x-data-grid-pro
+  kind: external
+  language: javascript
+  purl: pkg:npm/@mui/x-data-grid-pro@^7.29.4
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/generic/package.json
+  evidence_grade: strong
+- id: npm:@mui/x-date-pickers-pro
+  kind: external
+  language: javascript
+  purl: pkg:npm/@mui/x-date-pickers-pro@^8.11.3
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  - frontend/packages/generic/package.json
+  evidence_grade: strong
+- id: npm:@mui/x-license
+  kind: external
+  language: javascript
+  purl: pkg:npm/@mui/x-license@^8.24.0
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:@phosphor-icons/react
+  kind: external
+  language: javascript
+  purl: pkg:npm/@phosphor-icons/react@^2.1.7
+  discovered_from:
+  - frontend/packages/icons/package.json
+  evidence_grade: strong
+- id: npm:@playwright/test
+  kind: external
+  language: javascript
+  purl: pkg:npm/@playwright/test@^1.58.2
+  discovered_from:
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@radix-ui/colors
+  kind: external
+  language: javascript
+  purl: pkg:npm/@radix-ui/colors@^3.0.0
+  discovered_from:
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@radix-ui/react-one-time-password-field
+  kind: external
+  language: javascript
+  purl: pkg:npm/@radix-ui/react-one-time-password-field@^0.1.8
+  discovered_from:
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@radix-ui/react-slot
+  kind: external
+  language: javascript
+  purl: pkg:npm/@radix-ui/react-slot@^1.2.4
+  discovered_from:
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@react-aria/i18n
+  kind: external
+  language: javascript
+  purl: pkg:npm/@react-aria/i18n@^3.12.16
+  discovered_from:
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@react-aria/interactions
+  kind: external
+  language: javascript
+  purl: pkg:npm/@react-aria/interactions@^3.27.0
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  - frontend/packages/form/package.json
+  evidence_grade: strong
+- id: npm:@react-keycloak/web
+  kind: external
+  language: javascript
+  purl: pkg:npm/@react-keycloak/web@^3.4.0
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/shared/package.json
+  evidence_grade: strong
+- id: npm:@react-stately/utils
+  kind: external
+  language: javascript
+  purl: pkg:npm/@react-stately/utils@^3.11.0
+  discovered_from:
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@rollup/plugin-replace
+  kind: external
+  language: javascript
+  purl: pkg:npm/@rollup/plugin-replace@^5.0.1
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:@sentry/browser
+  kind: external
+  language: javascript
+  purl: pkg:npm/@sentry/browser@^7.88.0
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:@sentry/react
+  kind: external
+  language: javascript
+  purl: pkg:npm/@sentry/react@^7.88.0
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:@sentry/tracing
+  kind: external
+  language: javascript
+  purl: pkg:npm/@sentry/tracing@^7.88.0
+  discovered_from:
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:@sentry/vite-plugin
+  kind: external
+  language: javascript
+  purl: pkg:npm/@sentry/vite-plugin@^4.6.1
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:@storybook/addon-essentials
+  kind: external
+  language: javascript
+  purl: pkg:npm/@storybook/addon-essentials@^8.6.14
+  discovered_from:
+  - frontend/apps/keycloak-theme/package.json
+  evidence_grade: strong
+- id: npm:@storybook/blocks
+  kind: external
+  language: javascript
+  purl: pkg:npm/@storybook/blocks@^8.1.9
+  discovered_from:
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:@storybook/preset-create-react-app
+  kind: external
+  language: javascript
+  purl: pkg:npm/@storybook/preset-create-react-app@^8.1.9
+  discovered_from:
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:@storybook/react
+  kind: external
+  language: javascript
+  purl: pkg:npm/@storybook/react@^8.1.10
+  discovered_from:
+  - frontend/apps/keycloak-theme/package.json
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:@storybook/react-vite
+  kind: external
+  language: javascript
+  purl: pkg:npm/@storybook/react-vite@^8.1.10
+  discovered_from:
+  - frontend/apps/keycloak-theme/package.json
+  evidence_grade: strong
+- id: npm:@storybook/react-webpack5
+  kind: external
+  language: javascript
+  purl: pkg:npm/@storybook/react-webpack5@^8.1.9
+  discovered_from:
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:@storybook/test
+  kind: external
+  language: javascript
+  purl: pkg:npm/@storybook/test@^8.1.9
+  discovered_from:
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:@sveltejs/adapter-auto
+  kind: external
+  language: javascript
+  purl: pkg:npm/@sveltejs/adapter-auto@^7.0.1
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:@sveltejs/adapter-static
+  kind: external
+  language: javascript
+  purl: pkg:npm/@sveltejs/adapter-static@^3.0.10
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:@sveltejs/kit
+  kind: external
+  language: javascript
+  purl: pkg:npm/@sveltejs/kit@^2.54.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:@sveltejs/vite-plugin-svelte
+  kind: external
+  language: javascript
+  purl: pkg:npm/@sveltejs/vite-plugin-svelte@^5.0.3
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  evidence_grade: strong
+- id: npm:@tailwindcss/postcss
+  kind: external
+  language: javascript
+  purl: pkg:npm/@tailwindcss/postcss@^4.0.0
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:@tailwindcss/vite
+  kind: external
+  language: javascript
+  purl: pkg:npm/@tailwindcss/vite@^4.1.18
+  discovered_from:
+  - frontend/apps/index-page/package.json
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@tanstack/react-form
+  kind: external
+  language: javascript
+  purl: pkg:npm/@tanstack/react-form@^1.28.3
+  discovered_from:
+  - frontend/packages/form/package.json
+  evidence_grade: strong
+- id: npm:@tanstack/react-query
+  kind: external
+  language: javascript
+  purl: pkg:npm/@tanstack/react-query@^5.61.5
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/flags/package.json
+  evidence_grade: strong
+- id: npm:@testing-library/jest-dom
+  kind: external
+  language: javascript
+  purl: pkg:npm/@testing-library/jest-dom@^6.1.5
+  discovered_from:
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/flags/package.json
+  - frontend/packages/form/package.json
+  - frontend/packages/generic/package.json
+  - frontend/packages/icons/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@testing-library/react
+  kind: external
+  language: javascript
+  purl: pkg:npm/@testing-library/react@^14.1.2
+  discovered_from:
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/flags/package.json
+  - frontend/packages/form/package.json
+  - frontend/packages/generic/package.json
+  - frontend/packages/icons/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@testing-library/user-event
+  kind: external
+  language: javascript
+  purl: pkg:npm/@testing-library/user-event@^14.6.1
+  discovered_from:
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/form/package.json
+  - frontend/packages/generic/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@tsconfig/svelte
+  kind: external
+  language: javascript
+  purl: pkg:npm/@tsconfig/svelte@^5.0.4
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  evidence_grade: strong
+- id: npm:@turbo/gen
+  kind: external
+  language: javascript
+  purl: pkg:npm/@turbo/gen@^2.7.4
+  discovered_from:
+  - frontend/package.json
+  evidence_grade: strong
+- id: npm:@types/eslint-config-prettier
+  kind: external
+  language: javascript
+  purl: pkg:npm/@types/eslint-config-prettier@^6.11.3
+  discovered_from:
+  - frontend/packages/config/package.json
+  evidence_grade: strong
+- id: npm:@types/jest
+  kind: external
+  language: javascript
+  purl: pkg:npm/@types/jest@^29.5.12
+  discovered_from:
+  - frontend/packages/launcher-api-client/package.json
+  - frontend/packages/realm-api-client/package.json
+  - frontend/packages/secure-portal-api-client/package.json
+  evidence_grade: strong
+- id: npm:@types/lodash
+  kind: external
+  language: javascript
+  purl: pkg:npm/@types/lodash@^4.17.20
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/packages/generic/package.json
+  evidence_grade: strong
+- id: npm:@types/node
+  kind: external
+  language: javascript
+  purl: pkg:npm/@types/node@^22.13.1
+  discovered_from:
+  - frontend/packages/launcher-api-client/package.json
+  - frontend/packages/realm-api-client/package.json
+  - frontend/packages/secure-portal-api-client/package.json
+  evidence_grade: strong
+- id: npm:@types/qs
+  kind: external
+  language: javascript
+  purl: pkg:npm/@types/qs@^6.14.0
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/launcher-api-client/package.json
+  - frontend/packages/realm-api-client/package.json
+  - frontend/packages/secure-portal-api-client/package.json
+  evidence_grade: strong
+- id: npm:@types/react
+  kind: external
+  language: javascript
+  purl: pkg:npm/@types/react@^18.3.24
+  discovered_from:
+  - frontend/apps/index-page/package.json
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/flags/package.json
+  - frontend/packages/form/package.json
+  - frontend/packages/generic/package.json
+  - frontend/packages/icons/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:@types/react-dom
+  kind: external
+  language: javascript
+  purl: pkg:npm/@types/react-dom@^18.3.7
+  discovered_from:
+  - frontend/apps/index-page/package.json
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/generic/package.json
+  - frontend/packages/shared/package.json
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:@types/ua-parser-js
+  kind: external
+  language: javascript
+  purl: pkg:npm/@types/ua-parser-js@^0.7.36
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop-rdp/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  evidence_grade: strong
+- id: npm:@typescript-eslint/eslint-plugin
+  kind: external
+  language: javascript
+  purl: pkg:npm/@typescript-eslint/eslint-plugin@^8.25.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop-rdp/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  - frontend/packages/launcher-api-client/package.json
+  - frontend/packages/realm-api-client/package.json
+  - frontend/packages/secure-portal-api-client/package.json
+  evidence_grade: strong
+- id: npm:@typescript-eslint/parser
+  kind: external
+  language: javascript
+  purl: pkg:npm/@typescript-eslint/parser@^5.27.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  - frontend/packages/launcher-api-client/package.json
+  - frontend/packages/realm-api-client/package.json
+  - frontend/packages/secure-portal-api-client/package.json
+  evidence_grade: strong
+- id: npm:@uiw/react-codemirror
+  kind: external
+  language: javascript
+  purl: pkg:npm/@uiw/react-codemirror@^4.25.1
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:@vitejs/plugin-react
+  kind: external
+  language: javascript
+  purl: pkg:npm/@vitejs/plugin-react@^5.0.2
+  discovered_from:
+  - frontend/apps/index-page/package.json
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/flags/package.json
+  - frontend/packages/form/package.json
+  - frontend/packages/generic/package.json
+  - frontend/packages/icons/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@vitest/coverage-v8
+  kind: external
+  language: javascript
+  purl: pkg:npm/@vitest/coverage-v8@^4.1.4
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/flags/package.json
+  - frontend/packages/generic/package.json
+  - frontend/packages/icons/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:@vitest/ui
+  kind: external
+  language: javascript
+  purl: pkg:npm/@vitest/ui@^4.1.4
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/generic/package.json
+  evidence_grade: strong
+- id: npm:api-client
+  kind: external
+  language: javascript
+  purl: pkg:npm/api-client@workspace:@dull/launcher-api-client@*
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:atomic-sleep
+  kind: external
+  language: javascript
+  purl: pkg:npm/atomic-sleep@^1.0.0
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:axios
+  kind: external
+  language: javascript
+  purl: pkg:npm/axios@^1.15.0
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/launcher-api-client/package.json
+  - frontend/packages/realm-api-client/package.json
+  - frontend/packages/secure-portal-api-client/package.json
+  evidence_grade: strong
+- id: npm:beercss
+  kind: external
+  language: javascript
+  purl: pkg:npm/beercss@^2.3.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:browserslist
+  kind: external
+  language: javascript
+  purl: pkg:npm/browserslist@^4.24.4
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:camelize
+  kind: external
+  language: javascript
+  purl: pkg:npm/camelize@^1.0.1
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:caniuse-lite
+  kind: external
+  language: javascript
+  purl: pkg:npm/caniuse-lite@^1.0.30001570
+  discovered_from:
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:clsx
+  kind: external
+  language: javascript
+  purl: pkg:npm/clsx@^2.1.1
+  discovered_from:
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:cross-env
+  kind: external
+  language: javascript
+  purl: pkg:npm/cross-env@7.0.3
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:crypto-random-string
+  kind: external
+  language: javascript
+  purl: pkg:npm/crypto-random-string@^5.0.0
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:css-loader
+  kind: external
+  language: javascript
+  purl: pkg:npm/css-loader@^6.8.1
+  discovered_from:
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:date-fns
+  kind: external
+  language: javascript
+  purl: pkg:npm/date-fns@^4.1.0
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:dayjs
+  kind: external
+  language: javascript
+  purl: pkg:npm/dayjs@^1.11.18
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:dotenv
+  kind: external
+  language: javascript
+  purl: pkg:npm/dotenv@^16.3.1
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:dotenv-webpack
+  kind: external
+  language: javascript
+  purl: pkg:npm/dotenv-webpack@^8.0.1
+  discovered_from:
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:esbuild
+  kind: external
+  language: javascript
+  purl: pkg:npm/esbuild@^0.24.2
+  discovered_from:
+  - frontend/packages/launcher-api-client/package.json
+  - frontend/packages/realm-api-client/package.json
+  - frontend/packages/secure-portal-api-client/package.json
+  evidence_grade: strong
+- id: npm:eslint
+  kind: external
+  language: javascript
+  purl: pkg:npm/eslint@^9.27.0
+  discovered_from:
+  - frontend/apps/index-page/package.json
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop-rdp/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  - frontend/package.json
+  - frontend/packages/config/package.json
+  - frontend/packages/form/package.json
+  - frontend/packages/launcher-api-client/package.json
+  - frontend/packages/realm-api-client/package.json
+  - frontend/packages/secure-portal-api-client/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:eslint-config-prettier
+  kind: external
+  language: javascript
+  purl: pkg:npm/eslint-config-prettier@^9.0.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop-rdp/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  - frontend/packages/config/package.json
+  evidence_grade: strong
+- id: npm:eslint-plugin-html
+  kind: external
+  language: javascript
+  purl: pkg:npm/eslint-plugin-html@^7.1.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:eslint-plugin-import
+  kind: external
+  language: javascript
+  purl: pkg:npm/eslint-plugin-import@^2.32.0
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:eslint-plugin-jsx-a11y
+  kind: external
+  language: javascript
+  purl: pkg:npm/eslint-plugin-jsx-a11y@^6.10.2
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:eslint-plugin-prettier
+  kind: external
+  language: javascript
+  purl: pkg:npm/eslint-plugin-prettier@^5.0.1
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop-rdp/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:eslint-plugin-react
+  kind: external
+  language: javascript
+  purl: pkg:npm/eslint-plugin-react@^7.37.5
+  discovered_from:
+  - frontend/packages/config/package.json
+  evidence_grade: strong
+- id: npm:eslint-plugin-react-hooks
+  kind: external
+  language: javascript
+  purl: pkg:npm/eslint-plugin-react-hooks@^7.0.1
+  discovered_from:
+  - frontend/packages/config/package.json
+  evidence_grade: strong
+- id: npm:eslint-plugin-react-refresh
+  kind: external
+  language: javascript
+  purl: pkg:npm/eslint-plugin-react-refresh@^0.4.14
+  discovered_from:
+  - frontend/packages/config/package.json
+  evidence_grade: strong
+- id: npm:eslint-plugin-storybook
+  kind: external
+  language: javascript
+  purl: pkg:npm/eslint-plugin-storybook@^0.11.1
+  discovered_from:
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/packages/shared/package.json
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:eslint-plugin-svelte
+  kind: external
+  language: javascript
+  purl: pkg:npm/eslint-plugin-svelte@^3.0.2
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:file-loader
+  kind: external
+  language: javascript
+  purl: pkg:npm/file-loader@^6.2.0
+  discovered_from:
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:fs-extra
+  kind: external
+  language: javascript
+  purl: pkg:npm/fs-extra@^11.1.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:globals
+  kind: external
+  language: javascript
+  purl: pkg:npm/globals@^16.0.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop-rdp/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  - frontend/packages/config/package.json
+  evidence_grade: strong
+- id: npm:guid-typescript
+  kind: external
+  language: javascript
+  purl: pkg:npm/guid-typescript@^1.0.9
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:history
+  kind: external
+  language: javascript
+  purl: pkg:npm/history@^5.3.0
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:identity-obj-proxy
+  kind: external
+  language: javascript
+  purl: pkg:npm/identity-obj-proxy@^3.0.0
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:isomorphic-fetch
+  kind: external
+  language: javascript
+  purl: pkg:npm/isomorphic-fetch@^3.0.0
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:jest
+  kind: external
+  language: javascript
+  purl: pkg:npm/jest@^29.7.0
+  discovered_from:
+  - frontend/packages/launcher-api-client/package.json
+  - frontend/packages/realm-api-client/package.json
+  - frontend/packages/secure-portal-api-client/package.json
+  evidence_grade: strong
+- id: npm:jest-extended
+  kind: external
+  language: javascript
+  purl: pkg:npm/jest-extended@^4.0.2
+  discovered_from:
+  - frontend/packages/launcher-api-client/package.json
+  - frontend/packages/realm-api-client/package.json
+  - frontend/packages/secure-portal-api-client/package.json
+  evidence_grade: strong
+- id: npm:jsdom
+  kind: external
+  language: javascript
+  purl: pkg:npm/jsdom@^25.0.0
+  discovered_from:
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/packages/flags/package.json
+  - frontend/packages/form/package.json
+  - frontend/packages/icons/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:keycloak-js
+  kind: external
+  language: javascript
+  purl: pkg:npm/keycloak-js@^25.0.5
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/shared/package.json
+  evidence_grade: strong
+- id: npm:keycloakify
+  kind: external
+  language: javascript
+  purl: pkg:npm/keycloakify@^11.15.1
+  discovered_from:
+  - frontend/apps/keycloak-theme/package.json
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:lodash
+  kind: external
+  language: javascript
+  purl: pkg:npm/lodash@^4.18.1
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  - frontend/packages/generic/package.json
+  evidence_grade: strong
+- id: npm:openapi-merge-cli
+  kind: external
+  language: javascript
+  purl: pkg:npm/openapi-merge-cli@^1.3.2
+  discovered_from:
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:postcss-flexbugs-fixes
+  kind: external
+  language: javascript
+  purl: pkg:npm/postcss-flexbugs-fixes@^5.0.2
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:postcss-loader
+  kind: external
+  language: javascript
+  purl: pkg:npm/postcss-loader@^7.3.3
+  discovered_from:
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:prettier
+  kind: external
+  language: javascript
+  purl: pkg:npm/prettier@3.3.1
+  discovered_from:
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop-rdp/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  - frontend/package.json
+  - frontend/packages/config/package.json
+  - frontend/packages/form/package.json
+  - frontend/packages/launcher-api-client/package.json
+  - frontend/packages/realm-api-client/package.json
+  - frontend/packages/secure-portal-api-client/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:prettier-plugin-svelte
+  kind: external
+  language: javascript
+  purl: pkg:npm/prettier-plugin-svelte@^3.1.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:prettier-plugin-tailwindcss
+  kind: external
+  language: javascript
+  purl: pkg:npm/prettier-plugin-tailwindcss@^0.6.14
+  discovered_from:
+  - frontend/apps/index-page/package.json
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/config/package.json
+  - frontend/packages/flags/package.json
+  - frontend/packages/form/package.json
+  - frontend/packages/generic/package.json
+  - frontend/packages/icons/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:pretty-bytes
+  kind: external
+  language: javascript
+  purl: pkg:npm/pretty-bytes@^7.0.0
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:prop-types
+  kind: external
+  language: javascript
+  purl: pkg:npm/prop-types@^15.8.1
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:qrcode
+  kind: external
+  language: javascript
+  purl: pkg:npm/qrcode@^1.5.3
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:qrcode.react
+  kind: external
+  language: javascript
+  purl: pkg:npm/qrcode.react@^4.2.0
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  evidence_grade: strong
+- id: npm:qs
+  kind: external
+  language: javascript
+  purl: pkg:npm/qs@^6.14.2
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/launcher-api-client/package.json
+  - frontend/packages/realm-api-client/package.json
+  - frontend/packages/secure-portal-api-client/package.json
+  evidence_grade: strong
+- id: npm:react
+  kind: external
+  language: javascript
+  purl: pkg:npm/react@^18.3.1
+  discovered_from:
+  - frontend/apps/index-page/package.json
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/flags/package.json
+  - frontend/packages/form/package.json
+  - frontend/packages/generic/package.json
+  - frontend/packages/icons/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:react-aria-components
+  kind: external
+  language: javascript
+  purl: pkg:npm/react-aria-components@^1.14.0
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/packages/form/package.json
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:react-dom
+  kind: external
+  language: javascript
+  purl: pkg:npm/react-dom@^18.3.1
+  discovered_from:
+  - frontend/apps/index-page/package.json
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/flags/package.json
+  - frontend/packages/form/package.json
+  - frontend/packages/generic/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:react-helmet-async
+  kind: external
+  language: javascript
+  purl: pkg:npm/react-helmet-async@^2.0.4
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:react-json-pretty
+  kind: external
+  language: javascript
+  purl: pkg:npm/react-json-pretty@^2.2.0
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:react-player
+  kind: external
+  language: javascript
+  purl: pkg:npm/react-player@^2.16.1
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:react-refresh
+  kind: external
+  language: javascript
+  purl: pkg:npm/react-refresh@^0.14.0
+  discovered_from:
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:react-router-dom
+  kind: external
+  language: javascript
+  purl: pkg:npm/react-router-dom@^6.12.1
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/shared/package.json
+  evidence_grade: strong
+- id: npm:react-scripts
+  kind: external
+  language: javascript
+  purl: pkg:npm/react-scripts@5.0.1
+  discovered_from:
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:react-stately
+  kind: external
+  language: javascript
+  purl: pkg:npm/react-stately@^3.43.0
+  discovered_from:
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:react-toastify
+  kind: external
+  language: javascript
+  purl: pkg:npm/react-toastify@^11.0.5
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:recharts
+  kind: external
+  language: javascript
+  purl: pkg:npm/recharts@^2.10.3
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:recoil
+  kind: external
+  language: javascript
+  purl: pkg:npm/recoil@^0.7.7
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:rimraf
+  kind: external
+  language: javascript
+  purl: pkg:npm/rimraf@^5.0.5
+  discovered_from:
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/config/package.json
+  - frontend/packages/flags/package.json
+  - frontend/packages/icons/package.json
+  - frontend/packages/ui/package.json
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:rxjs
+  kind: external
+  language: javascript
+  purl: pkg:npm/rxjs@^7.8.2
+  discovered_from:
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:slugify
+  kind: external
+  language: javascript
+  purl: pkg:npm/slugify@^1.6.6
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:source-map-support
+  kind: external
+  language: javascript
+  purl: pkg:npm/source-map-support@^0.5.21
+  discovered_from:
+  - frontend/packages/launcher-api-client/package.json
+  - frontend/packages/realm-api-client/package.json
+  - frontend/packages/secure-portal-api-client/package.json
+  evidence_grade: strong
+- id: npm:storybook
+  kind: external
+  language: javascript
+  purl: pkg:npm/storybook@^8.6.17
+  discovered_from:
+  - frontend/apps/keycloak-theme/package.json
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:style-loader
+  kind: external
+  language: javascript
+  purl: pkg:npm/style-loader@^3.3.3
+  discovered_from:
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:svelte
+  kind: external
+  language: javascript
+  purl: pkg:npm/svelte@~5.20.2
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:svelte-check
+  kind: external
+  language: javascript
+  purl: pkg:npm/svelte-check@^4.1.4
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:svelte-eslint-parser
+  kind: external
+  language: javascript
+  purl: pkg:npm/svelte-eslint-parser@^1.0.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  evidence_grade: strong
+- id: npm:svelte-preprocess
+  kind: external
+  language: javascript
+  purl: pkg:npm/svelte-preprocess@^4.10.6
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:sync-fetch
+  kind: external
+  language: javascript
+  purl: pkg:npm/sync-fetch@^0.6.0
+  discovered_from:
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:tailwind-merge
+  kind: external
+  language: javascript
+  purl: pkg:npm/tailwind-merge@^3.5.0
+  discovered_from:
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:tailwind-variants
+  kind: external
+  language: javascript
+  purl: pkg:npm/tailwind-variants@^3.2.2
+  discovered_from:
+  - frontend/apps/index-page/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:tailwindcss
+  kind: external
+  language: javascript
+  purl: pkg:npm/tailwindcss@^4.1.18
+  discovered_from:
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:ts-jest
+  kind: external
+  language: javascript
+  purl: pkg:npm/ts-jest@^29.1.2
+  discovered_from:
+  - frontend/packages/launcher-api-client/package.json
+  - frontend/packages/realm-api-client/package.json
+  - frontend/packages/secure-portal-api-client/package.json
+  evidence_grade: strong
+- id: npm:tsc-files
+  kind: external
+  language: javascript
+  purl: pkg:npm/tsc-files@^1.1.4
+  discovered_from:
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:tslib
+  kind: external
+  language: javascript
+  purl: pkg:npm/tslib@^2.4.1
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop-rdp/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:turbo
+  kind: external
+  language: javascript
+  purl: pkg:npm/turbo@^2.6.3
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  - frontend/package.json
+  evidence_grade: strong
+- id: npm:tw-animate-css
+  kind: external
+  language: javascript
+  purl: pkg:npm/tw-animate-css@^1.4.0
+  discovered_from:
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:typescript
+  kind: external
+  language: javascript
+  purl: pkg:npm/typescript@~5.8.3
+  discovered_from:
+  - frontend/apps/index-page/package.json
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop-rdp/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  - frontend/package.json
+  - frontend/packages/config/package.json
+  - frontend/packages/flags/package.json
+  - frontend/packages/form/package.json
+  - frontend/packages/launcher-api-client/package.json
+  - frontend/packages/realm-api-client/package.json
+  - frontend/packages/secure-portal-api-client/package.json
+  - frontend/packages/shared/package.json
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:typescript-eslint
+  kind: external
+  language: javascript
+  purl: pkg:npm/typescript-eslint@^8.53.0
+  discovered_from:
+  - frontend/packages/config/package.json
+  evidence_grade: strong
+- id: npm:ua-parser-js
+  kind: external
+  language: javascript
+  purl: pkg:npm/ua-parser-js@^1.0.33
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop-rdp/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  evidence_grade: strong
+- id: npm:url-loader
+  kind: external
+  language: javascript
+  purl: pkg:npm/url-loader@^4.1.1
+  discovered_from:
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:video.js
+  kind: external
+  language: javascript
+  purl: pkg:npm/video.js@^8.23.4
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  evidence_grade: strong
+- id: npm:vite
+  kind: external
+  language: javascript
+  purl: pkg:npm/vite@^7.1.5
+  discovered_from:
+  - frontend/apps/index-page/package.json
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop-rdp/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:vite-plugin-dts
+  kind: external
+  language: javascript
+  purl: pkg:npm/vite-plugin-dts@^4.5.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop-rdp/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  evidence_grade: strong
+- id: npm:vite-plugin-eslint
+  kind: external
+  language: javascript
+  purl: pkg:npm/vite-plugin-eslint@^1.8.1
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:vite-plugin-html
+  kind: external
+  language: javascript
+  purl: pkg:npm/vite-plugin-html@^3.2.2
+  discovered_from:
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  evidence_grade: strong
+- id: npm:vite-plugin-top-level-await
+  kind: external
+  language: javascript
+  purl: pkg:npm/vite-plugin-top-level-await@^1.2.2
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop-rdp/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:vite-plugin-wasm
+  kind: external
+  language: javascript
+  purl: pkg:npm/vite-plugin-wasm@^3.1.0
+  discovered_from:
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop-rdp/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-remote-desktop/package.json
+  - frontend/apps/launcher-web/rust/IronRDP/web-client/iron-svelte-client/package.json
+  evidence_grade: strong
+- id: npm:vitest
+  kind: external
+  language: javascript
+  purl: pkg:npm/vitest@^4.1.4
+  discovered_from:
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/config/package.json
+  - frontend/packages/flags/package.json
+  - frontend/packages/form/package.json
+  - frontend/packages/generic/package.json
+  - frontend/packages/icons/package.json
+  - frontend/packages/shared/package.json
+  - frontend/packages/ui/package.json
+  evidence_grade: strong
+- id: npm:webpack
+  kind: external
+  language: javascript
+  purl: pkg:npm/webpack@^5.104.1
+  discovered_from:
+  - keycloakify-starter-webpack/package.json
+  evidence_grade: strong
+- id: npm:zod
+  kind: external
+  language: javascript
+  purl: pkg:npm/zod@^4.3.6
+  discovered_from:
+  - frontend/apps/keycloak-theme/package.json
+  - frontend/apps/launcher-web/package.json
+  - frontend/apps/realm-manager/package.json
+  - frontend/apps/secure-portal/package.json
+  - frontend/packages/flags/package.json
+  - frontend/packages/form/package.json
+  - frontend/packages/generic/package.json
+  evidence_grade: strong
