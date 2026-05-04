@@ -585,3 +585,15 @@ entries:
     indicatif drops all output on non-TTY stderr regardless of ProgressMode. `ProgressDrawTarget::stderr()` becomes a no-draw target when stderr is not a TTY (`draw_target.rs:167-169`); `multi.println` and bar `set_message` are both no-ops silently — even under `ProgressMode::Always`. Fix: track `plain_stderr: bool` in `Reporter`; route through `eprintln!` when `drawing && !stderr_is_tty`. `ProgressEvent` variants that update only via `set_msg` (Started, Phase, IterStart, Subcarve, Surface) still lack a plain-mode fallback and remain invisible on piped stderr.
 
     Cross-ref: `reporter-agent-mounted-is-tracked-in-state-not-derived-from-indicatif`.
+- id: indicatif-suppresses-drawing-including-println-when-stderr-is-not-a-tty
+  title: indicatif suppresses drawing including println when stderr is not a TTY
+  body: |
+    indicatif suppresses all drawing — including `MultiProgress::println` — when the underlying terminal is not a TTY, even when `ProgressDrawTarget::stderr()` is explicitly passed. This is baked into indicatif's draw-target abstraction (`draw_target.rs:167-169`) and is not surfaced as a visible error.
+
+    Consequence: any code that wires a `--progress` flag via indicatif will be silently ineffective when stderr is piped (CI, assert_cmd tests, shell pipelines). The `drawing: true` path through `Reporter` does not guarantee any output to non-TTY stderr.
+
+    Fix pattern: add a `plain_stderr: bool` flag set true iff `drawing && !stderr_is_tty`. In plain mode, emit via `eprintln!` directly instead of routing through indicatif's `set_message` / `multi.println`. This was applied to `AgentObserver::on_event`, `ProgressEvent::IterEnd`, and `ProgressEvent::Finished` handlers in `crates/atlas-cli/src/progress.rs`.
+
+    Remaining gap: `ProgressEvent::Started`, `Phase`, `IterStart`, `Subcarve`, `Surface` still route only through `set_msg` (indicatif bar state) and produce no output in `Always + non-TTY` mode. These would need parallel `eprintln!` emission to give CI consumers per-phase scrollback.
+
+    Cross-ref: `assert_cmd real-binary tests must be gated behind ATLAS_LLM_RUN_CLAUDE_TESTS=1` — the gating env var is both the budget guard and the CI-pipe guard; it is the same guard hiding TTY-related regressions.
