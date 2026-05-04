@@ -514,11 +514,15 @@ entries:
   body: |
     v1.3.0 includes three correctness fixes: env-var comment-skip, L3 token-injection, CodexBackend. First-run UX is clean. Cut v1.3.1 before external monorepo testing to reduce "is this a known bug?" noise in early feedback.
 - id: dull-depth-1-skips-llm-path-due-to-dense-pin-coverage
-  title: dull depth-1 skips LLM path due to dense pin coverage
+  title: dull pin coverage is high but not total; L3 fires on gap
   body: |
-    `dull` depth-1 calibration produces output identical to depth-0: pin coverage is dense enough that all classify/subcarve decisions short-circuit deterministically, so the LLM call path is never exercised. `dull` cannot serve as a cross-target LLM validator in its current state.
+    `dull` `components.overrides.yaml` declares 83 pinned ids, but Atlas's L1/L2 enumeration finds at least two unpinned candidates that fall through to L3 LLM Classify under cold cache: `session-recording-server/policy_api` and `shared-backend/Dull.SqlcDal/sql_sanitizer`. The pin coverage is *high* but not *total*, so cold-cache runs at any depth fire L3 LLM calls on the gap.
 
-    `verify-atlas-v1-success-criteria-end-to-end` against `dull` is unblocked — the init `schema_version` fix, L3/L8 prompt-token fix, `params.max_tokens` config-load validation, and pipeline setup-error abort have all landed.
+    A previously-recorded "depth-1 = depth-0 = 0 LLM calls" observation was almost certainly captured with a warm `llm-cache.json` (cache hits on every candidate). It is not representative of a true cold-cache run.
+
+    `dull` cannot serve as a cross-target LLM validator until the pin gap is closed. Two unblock paths: (a) audit `pins:` against the enumerated candidate set and pin everything, or (b) repurpose to a different target where pin coverage can be made total cheaply.
+
+    Cross-ref: `evaluation/results/2026-05-04-dull-depth0-perf.md` (full audit and recommendation).
 - id: missing-params-max-tokens-causes-three-silent-llm-failure-layers
   title: HTTP-provider config missing params.max_tokens rejected at config load
   body: |
