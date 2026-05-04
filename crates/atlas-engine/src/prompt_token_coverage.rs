@@ -1,4 +1,4 @@
-//! Unified bidirectional prompt/builder token-coverage check.
+//! Bidirectional prompt template / build-inputs coverage check.
 //!
 //! For every prompt template in `defaults/prompts/`, asserts:
 //!
@@ -9,150 +9,206 @@
 //!    silent L3 LLM-fallback degradation (2026-05-02 incident).
 //!
 //! 2. **Inverse direction** — every key the input builder supplies is
-//!    referenced by a `{{TOKEN}}` in the template. Surplus builder
-//!    keys are silently dropped by `prompt::render`, leaving the LLM
-//!    with no per-call context (2026-05-03 incident: classify and
-//!    subcarve received only catalog tokens, no candidate context).
+//!    referenced by a `{{TOKEN}}` in the template (or declared
+//!    cache-only). Surplus builder keys are silently dropped by
+//!    `prompt::render`, leaving the LLM with no per-call context
+//!    (2026-05-03 incident: classify and subcarve received only catalog
+//!    tokens, no candidate context).
 //!
-//! Each per-layer test (`classify_prompt_token_coverage_is_bidirectional`
-//! in `l3_classify`, `subcarve_prompt_token_coverage_is_bidirectional`
-//! in `l8_recurse`, etc.) provides locality-of-failure for one prompt;
-//! this module is the single matrix to extend when adding a new prompt
-//! template. Wire the new prompt by:
+//! ## Validation surfaces
 //!
-//! 1. Adding a parameterless `pub(crate) fn build_*_inputs_*for_tests()
-//!    -> Value` to the layer that owns the new prompt.
-//! 2. Adding a `Case { … }` row to `cases()` below.
+//! - **Compile time** — `build.rs` extracts each template's `{{TOKEN}}`
+//!   set into the `*_TEMPLATE_TOKENS` constants generated below; the
+//!   `const _: ()` blocks then compare those against each layer's
+//!   `BUILD_INPUTS_KEYS` and `CACHE_ONLY_KEYS` declarations. Mismatches
+//!   become hard `cargo build` failures.
+//!
+//! - **Test time** — a single runtime test verifies that each builder's
+//!   actual JSON output keys match its declared `BUILD_INPUTS_KEYS`,
+//!   catching drift between the runtime builder and its const list (the
+//!   compile-time check cannot inspect runtime code).
+//!
+//! ## Adding a new prompt template
+//!
+//! 1. Add a `(CONST_NAME, "defaults/prompts/<file>.md")` row to
+//!    `TEMPLATES` in `build.rs`.
+//! 2. Add `pub(crate) const BUILD_INPUTS_KEYS` and `CACHE_ONLY_KEYS`
+//!    declarations to the layer that owns the new prompt's builder.
+//! 3. Add a `const _: () = assert_bidirectional(...)` block here.
+//! 4. Add a parameterless `pub(crate) fn build_*_for_tests() -> Value`
+//!    on the layer and a corresponding row to `runtime_drift_cases()`.
 
-use std::collections::HashSet;
+include!(concat!(
+    env!("OUT_DIR"),
+    "/prompt_token_coverage_generated.rs"
+));
 
-use serde_json::Value;
+// --- Compile-time bidirectional validation ---------------------------
+//
+// Each `assert_bidirectional` call panics at compile time on mismatch,
+// turning the failure into a `cargo build` error. The panic message is
+// a fixed string literal because const-context `panic!` does not
+// interpolate. Source-location metadata in the build error narrows down
+// which template and which direction failed.
 
-struct Case {
-    /// Display name of the prompt — appears in failure messages.
-    prompt: &'static str,
-    /// Display name of the input builder — appears in failure messages.
-    builder: &'static str,
-    /// The shipped prompt template body, embedded via `include_str!`.
-    template: &'static str,
-    /// Parameterless builder hook returning the inputs `Value` the
-    /// engine would feed into `prompt::render` for one call.
-    inputs: fn() -> Value,
-    /// Keys the builder deliberately includes in the inputs JSON for
-    /// cache-key fingerprinting only — never referenced by the prompt.
-    /// `LlmCache` and `TestBackend` derive cache keys from the canonical
-    /// JSON shape, so adding a sha-bearing field invalidates cache
-    /// entries when underlying content changes without the LLM having
-    /// to see the value. The inverse-direction check skips these.
-    cache_only_keys: &'static [&'static str],
+const _: () = assert_bidirectional(
+    CLASSIFY_TEMPLATE_TOKENS,
+    crate::l3_classify::BUILD_INPUTS_KEYS,
+    crate::l3_classify::CACHE_ONLY_KEYS,
+    "classify.md and l3_classify::build_llm_inputs disagree: \
+     prompt template references a {{TOKEN}} that the builder does not \
+     populate, OR the builder supplies a key that the template does not \
+     reference (and is not in CACHE_ONLY_KEYS).",
+);
+
+const _: () = assert_bidirectional(
+    STAGE1_SURFACE_TEMPLATE_TOKENS,
+    crate::l5_surface::BUILD_INPUTS_KEYS,
+    crate::l5_surface::CACHE_ONLY_KEYS,
+    "stage1-surface.md and l5_surface::build_inputs disagree: \
+     prompt template references a {{TOKEN}} that the builder does not \
+     populate, OR the builder supplies a key that the template does not \
+     reference (and is not in CACHE_ONLY_KEYS).",
+);
+
+const _: () = assert_bidirectional(
+    STAGE2_EDGES_TEMPLATE_TOKENS,
+    crate::l6_edges::BUILD_INPUTS_KEYS,
+    crate::l6_edges::CACHE_ONLY_KEYS,
+    "stage2-edges.md and l6_edges::build_inputs disagree: \
+     prompt template references a {{TOKEN}} that the builder does not \
+     populate, OR the builder supplies a key that the template does not \
+     reference (and is not in CACHE_ONLY_KEYS).",
+);
+
+const fn assert_bidirectional(
+    template_tokens: &[&str],
+    build_inputs_keys: &[&str],
+    cache_only_keys: &[&str],
+    msg: &'static str,
+) {
+    // Forward: every `{{TOKEN}}` in the template must be in BUILD_INPUTS_KEYS.
+    let mut i = 0;
+    while i < template_tokens.len() {
+        if !contains(build_inputs_keys, template_tokens[i]) {
+            panic!("{}", msg);
+        }
+        i += 1;
+    }
+    // Inverse: every key in BUILD_INPUTS_KEYS must appear as a
+    // `{{TOKEN}}` in the template, OR be declared cache-only.
+    let mut i = 0;
+    while i < build_inputs_keys.len() {
+        let key = build_inputs_keys[i];
+        if !contains(template_tokens, key) && !contains(cache_only_keys, key) {
+            panic!("{}", msg);
+        }
+        i += 1;
+    }
 }
 
-fn cases() -> Vec<Case> {
-    vec![
-        Case {
-            prompt: "classify.md",
-            builder: "l3_classify::build_llm_inputs",
-            template: include_str!("../../../defaults/prompts/classify.md"),
-            inputs: crate::l3_classify::build_llm_inputs_for_tests,
-            cache_only_keys: &[],
-        },
-        // `subcarve.md` is intentionally absent: as of the L8
-        // map/reduce redesign the engine no longer renders that
-        // template — the per-subdir map step routes through `Classify`
-        // — so a token-coverage check on it would assert against an
-        // unused prompt. The file remains in `EMBEDDED_PROMPTS` so its
-        // sha continues to contribute to the run-wide template
-        // fingerprint during the transition; deletion is slated for a
-        // post-release cleanup pass.
-        Case {
-            prompt: "stage1-surface.md",
-            builder: "l5_surface::build_inputs",
-            template: include_str!("../../../defaults/prompts/stage1-surface.md"),
-            inputs: crate::l5_surface::build_inputs_with_stubs_for_tests,
-            // Per-segment content SHAs are baked into the inputs JSON
-            // so a file-content change reshapes the cache key, even
-            // though the LLM doesn't see the SHAs in the prompt.
-            cache_only_keys: &["COMPONENT_CONTENT_SHAS"],
-        },
-        Case {
-            prompt: "stage2-edges.md",
-            builder: "l6_edges::build_inputs",
-            template: include_str!("../../../defaults/prompts/stage2-edges.md"),
-            inputs: crate::l6_edges::build_inputs_with_stubs_for_tests,
-            cache_only_keys: &[],
-        },
-    ]
+const fn contains(haystack: &[&str], needle: &str) -> bool {
+    let mut i = 0;
+    while i < haystack.len() {
+        if str_eq(haystack[i], needle) {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
-#[test]
-fn every_prompt_and_builder_agree_on_token_set() {
-    let mut failures: Vec<String> = Vec::new();
+const fn str_eq(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
 
-    for case in cases() {
-        let inputs = (case.inputs)();
-        let object = inputs
-            .as_object()
-            .unwrap_or_else(|| panic!("{} must return a JSON object", case.builder));
+// --- Runtime drift check --------------------------------------------
+//
+// The compile-time check compares each template against the
+// `BUILD_INPUTS_KEYS` const declaration. This runtime test catches the
+// remaining drift surface: the const declaration no longer matching
+// what the actual builder emits at runtime. Without this, a developer
+// could change `build_inputs` without updating `BUILD_INPUTS_KEYS` and
+// the compile-time check would still pass against the stale const.
 
-        let supplied: HashSet<String> = object.keys().cloned().collect();
-        let referenced: HashSet<String> =
-            collect_template_tokens(case.template).into_iter().collect();
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
 
-        for token in &referenced {
-            if !supplied.contains(token) {
+    use serde_json::Value;
+
+    struct RuntimeDriftCase {
+        builder: &'static str,
+        declared_keys: &'static [&'static str],
+        actual_inputs: fn() -> Value,
+    }
+
+    fn runtime_drift_cases() -> Vec<RuntimeDriftCase> {
+        vec![
+            RuntimeDriftCase {
+                builder: "l3_classify::build_llm_inputs",
+                declared_keys: crate::l3_classify::BUILD_INPUTS_KEYS,
+                actual_inputs: crate::l3_classify::build_llm_inputs_for_tests,
+            },
+            RuntimeDriftCase {
+                builder: "l5_surface::build_inputs",
+                declared_keys: crate::l5_surface::BUILD_INPUTS_KEYS,
+                actual_inputs: crate::l5_surface::build_inputs_with_stubs_for_tests,
+            },
+            RuntimeDriftCase {
+                builder: "l6_edges::build_inputs",
+                declared_keys: crate::l6_edges::BUILD_INPUTS_KEYS,
+                actual_inputs: crate::l6_edges::build_inputs_with_stubs_for_tests,
+            },
+        ]
+    }
+
+    #[test]
+    fn build_inputs_keys_const_matches_runtime_builder_output() {
+        let mut failures: Vec<String> = Vec::new();
+
+        for case in runtime_drift_cases() {
+            let value = (case.actual_inputs)();
+            let object = value
+                .as_object()
+                .unwrap_or_else(|| panic!("{} must return a JSON object", case.builder));
+
+            let actual: BTreeSet<&str> = object.keys().map(String::as_str).collect();
+            let declared: BTreeSet<&str> = case.declared_keys.iter().copied().collect();
+
+            for key in actual.difference(&declared) {
                 failures.push(format!(
-                    "{} references `{{{{{token}}}}}` but {} does not populate key `{token}` \
-                     — `prompt::render` will error with `TemplateSyntax` and the call will \
-                     be absorbed by the caller's error handling",
-                    case.prompt, case.builder
+                    "{} emits key `{key}` at runtime but `BUILD_INPUTS_KEYS` does not list it \
+                     — update the const so the compile-time template/builder coverage check \
+                     can validate it",
+                    case.builder
+                ));
+            }
+            for key in declared.difference(&actual) {
+                failures.push(format!(
+                    "{} declares `BUILD_INPUTS_KEYS` entry `{key}` but the runtime builder \
+                     does not emit it — remove from the const or add to the builder",
+                    case.builder
                 ));
             }
         }
-        let cache_only: HashSet<&str> = case.cache_only_keys.iter().copied().collect();
-        for key in &supplied {
-            if referenced.contains(key) || cache_only.contains(key.as_str()) {
-                continue;
-            }
-            failures.push(format!(
-                "{} supplies key `{key}` but {} does not reference `{{{{{key}}}}}` \
-                 — `prompt::render` silently drops the value, leaving the LLM \
-                 without that input. If the key is intentionally cache-only, \
-                 add it to the case's `cache_only_keys` list with a comment.",
-                case.builder, case.prompt
-            ));
-        }
-    }
 
-    assert!(
-        failures.is_empty(),
-        "prompt/builder token coverage failed:\n  - {}",
-        failures.join("\n  - ")
-    );
-}
-
-/// Extract every `{{TOKEN}}` name referenced in `template`, using the
-/// same grammar as `atlas_llm::prompt::render`: `{{TOKEN}}` substitutes,
-/// `{{{{` and `}}}}` are literal-brace escapes.
-fn collect_template_tokens(template: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut rest = template;
-    while !rest.is_empty() {
-        if let Some(body) = rest.strip_prefix("{{{{") {
-            rest = body;
-            continue;
-        }
-        if let Some(body) = rest.strip_prefix("}}}}") {
-            rest = body;
-            continue;
-        }
-        if let Some(body) = rest.strip_prefix("{{") {
-            let end = body.find("}}").expect("template must close `{{`");
-            tokens.push(body[..end].trim().to_string());
-            rest = &body[end + 2..];
-            continue;
-        }
-        let ch = rest.chars().next().unwrap();
-        rest = &rest[ch.len_utf8()..];
+        assert!(
+            failures.is_empty(),
+            "BUILD_INPUTS_KEYS drifted from runtime builder output:\n  - {}",
+            failures.join("\n  - ")
+        );
     }
-    tokens
 }

@@ -36,7 +36,6 @@ pub mod subcarve_policy;
 pub mod surface_types;
 pub mod types;
 
-#[cfg(test)]
 mod prompt_token_coverage;
 
 pub use db::{

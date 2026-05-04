@@ -315,7 +315,7 @@ tasks:
 - id: prompt-template-token-coverage-check-at-build-time
   title: Prompt template token-coverage check at build time
   category: infra
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: MEDIUM.** Move the prompt template token-coverage check from test time to build time so mismatches are caught by `cargo build` rather than only when the test suite runs.
@@ -355,6 +355,54 @@ tasks:
 
     - Memory: `l5-l6-tests-include-template-token-coverage-check` — current runtime coverage shape and `cache_only_keys` mechanism.
     - `crates/atlas-engine/src/prompt_token_coverage.rs` — current implementation to supersede or augment.
+  results: |
+    **DONE.** Bidirectional prompt template / build-inputs token coverage now runs at compile time via `const _: () = { ... }` blocks; mismatches surface as `cargo build` errors. The four duplicated copies of `collect_template_tokens` are gone.
+
+    ## Implementation shape
+
+    - New `crates/atlas-engine/build.rs` reads `defaults/prompts/{classify,stage1-surface,stage2-edges}.md`, extracts each template's `{{TOKEN}}` set, and emits a `prompt_token_coverage_generated.rs` file in `OUT_DIR` with `pub(crate) const *_TEMPLATE_TOKENS: &[&str]` arrays. `subcarve.md` is intentionally absent — it remains in `EMBEDDED_PROMPTS` for fingerprint stability but is not a live prompt under the L8 map/reduce design.
+    - Each layer (`l3_classify`, `l5_surface`, `l6_edges`) declares `pub(crate) const BUILD_INPUTS_KEYS: &[&str]` and `pub(crate) const CACHE_ONLY_KEYS: &[&str]` adjacent to its `build_inputs` function. These are the single source of truth for the JSON keys each builder produces.
+    - `crates/atlas-engine/src/prompt_token_coverage.rs` is now a non-cfg-test module. It includes the generated file and runs three `const _: () = assert_bidirectional(...)` calls — one per live template — that compare template tokens against `BUILD_INPUTS_KEYS` / `CACHE_ONLY_KEYS` at compile time. `assert_bidirectional` is a `const fn` using `while`/`panic!`; helper `const fn`s `contains` and `str_eq` work in const context without external deps.
+    - A single runtime test `build_inputs_keys_const_matches_runtime_builder_output` covers the remaining drift surface: it calls each layer's parameterless `build_inputs_*_for_tests` and asserts the runtime JSON keys equal `BUILD_INPUTS_KEYS`. Without this, a developer could change the runtime builder without updating the const, and the compile-time check would still pass against a stale const.
+
+    ## Verification
+
+    Both failure modes confirmed by injecting drift:
+
+    - **Forward direction** (template token without builder key) — mutating `BUILD_INPUTS_KEYS` to drop `"COMPONENT_KINDS"` produced `error[E0080]: evaluation panicked: classify.md and l3_classify::build_llm_inputs disagree...` at compile time.
+    - **Inverse direction** (builder key without template token) — mutating `BUILD_INPUTS_KEYS` to add `"PHANTOM_KEY"` produced the same compile-time error.
+    - **Runtime drift** (const ↔ runtime builder mismatch, undetected by compile-time) — adding `"FAKE_KEY_NOT_EMITTED"` to both `BUILD_INPUTS_KEYS` and `CACHE_ONLY_KEYS` (so compile-time bidirectional passes) caused the runtime test to fail with `BUILD_INPUTS_KEYS drifted from runtime builder output: l5_surface::build_inputs declares 'BUILD_INPUTS_KEYS' entry 'FAKE_KEY_NOT_EMITTED' but the runtime builder does not emit it`.
+
+    After restoration: `cargo build --workspace` clean, `cargo test --workspace` 26/26 suites pass, `cargo clippy -p atlas-engine --all-targets` clean.
+
+    ## Cleanup
+
+    Three duplicated `collect_template_tokens` helpers and three corresponding per-layer token-coverage tests removed (`l3_classify::classify_prompt_token_coverage_is_bidirectional`, `l5_surface::stage1_surface_prompt_tokens_are_all_supplied_by_build_inputs`, `l6_edges::stage2_edges_prompt_tokens_are_all_supplied_by_build_inputs`). The compile-time check + central runtime drift test fully cover what those tests asserted. The L3 sanity check `rendered_classify_prompt_contains_candidate_dir` is preserved as the only remaining per-layer check — it verifies actual rendering output contains candidate context, distinct from the token-coverage axis.
+
+    `build.rs` retains its own copy of `collect_template_tokens` because cargo build scripts and the crate library cannot share code (the script runs before the crate compiles). This is the only intentional duplication; it shrinks four copies to one in build.rs plus one in the const-fn validator (which differs in shape).
+
+    ## Exit-criteria check
+
+    | Criterion | Status |
+    |---|---|
+    | `cargo build --workspace` fails fast on token mismatch | ✅ verified both directions |
+    | Existing three-layer bidirectional matrix passes under new mechanism | ✅ green |
+    | `collect_template_tokens` duplication eliminated | ✅ four → one (build.rs only) |
+    | No remaining test-only coverage matrices the build-time check could replace | ✅ removed all three per-layer tests; runtime drift test serves a different (still-needed) purpose |
+
+    ## Source-file changes left for analyse-work to commit
+
+    - `crates/atlas-engine/build.rs` — new file (cargo build script extracting template tokens).
+    - `crates/atlas-engine/src/lib.rs` — drop `#[cfg(test)]` on `mod prompt_token_coverage`.
+    - `crates/atlas-engine/src/prompt_token_coverage.rs` — full rewrite: const-fn validators + runtime drift test, no longer test-only.
+    - `crates/atlas-engine/src/l3_classify.rs` — add `BUILD_INPUTS_KEYS`/`CACHE_ONLY_KEYS` consts; replace bidirectional test with rendering-only sanity check; drop duplicated `collect_template_tokens`.
+    - `crates/atlas-engine/src/l5_surface.rs` — add `BUILD_INPUTS_KEYS`/`CACHE_ONLY_KEYS` consts; drop forward-only test and duplicated helper.
+    - `crates/atlas-engine/src/l6_edges.rs` — same shape as l5.
+
+    ## Follow-up notes for the next reflect/triage pass
+
+    - Memory entry `l5-l6-tests-include-template-token-coverage-check` describes the prior runtime-only coverage shape; should be rewritten to describe the new compile-time + runtime-drift split. The `cache_only_keys` mechanism shifted from per-test-case configuration to per-layer `pub(crate) const CACHE_ONLY_KEYS` declarations.
+    - If a fourth prompt template lands, the addition path is now: (1) add a row to `TEMPLATES` in `build.rs`, (2) add `BUILD_INPUTS_KEYS`/`CACHE_ONLY_KEYS` consts to its layer, (3) add a `const _: () = assert_bidirectional(...)` block to `prompt_token_coverage.rs`, (4) add a row to `runtime_drift_cases()`. No new helper duplication needed.
 - id: confirm-l8-perf-win-on-dull-at-max-depth-0
   title: Confirm L8 perf win on dull at --max-depth 0
   category: eval

@@ -37,6 +37,16 @@ use crate::surface_types::SurfaceRecord;
 pub const EMBEDDED_STAGE2_EDGES_PROMPT: &str =
     include_str!("../../../defaults/prompts/stage2-edges.md");
 
+/// Keys produced by [`build_inputs`]. Single source of truth for the
+/// bidirectional template/builder coverage check in
+/// [`crate::prompt_token_coverage`]: validated against
+/// `stage2-edges.md` at compile time, and against the runtime builder
+/// output by a unit test.
+pub(crate) const BUILD_INPUTS_KEYS: &[&str] = &["ONTOLOGY_KINDS", "SURFACE_RECORDS_YAML"];
+
+/// L6 has no cache-only fingerprinting keys.
+pub(crate) const CACHE_ONLY_KEYS: &[&str] = &[];
+
 /// Edges involving the component with id `id`. Built by filtering the
 /// global batch produced by [`all_proposed_edges`], so any number of
 /// per-component queries within a revision cost one backend call.
@@ -286,60 +296,9 @@ mod tests {
         assert!(!EMBEDDED_STAGE2_EDGES_PROMPT.is_empty());
     }
 
-    #[test]
-    fn stage2_edges_prompt_tokens_are_all_supplied_by_build_inputs() {
-        let (db, backend, _tmp) = two_component_setup();
-        let ids = prime_surfaces(&db, &backend);
-        let surfaces: Vec<SurfaceWithId> = ids
-            .iter()
-            .map(|id| SurfaceWithId {
-                id: id.clone(),
-                surface: (*surface_of(&db, id.clone())).clone(),
-            })
-            .collect();
-        let inputs = build_inputs(&surfaces);
-        let supplied: std::collections::HashSet<String> = inputs
-            .as_object()
-            .expect("build_inputs must return an object")
-            .keys()
-            .cloned()
-            .collect();
-
-        for token in collect_template_tokens(EMBEDDED_STAGE2_EDGES_PROMPT) {
-            assert!(
-                supplied.contains(&token),
-                "stage2-edges.md references `{{{{{token}}}}}` but \
-                 build_inputs does not populate key `{token}`"
-            );
-        }
-    }
-
-    /// Extract every `{{TOKEN}}` name referenced in `template`, using
-    /// the same grammar as `atlas_llm::prompt::render`: `{{TOKEN}}`
-    /// substitutes, `{{{{` and `}}}}` are literal-brace escapes.
-    fn collect_template_tokens(template: &str) -> Vec<String> {
-        let mut tokens = Vec::new();
-        let mut rest = template;
-        while !rest.is_empty() {
-            if let Some(body) = rest.strip_prefix("{{{{") {
-                rest = body;
-                continue;
-            }
-            if let Some(body) = rest.strip_prefix("}}}}") {
-                rest = body;
-                continue;
-            }
-            if let Some(body) = rest.strip_prefix("{{") {
-                let end = body.find("}}").expect("template must close `{{`");
-                tokens.push(body[..end].trim().to_string());
-                rest = &body[end + 2..];
-                continue;
-            }
-            let ch = rest.chars().next().unwrap();
-            rest = &rest[ch.len_utf8()..];
-        }
-        tokens
-    }
+    // Bidirectional token coverage between stage2-edges.md and
+    // build_inputs is enforced at compile time by
+    // `prompt_token_coverage.rs`.
 
     // ---------------------------------------------------------------
     // Fixtures: build a two-crate workspace so L4 produces two live

@@ -1,15 +1,10 @@
-id: session-54
-timestamp: 2026-05-03T23:58:34Z
+id: session-55
+timestamp: 2026-05-04T01:15:30Z
 phase: work
 body: |
-  ### Session 54 (2026-05-03T23:58:34Z) — Drop vestigial seam_density/cliques_touching from SubcarveSignals
+  ### Session 55 (2026-05-04T01:15:30Z) — Move prompt template token-coverage check to compile time
 
-  - Removed `seam_density` (f32) and `cliques_touching` (Vec<Clique>) fields from `SubcarveSignals` in `subcarve_policy.rs` — neither field was read by `subcarve_policy::decide`; only `modularity_hint` feeds into depth-cap logic.
-  - Removed their computation from `compute_decision` in `l8_recurse.rs`: dropped `seam_density_value`, the `cliques_touching_id` helper, and the `CLIQUES_TOUCHING_MIN_K` constant.
-  - Updated the import in `l8_recurse.rs` from `{cliques, modularity_hint, seam_density, Clique}` to `modularity_hint` only.
-  - Updated all affected comments and test doc-strings to remove references to the removed fields (three comment blocks in `l8_recurse.rs`, two in `subcarve_policy.rs`).
-  - All tests pass; no behavioural change — the removed fields were computed but never used in any policy branch.
-
-  What worked: the removal was clean and mechanical — no call sites referenced the dropped fields outside of `compute_decision`, so no cascading changes were required beyond the two files.
-
-  What this suggests trying next: the next structural task is to ensure the L8 bidirectional token-coverage test (added in session 53) correctly covers the trimmed `SubcarveSignals`; that test is already in tree and references the struct, so it will catch any future field drift.
+  - **Attempted:** Implement the `prompt-template-token-coverage-check-at-build-time` task — move bidirectional template/builder token-coverage validation from test time to `cargo build` time.
+  - **What worked:** Full implementation landed. `crates/atlas-engine/build.rs` (new file) reads the three live prompt templates at build time and emits `*_TEMPLATE_TOKENS` constant arrays into `OUT_DIR/prompt_token_coverage_generated.rs`. `prompt_token_coverage.rs` was rewritten as a non-`#[cfg(test)]` module: it includes the generated file and runs three `const _: () = assert_bidirectional(...)` calls using const-fn helpers (`str_eq`, `contains`). Each live layer (`l3_classify`, `l5_surface`, `l6_edges`) now declares `pub(crate) const BUILD_INPUTS_KEYS` and `CACHE_ONLY_KEYS` as its single source of truth. The four duplicated `collect_template_tokens` helpers and the three per-layer runtime bidirectional tests were removed. A single `build_inputs_keys_const_matches_runtime_builder_output` runtime test was added to catch drift between the const declarations and what the builders actually emit. Both failure directions (template token without builder key; builder key without template token) and the runtime-drift surface confirmed working by injection.
+  - **What this suggests trying next:** The `l5-l6-tests-include-template-token-coverage-check` memory entry now describes stale state — it references the old per-test `cache_only_keys` mechanism and the runtime-only coverage shape. Should be rewritten to describe the compile-time + runtime-drift split and the new `CACHE_ONLY_KEYS` const declarations. No new backlog tasks required from this session.
+  - **Key learnings:** Rust `const fn` with `while`/`panic!` is sufficient to implement bidirectional set-equality checks at compile time without external dependencies. `cargo build.rs` scripts cannot share code with the library they build (the script runs before the crate compiles), so `build.rs` retains its own `collect_template_tokens`; this reduces four copies to one (build.rs) plus one structurally different const-fn validator in `prompt_token_coverage.rs`.

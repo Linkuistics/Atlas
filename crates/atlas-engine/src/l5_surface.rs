@@ -33,6 +33,23 @@ use crate::surface_types::SurfaceRecord;
 pub const EMBEDDED_STAGE1_SURFACE_PROMPT: &str =
     include_str!("../../../defaults/prompts/stage1-surface.md");
 
+/// Keys produced by [`build_inputs`]. Single source of truth for the
+/// bidirectional template/builder coverage check in
+/// [`crate::prompt_token_coverage`]: validated against
+/// `stage1-surface.md` at compile time, and against the runtime builder
+/// output by a unit test.
+pub(crate) const BUILD_INPUTS_KEYS: &[&str] = &[
+    "COMPONENT_ID",
+    "COMPONENT_PATHS",
+    "COMPONENT_CONTENT_SHAS",
+    "CATALOG_COMPONENTS",
+];
+
+/// Per-segment content SHAs are baked into the inputs JSON so a
+/// file-content change reshapes the cache key, even though the LLM
+/// doesn't see the SHAs in the prompt.
+pub(crate) const CACHE_ONLY_KEYS: &[&str] = &["COMPONENT_CONTENT_SHAS"];
+
 /// Produce the Stage 1 surface record for the component whose id is
 /// `id`. Pin-short-circuits through [`surface_pin`] before any LLM
 /// call; otherwise invokes the backend via
@@ -290,65 +307,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn stage1_surface_prompt_tokens_are_all_supplied_by_build_inputs() {
-        // `prompt::render` errors if the prompt references a token for
-        // which inputs supply no value. Confirm every `{{TOKEN}}` in
-        // the shipped prompt maps to a key in `build_inputs`'s output;
-        // otherwise the first real backend call panics on
-        // `TemplateSyntax`.
-        let tmp = TempDir::new().unwrap();
-        write_cargo_lib_fixture(tmp.path(), "fixture");
-        let (db, _backend) = db_with_shared_backend(&tmp);
-        let id = all_components(&db)
-            .iter()
-            .find(|c| !c.deleted)
-            .expect("fixture must produce a component")
-            .id
-            .clone();
-        let inputs = inputs_for_id(&db, &id);
-        let supplied: std::collections::HashSet<String> = inputs
-            .as_object()
-            .expect("build_inputs must return an object")
-            .keys()
-            .cloned()
-            .collect();
-
-        for token in collect_template_tokens(EMBEDDED_STAGE1_SURFACE_PROMPT) {
-            assert!(
-                supplied.contains(&token),
-                "stage1-surface.md references `{{{{{token}}}}}` but \
-                 build_inputs does not populate key `{token}`"
-            );
-        }
-    }
-
-    /// Extract every `{{TOKEN}}` name referenced in `template`, using
-    /// the same grammar as `atlas_llm::prompt::render`: `{{TOKEN}}`
-    /// substitutes, `{{{{` and `}}}}` are literal-brace escapes.
-    fn collect_template_tokens(template: &str) -> Vec<String> {
-        let mut tokens = Vec::new();
-        let mut rest = template;
-        while !rest.is_empty() {
-            if let Some(body) = rest.strip_prefix("{{{{") {
-                rest = body;
-                continue;
-            }
-            if let Some(body) = rest.strip_prefix("}}}}") {
-                rest = body;
-                continue;
-            }
-            if let Some(body) = rest.strip_prefix("{{") {
-                let end = body.find("}}").expect("template must close `{{`");
-                tokens.push(body[..end].trim().to_string());
-                rest = &body[end + 2..];
-                continue;
-            }
-            let ch = rest.chars().next().unwrap();
-            rest = &rest[ch.len_utf8()..];
-        }
-        tokens
-    }
+    // Bidirectional token coverage between stage1-surface.md and
+    // build_inputs is enforced at compile time by
+    // `prompt_token_coverage.rs`.
 
     // ---------------------------------------------------------------
     // Fixture helpers for surface_of integration tests. The backend

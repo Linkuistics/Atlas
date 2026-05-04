@@ -41,6 +41,22 @@ use crate::types::{Classification, ComponentKind, RationaleBundle};
 /// prompts cheap.
 const MANIFEST_SNIPPET_LIMIT: usize = 16 * 1024;
 
+/// Keys produced by [`build_llm_inputs`]. Single source of truth for the
+/// bidirectional template/builder coverage check in
+/// [`crate::prompt_token_coverage`]: validated against `classify.md` at
+/// compile time, and against the runtime builder output by a unit test.
+pub(crate) const BUILD_INPUTS_KEYS: &[&str] = &[
+    "DIR_RELATIVE",
+    "RATIONALE_BUNDLE",
+    "MANIFEST_CONTENTS",
+    "COMPONENT_KINDS",
+    "LIFECYCLE_SCOPES",
+];
+
+/// Keys [`build_llm_inputs`] supplies for cache-key fingerprinting only,
+/// never referenced by the rendered prompt. Empty for L3.
+pub(crate) const CACHE_ONLY_KEYS: &[&str] = &[];
+
 /// Classify the candidate whose directory is `candidate_dir`. Returns
 /// `Arc<Classification>` so callers can cache the result cheaply.
 pub fn is_component(
@@ -607,14 +623,10 @@ mod tests {
     }
 
     #[test]
-    fn classify_prompt_token_coverage_is_bidirectional() {
-        // Regression: every `{{TOKEN}}` in classify.md must be supplied
-        // by build_llm_inputs (forward direction) AND every key
-        // build_llm_inputs supplies must be referenced by a `{{TOKEN}}`
-        // in classify.md (inverse direction). The inverse direction
-        // catches the silent-data-drop failure: a builder field with no
-        // matching template token is dropped by `prompt::render`,
-        // leaving the LLM with no candidate context.
+    fn rendered_classify_prompt_contains_candidate_dir() {
+        // Bidirectional template/builder coverage is enforced at compile
+        // time by `prompt_token_coverage.rs`; this test only sanity-checks
+        // that the rendered output actually contains candidate context.
         let template = include_str!("../../../defaults/prompts/classify.md");
         let bundle = RationaleBundle {
             manifests: Vec::new(),
@@ -630,26 +642,6 @@ mod tests {
             &snippets,
         );
         let object = inputs.as_object().expect("inputs must be a JSON object");
-        let supplied: std::collections::HashSet<String> = object.keys().cloned().collect();
-        let referenced: std::collections::HashSet<String> =
-            collect_template_tokens(template).into_iter().collect();
-
-        for token in &referenced {
-            assert!(
-                supplied.contains(token),
-                "classify.md references `{{{{{token}}}}}` but \
-                 build_llm_inputs does not populate key `{token}`"
-            );
-        }
-        for key in &supplied {
-            assert!(
-                referenced.contains(key),
-                "build_llm_inputs supplies key `{key}` but \
-                 classify.md does not reference `{{{{{key}}}}}` — \
-                 the value will be silently dropped by prompt::render, \
-                 leaving the LLM without that input"
-            );
-        }
 
         let mut tokens = BTreeMap::new();
         for (key, value) in object {
@@ -662,42 +654,12 @@ mod tests {
         let rendered = atlas_llm::prompt::render(template, &tokens)
             .expect("classify.md must render with build_llm_inputs output");
 
-        // Sanity-check that candidate context actually appears in the
-        // rendered prompt — a tighter assertion than "render didn't
-        // error", which only verifies the forward direction.
         assert!(
             rendered.contains("some-dir"),
             "rendered classify prompt must contain candidate dir_relative; \
              got prompt without it (length={})",
             rendered.len()
         );
-    }
-
-    /// Extract every `{{TOKEN}}` name referenced in `template`, using
-    /// the same grammar as `atlas_llm::prompt::render`: `{{TOKEN}}`
-    /// substitutes, `{{{{` and `}}}}` are literal-brace escapes.
-    fn collect_template_tokens(template: &str) -> Vec<String> {
-        let mut tokens = Vec::new();
-        let mut rest = template;
-        while !rest.is_empty() {
-            if let Some(body) = rest.strip_prefix("{{{{") {
-                rest = body;
-                continue;
-            }
-            if let Some(body) = rest.strip_prefix("}}}}") {
-                rest = body;
-                continue;
-            }
-            if let Some(body) = rest.strip_prefix("{{") {
-                let end = body.find("}}").expect("template must close `{{`");
-                tokens.push(body[..end].trim().to_string());
-                rest = &body[end + 2..];
-                continue;
-            }
-            let ch = rest.chars().next().unwrap();
-            rest = &rest[ch.len_utf8()..];
-        }
-        tokens
     }
 
     #[test]
