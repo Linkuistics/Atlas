@@ -38,7 +38,8 @@ use atlas_index::{
     load_or_default_components, load_or_default_externals, load_or_default_overrides,
     load_or_default_related_components, load_or_default_subsystems,
     load_or_default_subsystems_overrides, save_components_atomic, save_externals_atomic,
-    save_related_components_atomic, save_subsystems_atomic, ComponentsFile, SubsystemsFile,
+    save_related_components_atomic, save_subsystems_atomic, ComponentsFile, OverridesFile,
+    SubsystemsFile, SubsystemsOverridesFile,
 };
 use atlas_llm::{LlmBackend, LlmFingerprint, TokenCounter};
 
@@ -82,6 +83,12 @@ pub struct IndexConfig {
     pub recarve: bool,
     pub dry_run: bool,
     pub respect_gitignore: bool,
+    /// Skip loading `components.overrides.yaml` and
+    /// `subsystems.overrides.yaml` from the output dir. Files on disk
+    /// are untouched. The fingerprint's `backend_version` is suffixed
+    /// with `+overrides=disabled` so cache entries do not bleed
+    /// between with/without runs.
+    pub no_overrides: bool,
     /// Per-prompt SHA map embedded into `components.yaml`'s
     /// `cache_fingerprints.prompt_shas`. Left as `None` by tests that
     /// do not care; the CLI binary fills it from the embedded prompt
@@ -105,6 +112,7 @@ impl IndexConfig {
             recarve: false,
             dry_run: false,
             respect_gitignore: true,
+            no_overrides: false,
             prompt_shas: None,
             fingerprint_override: None,
         }
@@ -162,27 +170,44 @@ pub fn run_index(
         load_or_default_externals(&prior_externals_path).map_err(IndexError::Other)?;
     let prior_related =
         load_or_default_related_components(&prior_related_path).map_err(IndexError::Other)?;
-    let overrides = load_or_default_overrides(&overrides_path).map_err(IndexError::Other)?;
-    let subsystems_overrides = load_or_default_subsystems_overrides(&subsystems_overrides_path)
-        .map_err(IndexError::Other)?;
-    let validation =
-        crate::validate::validate_overrides_with_subsystems(&overrides, &subsystems_overrides);
-    if validation.has_any() {
-        crate::validate::print_report(&validation, &overrides_path, &mut std::io::stderr().lock());
-    }
-    if validation.has_errors() {
-        return Err(IndexError::Other(anyhow::anyhow!(
-            "components.overrides.yaml has validation errors; fix them or run \
-             `atlas validate-overrides {}` for the full report",
-            overrides_path.display()
-        )));
-    }
+    let (overrides, subsystems_overrides) = if config.no_overrides {
+        eprintln!(
+            "atlas: --no-overrides is set; ignoring components.overrides.yaml and \
+             subsystems.overrides.yaml (files on disk are untouched)"
+        );
+        (OverridesFile::default(), SubsystemsOverridesFile::default())
+    } else {
+        let overrides = load_or_default_overrides(&overrides_path).map_err(IndexError::Other)?;
+        let subsystems_overrides =
+            load_or_default_subsystems_overrides(&subsystems_overrides_path)
+                .map_err(IndexError::Other)?;
+        let validation =
+            crate::validate::validate_overrides_with_subsystems(&overrides, &subsystems_overrides);
+        if validation.has_any() {
+            crate::validate::print_report(
+                &validation,
+                &overrides_path,
+                &mut std::io::stderr().lock(),
+            );
+        }
+        if validation.has_errors() {
+            return Err(IndexError::Other(anyhow::anyhow!(
+                "components.overrides.yaml has validation errors; fix them or run \
+                 `atlas validate-overrides {}` for the full report",
+                overrides_path.display()
+            )));
+        }
+        (overrides, subsystems_overrides)
+    };
 
     // ---- construct database ---------------------------------------
-    let fingerprint = config
+    let mut fingerprint = config
         .fingerprint_override
         .clone()
         .unwrap_or_else(|| backend.fingerprint());
+    if config.no_overrides {
+        fingerprint.backend_version.push_str("+overrides=disabled");
+    }
 
     let mut db = AtlasDatabase::new(backend.clone(), config.root.clone(), fingerprint.clone());
     let cache_path = config.output_dir.join("llm-cache.json");

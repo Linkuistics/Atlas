@@ -1,16 +1,11 @@
-id: session-56
-timestamp: 2026-05-04T01:55:36Z
+id: session-57
+timestamp: 2026-05-04T02:16:12Z
 phase: work
 body: |
-  ### Session 56 (2026-05-04T01:55:36Z) — Discover dull pin gap; block L8 smoke and repivot cross-target validation
+  ### Session 57 (2026-05-04T02:16:12Z) — Add --no-overrides flag to atlas index CLI
 
-  - Attempted integration-level smoke of the L8 perf fix (`skip-l8-structural-signal-computation-when-policy-will-stop`) on `~/Development/dull/` at `--max-depth 0` with a cold cache.
-  - Run was killed after ~12 min when it became clear dull's `components.overrides.yaml` (83 pins) does not fully cover Atlas's enumerated candidate set — at least two candidates (`session-recording-server/policy_api`, `shared-backend/Dull.SqlcDal/sql_sanitizer`) are not keyed in the pin file, triggering L3 Classify calls that dominate wall time and make the L8 measurement unattainable.
-  - L8 fix itself is verified: confirmed by code inspection at `subcarve_policy.rs:58` and `l8_recurse.rs:121`, backed by two unit tests using `RecordingBackend` at lines 621 and 653. Task marked blocked, not done, with the rationale recorded in `evaluation/results/2026-05-04-dull-depth0-perf.md`.
-  - Discovered that the previously-recorded "0 LLM calls, 7min" datapoint was likely a warm-cache measurement, not a true cold-cache baseline.
-  - Deleted `hand-author-second-golden-for-merged-monorepo` (too high-cost/low-signal) and replaced it with `cross-target-validation-on-dull-via-no-overrides-smoke` — a new approach that implements `--no-overrides` flag and a cost-controlled live run on dull to capture cross-target reference outputs structurally rather than via metric comparison.
-  - Updated `verify-atlas-v1-success-criteria-end-to-end` dependency chain to point at the new task.
-
-  What this suggests trying next: implement `--no-overrides` flag (small, ~30-50 lines) then run the calibration + full run on dull to produce the cross-target reference, unblocking v1 sign-off.
-
-  Key learnings: dull's pin coverage is high but not total; any cold-cache run on dull will fire L3 for gap candidates regardless of `--max-depth` setting. The warm-cache path is essentially a no-op run, not a perf baseline.
+  - Attempted: Stage 1 of cross-target validation — implement `--no-overrides` CLI flag that forces every candidate through the full classification path by bypassing pin loading
+  - What worked: Flag implemented end-to-end; `main.rs` wires `--no-overrides` into `IndexConfig.no_overrides`; `pipeline.rs` skips `load_or_default_overrides` and `load_or_default_subsystems_overrides` when the flag is set, logs a one-line stderr warning, and appends `+overrides=disabled` to `fingerprint.backend_version` for cache isolation; two integration tests added covering (a) suppress pins are bypassed so suppressed components reappear, and (b) the overrides file on disk is untouched
+  - What didn't: Stages 2–4 of the task (live run on ~/Development/dull/, output capture, criterion-6 update) are blocked — auto-mode safety rails block unattended LLM spend (~$5–$35 estimated) on shared paid systems without explicit user authorization
+  - What this suggests trying next: User confirms spend authorization; a fresh work phase runs the two-step calibration + full-depth `atlas index ~/Development/dull/ --no-overrides` sequence, captures outputs under `evaluation/results/<date>-dull-no-pins/`, and softens criterion 6 in `verify-atlas-v1-success-criteria-end-to-end`
+  - Key learnings: Cache isolation via fingerprint suffix is the correct pattern here — it piggybacks on the existing `fingerprint_override` mechanism without adding a new cache-key dimension; appending to `backend_version` is sufficient because the fingerprint hash covers all fields

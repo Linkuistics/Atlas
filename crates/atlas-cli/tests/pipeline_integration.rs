@@ -406,6 +406,86 @@ fn overrides_file_never_written_by_pipeline() {
 }
 
 // ---------------------------------------------------------------
+// --no-overrides
+// ---------------------------------------------------------------
+
+#[test]
+fn no_overrides_skips_loading_pins_so_suppress_does_not_apply() {
+    // A pin with `suppress: true` on `mylib` would normally cause L4
+    // to drop the component (is_boundary=false). With `--no-overrides`
+    // the pin is bypassed, so the component reappears in the output.
+    let tmp = materialise_tiny_fixture();
+    let config = base_config(tmp.path());
+    std::fs::create_dir_all(&config.output_dir).unwrap();
+    let overrides_path = config.output_dir.join("components.overrides.yaml");
+    std::fs::write(
+        &overrides_path,
+        "schema_version: 1\npins:\n  mylib:\n    suppress: true\nadditions: []\n",
+    )
+    .unwrap();
+
+    // Baseline: pin honoured, mylib suppressed.
+    let backend1 = LenientBackend::new();
+    let summary_with = run_index(
+        &config,
+        backend1,
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
+
+    // Wipe outputs so the second run starts fresh; the LLM cache also
+    // has to clear so we observe behaviour, not a cached re-projection.
+    std::fs::remove_file(config.output_dir.join("components.yaml")).unwrap();
+    std::fs::remove_file(config.output_dir.join("llm-cache.json")).ok();
+
+    let mut config_no_overrides = config.clone();
+    config_no_overrides.no_overrides = true;
+    let backend2 = LenientBackend::new();
+    let summary_without = run_index(
+        &config_no_overrides,
+        backend2,
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
+
+    assert!(
+        summary_without.component_count > summary_with.component_count,
+        "--no-overrides must bypass the suppress pin: with={} without={}",
+        summary_with.component_count,
+        summary_without.component_count,
+    );
+}
+
+#[test]
+fn no_overrides_does_not_modify_overrides_file() {
+    let tmp = materialise_tiny_fixture();
+    let mut config = base_config(tmp.path());
+    config.no_overrides = true;
+    std::fs::create_dir_all(&config.output_dir).unwrap();
+    let overrides_path = config.output_dir.join("components.overrides.yaml");
+    let body = "schema_version: 1\npins:\n  mylib:\n    suppress: true\nadditions: []\n";
+    std::fs::write(&overrides_path, body).unwrap();
+    let before = std::fs::read(&overrides_path).unwrap();
+
+    let backend = LenientBackend::new();
+    run_index(
+        &config,
+        backend,
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
+
+    let after = std::fs::read(&overrides_path).unwrap();
+    assert_eq!(
+        before, after,
+        "--no-overrides must not write to components.overrides.yaml"
+    );
+}
+
+// ---------------------------------------------------------------
 // LLM cache persistence
 // ---------------------------------------------------------------
 

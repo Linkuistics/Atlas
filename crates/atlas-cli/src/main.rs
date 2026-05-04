@@ -95,6 +95,15 @@ struct IndexArgs {
     #[arg(long)]
     no_gitignore: bool,
 
+    /// Skip loading `components.overrides.yaml` and
+    /// `subsystems.overrides.yaml` from the output directory. The
+    /// files on disk are untouched. Forces every candidate through
+    /// Atlas's full classification path; useful for cross-target
+    /// validation where pin coverage would otherwise short-circuit
+    /// the pipeline.
+    #[arg(long)]
+    no_overrides: bool,
+
     /// Force the per-call progress tally on stderr even when stderr
     /// is not a TTY (e.g., piped to a file). Default behaviour is to
     /// auto-enable when stderr is a TTY.
@@ -195,6 +204,7 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
     index_config.recarve = args.recarve;
     index_config.dry_run = args.dry_run;
     index_config.respect_gitignore = !args.no_gitignore;
+    index_config.no_overrides = args.no_overrides;
     index_config.prompt_shas = Some(atlas_cli::backend::compute_prompt_shas());
 
     let progress_mode = if args.no_progress {
