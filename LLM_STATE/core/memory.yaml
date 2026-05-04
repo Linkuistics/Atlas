@@ -518,11 +518,9 @@ entries:
   body: |
     `dull` `components.overrides.yaml` declares 83 pinned ids, but Atlas's L1/L2 enumeration finds at least two unpinned candidates that fall through to L3 LLM Classify under cold cache: `session-recording-server/policy_api` and `shared-backend/Dull.SqlcDal/sql_sanitizer`. The pin coverage is *high* but not *total*, so cold-cache runs at any depth fire L3 LLM calls on the gap.
 
-    A previously-recorded "0 LLM calls, 7min" observation was warm-cache (cache hits on every candidate), not a true cold-cache baseline.
+    A previously-recorded "0 LLM calls, 7min" observation was warm-cache (cache hits on every candidate), not a true cold-cache baseline. L8 perf smoke on dull is blocked until the pin gap is closed. Run `atlas index ~/Development/dull/ --no-overrides` to bypass `components.overrides.yaml` entirely, forcing L3 LLM calls on all enumerated candidates; use that output as the structural cross-target reference for v1 sign-off.
 
-    L8 perf smoke on dull is blocked until the pin gap is closed. Cross-target validation bypasses the gap via `--no-overrides` (task: `cross-target-validation-on-dull-via-no-overrides-smoke`): run `atlas index --no-overrides` to bypass `components.overrides.yaml` entirely, forcing L3 LLM calls on all enumerated candidates; use that output as the structural cross-target reference for v1 sign-off.
-
-    Cross-ref: `evaluation/results/2026-05-04-dull-depth0-perf.md` (full audit and recommendation).
+    Cross-ref: `atlas-index no-overrides flag bypasses pin loading`, `evaluation/results/2026-05-04-dull-depth0-perf.md` (full audit and recommendation).
 - id: missing-params-max-tokens-causes-three-silent-llm-failure-layers
   title: HTTP-provider config missing params.max_tokens rejected at config load
   body: |
@@ -575,3 +573,9 @@ entries:
   title: build.rs cannot import from the crate it builds
   body: |
     Cargo `build.rs` runs before its crate compiles, so it cannot `use` or import code from the crate itself. Shared logic must be duplicated or moved to a separate helper crate. In `crates/atlas-engine/build.rs`, `collect_template_tokens` is one retained copy; the structurally distinct const-fn validator in `prompt_token_coverage.rs` is a separate implementation of the same concept.
+- id: atlas-index-no-overrides-flag-bypasses-pin-loading
+  title: atlas-index no-overrides flag bypasses pin loading
+  body: |
+    `atlas index --no-overrides` bypasses both `load_or_default_overrides` and `load_or_default_subsystems_overrides`, forcing every candidate through the full classification path. Pipeline logs a one-line stderr warning when active. Cache isolation appends `+overrides=disabled` to `fingerprint.backend_version` — piggybacks on the existing fingerprint mechanism without adding a new cache-key dimension. Integration tests cover: (a) suppressed components reappear under `--no-overrides`, and (b) the overrides file on disk is untouched.
+
+    Cross-ref: `dull pin coverage is high but not total; L3 fires on gap`.
