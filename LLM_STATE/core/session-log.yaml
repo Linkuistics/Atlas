@@ -731,3 +731,14 @@ sessions:
     - What didn't: Stages 2–4 of the task (live run on ~/Development/dull/, output capture, criterion-6 update) are blocked — auto-mode safety rails block unattended LLM spend (~$5–$35 estimated) on shared paid systems without explicit user authorization
     - What this suggests trying next: User confirms spend authorization; a fresh work phase runs the two-step calibration + full-depth `atlas index ~/Development/dull/ --no-overrides` sequence, captures outputs under `evaluation/results/<date>-dull-no-pins/`, and softens criterion 6 in `verify-atlas-v1-success-criteria-end-to-end`
     - Key learnings: Cache isolation via fingerprint suffix is the correct pattern here — it piggybacks on the existing `fingerprint_override` mechanism without adding a new cache-key dimension; appending to `backend_version` is sufficient because the fingerprint hash covers all fields
+- id: session-58
+  timestamp: 2026-05-04T02:46:34Z
+  phase: work
+  body: |
+    ### Session 58 (2026-05-04T02:46:34Z) — Fix progress reporter silent output under --progress with piped stderr
+
+    - Attempted: Run the agent-progress e2e integration test (`agent_observer_e2e`) against the real `claude -p` binary with `ATLAS_LLM_RUN_CLAUDE_TESTS=1`.
+    - What worked: The test exposed a real bug in `crates/atlas-cli/src/progress.rs`. After fixing the bug, the test passed (67s, 3 LLM calls). All 65 unit + ~21 integration tests pass. `cargo clippy` clean.
+    - What didn't: First run failed because `ProgressMode::Always` with non-TTY stderr was silently swallowing all output — indicatif's draw target short-circuits when not a TTY, so `multi.println` and `set_message` both became no-ops.
+    - What this suggests next: Other `ProgressEvent` variants (Started, Phase, IterStart, Subcarve, Surface) only update the activity bar via `set_msg` and have no plain-mode fallback — they are not user-visible in the non-TTY path. If CI consumers need those events, they would need the same `eprintln!` treatment. Low priority since iteration summaries and agent lines are the high-value signals.
+    - Key learnings: `indicatif`'s `ProgressDrawTarget::stderr()` silently becomes a no-draw target when stderr is not a TTY (`draw_target.rs:167-169`). `MultiProgress::println` is documented to do the same. This means any code that routes output only through `multi.println` or bar `set_message` will emit nothing to piped stderr — even when `ProgressMode::Always` was explicitly requested. The fix is a `plain_stderr` boolean that routes through `eprintln!` when `drawing && !stderr_is_tty`.

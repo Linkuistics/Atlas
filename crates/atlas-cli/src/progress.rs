@@ -67,6 +67,11 @@ pub struct Reporter {
     state: Mutex<ReporterState>,
     counter: Option<Arc<TokenCounter>>,
     drawing: bool,
+    /// `Always` was requested but stderr is not a TTY, so indicatif's
+    /// bar rendering and `MultiProgress::println` are no-ops. Emit
+    /// scrollback-style lines via `eprintln!` so piped/CI consumers
+    /// still see the progress they asked for.
+    plain_stderr: bool,
 }
 
 impl Reporter {
@@ -77,6 +82,7 @@ impl Reporter {
             ProgressMode::Always => true,
             ProgressMode::Never => false,
         };
+        let plain_stderr = drawing && !stderr_is_tty;
         let multi = if drawing {
             MultiProgress::with_draw_target(ProgressDrawTarget::stderr())
         } else {
@@ -113,6 +119,7 @@ impl Reporter {
             state: Mutex::new(ReporterState::default()),
             counter,
             drawing,
+            plain_stderr,
         })
     }
 
@@ -270,7 +277,11 @@ impl ProgressSink for Reporter {
             } => {
                 let live = self.lock().iter_live;
                 let line = format_iter_end_line(iteration, live, components_added, elapsed);
-                let _ = self.multi.println(&line);
+                if self.plain_stderr {
+                    eprintln!("{line}");
+                } else {
+                    let _ = self.multi.println(&line);
+                }
                 self.lock().iter_history.push(line);
             }
             ProgressEvent::Subcarve {
@@ -327,7 +338,7 @@ impl ProgressSink for Reporter {
                     elapsed,
                     &breakdown,
                 );
-                if self.drawing {
+                if self.drawing && !self.plain_stderr {
                     let _ = self.multi.println(&line);
                 } else {
                     eprintln!("{line}");
@@ -356,8 +367,11 @@ impl AgentObserver for Reporter {
                 if needs_mount {
                     self.multi.insert_after(&self.activity, self.agent.clone());
                 }
-                self.agent
-                    .set_message(format!("↳ starting {}", prompt_label(prompt)));
+                let line = format!("↳ starting {}", prompt_label(prompt));
+                self.agent.set_message(line.clone());
+                if self.plain_stderr {
+                    eprintln!("{line}");
+                }
             }
             AgentEvent::ToolUse { name, summary } => {
                 let line = {
@@ -367,7 +381,10 @@ impl AgentObserver for Reporter {
                     s.agent_last_failed = false;
                     render_agent_line(&s)
                 };
-                self.agent.set_message(line);
+                self.agent.set_message(line.clone());
+                if self.plain_stderr {
+                    eprintln!("{line}");
+                }
             }
             AgentEvent::ToolResult { ok } => {
                 if !ok {
@@ -376,7 +393,10 @@ impl AgentObserver for Reporter {
                         s.agent_last_failed = true;
                         render_agent_line(&s)
                     };
-                    self.agent.set_message(line);
+                    self.agent.set_message(line.clone());
+                    if self.plain_stderr {
+                        eprintln!("{line}");
+                    }
                 }
             }
             AgentEvent::CallEnd => {

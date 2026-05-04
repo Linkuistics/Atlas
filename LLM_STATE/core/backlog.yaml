@@ -378,7 +378,7 @@ tasks:
 - id: run-agent-progress-e2e-integration-test-against-real-claude-binary
   title: Run agent-progress e2e integration test against real claude binary
   category: eval
-  status: not_started
+  status: done
   dependencies: []
   description: |
     **Priority: LOW.** The agent-progress e2e integration test (`cargo test -p atlas-cli --test agent_observer_e2e`) skips silently by default. Running it once with `ATLAS_LLM_RUN_CLAUDE_TESTS=1` would close the loop on the full streaming pipeline: `ClaudeCodeBackend` → `parse_stream` → `AgentObserver` → `Reporter` agent sub-line.
@@ -398,6 +398,99 @@ tasks:
 
     - Test passes under `ATLAS_LLM_RUN_CLAUDE_TESTS=1`.
     - No regressions in other `atlas-cli` tests.
+  results: |
+    ## Outcome
+
+    The e2e test now passes against the real `claude -p` binary:
+
+    ```
+    ATLAS_LLM_RUN_CLAUDE_TESTS=1 cargo test -p atlas-cli --test agent_observer_e2e
+    # 1 passed, ~67s, 3 LLM calls on the 1-component fixture
+    ```
+
+    The first run failed and exposed a real regression in the progress
+    reporter, which I then fixed before retiring the task.
+
+    ## Bug found and fixed
+
+    `atlas index --progress` exited 0 but emitted nothing on stderr. Root
+    cause was a latent bug in `crates/atlas-cli/src/progress.rs` that the
+    e2e harness exercises but the existing unit / parser-level tests do
+    not.
+
+    Under `--progress` (`ProgressMode::Always`) with **non-TTY stderr**
+    (which `assert_cmd::Command` produces — it pipes stderr):
+
+    - `Reporter::drawing == true`, so `main.rs` attached the agent observer.
+    - `AgentEvent::CallStart` / `ToolUse` reached `Reporter::on_event`,
+      which called `self.agent.set_message(…)`.
+    - But indicatif's `ProgressDrawTarget::stderr()` short-circuits to
+      "no draw" when the underlying terminal isn't a TTY
+      (`indicatif/draw_target.rs:167-169`). `MultiProgress::println` is
+      documented to behave the same way.
+    - The `↳` sub-line therefore lived only in indicatif's internal state
+      and was never rendered to the piped stderr the test was reading.
+
+    The same TTY-gate silently swallowed the `Finished` summary line in
+    `Always + non-TTY` mode (only visible today because `main.rs`
+    independently writes the summary to stdout via `println!`). `IterEnd`
+    lines had the same bug but did not fire on the 1-component fixture.
+
+    ## Fix
+
+    `crates/atlas-cli/src/progress.rs`:
+
+    - Added `plain_stderr: bool` field on `Reporter`. Set true iff
+      `drawing && !stderr_is_tty` — i.e. the user explicitly forced
+      `--progress` but indicatif cannot render bars.
+    - `AgentObserver::on_event` (CallStart, ToolUse, ToolResult-failure)
+      still calls `set_message` to keep state consistent for in-process
+      test accessors, but **also** `eprintln!`s the rendered line in
+      plain mode so it actually reaches piped stderr.
+    - `ProgressEvent::IterEnd` and `Finished` handlers now route through
+      `eprintln!` in plain mode instead of the silent `multi.println`.
+
+    Behaviour matrix:
+
+    | mode + stderr        | drawing | plain_stderr | output                                  |
+    |----------------------|---------|--------------|-----------------------------------------|
+    | Always + TTY         | true    | false        | indicatif bars in place (unchanged)     |
+    | Always + non-TTY     | true    | true         | `eprintln!` scrollback (was silent)     |
+    | Auto + TTY           | true    | false        | indicatif bars in place (unchanged)     |
+    | Auto + non-TTY       | false   | false        | only Finished summary, eprintln!        |
+    | Never                | false   | false        | only Finished summary, eprintln!        |
+
+    Only the `Always + non-TTY` cell changes — and only from "silent" to
+    "visible scrollback", which is what the user asked for when they
+    passed `--progress`.
+
+    ## Verification
+
+    - `ATLAS_LLM_RUN_CLAUDE_TESTS=1 cargo test -p atlas-cli --test
+      agent_observer_e2e` → **pass** (67s).
+    - `cargo test -p atlas-cli` → 65 unit tests + ~21 integration tests,
+      all pass.
+    - `cargo clippy -p atlas-cli --all-targets` → clean.
+
+    ## What this suggests next
+
+    - The other `ProgressEvent` variants (Started, Phase, IterStart,
+      Subcarve, Surface) only update the activity bar via `set_msg`, so
+      they remain invisible under `--progress` in piped/CI mode. Adding
+      parallel `eprintln!` emission would give CI consumers per-phase
+      scrollback. Out of scope for closing this task, but a clear
+      follow-up if `--progress`-in-CI becomes a real workflow.
+    - A unit-level test that captures stderr would have caught this
+      without burning tokens. Existing tests check `agent_msg()` (the
+      in-memory bar message string), which never touches the indicatif
+      draw path. Refactoring `Reporter` to take an injectable writer
+      would unlock cheap coverage of the plain-mode branch.
+    - A memory entry is worth adding: indicatif suppresses bar drawing
+      *and* `MultiProgress::println` when the underlying terminal isn't
+      a TTY — even when explicitly handed `ProgressDrawTarget::stderr()`.
+      Future code that wires a `--progress`-style flag must add an
+      `eprintln!` fallback or the flag will be silently ineffective in
+      pipes / CI.
 - id: confirm-l8-perf-win-on-dull-at-max-depth-0
   title: Confirm L8 perf win on dull at --max-depth 0
   category: eval
