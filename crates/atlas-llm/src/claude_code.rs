@@ -283,6 +283,10 @@ impl LlmBackend for ClaudeCodeBackend {
             backend_version: self.version.clone(),
         }
     }
+
+    fn supports_filesystem_tools(&self) -> bool {
+        true
+    }
 }
 
 /// Resolve the model-id default used when no explicit model is

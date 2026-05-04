@@ -277,7 +277,8 @@ tasks:
 - id: filesystem-tool-use-loop-for-http-llm-backends-provider-agnostic
   title: Filesystem tool-use loop for HTTP LLM backends (provider-agnostic)
   category: feature
-  status: not_started
+  status: blocked
+  blocked_reason: 'Phase 1 of 4 complete (sandboxed FS tool surface + LlmBackend::supports_filesystem_tools capability method, all 161 atlas-llm tests green, full workspace clean). Phases 2-4 remain: Anthropic tool-use loop, OpenAI tool-use loop, router relaxation + config + fingerprint + live e2e on dull (Phase 4''s live verification needs ~- LLM spend authorization). Continuation guide for each phase is in this task''s Results block. Unblock: schedule a fresh work phase to pick up Phase 2.'
   dependencies: []
   description: |
     **Priority: MEDIUM.** Add a generic filesystem-tool-use loop to `AnthropicHttpBackend` and `OpenAiHttpBackend` so HTTP providers can service `Stage1Surface` and `Stage2Edges`. Once landed, the routing rejection in `BackendRouter` (added in `reject-http-providers-for-stage1surface-and-stage2edges-in-backendrouter`) loosens to a per-backend capability check rather than an unconditional ban on `provider in {anthropic, openai}`.
@@ -375,6 +376,157 @@ tasks:
     - Cache fingerprint encodes "tools enabled" + tool-set hash; existing zero-LLM-call no-op re-runs remain byte-identical.
     - Live end-to-end: `atlas index ~/Development/dull/` with `surface` routed to `anthropic/...` (tools enabled) produces non-empty surfaces and edge proposals; metrics within 5pp of the same run on `claude-code/...`.
     - Memory note added documenting the design and the routing-relaxation that follows.
+  results: |
+    **2026-05-04 work phase: Phase 1 of 4 complete — sandboxed filesystem tool surface + `LlmBackend::supports_filesystem_tools` capability method. Phases 2–4 (provider tool-use loops, router relaxation, live verification) remain.**
+
+    ## What was done
+
+    ### `crates/atlas-llm/src/tool_use.rs` (new, ~520 lines)
+
+    Pure tool-surface module, decoupled from any provider wire format. Public API:
+
+    - `FilesystemTools` trait — four read-only methods: `read_file`, `glob`, `grep`, `list_dir`.
+    - `SandboxedFilesystem` — concrete impl rooted at one workspace dir, with cumulative byte-budget tracking shared across calls (atomic `bytes_read` counter).
+    - `ToolBudget` config struct: `max_total_bytes_read` (default 1 MiB), `max_glob_results` (1000), `max_grep_matches` (100), `default_read_max_bytes` (64 KiB).
+    - Output types: `ReadFileOutput`, `GlobOutput`, `GrepOutput`/`GrepMatch`, `ListDirOutput`/`DirEntryInfo`/`DirEntryKind` — all `serde::Serialize/Deserialize` for easy JSON wire-format adapters in Phase 2/3.
+    - `ToolError` enum (thiserror): `SandboxEscape`, `BudgetExceeded`, `InvalidArgument`, `Io`, `NotFound`.
+
+    ### Sandboxing
+
+    Three-layer defense against escape:
+
+    1. **Lexical rejection** — `is_absolute()` paths and any `Component::ParentDir`/`Component::RootDir`/`Component::Prefix` segment fail with `SandboxEscape` before any FS call.
+    2. **Symlink defense** — when the resolved path exists, we `canonicalize()` and check `starts_with(self.root)`; the root itself is canonicalised at construction so the comparison is apples-to-apples.
+    3. **Pattern-level rejection** — `glob` rejects absolute patterns and `..` segments in the pattern itself.
+
+    ### Budget semantics
+
+    `read_file` enforces cumulative bytes by *truncating to `min(user_cap, remaining_budget)`* and returning `BudgetExceeded` only when remaining=0. This means:
+
+    - The user's `truncated: bool` signal covers both "file > requested cap" and "file > remaining budget" — one consumer-facing signal regardless of which cap kicked in.
+    - A pathological tool-use loop cannot exceed the budget by even a single byte.
+    - `bytes_read()` getter exposes the running counter for observation.
+
+    ### `glob` and `grep`
+
+    - `glob` uses `globset::Glob` with `literal_separator(true)` (so `*` does not cross `/`), walks via `ignore::WalkBuilder` so `.gitignore` is honoured when the workspace is git-rooted (per memory `ignore-crate-requires-git-root-for-gitignore-filtering`, the walker still works fine outside `.git` — just doesn't filter).
+    - `grep` uses `regex::RegexBuilder` with `size_limit(1024 * 1024)` to bound regex compilation. Each path is sandbox-checked before reading. Result count caps at `max_matches`.
+
+    ### `LlmBackend` trait extension
+
+    Added `fn supports_filesystem_tools(&self) -> bool { false }` with rustdoc explaining the contract. Default `false` keeps every existing impl compiling; subprocess backends override:
+
+    | Backend | `supports_filesystem_tools` |
+    |---|---|
+    | `ClaudeCodeBackend` | `true` (overrides) |
+    | `CodexBackend` | `true` (overrides) |
+    | `AnthropicHttpBackend` | `false` (default — flips to `true` in Phase 2) |
+    | `OpenAiHttpBackend` | `false` (default — flips to `true` in Phase 3) |
+    | `TestBackend` | `false` (default) |
+    | `BudgetedBackend` | delegates to inner |
+    | `BudgetSentinel` (atlas-cli) | delegates to inner |
+    | `ProgressBackend` (atlas-cli) | delegates to inner |
+    | `BackendRouter` | `true` iff *any* registered backend supports it |
+
+    ### `BackendRouter::backend_for(prompt_id)` accessor (new)
+
+    Public method returning `Option<&Arc<dyn LlmBackend>>` for a given prompt id. Lets the eventual routing relaxation ask the per-prompt backend its capability rather than relying on the composite router's "any-of" answer. Cleaner than exposing the internal `HashMap`.
+
+    ### Cargo.toml
+
+    Added `globset`, `ignore`, `regex` to atlas-llm's regular `[dependencies]` (all already on workspace; `regex` was previously declared as a test-only workspace dep but the comment was a soft convention, and grep is a real production tool). No new transitive crates pulled in beyond what was already on the build graph.
+
+    ## Tests added
+
+    **~24 new unit tests** (atlas-llm test count: 132 → 161, all green):
+
+    - `tool_use::tests` (22 tests) covering sandboxing, read_file, list_dir, glob, grep paths.
+    - Trait/wrapper coverage: `test_backend_does_not_support_filesystem_tools_by_default`, `budgeted_backend_delegates_supports_filesystem_tools`, `supports_filesystem_tools_is_true_when_any_backend_does` (router any-semantic), `supports_filesystem_tools_is_false_when_no_backend_does`, `backend_for_returns_per_prompt_capability`.
+
+    ## Verification
+
+    - `cargo build -p atlas-llm` — clean.
+    - `cargo build --workspace` — clean across `atlas-llm`, `atlas-engine`, `atlas-cli`, `atlas-eval`.
+    - `cargo clippy --workspace --all-targets` — clean, no warnings (workspace lint level: `warnings = "deny"`).
+    - `cargo test --workspace` — every crate's test result line reads `0 failed`. atlas-llm: 161 passed, 0 failed, 4 ignored.
+    - No live LLM spend; every test is hermetic on tempdirs.
+
+    ## Why blocked, not done
+
+    Of the eight exit criteria in the task description, this work satisfies the foundational subset:
+
+    | Exit criterion | Status |
+    |---|---|
+    | `LlmBackend::supports_filesystem_tools(&self) -> bool` declared with default false | done |
+    | Subprocess backends override to true; HTTP backends default false | done |
+    | Read-only filesystem tools available, sandboxed to a configured root | done |
+    | `AnthropicHttpBackend::call` executes tool-use loop when configured | Phase 2 |
+    | `OpenAiHttpBackend::call` executes tool-use loop when configured | Phase 3 |
+    | Routing layer asks the trait method instead of hard-coding providers | Phase 4 |
+    | `.atlas/config.yaml` `params.tools.enabled: true` opts in per-operation | Phase 4 |
+    | Cache fingerprint encodes "tools enabled" + tool-set hash | Phase 4 |
+    | Live e2e: `atlas index ~/Development/dull/` with surface routed to anthropic | Phase 4 (LLM spend gate) |
+
+    ## Phases 2–4 continuation guide
+
+    ### Phase 2 — Anthropic tool-use loop (~150–250 lines + tests)
+
+    In `crates/atlas-llm/src/http_anthropic.rs` (or new `tool_use_anthropic.rs` if it grows), gated behind a constructor flag (e.g. `with_filesystem_tools(SandboxedFilesystem)`):
+
+    1. When tools are enabled, send `tools: [{name, description, input_schema}, ...]` in the request body. Tool definitions: small static catalog mapping the four `FilesystemTools` methods to JSON Schema input shapes.
+    2. Loop: receive response → if `stop_reason: "tool_use"`, extract `tool_use` blocks, dispatch each via `FilesystemTools` impl, append a user message with `content: [{type: "tool_result", tool_use_id, content: <json>}]`, send next turn. Continue until `stop_reason: "end_turn"` or the `max_turns` cap (default 25) trips an `LlmError::Invocation`.
+    3. Final assistant text goes through existing `parse_anthropic_response` then `validate_response` path.
+    4. Cache boundary lives **above** the tools (tools are static across the run); ephemeral caching on the system+tools prefix already composes per-existing `build_user_content` adapter.
+    5. Override `supports_filesystem_tools` to `true` on the new code path.
+
+    ### Phase 3 — OpenAI tool-use loop (~150–250 lines + tests)
+
+    Mirror Phase 2 in `crates/atlas-llm/src/http_openai.rs`. Wire format differences:
+
+    - Tools sent under `tools: [{type: "function", function: {name, description, parameters}}, ...]`.
+    - Tool results returned as `{role: "tool", tool_call_id, content: <json-string>}` messages.
+    - `finish_reason: "tool_calls"` triggers iteration; `finish_reason: "stop"` ends.
+    - OpenRouter rides this path verbatim (existing `with_base_url` adapter pattern).
+
+    The two adapters share enough shape that — once both work — the loop body could be lifted into a generic `tool_use::loop::run<Provider>(...)` (per the task's "design for liftability" guidance). Defer that refactor until both are landed and stable.
+
+    ### Phase 4 — Router relaxation, config plumbing, fingerprint, live run
+
+    1. **Router relaxation** — `crates/atlas-llm/src/router.rs::reject_http_for_filesystem_required_prompt` becomes a check that asks the resolved backend `.supports_filesystem_tools()` rather than hard-coding HTTP-provider names. Existing tests need updating; `BackendRouter::backend_for` already lets the router check per-prompt capability.
+    2. **Config plumbing** — add `params.tools.enabled: bool` (default false) reading; thread through `BackendRouter::new` to construct HTTP backends with the FS tool seed when enabled. The `params.tools.budget.*` knobs map to `ToolBudget` fields.
+    3. **Fingerprint** — append `+tools=enabled+sha=<sha8>` to `backend_version` when tools are on, where `<sha8>` is the first 8 hex chars of SHA-256 over the JSON-serialised tool definitions list. Two runs with different tool sets are not interchangeable; existing zero-LLM-call no-op re-runs stay byte-identical.
+    4. **Live e2e** — gated on user spend authorization. Suggested run:
+       ```
+       # Edit ~/Development/dull/.atlas/config.yaml:
+       #   operations.surface.model: anthropic/claude-sonnet-4-6
+       #   operations.surface.params.tools.enabled: true
+       atlas index ~/Development/dull/ --no-overrides --max-depth 1 --budget 50000
+       ```
+       Capture `evaluation/results/<date>-tool-use-anthropic-surface/` with notes on metric parity vs. claude-code/sonnet baseline.
+
+    ## Source-file changes left for analyse-work to commit
+
+    - `crates/atlas-llm/Cargo.toml` — added globset/ignore/regex deps.
+    - `crates/atlas-llm/src/lib.rs` — `tool_use` module decl; `LlmBackend::supports_filesystem_tools` default-method addition.
+    - `crates/atlas-llm/src/tool_use.rs` — new module.
+    - `crates/atlas-llm/src/claude_code.rs` — `supports_filesystem_tools = true` override.
+    - `crates/atlas-llm/src/codex.rs` — `supports_filesystem_tools = true` override.
+    - `crates/atlas-llm/src/budget.rs` — `BudgetedBackend` delegation + delegation test.
+    - `crates/atlas-llm/src/router.rs` — `BackendRouter` "any-of" delegation, `backend_for` accessor, three new tests.
+    - `crates/atlas-llm/src/test_backend.rs` — default-false coverage test.
+    - `crates/atlas-cli/src/backend.rs` — `BudgetSentinel` delegation.
+    - `crates/atlas-cli/src/progress.rs` — `ProgressBackend` delegation.
+    - `Cargo.lock` — re-resolved lockfile.
+
+    ## Cross-references
+
+    - Memory: `backendrouter-rejects-http-providers-for-stage1surface-and-stage2edges` — the rejection that Phase 4's router relaxation will rewrite.
+    - Memory: `ignore-crate-requires-git-root-for-gitignore-filtering` — drove the choice to use `ignore::WalkBuilder` rather than walkdir; works fine without `.git`.
+    - Memory: `anthropichttpbackend-already-implemented-...` — the `<!-- CACHE_BOUNDARY -->` prefix-suffix split composes naturally with tool definitions in the prefix block (Phase 2 design note).
+
+    ## Unblock path
+
+    Run a fresh work phase for Phase 2 (Anthropic tool-use loop). Phases 3 and 4 each fit one work phase too. The whole stack lands in three more sessions, two without LLM spend and one (Phase 4 final criterion) gated on spend authorization.
 - id: confirm-l8-perf-win-on-dull-at-max-depth-0
   title: Confirm L8 perf win on dull at --max-depth 0
   category: eval

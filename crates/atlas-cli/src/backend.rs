@@ -105,6 +105,10 @@ impl LlmBackend for BudgetSentinel {
     fn fingerprint(&self) -> LlmFingerprint {
         self.inner.fingerprint()
     }
+
+    fn supports_filesystem_tools(&self) -> bool {
+        self.inner.supports_filesystem_tools()
+    }
 }
 
 /// Construct the production backend stack from an `AtlasConfig`.

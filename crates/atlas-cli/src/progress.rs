@@ -489,6 +489,10 @@ impl LlmBackend for ProgressBackend {
     fn fingerprint(&self) -> LlmFingerprint {
         self.inner.fingerprint()
     }
+
+    fn supports_filesystem_tools(&self) -> bool {
+        self.inner.supports_filesystem_tools()
+    }
 }
 
 fn relpath_from_inputs(inputs: &Value) -> Option<PathBuf> {

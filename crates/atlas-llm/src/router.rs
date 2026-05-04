@@ -181,6 +181,28 @@ impl LlmBackend for BackendRouter {
     fn fingerprint(&self) -> LlmFingerprint {
         self.fingerprint.clone()
     }
+
+    /// True iff at least one of the per-prompt routed backends exposes
+    /// filesystem tools. The router is the engine-facing wrapper, so a
+    /// caller asking the router this question is asking "does this
+    /// configuration have *any* filesystem-aware backend wired in" —
+    /// per-prompt eligibility is decided at routing time.
+    fn supports_filesystem_tools(&self) -> bool {
+        self.table
+            .values()
+            .any(|b| b.supports_filesystem_tools())
+    }
+}
+
+impl BackendRouter {
+    /// Look up the backend routed for a given `PromptId`. Returns
+    /// `None` if no entry is registered for that prompt. Useful for
+    /// router-level capability checks (e.g. asking the per-prompt
+    /// backend whether it supports filesystem tools, rather than the
+    /// composite router).
+    pub fn backend_for(&self, prompt_id: PromptId) -> Option<&Arc<dyn LlmBackend>> {
+        self.table.get(&prompt_id)
+    }
 }
 
 #[cfg(test)]
@@ -354,6 +376,65 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{prompt_id:?} + {provider} should pass: {e:?}"));
             }
         }
+    }
+
+    /// A backend that returns the configured boolean from
+    /// `supports_filesystem_tools`. Lets router tests model
+    /// filesystem-aware backends without spinning up a real subprocess.
+    struct CapBackend {
+        fs: bool,
+    }
+
+    impl LlmBackend for CapBackend {
+        fn call(&self, _req: &LlmRequest) -> Result<Value, LlmError> {
+            Err(LlmError::Invocation("not used in this test".into()))
+        }
+
+        fn fingerprint(&self) -> LlmFingerprint {
+            make_fingerprint("cap-backend")
+        }
+
+        fn supports_filesystem_tools(&self) -> bool {
+            self.fs
+        }
+    }
+
+    #[test]
+    fn supports_filesystem_tools_is_true_when_any_backend_does() {
+        let mut table: HashMap<PromptId, Arc<dyn LlmBackend>> = HashMap::new();
+        table.insert(PromptId::Classify, Arc::new(CapBackend { fs: false }));
+        table.insert(PromptId::Subcarve, Arc::new(CapBackend { fs: false }));
+        table.insert(PromptId::Stage1Surface, Arc::new(CapBackend { fs: true }));
+        table.insert(PromptId::Stage2Edges, Arc::new(CapBackend { fs: false }));
+        let router = BackendRouter::from_dispatch_table(table, make_fingerprint("mixed"));
+        assert!(router.supports_filesystem_tools());
+    }
+
+    #[test]
+    fn supports_filesystem_tools_is_false_when_no_backend_does() {
+        let mut table: HashMap<PromptId, Arc<dyn LlmBackend>> = HashMap::new();
+        table.insert(PromptId::Classify, Arc::new(CapBackend { fs: false }));
+        table.insert(PromptId::Subcarve, Arc::new(CapBackend { fs: false }));
+        let router = BackendRouter::from_dispatch_table(table, make_fingerprint("none"));
+        assert!(!router.supports_filesystem_tools());
+    }
+
+    #[test]
+    fn backend_for_returns_per_prompt_capability() {
+        let mut table: HashMap<PromptId, Arc<dyn LlmBackend>> = HashMap::new();
+        table.insert(PromptId::Classify, Arc::new(CapBackend { fs: false }));
+        table.insert(PromptId::Stage1Surface, Arc::new(CapBackend { fs: true }));
+        let router = BackendRouter::from_dispatch_table(table, make_fingerprint("split"));
+
+        assert!(!router
+            .backend_for(PromptId::Classify)
+            .unwrap()
+            .supports_filesystem_tools());
+        assert!(router
+            .backend_for(PromptId::Stage1Surface)
+            .unwrap()
+            .supports_filesystem_tools());
+        assert!(router.backend_for(PromptId::Stage2Edges).is_none());
     }
 
     #[test]

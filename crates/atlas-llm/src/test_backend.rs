@@ -178,4 +178,9 @@ mod tests {
         assert_eq!(got.template_sha, custom.template_sha);
         assert_eq!(got.ontology_sha, custom.ontology_sha);
     }
+
+    #[test]
+    fn test_backend_does_not_support_filesystem_tools_by_default() {
+        assert!(!TestBackend::new().supports_filesystem_tools());
+    }
 }

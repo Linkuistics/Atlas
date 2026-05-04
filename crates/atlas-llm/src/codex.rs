@@ -211,6 +211,10 @@ impl LlmBackend for CodexBackend {
             backend_version: format!("codex/{}", self.version),
         }
     }
+
+    fn supports_filesystem_tools(&self) -> bool {
+        true
+    }
 }
 
 /// Verify the given directory contains a prompt file for every

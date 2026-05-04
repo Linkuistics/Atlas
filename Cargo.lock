@@ -161,6 +161,9 @@ dependencies = [
 name = "atlas-llm"
 version = "1.3.0"
 dependencies = [
+ "globset",
+ "ignore",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

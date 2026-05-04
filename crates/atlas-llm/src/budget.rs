@@ -115,6 +115,10 @@ impl LlmBackend for BudgetedBackend {
     fn fingerprint(&self) -> LlmFingerprint {
         self.inner.fingerprint()
     }
+
+    fn supports_filesystem_tools(&self) -> bool {
+        self.inner.supports_filesystem_tools()
+    }
 }
 
 #[cfg(test)]
@@ -229,6 +233,15 @@ mod tests {
         let backend = BudgetedBackend::new(inner, counter, Box::new(|_, _| 0));
 
         assert_eq!(backend.fingerprint().model_id, "test-backend");
+    }
+
+    #[test]
+    fn budgeted_backend_delegates_supports_filesystem_tools() {
+        let inner = Arc::new(TestBackend::new());
+        let counter = Arc::new(TokenCounter::new(100));
+        let backend = BudgetedBackend::new(inner, counter, Box::new(|_, _| 0));
+
+        assert!(!backend.supports_filesystem_tools());
     }
 
     #[test]

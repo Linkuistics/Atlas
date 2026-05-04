@@ -42,6 +42,7 @@ pub mod prompt;
 pub mod router;
 pub(crate) mod stream_parse;
 pub mod test_backend;
+pub mod tool_use;
 
 pub use agent_observer::{AgentEvent, AgentObserver};
 pub use budget::{default_token_estimator, BudgetedBackend, TokenCounter, TokenEstimator};
@@ -115,6 +116,21 @@ pub struct LlmFingerprint {
 pub trait LlmBackend: Send + Sync {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError>;
     fn fingerprint(&self) -> LlmFingerprint;
+
+    /// True iff this backend exposes filesystem tools to the model
+    /// during a call — either via an upstream agent's built-in tools
+    /// (subprocess backends) or via a tool-use loop driven by Atlas
+    /// (HTTP backends with `tool_use` enabled).
+    ///
+    /// `BackendRouter` will eventually consult this method instead of
+    /// hard-coding HTTP-provider rejection for `Stage1Surface` /
+    /// `Stage2Edges`. The default `false` means: a backend that hasn't
+    /// opted in cannot service prompts that need to read source.
+    /// Wrapping backends (`BudgetedBackend`, `BackendRouter`) must
+    /// delegate to their inner backend rather than rely on this default.
+    fn supports_filesystem_tools(&self) -> bool {
+        false
+    }
 }
 
 /// Errors surfaced by the `atlas-llm` crate. Backends return
