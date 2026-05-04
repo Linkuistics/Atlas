@@ -1,153 +1,9 @@
 tasks:
-- id: cross-target-validation-on-dull-via-no-overrides-smoke
-  title: Cross-target validation on dull via --no-overrides smoke
-  category: eval
-  status: done
-  dependencies: []
-  description: |
-    **Priority: HIGH.** Replaces `hand-author-second-golden-for-merged-monorepo` (deleted). Goal: unblock v1 sign-off criterion 6 (cross-target generalisation) without hand-authoring a second golden. Uses a new `--no-overrides` CLI flag to force every candidate through Atlas's full classification path on a real workspace, captures the resulting outputs as the cross-target reference, and replaces criterion 6's metric-comparison bar with a structural-stability bar.
-
-    ## Why this replaces the hand-authored-golden approach
-
-    Hand-authoring a 100+-component golden by reading source and choosing boundaries is high-cost and high-judgement work. It's also recursive: a hand-authored golden for cross-target validation only tests Atlas if Atlas disagrees with the author — and the author's reading of the codebase is itself error-prone. A pin-disabled smoke run on a real workspace (a) exercises every layer of the pipeline end-to-end, (b) produces outputs that can be diffed across runs to detect regressions, and (c) is cheap enough to repeat.
-
-    The unmet condition for criterion 6 ("metrics within 5pp on each axis") becomes a structural-stability bar: pipeline completes without errors, output schema validates, surfaces and edges are populated for ≥80% of components. Quality measurement against a hand-authored ground truth is dropped.
-
-    ## Scope
-
-    ### Stage 1 — Implement `--no-overrides`
-
-    Add a CLI flag to `atlas index` that, when set:
-
-    - Skips loading `components.overrides.yaml` and `subsystems.overrides.yaml` from the output dir.
-    - Logs a one-line warning at startup that overrides are disabled.
-    - Cache fingerprint encodes "overrides disabled" so cache entries do not bleed between with/without runs.
-    - Files on disk are untouched — flag-only behaviour, not destructive.
-
-    Tests:
-    - Unit: `pipeline.rs` loads no overrides when flag is set, regardless of file presence.
-    - Integration: a fixture with non-trivial pins, run with and without `--no-overrides`, produces different L3 verdicts (deterministic short-circuit vs. LLM-fallback / kind-only path).
-
-    Estimated size: ~30-50 lines + 2 tests.
-
-    ### Stage 2 — Cost-controlled live run on dull
-
-    Edit `~/Development/dull/.atlas/config.yaml`:
-
-    - `providers.anthropic.api_key: ${ANTHROPIC_API_KEY}` (env var must be set).
-    - `operations.classify.model: anthropic/claude-haiku-4-5`, `params.max_tokens: 1024` — Haiku via HTTP with prompt caching on the kind-catalogue prefix.
-    - `operations.surface.model: claude-code/claude-sonnet-4-6` — Sonnet for cost; Opus is overkill for surface extraction.
-    - `operations.edges.model: claude-code/claude-sonnet-4-6` — same reasoning.
-
-    Run sequence:
-
-    1. Calibration: `atlas index ~/Development/dull/ --no-overrides --max-depth 1 --budget 50000`. Read summary; verify call count and token spend project reasonably to full depth.
-    2. Full run: `atlas index ~/Development/dull/ --no-overrides --budget 200000`. Capture wall time and final summary.
-
-    Cost envelope (rough):
-
-    | Layer | Calls | Per-call | Subtotal |
-    |---|---|---|---|
-    | L3 Classify (Haiku/HTTP, prefix-cached) | ~100 | $0.001-$0.005 | $0.10-$0.50 |
-    | L5 Surface (Sonnet/claude-code) | ~100 | $0.05-$0.30 | $5-$30 |
-    | L6 Edges (Sonnet/claude-code) | 1 batch | $0.50-$2.00 | $0.50-$2.00 |
-    | **Total** | | | **~$5-$35** |
-
-    ### Stage 3 — Capture outputs as cross-target reference
-
-    - Stash `components.yaml`, `external-components.yaml`, `related-components.yaml`, `subsystems.yaml`, and `llm-cache.json` under `Atlas/evaluation/results/<date>-dull-no-pins/`.
-    - Author `notes.md` documenting: model routing used, budget consumed, wall time, llm-cache.json size, any errors observed, structural metrics (component count, % with non-empty surfaces, edge count).
-    - Header `notes.md` with "captured run output, NOT authoritative ground truth — Atlas's own verdicts at this run".
-
-    ### Stage 4 — Soften v1 sign-off criterion 6
-
-    Update `verify-atlas-v1-success-criteria-end-to-end` description to replace criterion 6 with a structural-stability bar:
-
-    - Pipeline completes without `LlmError::Setup` or `LlmError::BudgetExhausted`.
-    - ≥10 components emitted (sanity floor).
-    - All four output YAMLs schema-validate via `atlas validate-overrides` or equivalent.
-    - ≥80% of components have non-empty surface entries.
-    - L6 edges file is non-empty (a workspace with 100 components and 0 inferred edges signals an L6 failure).
-
-    The original "metrics within 5pp" bar is dropped from v1; if a hand-authored golden materialises later, the metric bar can be reintroduced as a v1.x.
-
-    ## Exit criteria
-
-    - `--no-overrides` flag implemented, tested, and behind a fingerprint guard.
-    - One full run on dull captured under `evaluation/results/<date>-dull-no-pins/` with `notes.md`.
-    - All four structural-stability checks pass on that run.
-    - `verify-atlas-v1-success-criteria-end-to-end` description updated to reference the captured run as criterion-6 evidence.
-
-    ## Out of scope
-
-    - Hand-authoring a golden. Explicitly not done in this task.
-    - Performance optimisation.
-    - Migrating L5/L6 to HTTP (separate task: `filesystem-tool-use-loop-for-http-llm-backends-provider-agnostic`).
-
-    ## References
-
-    - Predecessor results: `evaluation/results/2026-05-04-dull-depth0-perf.md` (the analysis that surfaced the dull pin gap and motivated this approach).
-    - Memory: `dull-depth-1-skips-llm-path-due-to-dense-pin-coverage` (corrected; "high but not total").
-    - Memory: `backendrouter-rejects-http-providers-for-stage1surface-and-stage2edges` (why surface/edges stay on claude-code).
-    - Memory: `anthropichttpbackend-already-implemented-...` (HTTP prompt caching for Classify is already on).
-  results: |
-    **2026-05-04 work phase: captured run complete with 7/8 structural-stability checks PASS.** User authorised the live LLM spend at the start of the phase; the run cleared.
-
-    ## Captured run
-
-    - Output: `evaluation/results/2026-05-04-dull-no-pins/` (full notes inline at `notes.md`).
-    - Inputs: `atlas index ~/Development/dull/ --output-dir .atlas-no-overrides/ --no-overrides --max-depth 1 --budget 200000` (run from dull cwd; see deviation #2 below).
-    - Final summary: `162 components · 72 LLM calls · 164.0k/200.0k tokens · 42:24` (last pass; cumulative wall-time across all attempts in this phase: many hours).
-    - Cache: 256 entries (95 classify + 161 surface), 3.1 MB.
-
-    ## Structural-stability bar — 7 PASS / 1 FAIL
-
-    | # | Check | Result |
-    |---|---|---|
-    | 1 | No `LlmError::Setup` / `LlmError::BudgetExhausted` | PASS |
-    | 2 | ≥10 components emitted | PASS (162) |
-    | 3a-3d | Four output YAMLs schema-validate | PASS |
-    | 4 | ≥80% of components have non-empty surface entries | PASS (99%) |
-    | 5 | L6 edges file has populated edges | FAIL (0 edges; see deviation #5) |
-
-    ## Deviations from task spec
-
-    1. **Output dir** — fresh `~/Development/dull/.atlas-no-overrides/` to preserve the existing 3-May with-overrides artifact at `~/Development/dull/.atlas/`.
-    2. **CWD** — invoked atlas from `~/Development/dull/`, not Atlas. claude-code subprocesses inherit cwd; without the change claude searched Atlas's tree for surface evidence on dull components.
-    3. **Depth** — `--max-depth 1` instead of full default depth. Dull's depth-1 candidate set is ~250+; calibration projected depth-8 at multi-hour wall and likely budget-exhausted. Depth 1 still exercises every pipeline layer (L0→L9).
-    4. **Atlas source-code fixes shipped this phase** — committed by the analyse-work phase that follows:
-       - HTTP backends (`http_anthropic.rs`, `http_openai.rs`): added `connect_timeout(30s) + timeout(60s)`. The original `Client::new()` had no timeout, so a TCP stall hung the pipeline forever. Caught a real hang at the first attempt of this run; the timeout is required for any future HTTP-routed run.
-       - `LlmResponseCache`: added `set_persist_hook` callback fired on every successful insert. Previously the cache was only persisted at end of `run_index`, so an aborted run discarded *every* response — a 4-hour subprocess-only pre-attempt of this run lost all 800+ classify responses, motivating the change.
-       - `pipeline.rs`: registered a persist hook calling `cache_io::save_from`. Also parallelised the L9 demand-loop's `surface_of` calls via rayon `map_with` (using `db.clone()` for per-worker handles, mirroring `l8_recurse::run_map_step`); without parallelism the L5 prewarm pass on ~150 components was 4h+ serial.
-    5. **L6 edges hang** — the Stage 2 `claude -p` subprocess hung at tool 13 with 0.3% CPU for 5+ min. Killing that one subprocess let `l6_edges::all_proposed_edges` fall through its soft-fail `Err → Vec::new()` path, which let the rest of the pipeline finish and write the YAMLs. Net effect: `related-components.yaml` shows `edges: []`. Whether the hang is a claude-code regression or just an unusually large prompt (~150 surface records inlined) is open and merits its own bug.
-
-    ## Source-file changes left for analyse-work to commit
-
-    - `crates/atlas-llm/src/http_anthropic.rs` — `connect_timeout` + `timeout` on `reqwest::blocking::Client`.
-    - `crates/atlas-llm/src/http_openai.rs` — same.
-    - `crates/atlas-engine/src/llm_cache.rs` — `set_persist_hook` field + method.
-    - `crates/atlas-cli/src/pipeline.rs` — persist hook registration + L9-prewarm rayon parallelism.
-    - `crates/atlas-cli/Cargo.toml` — `rayon` dep added.
-    - `evaluation/results/2026-05-04-dull-no-pins/{components,external-components,related-components,subsystems}.yaml`, `llm-cache.json`, `notes.md` — captured run artifacts.
-
-    (`crates/atlas-engine/src/l6_edges.rs` was edited mid-phase to try L6-side rayon parallelism, then reverted to its original serial form once it became clear the problem was elsewhere. Final state matches `main`.)
-
-    ## Sibling-task downstream effect
-
-    `verify-atlas-v1-success-criteria-end-to-end` now references this captured run as the criterion-6 evidence. Description updated to soften criterion 6 from the deleted "metrics within 5pp" bar to a structural-stability bar matching the cross-target task spec, with a note that the 2026-05-04 dull capture passed 4/5 of those checks (L6 edges open as a follow-up).
-
-    ## Follow-up suggestions for triage
-
-    - **L6 edges hang investigation** — fresh task. Reproducer: re-run the same dull command after warming cache; observe whether L6 still hangs. If reproducible, narrow on whether it's a claude-code subprocess bug or atlas's prompt size.
-    - **claude-code cwd inheritance** — fresh task. `ClaudeCodeBackend` should set the subprocess cwd to the workspace root, not inherit atlas's cwd. Workaround used here (run atlas from dull) is fragile.
-    - **Memory: `backendrouter-rejects-http-providers-for-stage1surface-and-stage2edges`** still accurate per `crates/atlas-llm/src/router.rs` source.
-    - **Memory: `dull-depth-1-skips-llm-path-due-to-dense-pin-coverage`** — already corrected by the predecessor task.
 - id: verify-atlas-v1-success-criteria-end-to-end
   title: Verify Atlas v1 success criteria end-to-end
   category: eval
   status: not_started
-  dependencies:
-  - cross-target-validation-on-dull-via-no-overrides-smoke
+  dependencies: []
   description: |
     **Priority: HIGH.** Signs off v1.
 
@@ -199,61 +55,107 @@ tasks:
     - All six criteria pass or have documented follow-up tasks (criterion 5 may be deferred pending Ravel-Lite M5; criterion 6 may stand at 4/5 PASS pending the L6-hang follow-up bug).
     - Sign-off report committed to the Atlas repo.
     - An announcement-ready short summary written (optional) as `README-v1.md` documenting what Atlas v1 does and does not do.
-- id: audit-atlas-cli-against-llm-friendly-cli-design-guide
-  title: Audit Atlas CLI against LLM-friendly CLI design guide
-  category: infra
+- id: investigate-and-fix-l6-edges-subprocess-hang-on-large-prompt
+  title: Investigate and fix L6 edges subprocess hang on large prompt
+  category: eval
   status: not_started
-  dependencies:
-  - verify-atlas-v1-success-criteria-end-to-end
+  dependencies: []
   description: |
-    **Priority: MEDIUM.** Audit Atlas's CLI surface (`atlas`, all subcommands, all flags, all output formats) against the LLM-friendly CLI design guide at `~/Development/Ravel-Lite/defaults/fixed-memory/cli-tool-design.md`. Produce a punch-list of findings, prioritised by ROI per the guide's own ordering (structured output > examples in --help > actionable errors > flag consistency > exit codes > defaults > non-TTY behaviour > capabilities).
+    **Priority: HIGH.** The L6 Stage 2 `claude -p` subprocess hung at tool 13 with 0.3% CPU for 5+ minutes during the 2026-05-04 dull `--no-overrides` run. The soft-fail `Vec::new()` path let the pipeline continue, but `related-components.yaml` shows `edges: []`. This caused v1 sign-off criterion 6 to pass only 4/5 structural-stability checks (L6 edges check FAIL).
 
-    ## Why
+    ## Context
 
-    Atlas is increasingly invoked by other agents (Ravel-Lite tooling, future Uplift/Redeveloper consumers, ad-hoc evaluation runs in subagents). Friction in the CLI surface — missing `--json`, prose-only output, vague errors, undocumented exit codes — costs tokens and produces flaky agent loops. The guide is opinionated and ordered by impact; follow its ordering rather than re-deriving it.
+    Run: `atlas index ~/Development/dull/ --output-dir .atlas-no-overrides/ --no-overrides --max-depth 1 --budget 200000`
+
+    Artifacts: `evaluation/results/2026-05-04-dull-no-pins/`
+
+    The subprocess hung at tool 13 — well into the tool-use loop, not at startup. The prompt to L6 at that point contained ~150 inline surface records (all components surfaced during the run). The subprocess was killed after 5+ min; its sibling workers completed normally.
+
+    Possible causes:
+    1. **Prompt size:** ~150 surface records may push the L6 prompt past a context threshold or into a slow-to-process region for claude-code.
+    2. **claude-code regression:** A hanging tool 13 could indicate a regression in the `claude -p` subprocess that only manifests under large prompts.
 
     ## Scope
 
-    ### Discovery (read-only audit)
+    ### Stage 1 — Reproduce with warmed cache
 
-    Walk every code path that produces user-facing output:
+    1. Ensure `evaluation/results/2026-05-04-dull-no-pins/llm-cache.json` is present (cache is already warmed from the prior run).
+    2. Re-run: `atlas index ~/Development/dull/ --output-dir .atlas-repro/ --no-overrides --max-depth 1 --budget 200000` from `~/Development/dull/`.
+    3. Observe: does L6 hang again? Record tool count and wall time.
 
-    - `atlas --help` and every subcommand's `--help`.
-    - `atlas index` — the primary data-producing command. Outputs three YAMLs + `llm-cache.json`. Stdout summary line. Stderr progress.
-    - `atlas validate-overrides` — error reporting on malformed config / overrides.
-    - `atlas init` — scaffold output.
-    - `atlas --version` — version output, `--json` form?
-    - Error paths: missing config, missing API key, invalid model string, budget exhausted, filesystem-required prompt routed to HTTP (the new `LlmError::Setup` from `BackendRouter`), `LlmError::Invocation`, `LlmError::Schema`.
-    - Exit codes: which subcommands emit which codes for which conditions.
+    If the hang does NOT reproduce: the prior hang may have been a transient subprocess anomaly. Mark as resolved; update v1 criterion 6 to 5/5.
 
-    For each surface, score against the guide's audit checklist (lines 208–252 of `cli-tool-design.md`). Each "no" is a finding.
+    If the hang DOES reproduce: proceed to Stage 2.
 
-    ### Output
+    ### Stage 2 — Isolate the cause
 
-    A markdown report at `evaluation/results/cli-audit-<date>.md` with:
+    - Count surface records in the L6 prompt: how many components have non-empty `SurfaceRecord` entries? (Check `llm-cache.json` entries with `prompt: stage1-surface`.)
+    - Estimate the L6 prompt token count by passing the rendered prompt to a tokeniser or checking the `total_cost_usd` line of the preceding `atlas index` run.
+    - Try reducing the prompt: run with `--max-depth 0` (fewer components → fewer surface records → smaller L6 input) and check if L6 completes.
+    - Check if the latest `claude` CLI version has changed: `claude --version`.
 
-    - One section per audit-checklist subheading (Output, Help, Errors, Conventions, Behaviour, Discoverability).
-    - Each finding tagged `[blocker]` / `[high]` / `[medium]` / `[low]` per the guide's ROI ordering.
-    - A prioritised remediation backlog at the bottom — each entry small enough to be its own follow-up backlog task.
-    - Explicit "out of scope for v1" calls where appropriate (e.g. `atlas capabilities` is "optional but valuable" — don't block v1 sign-off on it).
+    ### Stage 3 — Fix or mitigate
 
-    ### Out of scope
-
-    - Implementing fixes. This task ends at the report; remediation work spawns separate backlog tasks per the report's recommendations.
-    - Auditing Ravel-Lite or other linkuistics CLIs.
-    - Reworking the YAML output schemas — they are separately governed by the components/externals/related-components contracts.
+    Depending on findings:
+    - If **prompt size** is the cause: add a component-count cap or batch L6 into smaller slices. Design a batched L6 loop similar to the tool-use loop in `filesystem-tool-use-loop-for-http-llm-backends-provider-agnostic`.
+    - If **claude-code regression** is the cause: file a bug with Anthropic; add a timeout to the L6 subprocess spawn (mirror the `connect_timeout` + `timeout` fix applied to HTTP backends in the prior cycle).
+    - If **transient**: document as transient; no code change required.
 
     ## Exit criteria
 
-    - `evaluation/results/cli-audit-<date>.md` exists, walks every guide audit-checklist item against Atlas's current CLI, and identifies findings.
-    - Each finding is prioritised per the guide's ROI ordering (structured output > examples > errors > consistency > etc.).
-    - A short follow-up backlog of 3–8 remediation tasks is proposed in the report's final section. The user reviews and decides which to file.
-    - Atlas v1 sign-off (`verify-atlas-v1-success-criteria-end-to-end`) cross-references the report so anyone reading the v1 announcement understands what is and is not LLM-friendly today.
+    - Hang is either reproducible or confirmed transient.
+    - If reproducible: root cause identified and either fixed or a follow-up task is filed with the specific fix scope.
+    - v1 sign-off criterion 6 updated to reflect the current status (5/5 if fixed, 4/5 with documented follow-up if not).
 
     ## References
 
-    - Guide: `~/Development/Ravel-Lite/defaults/fixed-memory/cli-tool-design.md`. Treat the audit checklist (lines 208–252) and the anti-patterns list (lines 256–268) as load-bearing.
-    - The guide's own remediation order (lines 271–284) — "Add `--json` everywhere it's missing" first, "stabilise the JSON schema" second, "rewrite error messages" third — is the recommended order for any follow-up tasks the report spawns.
+    - Memory: `l6-claude-p-hangs-with-large-prompt-under-no-overrides`
+    - Artifacts: `evaluation/results/2026-05-04-dull-no-pins/notes.md`
+    - v1 sign-off: `verify-atlas-v1-success-criteria-end-to-end` criterion 6
+- id: fix-claudecodebackend-subprocess-cwd-to-workspace-root
+  title: Fix ClaudeCodeBackend subprocess cwd to workspace root
+  category: feature
+  status: not_started
+  dependencies: []
+  description: |
+    **Priority: MEDIUM.** `ClaudeCodeBackend` currently inherits the cwd of the `atlas` process when spawning `claude -p` subprocesses. During the 2026-05-04 dull `--no-overrides` run, this caused `claude -p` to search Atlas's tree for surface evidence on dull components — the wrong workspace. The workaround was to run `atlas` from `~/Development/dull/` rather than `~/Development/Atlas/`, but this is fragile and unintuitive.
+
+    ## Why this matters
+
+    `ClaudeCodeBackend` spawns `claude -p` subprocesses that use the Read, Grep, Glob, and Bash tools to read source files for surface and edge extraction. The subprocess inherits the parent process's cwd, so if `atlas index` is invoked from any directory other than the target workspace, surface extraction reads the wrong tree and produces hallucinated or empty surfaces.
+
+    The correct behaviour: `ClaudeCodeBackend` should set the subprocess cwd to the workspace root path it was constructed with (the `workspace_path` field, or its equivalent, already present in the backend configuration). This eliminates the "run atlas from the target workspace" workaround entirely.
+
+    ## Scope
+
+    ### Implementation
+
+    In `crates/atlas-llm/src/claude_code.rs`, find the `Command` spawn for `claude -p`. Add `.current_dir(&self.workspace_path)` (or the equivalent field name) to the `Command` builder, immediately before `.spawn()`.
+
+    Estimated change: 1–2 lines in `claude_code.rs`.
+
+    Verify the workspace path is available at spawn time:
+    - If `ClaudeCodeBackend` already holds the workspace path, add `.current_dir`.
+    - If not, thread the path from `BackendRouter::new(config, workspace_path)` down to `ClaudeCodeBackend::new`.
+
+    ### Tests
+
+    Add or extend an existing `ClaudeCodeBackend` unit test to verify the subprocess is spawned with the expected cwd. If the test infrastructure mocks `Command` creation, assert `.current_dir` is set to the workspace root; otherwise document the invariant with a code comment and a manual verification step.
+
+    ### Verification
+
+    After the fix: run `atlas index ~/Development/dull/` from `~/Development/Atlas/` (the wrong directory for dull). Confirm surface records in the resulting `components.yaml` reference dull-appropriate content rather than Atlas source.
+
+    ## Exit criteria
+
+    - `ClaudeCodeBackend` sets subprocess cwd to the workspace root before spawning `claude -p`.
+    - Manual verification: `atlas index ~/Development/dull/` run from `~/Development/Atlas/` produces correct dull surfaces (not Atlas surfaces).
+    - Workaround note in `evaluation/results/2026-05-04-dull-no-pins/notes.md` updated to mark as fixed.
+
+    ## References
+
+    - Deviation #2 in `evaluation/results/2026-05-04-dull-no-pins/notes.md` — workaround used during the dull run.
+    - `crates/atlas-llm/src/claude_code.rs` — subprocess spawn site.
 - id: filesystem-tool-use-loop-for-http-llm-backends-provider-agnostic
   title: Filesystem tool-use loop for HTTP LLM backends (provider-agnostic)
   category: feature
@@ -507,6 +409,61 @@ tasks:
     ## Unblock path
 
     Run a fresh work phase for Phase 2 (Anthropic tool-use loop). Phases 3 and 4 each fit one work phase too. The whole stack lands in three more sessions, two without LLM spend and one (Phase 4 final criterion) gated on spend authorization.
+- id: audit-atlas-cli-against-llm-friendly-cli-design-guide
+  title: Audit Atlas CLI against LLM-friendly CLI design guide
+  category: infra
+  status: not_started
+  dependencies:
+  - verify-atlas-v1-success-criteria-end-to-end
+  description: |
+    **Priority: MEDIUM.** Audit Atlas's CLI surface (`atlas`, all subcommands, all flags, all output formats) against the LLM-friendly CLI design guide at `~/Development/Ravel-Lite/defaults/fixed-memory/cli-tool-design.md`. Produce a punch-list of findings, prioritised by ROI per the guide's own ordering (structured output > examples in --help > actionable errors > flag consistency > exit codes > defaults > non-TTY behaviour > capabilities).
+
+    ## Why
+
+    Atlas is increasingly invoked by other agents (Ravel-Lite tooling, future Uplift/Redeveloper consumers, ad-hoc evaluation runs in subagents). Friction in the CLI surface — missing `--json`, prose-only output, vague errors, undocumented exit codes — costs tokens and produces flaky agent loops. The guide is opinionated and ordered by impact; follow its ordering rather than re-deriving it.
+
+    ## Scope
+
+    ### Discovery (read-only audit)
+
+    Walk every code path that produces user-facing output:
+
+    - `atlas --help` and every subcommand's `--help`.
+    - `atlas index` — the primary data-producing command. Outputs three YAMLs + `llm-cache.json`. Stdout summary line. Stderr progress.
+    - `atlas validate-overrides` — error reporting on malformed config / overrides.
+    - `atlas init` — scaffold output.
+    - `atlas --version` — version output, `--json` form?
+    - Error paths: missing config, missing API key, invalid model string, budget exhausted, filesystem-required prompt routed to HTTP (the new `LlmError::Setup` from `BackendRouter`), `LlmError::Invocation`, `LlmError::Schema`.
+    - Exit codes: which subcommands emit which codes for which conditions.
+
+    For each surface, score against the guide's audit checklist (lines 208–252 of `cli-tool-design.md`). Each "no" is a finding.
+
+    ### Output
+
+    A markdown report at `evaluation/results/cli-audit-<date>.md` with:
+
+    - One section per audit-checklist subheading (Output, Help, Errors, Conventions, Behaviour, Discoverability).
+    - Each finding tagged `[blocker]` / `[high]` / `[medium]` / `[low]` per the guide's ROI ordering.
+    - A prioritised remediation backlog at the bottom — each entry small enough to be its own follow-up backlog task.
+    - Explicit "out of scope for v1" calls where appropriate (e.g. `atlas capabilities` is "optional but valuable" — don't block v1 sign-off on it).
+
+    ### Out of scope
+
+    - Implementing fixes. This task ends at the report; remediation work spawns separate backlog tasks per the report's recommendations.
+    - Auditing Ravel-Lite or other linkuistics CLIs.
+    - Reworking the YAML output schemas — they are separately governed by the components/externals/related-components contracts.
+
+    ## Exit criteria
+
+    - `evaluation/results/cli-audit-<date>.md` exists, walks every guide audit-checklist item against Atlas's current CLI, and identifies findings.
+    - Each finding is prioritised per the guide's ROI ordering (structured output > examples > errors > consistency > etc.).
+    - A short follow-up backlog of 3–8 remediation tasks is proposed in the report's final section. The user reviews and decides which to file.
+    - Atlas v1 sign-off (`verify-atlas-v1-success-criteria-end-to-end`) cross-references the report so anyone reading the v1 announcement understands what is and is not LLM-friendly today.
+
+    ## References
+
+    - Guide: `~/Development/Ravel-Lite/defaults/fixed-memory/cli-tool-design.md`. Treat the audit checklist (lines 208–252) and the anti-patterns list (lines 256–268) as load-bearing.
+    - The guide's own remediation order (lines 271–284) — "Add `--json` everywhere it's missing" first, "stabilise the JSON schema" second, "rewrite error messages" third — is the recommended order for any follow-up tasks the report spawns.
 - id: confirm-l8-perf-win-on-dull-at-max-depth-0
   title: Confirm L8 perf win on dull at --max-depth 0
   category: eval
