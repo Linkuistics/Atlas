@@ -579,3 +579,9 @@ entries:
     `atlas index --no-overrides` bypasses both `load_or_default_overrides` and `load_or_default_subsystems_overrides`, forcing every candidate through the full classification path. Pipeline logs a one-line stderr warning when active. Cache isolation appends `+overrides=disabled` to `fingerprint.backend_version` — piggybacks on the existing fingerprint mechanism without adding a new cache-key dimension. Integration tests cover: (a) suppressed components reappear under `--no-overrides`, and (b) the overrides file on disk is untouched.
 
     Cross-ref: `dull pin coverage is high but not total; L3 fires on gap`.
+- id: indicatif-drops-non-tty-output-regardless-of-progressmode
+  title: indicatif drops non-TTY output regardless of ProgressMode
+  body: |
+    indicatif drops all output on non-TTY stderr regardless of ProgressMode. `ProgressDrawTarget::stderr()` becomes a no-draw target when stderr is not a TTY (`draw_target.rs:167-169`); `multi.println` and bar `set_message` are both no-ops silently — even under `ProgressMode::Always`. Fix: track `plain_stderr: bool` in `Reporter`; route through `eprintln!` when `drawing && !stderr_is_tty`. `ProgressEvent` variants that update only via `set_msg` (Started, Phase, IterStart, Subcarve, Surface) still lack a plain-mode fallback and remain invisible on piped stderr.
+
+    Cross-ref: `reporter-agent-mounted-is-tracked-in-state-not-derived-from-indicatif`.
