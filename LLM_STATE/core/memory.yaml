@@ -518,9 +518,9 @@ entries:
   body: |
     `dull` `components.overrides.yaml` declares 83 pinned ids, but Atlas's L1/L2 enumeration finds at least two unpinned candidates that fall through to L3 LLM Classify under cold cache: `session-recording-server/policy_api` and `shared-backend/Dull.SqlcDal/sql_sanitizer`. The pin coverage is *high* but not *total*, so cold-cache runs at any depth fire L3 LLM calls on the gap.
 
-    A previously-recorded "depth-1 = depth-0 = 0 LLM calls" observation was almost certainly captured with a warm `llm-cache.json` (cache hits on every candidate). It is not representative of a true cold-cache run.
+    A previously-recorded "0 LLM calls, 7min" observation was warm-cache (cache hits on every candidate), not a true cold-cache baseline.
 
-    `dull` cannot serve as a cross-target LLM validator until the pin gap is closed. Two unblock paths: (a) audit `pins:` against the enumerated candidate set and pin everything, or (b) repurpose to a different target where pin coverage can be made total cheaply.
+    L8 perf smoke on dull is blocked until the pin gap is closed. Cross-target validation bypasses the gap via `--no-overrides` (task: `cross-target-validation-on-dull-via-no-overrides-smoke`): run `atlas index --no-overrides` to bypass `components.overrides.yaml` entirely, forcing L3 LLM calls on all enumerated candidates; use that output as the structural cross-target reference for v1 sign-off.
 
     Cross-ref: `evaluation/results/2026-05-04-dull-depth0-perf.md` (full audit and recommendation).
 - id: missing-params-max-tokens-causes-three-silent-llm-failure-layers
