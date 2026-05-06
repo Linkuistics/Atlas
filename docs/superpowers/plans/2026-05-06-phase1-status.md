@@ -5,7 +5,7 @@ This file tracks per-PR completion state across sessions. The session
 prompt at `docs/superpowers/plans/2026-05-06-phase1-session-prompt.md`
 reads this file to find the next PR to dispatch.
 
-**Last updated:** 2026-05-07 (PR-5 landed).
+**Last updated:** 2026-05-07 (PR-5 + PR-6 landed).
 
 ## PR status
 
@@ -19,7 +19,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-3  — Multi-root `Workspace` (Salsa input)
 - [x] PR-4  — Path-dep root expansion to fixed point
 - [x] PR-5  — Plugin protocol + three reference analysers
-- [ ] PR-6  — Scattered per-component `.atlas/` writers
+- [x] PR-6  — Scattered per-component `.atlas/` writers
 - [ ] PR-7  — `surfaces.yaml` emission (Rust binding shape)
 - [ ] PR-8  — Contract participants in `related-components.yaml`
 - [ ] PR-9  — Composition edges from Dockerfiles
@@ -415,7 +415,127 @@ Carry-over for downstream PRs:
   output now includes `analyzer_registry_sha:` line.
 
 ### PR-6
-(none yet)
+2026-05-07 — Landed on Atlas main as a single commit `3c1b518`.
+
+**New public API (atlas-engine):**
+- `per_component_yaml_snapshot(db, component_id) -> anyhow::Result<Arc<PerComponentFile>>`
+  — single-component projection plus envelope (`schema_version`,
+  `surfaces_path`, `overrides_path`, `analyser_id`, `analyser_version`,
+  `fingerprint`). Phase 1 placeholders: `analyser_id="l3-driver"`,
+  `analyser_version=L3_DRIVER_VERSION` (`"1.0.0"`),
+  `fingerprint=sha256(serde_yaml::to_string(&entry))`. PR-7 swaps
+  these for per-analyser identity (plumbed through L3 dispatch) and
+  the surfaces.yaml fingerprint per design §6.2.
+- `L3_DRIVER_VERSION` constant — exported so PR-7 can read the prior
+  value when computing the fingerprint lineage.
+- `try_assemble_with_warnings(db, &mut dyn Write)` — sibling to
+  `try_assemble` that takes a warning sink, mirroring PR-4's
+  `expand_roots_with_warnings`. The plain `try_assemble` is now a
+  thin wrapper writing to stderr.
+- `TreeAssemblyError::PerComponentScopeViolation { file, offending_id, owner_prefix }`
+  and `TreeAssemblyError::PerComponentParseError { file, message }`
+  — new variants for spec §5 (cross-component pin rejected) and a
+  malformed per-component file (read or parse error).
+
+**Override-merge structural changes (`l4_tree.rs`):**
+- `try_assemble_with_warnings` reads `workspace.components_overrides`
+  (the CLI-installed primary-root file) and feeds it as the **first**
+  tier into a new `merge_overrides_in_discovery_order` helper. The
+  helper walks the spec §3 three-tier order:
+  1. primary-root top-level (received as the workspace input).
+  2. peer-root top-level — `<peer-root>/.atlas/components.overrides.yaml`
+     for every `roots[i]` with `i >= 1`, lex-sorted by canonical
+     absolute path.
+  3. per-component — `<dir>/.atlas/overrides.yaml` files discovered
+     via a direct filesystem walk (`find_per_component_overrides_under`)
+     under each root, path-sorted (a deterministic stand-in for the
+     spec's "id-sorted" rule, which would require post-assembly ids).
+  Per-component files are validated against §5 scoping at discovery
+  time. The implied owner prefix is computed in two forms (path-only
+  and root-basename-prefixed) and an entry id must match either as
+  `id == prefix` or `id.starts_with(format!("{prefix}/"))`. A
+  violation is `TreeAssemblyError::PerComponentScopeViolation` —
+  always a hard error per spec §5.
+- The merge itself is last-writer-wins, keyed by `(component_id, key)`
+  for pins and by `component_id` for additions. Conflicting values
+  (two contributors with distinct values) emit a §6-format warning
+  to the sink: `warning: override conflict on (id, key):` followed
+  by one line per contributor (labelled `primary`/`peer`/
+  `per-component`) and a `resolved value:` summary. `eprintln!`-
+  via-stderr is the production sink; tests pass a `Vec<u8>`.
+
+**Filesystem-walk exclusion (`ingest.rs`):**
+- `seed_filesystem_inner` now universally prunes every `.atlas/`
+  directory from the walk (regardless of root). PR-6's per-component
+  writers create `<component>/.atlas/component.yaml` and PR-7+ adds
+  more; without this exclusion the second run would treat each
+  `<component>/.atlas` as an immediate sub-dir candidate (L8's
+  enumerator) and feed prior outputs into L0. The override-merge
+  walk reads per-component files via a direct filesystem walk, so
+  it is not affected by this exclusion.
+- The existing per-root `excluded_dir` mechanism (PR-3) is preserved
+  alongside the new `.atlas/` prune; both run inside one
+  `filter_entry` closure.
+
+**Per-component writer (`pipeline.rs`):**
+- New `write_per_component_files(db, &components_file, &roots)` is
+  invoked after the top-level YAML writes and before the LLM-cache
+  save. Per-component write failures are non-fatal warnings on
+  stderr (same policy as PR-4's config.yaml writer); the top-level
+  `components.yaml` is the canonical source.
+- Atomic write via tempfile-then-rename inside the component's
+  `.atlas/` directory (`mkdir -p` per component).
+- `--dry-run` skips the per-component writes (the walk lives inside
+  the `if !config.dry_run` block, alongside the top-level saves).
+
+**Carry-over for PR-7 reviewers:**
+- The same `write_per_component_files` walk pattern (`for entry in
+  &components_file.components` → resolve `<root>/<segment[0].path>`
+  → `mkdir -p <dir>/.atlas` → atomic write) is the canonical
+  template for `surfaces.yaml` emission. PR-7 should add a sibling
+  walk inside the same `if !config.dry_run` block (or extend
+  `write_per_component_files` to emit both files in one pass).
+- The placeholder fingerprint computed in `per_component_yaml_snapshot`
+  (sha256 of the entry's canonical YAML) is correct per spec §6.2's
+  letter (it does change when classification or path changes), but
+  the surfaces fingerprint is the long-term value. PR-7's reviewer
+  should swap the body of the `let entry_yaml = ...` block for
+  `let surfaces = surfaces_yaml_snapshot(db, component_id); let
+  fingerprint = surfaces.fingerprint.clone();`.
+- `L3_DRIVER_VERSION` is a public const so PR-7 can compute the
+  lineage diff.
+
+**Deviations from the plan/spec:**
+- The brief suggests deriving the per-component scoping prefix as
+  "the portion before the first `/`" (manifest-root namespace). The
+  implementation is stricter: it computes both the path-derived form
+  and the root-basename-prefixed form and accepts either. This is
+  more conservative — it actually enforces §5 against sibling-of-
+  the-owner pins, where the manifest-root-namespace check would
+  let them through. The change is invisible to the spec's test
+  obligations (all four listed tests pass with either rule) and the
+  stricter form is what the spec's worded text describes.
+- Per-component override discovery walks the filesystem directly
+  rather than using `Workspace.files`. The brief outlines both
+  approaches; the filesystem walk is necessary because
+  `seed_filesystem` excludes `.atlas/` directories (see above). The
+  walk lives in `find_per_component_overrides_under` and only
+  descends into the root tree, skipping `.git/`, `target/`, and
+  `node_modules/` for performance.
+
+**Debt deferred:**
+- `fingerprint` field on `PerComponentFile` is the entry-yaml-sha
+  placeholder; PR-7 lands the surfaces.yaml fingerprint.
+- `analyser_id`/`analyser_version` are static (`"l3-driver"` /
+  `"1.0.0"`); PR-7 swaps to per-analyser identity.
+- The `--strict-overrides` flag (escalating warnings to errors per
+  spec §6) is Phase 2.
+- Per-component overrides are read directly from disk (not through
+  Salsa input). A future PR that wants Salsa-tracked override
+  discovery could swap the `find_per_component_overrides_under`
+  walk for an L1-style tracked query — the per-component file
+  contents would need to be ingested via a separate registration
+  path because they live inside the universally-excluded `.atlas/`.
 
 ### PR-7
 (none yet)
