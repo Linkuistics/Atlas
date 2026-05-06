@@ -255,8 +255,32 @@ pub fn run_index(
     // Manual `--additional-root` paths win the ordering tie: users
     // who explicitly listed a root expect it adjacent to the primary
     // in `components.yaml`. Auto-discovered peers follow.
-    for r in config.additional_roots.iter().chain(auto_additional.iter()) {
-        let canonical = r.canonicalize().unwrap_or_else(|_| r.clone());
+    let manual_iter = config.additional_roots.iter().map(|r| (true, r));
+    let auto_iter = auto_additional.iter().map(|r| (false, r));
+    for (is_manual, r) in manual_iter.chain(auto_iter) {
+        let canonical = match std::fs::canonicalize(r) {
+            Ok(c) => c,
+            Err(e) => {
+                if is_manual {
+                    // Manual --additional-root paths must canonicalise so
+                    // dedup against the auto-discovered set works. A
+                    // path that fails canonicalisation (missing,
+                    // permission-denied, broken symlink) cannot be
+                    // safely de-duplicated against the canonical set —
+                    // skipping it is preferable to inserting a
+                    // potentially-aliased non-canonical form.
+                    eprintln!(
+                        "warning: --additional-root {} could not be canonicalised: {}; skipping",
+                        r.display(),
+                        e
+                    );
+                }
+                // Auto-discovered roots already came from `expand_roots`
+                // which canonicalises internally, so a failure here is
+                // a TOCTOU race; just skip silently.
+                continue;
+            }
+        };
         if seen.insert(canonical.clone()) {
             all_additional.push(canonical);
         }

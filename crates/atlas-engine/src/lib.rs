@@ -83,7 +83,7 @@ pub use l9_subsystems::{
 pub use llm_cache::{LlmCacheKey, LlmResponseCache};
 pub use manifest_patterns::is_manifest_file;
 pub use progress::{relpath_of, Phase, ProgressEvent, ProgressSink, PromptBreakdown};
-pub use root_expansion::expand_roots;
+pub use root_expansion::{expand_roots, expand_roots_with_warnings};
 pub use roots::best_root_for;
 pub use surface_types::{InteractionRoleHint, SurfaceRecord};
 pub use types::{Candidate, Classification, ComponentKind, RationaleBundle};

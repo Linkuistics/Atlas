@@ -26,6 +26,7 @@
 //! and friends are skipped — Phase 2 adds npm-workspace support.
 
 use std::collections::{BTreeSet, VecDeque};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -60,6 +61,18 @@ use crate::manifest_parse::extract_path_deps;
 /// the discovery order — and the resulting `Vec` order — is stable
 /// across runs.
 pub fn expand_roots(primary: &Path) -> Result<Vec<PathBuf>> {
+    let mut stderr = std::io::stderr();
+    expand_roots_with_warnings(primary, &mut stderr)
+}
+
+/// Same contract as [`expand_roots`], but warning lines (cycle
+/// detection) go to a caller-supplied writer instead of stderr.
+/// Tests use this to assert on the exact warning text without spawning
+/// a subprocess; production code should call [`expand_roots`].
+pub fn expand_roots_with_warnings(
+    primary: &Path,
+    warnings: &mut dyn Write,
+) -> Result<Vec<PathBuf>> {
     let primary_canonical = primary
         .canonicalize()
         .with_context(|| format!("failed to canonicalize primary root {}", primary.display()))?;
@@ -90,33 +103,58 @@ pub fn expand_roots(primary: &Path) -> Result<Vec<PathBuf>> {
                     continue;
                 };
 
-                // Skip if the target is already covered by a known
-                // root: its contents will be enumerated under that
-                // root's L1 walk.
-                if is_inside_any(&target_canonical, &result) {
-                    continue;
-                }
-
                 let candidate = enclosing_manifest_root(&target_canonical);
                 let Ok(candidate_canonical) = candidate.canonicalize() else {
                     continue;
                 };
 
+                // Cycle detection: the candidate root is already in the
+                // visited set. Two flavours, both indicate a cycle in
+                // the path-dep graph:
+                //
+                //  - Exact-equality: the candidate is one of the roots
+                //    we've already walked. e.g. `peer-a` path-deps to
+                //    `peer-b/x`, then `peer-b` path-deps to a sibling
+                //    that walks-up to peer-a. The cycle is between two
+                //    discovered peers.
+                //
+                //  - Inside-known-root: the candidate is a descendant
+                //    of an already-discovered root. e.g. peer-b
+                //    path-deps to a workspace member of peer-a; the
+                //    walk-up returns peer-a (already in `result`).
+                //    The defence covers `is_inside_any` since
+                //    `result` may include strict ancestors of the
+                //    candidate.
+                //
+                // Both branches are silent skips structurally — no new
+                // root added, no recursion. We emit the warning when
+                // the candidate equals (or is enclosed by) a visited
+                // root AND the manifest declaring the path-dep is on a
+                // peer (not the primary's own walk into a known root,
+                // which is benign and common).
                 if visited.contains(&candidate_canonical) {
-                    eprintln!(
-                        "warning: path-dep cycle detected: {} <-> {}",
-                        manifest.display(),
-                        candidate_canonical.display()
-                    );
+                    // The "the manifest is itself on a peer that's
+                    // visited" check distinguishes a real cycle (peer
+                    // X path-deps peer Y, peer Y path-deps back to X)
+                    // from the benign case where a primary-rooted
+                    // crate path-deps a sibling that walks up to the
+                    // primary itself.
+                    if is_inside_any(&manifest, &result[1..]) {
+                        let _ = writeln!(
+                            warnings,
+                            "warning: path-dep cycle detected: {} <-> {}",
+                            manifest.display(),
+                            candidate_canonical.display()
+                        );
+                    }
                     continue;
                 }
 
-                // Defence in depth: if the candidate happens to be
-                // inside a known root (e.g. a workspace member of the
-                // primary that a peer's path-dep aliased through), do
-                // not double-count it. `is_inside_any` already covered
-                // the target check; the candidate may have walked up
-                // into another known root.
+                // Defence in depth: the candidate is a strict
+                // descendant of a known root (e.g. a workspace member
+                // of the primary that a peer's path-dep aliased
+                // through). Not a cycle, just already-covered — silent
+                // skip.
                 if is_inside_any(&candidate_canonical, &result) {
                     continue;
                 }
@@ -154,10 +192,19 @@ fn enclosing_manifest_root(start: &Path) -> PathBuf {
             .unwrap_or_else(|| start.to_path_buf())
     };
 
-    // The crate-root candidate is the highest directory that contains
-    // a `Cargo.toml`; the workspace-root candidate is the highest such
-    // directory whose `Cargo.toml` declares `[workspace]`. Phase 1
-    // returns the workspace if it exists, else the crate.
+    // The crate-root candidate is the innermost directory that
+    // contains a `Cargo.toml`; the workspace-root candidate is the
+    // innermost such directory whose `Cargo.toml` declares
+    // `[workspace]`. Phase 1 returns the workspace if it exists, else
+    // the crate.
+    //
+    // Innermost-wins matches Cargo's own resolution rule: when crate
+    // `X` walks up looking for an enclosing workspace, the *first*
+    // `[workspace]` ancestor binds. Two independently-versioned
+    // workspaces under a common parent (e.g. a monorepo umbrella that
+    // happens to also be a workspace) must therefore stay separate —
+    // the inner workspace owns its members, the outer does not see
+    // through.
     let mut crate_root: Option<PathBuf> = None;
     let mut workspace_root: Option<PathBuf> = None;
 
@@ -166,12 +213,10 @@ fn enclosing_manifest_root(start: &Path) -> PathBuf {
         if manifest.is_file() {
             if let Ok(contents) = std::fs::read_to_string(&manifest) {
                 let shape = crate::manifest_parse::parse_cargo_toml(&contents);
-                if shape.has_workspace_section {
+                if shape.has_workspace_section && workspace_root.is_none() {
                     workspace_root = Some(cursor.clone());
-                    // Don't stop — a higher [workspace] could still
-                    // enclose this one (rare but legal in Cargo). The
-                    // outermost wins.
-                } else if crate_root.is_none() {
+                }
+                if shape.has_package_section && crate_root.is_none() {
                     crate_root = Some(cursor.clone());
                 }
             }

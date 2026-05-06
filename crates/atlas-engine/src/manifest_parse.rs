@@ -18,6 +18,7 @@ pub struct CargoTomlShape {
     pub has_lib_section: bool,
     pub has_bin_section: bool,
     pub has_workspace_section: bool,
+    pub has_package_section: bool,
 }
 
 pub fn parse_cargo_toml(contents: &str) -> CargoTomlShape {
@@ -28,6 +29,7 @@ pub fn parse_cargo_toml(contents: &str) -> CargoTomlShape {
         has_lib_section: table.get("lib").is_some_and(toml::Value::is_table),
         has_bin_section: table.get("bin").is_some_and(toml::Value::is_array),
         has_workspace_section: table.get("workspace").is_some_and(toml::Value::is_table),
+        has_package_section: table.get("package").is_some_and(toml::Value::is_table),
     }
 }
 

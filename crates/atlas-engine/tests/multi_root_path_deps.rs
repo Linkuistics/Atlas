@@ -22,7 +22,7 @@
 
 use std::path::{Path, PathBuf};
 
-use atlas_engine::expand_roots;
+use atlas_engine::{expand_roots, expand_roots_with_warnings};
 use tempfile::TempDir;
 
 fn write(path: &Path, contents: &str) {
@@ -255,6 +255,62 @@ fn cross_tree_cycle_terminates() {
     assert_eq!(roots[0], primary_canonical);
     assert_eq!(roots[1], ext1_canonical);
     assert_eq!(roots[2], ext2_canonical);
+}
+
+/// Cycle between two true peer roots (both outside the primary):
+/// peer-a path-deps a crate inside peer-b, peer-b path-deps a crate
+/// inside peer-a. The walk discovers both peers, and on revisiting
+/// the second peer's path-dep back to the first the visited-set
+/// guard fires — emitting a `warning: path-dep cycle detected …`
+/// line on the supplied warnings writer. The test pins the exact
+/// warning string so a future regression in the cycle wording (or
+/// the silent loss of the warning entirely) is caught.
+#[test]
+fn cycle_between_two_peers_emits_warning() {
+    let parent = TempDir::new().unwrap();
+    let primary = parent.path().join("primary");
+    let peer_a = parent.path().join("peer-a");
+    let peer_b = parent.path().join("peer-b");
+
+    // Primary path-deps into peer-a's crate; peer-a's crate
+    // path-deps into peer-b's crate; peer-b's crate path-deps back
+    // into peer-a. The trip back into peer-a triggers the cycle
+    // warning — peer-a is already visited.
+    write_cargo_crate(
+        &primary.join("crate-p"),
+        "crate-p",
+        &[("crate-a", "../../peer-a/crate-a")],
+    );
+    write_cargo_crate(
+        &peer_a.join("crate-a"),
+        "crate-a",
+        &[("crate-b", "../../peer-b/crate-b")],
+    );
+    write_cargo_crate(
+        &peer_b.join("crate-b"),
+        "crate-b",
+        &[("crate-a", "../../peer-a/crate-a")],
+    );
+
+    let mut buf: Vec<u8> = Vec::new();
+    let roots = expand_roots_with_warnings(&primary, &mut buf)
+        .expect("expand_roots_with_warnings terminates on peer-peer cycle");
+    assert_eq!(
+        roots.len(),
+        3,
+        "primary + peer-a/crate-a + peer-b/crate-b — no extra roots from the cycle"
+    );
+
+    let stderr = String::from_utf8(buf).expect("warnings are utf-8");
+    assert!(
+        stderr.contains("warning: path-dep cycle detected"),
+        "expected cycle warning, got: {stderr:?}"
+    );
+    let peer_a_canonical = peer_a.join("crate-a").canonicalize().unwrap();
+    assert!(
+        stderr.contains(&peer_a_canonical.display().to_string()),
+        "warning should name peer-a's discovered root, got: {stderr:?}"
+    );
 }
 
 /// Convenience: a path-dep through a chain of intermediate peers
