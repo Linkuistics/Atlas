@@ -15,7 +15,7 @@ commit sha + anything load-bearing the next session needs to know).
 
 - [x] PR-0  — Companion specs (docs only) — *blocks PR-1+*
 - [x] PR-1  — Schema definitions for new types
-- [ ] PR-2  — Persistent content-addressed cache (no wiring)
+- [x] PR-2  — Persistent content-addressed cache (no wiring)
 - [x] PR-3  — Multi-root `Workspace` (Salsa input)
 - [x] PR-4  — Path-dep root expansion to fixed point
 - [ ] PR-5  — Plugin protocol + three reference analysers
@@ -105,7 +105,30 @@ Notes for downstream PRs:
   Some) pairs. PR-5 callers should validate.
 
 ### PR-2
-(none yet)
+2026-05-06 — Landed on Atlas main as `4d52431` (initial) + `597ade3`
+(quality fixes — GC race counting, FingerprintBuilder Clone removal,
+Sha256Hex invariant doc).
+
+Public API available from `atlas_engine`:
+- `PersistentCache::open(&Path) -> Result<Self>`
+- `PersistentCache::{get, put, gc, root}` — content-addressed store at
+  `<root>/cache/<stage>/<sha>.blob` (caller passes the full cache root,
+  e.g. `<output>/.atlas/cache`).
+- `FingerprintBuilder::new(stage, analyzer_id, analyzer_version)` plus
+  five `add_*` methods (file_content_sha, prompt_sha, llm_fingerprint,
+  participant_surface_sha) and `finalise(self) -> Sha256Hex`. Tag-byte
+  framing + BTreeSet accumulator give order-independent fingerprints.
+  No `Clone` derive — single-shot by design.
+- `GcReport { kept, removed, bytes_freed }`, `Sha256Hex = String`.
+
+**Spec deviation noted, deferred to a future PR:** the plan signature
+is `gc(&BTreeSet<(Stage, Sha256Hex)>)` but `Stage` from atlas-contracts
+only derives `Hash + Eq`, not `Ord`. PR-2 ships `gc(&HashSet<...>)` and
+documents the divergence. The first PR that touches atlas-contracts
+again should add `#[derive(PartialOrd, Ord)]` to `Stage` and restore
+the `BTreeSet` signature in atlas-engine.
+
+PR-10 wires the cache into L3/L5/L6; PR-2 itself does no wiring.
 
 ### PR-3
 2026-05-06 — Landed on Atlas main as a single commit (see git log).
@@ -192,9 +215,39 @@ Tests:
 Concurrency note: PR-2 (persistent cache) was dispatched in parallel.
 The `lib.rs` re-exports for `expand_roots` and PR-2's
 `PersistentCache`/`FingerprintBuilder` co-exist in the file naturally
-(both add their own `pub mod` line and `pub use` re-export). No merge
-conflict observed at this point; the controller still owns final
-resolution if PR-2 lands separately.
+(both add their own `pub mod` line and `pub use` re-export). PR-2
+landed first as `4d52431`; PR-4 cleanly stacked at `8e60d32`.
+
+Quality fixes follow-up at commit `b96977f`:
+- `enclosing_manifest_root` now binds to the **innermost** enclosing
+  `[workspace]` Cargo.toml (matching Cargo's own resolution rule), not
+  the outermost. Two independently-versioned workspaces under a common
+  parent are now correctly kept separate.
+- `expand_roots` API split: now also exposes
+  `expand_roots_with_warnings(primary, &mut dyn Write)` so tests can
+  capture the cycle warning without process plumbing. The plain
+  `expand_roots` is a thin wrapper writing to stderr.
+- New test `cycle_between_two_peers_emits_warning` exercises the
+  visited-set cycle branch with two true peer roots and asserts the
+  warning text appears in the captured stream.
+- Manual `--additional-root` paths that fail canonicalisation now emit
+  a stderr warning and are skipped (was: silently inserted in
+  non-canonical form, breaking dedup against auto-discovered roots).
+- Cycle-warning emission moved off `eprintln!` and onto the writer
+  argument; pipeline.rs's `persist_discovered_roots` warning still uses
+  `eprintln!` (its own concern, not in PR-4 scope).
+- Dropped the unreachable `is_inside_any(target)` early-exit; the
+  defence-in-depth `is_inside_any(candidate, &result)` guard remains
+  for benign workspace-member aliasing.
+
+Carry-over for downstream PRs:
+- PR-5 onwards do NOT need to know about `expand_roots_with_warnings`
+  unless they want to plumb their own warning sinks. The default
+  `expand_roots` is the call site.
+- The `<output>/.atlas/config.yaml` writer in pipeline.rs uses
+  `AtlasConfigFile` from atlas-contracts (PR-1's type) and is the
+  canonical config-write site. PR-5+ adding new config keys should
+  extend `AtlasConfigFile`, not introduce parallel YAML writers.
 
 ### PR-5
 (none yet)
