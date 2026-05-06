@@ -14,7 +14,7 @@ when the PR is reviewed and committed. Append a one-line note (date +
 commit sha + anything load-bearing the next session needs to know).
 
 - [x] PR-0  — Companion specs (docs only) — *blocks PR-1+*
-- [ ] PR-1  — Schema definitions for new types
+- [x] PR-1  — Schema definitions for new types
 - [ ] PR-2  — Persistent content-addressed cache (no wiring)
 - [ ] PR-3  — Multi-root `Workspace` (Salsa input)
 - [ ] PR-4  — Path-dep root expansion to fixed point
@@ -72,7 +72,37 @@ emit the per-component-scoping warning in the format spelled out in §6 of
 the override-scoping spec.
 
 ### PR-1
-(none yet)
+2026-05-06 — Landed in `/Users/antony/Development/atlas-contracts` as
+three commits: `34fc2f9` (initial), `bef736d` (spec fixup —
+Contract.fingerprint field rename, nested subprocess config), `2d8c54c`
+(quality fixes — LibraryApi validate, fixture pinning, AtlasConfigFile
+default hygiene).
+
+Atlas main repo is now red until PR-3 lands. Expected.
+
+Notes for downstream PRs:
+- `Stage` (kebab-case lowercase: `l1`..`l9`), `CostClass`, `Confidence`,
+  `Transport`, `SubprocessConfig`, `AnalyzerSpec` available from
+  `atlas_index::analyzers`. PR-2 imports `Stage` from here.
+- `ComponentsFile.roots: Vec<PathBuf>` (singular `root` deleted). PR-3
+  must adopt this; every Atlas-side consumer of `ComponentsFile.root`
+  is currently broken.
+- `ComponentEntry.languages: BTreeSet<String>` (singular `language`
+  deleted). PR-3 must adopt.
+- `EdgeKind` extended with `DefinesContract`, `ImplementsContract`,
+  `ConsumesContract`, `BundledInto`, `PublishedAs`, `DeployedWith`,
+  `ReleasedWith`, `BundledFromExternal`. `Orchestrates` already existed.
+  PR-8 / PR-9 consume these.
+- `LifecycleScope::Release` does NOT exist; `published-as` and
+  `released-with` are tagged `deploy` lifecycle in the ontology YAML.
+  Design §3.5 table text says `release`, but the ontology is canonical.
+  Future work can add `Release` if needed.
+- `CacheFingerprints.analyzer_registry_sha` is NOT yet added (deferred
+  to PR-5). PR-5 must add it before any writer lands.
+- `LibraryApi::validate()` enforces `kind == LibraryApi`. PR-5/PR-7
+  callers should `validate()` before serialising.
+- `AnalyzerSpec::validate()` rejects (Subprocess, None) and (InProcess,
+  Some) pairs. PR-5 callers should validate.
 
 ### PR-2
 (none yet)
