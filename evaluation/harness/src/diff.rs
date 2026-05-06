@@ -458,8 +458,8 @@ fn detect_identifier_changes(
             if let Some(prior) = by_sha.get(seg.content_sha.as_str()) {
                 if prior.id != c.id {
                     changes.push(IdentifierChange {
-                        prior_id: prior.id.clone(),
-                        new_id: c.id.clone(),
+                        prior_id: prior.id.as_str().to_string(),
+                        new_id: c.id.as_str().to_string(),
                         shared_path: seg.path.clone(),
                     });
                 }
@@ -487,7 +487,7 @@ mod tests {
 
     fn component(id: &str, path: &str) -> ComponentEntry {
         ComponentEntry {
-            id: id.into(),
+            id: component_ontology::ComponentId::parse(id).unwrap(),
             parent: None,
             kind: "rust-library".into(),
             lifecycle_roles: vec![],

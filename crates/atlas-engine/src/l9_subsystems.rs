@@ -9,6 +9,7 @@ use atlas_index::{
     ComponentEntry, MemberEvidence, SubsystemEntry, SubsystemOverride, SubsystemsFile,
     SUBSYSTEMS_SCHEMA_VERSION,
 };
+use component_ontology::ComponentId;
 use globset::{Glob, GlobMatcher};
 
 use crate::db::AtlasDatabase;
@@ -51,27 +52,25 @@ fn resolve_one_subsystem(
     live: &[&ComponentEntry],
     by_id: &BTreeMap<&str, &ComponentEntry>,
 ) -> SubsystemEntry {
-    let mut resolved_ids: BTreeSet<String> = BTreeSet::new();
+    let mut resolved_ids: BTreeSet<ComponentId> = BTreeSet::new();
     let mut evidence: Vec<MemberEvidence> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
 
     for member in &sub.members {
         if is_glob_form(member) {
             let matcher = match Glob::new(member) {
                 Ok(g) => g.compile_matcher(),
                 Err(_) => {
-                    evidence.push(MemberEvidence {
-                        id: String::new(),
-                        matched_via: format!("{member} (invalid glob)"),
-                    });
+                    // No valid id to attach evidence to — surface via
+                    // notes instead. Evidence requires a real
+                    // ComponentId per the schema contract.
+                    notes.push(format!("{member}: invalid glob"));
                     continue;
                 }
             };
             let matches = match_glob(&matcher, live);
             if matches.is_empty() {
-                evidence.push(MemberEvidence {
-                    id: String::new(),
-                    matched_via: format!("{member} (no matches)"),
-                });
+                notes.push(format!("{member}: no matches"));
             } else {
                 for c in matches {
                     if resolved_ids.insert(c.id.clone()) {
@@ -90,19 +89,13 @@ fn resolve_one_subsystem(
                 });
             }
         } else {
-            // Unknown id — caller surfaces this as a hard error in the
-            // post-L4 validation pass. Record it in evidence so the
-            // projection is self-describing even if validation is
-            // skipped.
-            evidence.push(MemberEvidence {
-                id: member.clone(),
-                matched_via: "id (no such component)".into(),
-            });
+            // Unknown id — surface via notes; the post-L4 validation
+            // pass also flags this as a hard error.
+            notes.push(format!("{member}: no such component"));
         }
     }
 
-    let members: Vec<String> = resolved_ids.into_iter().collect();
-    let mut notes: Vec<String> = Vec::new();
+    let members: Vec<ComponentId> = resolved_ids.into_iter().collect();
     if members.is_empty() {
         notes.push("all members unresolved".into());
     }
@@ -199,7 +192,7 @@ mod tests {
 
     fn comp(id: &str, path: &str) -> ComponentEntry {
         ComponentEntry {
-            id: id.into(),
+            id: ComponentId::parse(id).unwrap(),
             parent: None,
             kind: "rust-library".into(),
             lifecycle_roles: vec![],
@@ -250,7 +243,10 @@ mod tests {
         )];
         let out = resolve_subsystems(&subs, &comps);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].members, vec!["auth-tools"]);
+        assert_eq!(
+            out[0].members,
+            vec![ComponentId::parse("auth-tools").unwrap()]
+        );
         assert_eq!(out[0].member_evidence.len(), 1);
         assert_eq!(out[0].member_evidence[0].matched_via, "services/auth/*");
     }
@@ -260,12 +256,15 @@ mod tests {
         let comps = vec![comp("identity-core", "libs/identity")];
         let subs = vec![override_with_members("auth", vec!["identity-core".into()])];
         let out = resolve_subsystems(&subs, &comps);
-        assert_eq!(out[0].members, vec!["identity-core"]);
+        assert_eq!(
+            out[0].members,
+            vec![ComponentId::parse("identity-core").unwrap()]
+        );
         assert_eq!(out[0].member_evidence[0].matched_via, "id");
     }
 
     #[test]
-    fn glob_with_zero_matches_emits_no_matches_evidence() {
+    fn glob_with_zero_matches_emits_no_matches_note() {
         let comps = vec![comp("storage", "services/storage")];
         let subs = vec![override_with_members(
             "auth",
@@ -273,23 +272,33 @@ mod tests {
         )];
         let out = resolve_subsystems(&subs, &comps);
         assert!(out[0].members.is_empty());
-        assert_eq!(out[0].notes, vec!["all members unresolved".to_string()]);
-        assert_eq!(
-            out[0].member_evidence[0].matched_via,
-            "services/auth/* (no matches)"
-        );
+        // Notes contain both the per-member "no matches" note and the
+        // aggregate "all members unresolved" summary.
+        assert!(out[0]
+            .notes
+            .iter()
+            .any(|n| n.contains("services/auth/*") && n.contains("no matches")));
+        assert!(out[0]
+            .notes
+            .iter()
+            .any(|n| n == "all members unresolved"));
+        assert!(out[0].member_evidence.is_empty());
     }
 
     #[test]
-    fn unknown_id_form_emits_no_such_component_evidence() {
+    fn unknown_id_form_emits_no_such_component_note() {
         let subs = vec![override_with_members("auth", vec!["nonexistent".into()])];
         let out = resolve_subsystems(&subs, &[]);
         assert!(out[0].members.is_empty());
-        assert_eq!(out[0].notes, vec!["all members unresolved".to_string()]);
-        assert_eq!(
-            out[0].member_evidence[0].matched_via,
-            "id (no such component)"
-        );
+        assert!(out[0]
+            .notes
+            .iter()
+            .any(|n| n.contains("nonexistent") && n.contains("no such component")));
+        assert!(out[0]
+            .notes
+            .iter()
+            .any(|n| n == "all members unresolved"));
+        assert!(out[0].member_evidence.is_empty());
     }
 
     #[test]
@@ -300,7 +309,10 @@ mod tests {
             vec!["services/auth".into(), "auth-service".into()],
         )];
         let out = resolve_subsystems(&subs, &comps);
-        assert_eq!(out[0].members, vec!["auth-service"]);
+        assert_eq!(
+            out[0].members,
+            vec![ComponentId::parse("auth-service").unwrap()]
+        );
         // First form ("services/auth") wins; second is a no-op dedupe.
         assert_eq!(out[0].member_evidence.len(), 1);
         assert_eq!(out[0].member_evidence[0].matched_via, "services/auth");

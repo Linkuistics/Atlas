@@ -125,7 +125,7 @@ mod tests {
     fn relpath_of_returns_last_segment_path() {
         use atlas_index::{EvidenceGrade, PathSegment};
         let entry = ComponentEntry {
-            id: "c".into(),
+            id: component_ontology::ComponentId::parse("c").unwrap(),
             parent: None,
             kind: "rust-library".into(),
             lifecycle_roles: Vec::new(),
@@ -156,7 +156,7 @@ mod tests {
     fn relpath_of_returns_empty_when_no_segments() {
         use atlas_index::EvidenceGrade;
         let entry = ComponentEntry {
-            id: "c".into(),
+            id: component_ontology::ComponentId::parse("c").unwrap(),
             parent: None,
             kind: "rust-library".into(),
             lifecycle_roles: Vec::new(),

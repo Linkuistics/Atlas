@@ -12,7 +12,7 @@ use tempfile::TempDir;
 
 fn component(id: &str, path: &str, manifests: Vec<PathBuf>) -> ComponentEntry {
     ComponentEntry {
-        id: id.into(),
+        id: component_ontology::ComponentId::parse(id).unwrap(),
         parent: None,
         kind: "rust-library".into(),
         lifecycle_roles: vec![LifecycleScope::Build],

@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use atlas_index::{ComponentEntry, OverridesFile, PinValue};
 use atlas_llm::{LlmRequest, PromptId, ResponseSchema};
+use component_ontology::ComponentId;
 use serde_json::{json, Value};
 
 use crate::db::AtlasDatabase;
@@ -60,7 +61,7 @@ pub(crate) const CACHE_ONLY_KEYS: &[&str] = &["COMPONENT_CONTENT_SHAS"];
 /// component has no path_segments), returns a default
 /// [`SurfaceRecord`] — the engine is intentionally non-panicking on
 /// unknown ids so callers can probe freely.
-pub fn surface_of(db: &AtlasDatabase, id: String) -> Arc<SurfaceRecord> {
+pub fn surface_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceRecord> {
     // Resolve the component. `all_components` does the L2→L4 walk;
     // Salsa caches the result across repeated surface_of calls that
     // share a revision.
@@ -80,7 +81,7 @@ pub fn surface_of(db: &AtlasDatabase, id: String) -> Arc<SurfaceRecord> {
     let peer_ids: Vec<String> = components
         .iter()
         .filter(|c| !c.deleted && c.id != id)
-        .map(|c| c.id.clone())
+        .map(|c| c.id.as_str().to_string())
         .collect();
 
     let request = LlmRequest {
@@ -144,7 +145,7 @@ fn build_inputs(component: &ComponentEntry, peer_ids: &[String]) -> Value {
     let catalog_block = render_catalog_for_prompt(peer_ids);
 
     json!({
-        "COMPONENT_ID": component.id,
+        "COMPONENT_ID": component.id.as_str(),
         "COMPONENT_PATHS": component_paths,
         "COMPONENT_CONTENT_SHAS": content_shas,
         "CATALOG_COMPONENTS": catalog_block,
@@ -166,7 +167,7 @@ pub(crate) fn build_inputs_for_tests(component: &ComponentEntry, peer_ids: &[Str
 #[cfg(test)]
 pub(crate) fn build_inputs_with_stubs_for_tests() -> Value {
     let component = ComponentEntry {
-        id: "demo".into(),
+        id: ComponentId::parse("demo").unwrap(),
         parent: None,
         kind: "rust-library".into(),
         lifecycle_roles: Vec::new(),
@@ -243,7 +244,7 @@ fn value_kind(value: &Value) -> &'static str {
 /// the pin is present AND parses cleanly — a malformed pin is
 /// reported via `notes` by the caller's fallback, not silently
 /// ignored.
-fn surface_pin(overrides: &OverridesFile, id: &str) -> Option<SurfaceRecord> {
+fn surface_pin(overrides: &OverridesFile, id: &ComponentId) -> Option<SurfaceRecord> {
     let pins = overrides.pins.get(id)?;
     let entry = pins.get("surface")?;
     let PinValue::Value { value, .. } = entry else {
@@ -369,16 +370,16 @@ mod tests {
     /// content_shas in its cache-key inputs, which the test cannot
     /// know until after seeding. Returns the exact inputs
     /// [`surface_of`] will build.
-    fn inputs_for_id(db: &AtlasDatabase, id: &str) -> Value {
+    fn inputs_for_id(db: &AtlasDatabase, id: &ComponentId) -> Value {
         let components = all_components(db);
         let entry = components
             .iter()
-            .find(|c| c.id == id && !c.deleted)
+            .find(|c| &c.id == id && !c.deleted)
             .expect("id must resolve to a live component");
         let peer_ids: Vec<String> = components
             .iter()
-            .filter(|c| !c.deleted && c.id != id)
-            .map(|c| c.id.clone())
+            .filter(|c| !c.deleted && &c.id != id)
+            .map(|c| c.id.as_str().to_string())
             .collect();
         build_inputs(entry, &peer_ids)
     }
@@ -529,7 +530,7 @@ mod tests {
         write_cargo_lib_fixture(tmp.path(), "epsilon");
         let (db, _backend) = db_with_shared_backend(&tmp);
 
-        let record = surface_of(&db, "does-not-exist".into());
+        let record = surface_of(&db, ComponentId::parse("does-not-exist").unwrap());
         assert_eq!(record.as_ref(), &SurfaceRecord::default());
         assert_eq!(
             db.llm_cache().call_count(),

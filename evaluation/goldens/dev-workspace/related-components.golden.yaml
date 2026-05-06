@@ -3,31 +3,31 @@ edges:
 - kind: depends-on
   lifecycle: build
   participants:
-  - Ravel-Lite
-  - Atlas
+  - ravel-lite
+  - atlas
   evidence_grade: strong
   evidence_fields:
-  - Atlas.README.related-projects
-  - Ravel-Lite.CLAUDE.md
-  rationale: 'Per the migration plan (Atlas §9.4, memory: cross-crate include paths), Ravel-Lite will depend on Atlas crates for the ontology. Atlas README explicitly names Ravel-Lite as a peer.'
+  - atlas.README.related-projects
+  - ravel-lite.CLAUDE.md
+  rationale: 'Per the migration plan (Atlas §9.4, memory: cross-crate include paths), ravel-lite will depend on Atlas crates for the ontology. Atlas README explicitly names ravel-lite as a peer.'
 
 - kind: depends-on
   lifecycle: runtime
   participants:
-  - Ravel-Lite
+  - ravel-lite
   - ravel-lite-config
   evidence_grade: medium
   evidence_fields:
   - ravel-lite-config.fixed-memory
-  - Ravel-Lite.defaults
-  rationale: 'Ravel-Lite reads fixed-memory and per-plan config from the ravel-lite-config bundle at runtime.'
+  - ravel-lite.defaults
+  rationale: 'ravel-lite reads fixed-memory and per-plan config from the ravel-lite-config bundle at runtime.'
 
 - kind: depends-on
   lifecycle: build
   participants:
   - mdformat-rs
-  - Ravel-Lite
+  - ravel-lite
   evidence_grade: weak
   evidence_fields:
   - LLM_STATE
-  rationale: 'mdformat-rs carries an LLM_STATE directory shaped by Ravel-Lite, implying it is used as the plan host during mdformat-rs development. Build-time relationship inferred.'
+  rationale: 'mdformat-rs carries an LLM_STATE directory shaped by ravel-lite, implying it is used as the plan host during mdformat-rs development. Build-time relationship inferred.'

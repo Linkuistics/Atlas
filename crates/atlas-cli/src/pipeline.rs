@@ -312,7 +312,7 @@ pub fn run_index(
     if map_concurrency <= 1 || live_components.len() <= 1 {
         for (i, comp) in live_components.iter().enumerate() {
             reporter.on_event(ProgressEvent::Surface {
-                component_id: comp.id.clone(),
+                component_id: comp.id.as_str().to_string(),
                 relpath: atlas_engine::relpath_of(comp),
                 k: (i as u64) + 1,
                 n,
@@ -333,7 +333,7 @@ pub fn run_index(
             live_components.par_iter().for_each_with(seed_db, |db_handle, comp| {
                 let k = progress.fetch_add(1, Ordering::Relaxed) + 1;
                 reporter.on_event(ProgressEvent::Surface {
-                    component_id: comp.id.clone(),
+                    component_id: comp.id.as_str().to_string(),
                     relpath: atlas_engine::relpath_of(comp),
                     k,
                     n,

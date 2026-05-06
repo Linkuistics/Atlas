@@ -81,7 +81,7 @@ pub fn validate_overrides(overrides: &OverridesFile) -> ValidationReport {
             if !RECOGNISED_PIN_FIELDS.contains(&field.as_str()) {
                 report.issues.push(ValidationIssue {
                     severity: Severity::Warning,
-                    pin_key: Some(pin_key.clone()),
+                    pin_key: Some(pin_key.as_str().to_string()),
                     field: Some(field.clone()),
                     message: format!("unknown pin field `{field}` will be ignored by the engine"),
                     suggestion: None,
@@ -96,7 +96,7 @@ pub fn validate_overrides(overrides: &OverridesFile) -> ValidationReport {
                     if ComponentKind::parse(kind_str).is_none() {
                         report.issues.push(ValidationIssue {
                             severity: Severity::Error,
-                            pin_key: Some(pin_key.clone()),
+                            pin_key: Some(pin_key.as_str().to_string()),
                             field: Some("kind".to_string()),
                             message: format!(
                                 "kind value `{kind_str}` is not in the canonical \
@@ -115,7 +115,7 @@ pub fn validate_overrides(overrides: &OverridesFile) -> ValidationReport {
         if ComponentKind::parse(&addition.kind).is_none() {
             report.issues.push(ValidationIssue {
                 severity: Severity::Error,
-                pin_key: Some(addition.id.clone()),
+                pin_key: Some(addition.id.as_str().to_string()),
                 field: Some("kind".to_string()),
                 message: format!(
                     "addition `{}` has kind `{}` which is not in the canonical \
@@ -238,7 +238,10 @@ mod tests {
         let mut field_pins = BTreeMap::new();
         field_pins.insert(field.to_string(), pin_value(value));
         let mut pins = BTreeMap::new();
-        pins.insert(id.to_string(), field_pins);
+        pins.insert(
+            component_ontology::ComponentId::parse(id).unwrap(),
+            field_pins,
+        );
         OverridesFile {
             pins,
             ..OverridesFile::default()
@@ -302,7 +305,7 @@ mod tests {
     fn addition_with_unknown_kind_is_an_error() {
         let mut overrides = OverridesFile::default();
         overrides.additions.push(ComponentEntry {
-            id: "wizard".into(),
+            id: component_ontology::ComponentId::parse("wizard").unwrap(),
             parent: None,
             kind: "rust-binary".into(),
             lifecycle_roles: Vec::new(),

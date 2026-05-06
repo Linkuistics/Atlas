@@ -13,6 +13,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use component_ontology::ComponentId;
 use sha2::{Digest, Sha256};
 
 /// How many numeric suffixes to try before falling back to the
@@ -37,20 +38,24 @@ const HASH_SUFFIX_WIDTH: usize = 8;
 /// leaf slug by `/`.
 pub fn allocate_id(
     candidate_dir: &Path,
-    parent_id: Option<&str>,
-    existing_ids: &HashSet<String>,
-) -> String {
+    parent_id: Option<&ComponentId>,
+    existing_ids: &HashSet<ComponentId>,
+) -> ComponentId {
     let leaf = leaf_slug(candidate_dir);
-    let primary = match parent_id {
-        Some(parent) if !parent.is_empty() => format!("{parent}/{leaf}"),
-        _ => leaf.clone(),
+    let primary_str = match parent_id {
+        Some(parent) => format!("{}/{leaf}", parent.as_str()),
+        None => leaf.clone(),
     };
+    let primary = ComponentId::parse(&primary_str)
+        .expect("primary id must be a valid ComponentId — leaf_slug enforces segment shape");
+
     if !existing_ids.contains(&primary) {
         return primary;
     }
 
     for suffix in 2..=MAX_NUMERIC_SUFFIX {
-        let candidate = format!("{primary}-{suffix}");
+        let candidate = ComponentId::parse(&format!("{primary_str}-{suffix}"))
+            .expect("numeric suffix preserves slug shape");
         if !existing_ids.contains(&candidate) {
             return candidate;
         }
@@ -59,7 +64,8 @@ pub fn allocate_id(
     // Pathological collision count: derive a short content hash from
     // the path itself as a last-resort disambiguator.
     let hash_suffix = content_hash_suffix(candidate_dir);
-    let hashed = format!("{primary}-{hash_suffix}");
+    let hashed_str = format!("{primary_str}-{hash_suffix}");
+    let hashed = ComponentId::parse(&hashed_str).expect("hex suffix is slug-shaped");
     if !existing_ids.contains(&hashed) {
         return hashed;
     }
@@ -67,7 +73,8 @@ pub fn allocate_id(
     // Extraordinarily improbable — content-hash collision plus full
     // numeric-suffix exhaustion. Append a second numeric suffix.
     for suffix in 2..=MAX_NUMERIC_SUFFIX {
-        let candidate = format!("{hashed}-{suffix}");
+        let candidate = ComponentId::parse(&format!("{hashed_str}-{suffix}"))
+            .expect("hex+numeric suffix is slug-shaped");
         if !existing_ids.contains(&candidate) {
             return candidate;
         }
@@ -77,7 +84,7 @@ pub fn allocate_id(
         "allocate_id: could not find a free id for {} under {:?} after exhausting numeric \
          and content-hash suffixes; existing_ids size = {}",
         candidate_dir.display(),
-        parent_id,
+        parent_id.map(ComponentId::as_str),
         existing_ids.len()
     );
 }
@@ -158,30 +165,36 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn existing(ids: &[&str]) -> HashSet<String> {
-        ids.iter().map(|s| (*s).to_string()).collect()
+    fn existing(ids: &[&str]) -> HashSet<ComponentId> {
+        ids.iter()
+            .map(|s| ComponentId::parse(s).unwrap())
+            .collect()
+    }
+
+    fn parent(s: &str) -> ComponentId {
+        ComponentId::parse(s).unwrap()
     }
 
     #[test]
     fn root_component_id_is_just_the_leaf_slug() {
         let id = allocate_id(&PathBuf::from("/ws/atlas-engine"), None, &existing(&[]));
-        assert_eq!(id, "atlas-engine");
+        assert_eq!(id.as_str(), "atlas-engine");
     }
 
     #[test]
     fn nested_component_id_prefixes_parent_id() {
         let id = allocate_id(
             &PathBuf::from("/ws/crates/inner"),
-            Some("atlas"),
+            Some(&parent("atlas")),
             &existing(&[]),
         );
-        assert_eq!(id, "atlas/inner");
+        assert_eq!(id.as_str(), "atlas/inner");
     }
 
     #[test]
     fn collision_at_root_falls_back_to_numeric_suffix() {
         let id = allocate_id(&PathBuf::from("/ws/foo"), None, &existing(&["foo"]));
-        assert_eq!(id, "foo-2");
+        assert_eq!(id.as_str(), "foo-2");
     }
 
     #[test]
@@ -191,55 +204,56 @@ mod tests {
             None,
             &existing(&["foo", "foo-2", "foo-3"]),
         );
-        assert_eq!(id, "foo-4");
+        assert_eq!(id.as_str(), "foo-4");
     }
 
     #[test]
     fn collision_under_parent_uses_parent_slash_suffix() {
         let id = allocate_id(
             &PathBuf::from("/ws/a/bar"),
-            Some("a"),
+            Some(&parent("a")),
             &existing(&["a/bar"]),
         );
-        assert_eq!(id, "a/bar-2");
+        assert_eq!(id.as_str(), "a/bar-2");
     }
 
     #[test]
     fn leaf_slug_kebab_cases_non_alphanumeric() {
         let id = allocate_id(&PathBuf::from("/ws/My Weird Name!"), None, &existing(&[]));
-        assert_eq!(id, "my-weird-name");
+        assert_eq!(id.as_str(), "my-weird-name");
     }
 
     #[test]
     fn leaf_slug_compresses_runs_of_dashes() {
         let id = allocate_id(&PathBuf::from("/ws/a---b"), None, &existing(&[]));
-        assert_eq!(id, "a-b");
+        assert_eq!(id.as_str(), "a-b");
     }
 
     #[test]
     fn leaf_slug_strips_leading_trailing_dashes() {
         let id = allocate_id(&PathBuf::from("/ws/--foo--"), None, &existing(&[]));
-        assert_eq!(id, "foo");
+        assert_eq!(id.as_str(), "foo");
     }
 
     #[test]
     fn empty_leaf_degrades_to_root() {
         // A path ending in "/" has no file_name; treat as root.
         let id = allocate_id(&PathBuf::from("/"), None, &existing(&[]));
-        assert_eq!(id, "root");
+        assert_eq!(id.as_str(), "root");
     }
 
     #[test]
     fn hash_fallback_activates_after_numeric_exhaustion() {
-        let mut taken: HashSet<String> = HashSet::new();
-        taken.insert("foo".to_string());
+        let mut taken: HashSet<ComponentId> = HashSet::new();
+        taken.insert(ComponentId::parse("foo").unwrap());
         for i in 2..=MAX_NUMERIC_SUFFIX {
-            taken.insert(format!("foo-{i}"));
+            taken.insert(ComponentId::parse(&format!("foo-{i}")).unwrap());
         }
         let id = allocate_id(&PathBuf::from("/ws/foo"), None, &taken);
+        let s = id.as_str();
         assert!(
-            id.starts_with("foo-") && id.len() == "foo-".len() + HASH_SUFFIX_WIDTH,
-            "expected content-hash suffix fallback, got {id}"
+            s.starts_with("foo-") && s.len() == "foo-".len() + HASH_SUFFIX_WIDTH,
+            "expected content-hash suffix fallback, got {s}"
         );
     }
 }

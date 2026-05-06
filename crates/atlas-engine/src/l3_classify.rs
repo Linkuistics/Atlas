@@ -208,14 +208,21 @@ fn pinned_classification(
                 workspace_root.join(&first_seg.path)
             };
             if abs_path == candidate_dir {
-                push_unique(&mut keys_tried, addition.id.clone());
+                push_unique(&mut keys_tried, addition.id.as_str().to_string());
             }
         }
     }
 
     for key in &keys_tried {
-        if let Some(pins) = overrides.pins.get(key) {
-            return Some(pins_to_classification(pins));
+        // Pins are keyed by ComponentId; only well-formed component-id
+        // strings can match. Strings that fail to parse (e.g. raw paths
+        // with slashes that don't validate) simply won't match — that is
+        // the same behaviour as before where they wouldn't be present
+        // as String keys either.
+        if let Ok(cid) = component_ontology::ComponentId::parse(key) {
+            if let Some(pins) = overrides.pins.get(&cid) {
+                return Some(pins_to_classification(pins));
+            }
         }
     }
     None
@@ -496,7 +503,10 @@ mod tests {
                 reason: None,
             },
         );
-        pins.insert(id.to_string(), field_pins);
+        pins.insert(
+            component_ontology::ComponentId::parse(id).unwrap(),
+            field_pins,
+        );
         OverridesFile {
             pins,
             ..OverridesFile::default()
@@ -556,7 +566,7 @@ mod tests {
         // the pin key references that id.
         let mut overrides = overrides_with_pin("my-spec", "kind", "spec");
         overrides.additions.push(ComponentEntry {
-            id: "my-spec".into(),
+            id: component_ontology::ComponentId::parse("my-spec").unwrap(),
             parent: None,
             kind: "spec".into(),
             lifecycle_roles: Vec::new(),
@@ -590,7 +600,10 @@ mod tests {
             },
         );
         let mut pins = BTreeMap::new();
-        pins.insert("foo".to_string(), field_pins);
+        pins.insert(
+            component_ontology::ComponentId::parse("foo").unwrap(),
+            field_pins,
+        );
         let overrides = OverridesFile {
             pins,
             ..OverridesFile::default()

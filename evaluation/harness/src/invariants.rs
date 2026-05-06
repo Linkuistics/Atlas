@@ -110,7 +110,9 @@ pub fn no_path_overlap(file: &ComponentsFile) -> Result<(), InvariantFailure> {
 
     for (i, a) in components.iter().enumerate() {
         for b in &components[i + 1..] {
-            if is_ancestor(&parents, &a.id, &b.id) || is_ancestor(&parents, &b.id, &a.id) {
+            if is_ancestor(&parents, a.id.as_str(), b.id.as_str())
+                || is_ancestor(&parents, b.id.as_str(), a.id.as_str())
+            {
                 continue;
             }
             for seg_a in &a.path_segments {
@@ -138,7 +140,11 @@ pub fn no_path_overlap(file: &ComponentsFile) -> Result<(), InvariantFailure> {
 fn parent_index(file: &ComponentsFile) -> BTreeMap<&str, &str> {
     file.components
         .iter()
-        .filter_map(|c| c.parent.as_deref().map(|p| (c.id.as_str(), p)))
+        .filter_map(|c| {
+            c.parent
+                .as_ref()
+                .map(|p| (c.id.as_str(), p.as_str()))
+        })
         .collect()
 }
 
@@ -226,11 +232,11 @@ pub fn edge_participant_existence(
     let mut known: BTreeSet<&str> = BTreeSet::new();
     for c in &components.components {
         if !c.deleted {
-            known.insert(&c.id);
+            known.insert(c.id.as_str());
         }
     }
     for e in &externals.externals {
-        known.insert(&e.id);
+        known.insert(e.id.as_str());
     }
 
     for edge in &related.edges {
@@ -384,7 +390,7 @@ mod tests {
 
     fn minimal_component(id: &str, path: &str) -> ComponentEntry {
         ComponentEntry {
-            id: id.into(),
+            id: component_ontology::ComponentId::parse(id).unwrap(),
             parent: None,
             kind: "rust-library".into(),
             lifecycle_roles: vec![LifecycleScope::Build],
@@ -445,7 +451,7 @@ mod tests {
     fn no_path_overlap_accepts_parent_child_nesting() {
         let parent = minimal_component("root", "pkg");
         let mut child = minimal_component("root/inner", "pkg/inner");
-        child.parent = Some("root".into());
+        child.parent = Some(component_ontology::ComponentId::parse("root").unwrap());
         let f = file_of(vec![parent, child]);
         assert!(no_path_overlap(&f).is_ok());
     }

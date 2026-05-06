@@ -7,7 +7,7 @@ cache_fingerprints:
   model_id: ''
   backend_version: ''
 components:
-- id: Atlas
+- id: atlas
   kind: rust-workspace
   lifecycle_roles: [design, build, test]
   language: rust
@@ -27,7 +27,7 @@ components:
   - README.md:title
   rationale: 'Cargo.toml declares `[workspace]` with five member crates; README identifies the project. This is the Atlas repo itself.'
 
-- id: Ravel-Lite
+- id: ravel-lite
   kind: rust-workspace
   lifecycle_roles: [build, test, dev-workflow]
   language: rust
@@ -62,7 +62,7 @@ components:
   - agents/
   rationale: 'No build manifest; contents are YAML config + prompt/memory markdown consumed by Ravel-Lite at runtime.'
 
-- id: Ravel
+- id: ravel
   kind: tool
   lifecycle_roles: [dev-workflow]
   language: racket
@@ -126,7 +126,7 @@ components:
   - justfile
   rationale: 'Single-crate Rust project with justfile; small tool. Likely a zellij plugin or helper.'
 
-- id: HeavyMentalToolkit
+- id: heavy-mental-toolkit
   kind: node-workspace
   lifecycle_roles: [build]
   language: javascript
@@ -144,7 +144,7 @@ components:
   - packages/
   rationale: 'package.json + packages/ subdir — a Node.js workspace/monorepo.'
 
-- id: APIAnyware-MacOS
+- id: api-anyware-macos
   kind: rust-workspace
   lifecycle_roles: [build, runtime]
   language: rust
@@ -161,7 +161,7 @@ components:
   - Cargo.toml
   rationale: 'Cargo workspace; directory name implies a macOS application with analysis/collection subsystems.'
 
-- id: Modaliser
+- id: modaliser
   kind: configuration-bundle
   lifecycle_roles: [runtime]
   language: scheme
@@ -176,7 +176,7 @@ components:
   - Info.plist
   rationale: 'config.scm + Info.plist + icons; classification is uncertain. Could be a karabiner/keyboard-modifier config bundle.'
 
-- id: Modaliser-Racket
+- id: modaliser-racket
   kind: application
   lifecycle_roles: [build, runtime]
   language: racket
@@ -192,7 +192,7 @@ components:
   - core/
   rationale: 'Racket project with bindings/bundle/core substructure; sibling of Modaliser. Classification provisional.'
 
-- id: TheGreatExplainer
+- id: the-great-explainer
   kind: spec
   lifecycle_roles: [design]
   language: markdown
@@ -209,7 +209,7 @@ components:
   - TODO.md
   rationale: 'docs/ + README + TODO with no build manifest — a specification/planning project, no runnable artefact.'
 
-- id: www.linkuistics.com
+- id: www-linkuistics-com
   kind: static-site
   lifecycle_roles: [deploy]
   language: html
@@ -227,7 +227,7 @@ components:
   - js/
   rationale: 'Plain HTML+CSS+JS site; no package.json, so deployed as-is.'
 
-- id: Branding
+- id: branding
   kind: asset-collection
   lifecycle_roles: [design]
   role: assets
@@ -257,7 +257,7 @@ components:
   - prompts/
   rationale: 'Cross-project design docs, plans, and prompts; not a build target.'
 
-- id: Roadmap
+- id: roadmap
   kind: spec
   lifecycle_roles: [design]
   language: markdown
@@ -274,7 +274,7 @@ components:
   - TODO.md
   rationale: 'Small README+TODO project with no build manifest — a spec/roadmap document bundle.'
 
-- id: InTheLoop
+- id: in-the-loop
   kind: spec
   lifecycle_roles: [design]
   language: markdown
@@ -291,7 +291,7 @@ components:
   - TODO.md
   rationale: 'Same shape as Roadmap — planning/spec project, no build.'
 
-- id: TestSubject
+- id: test-subject
   kind: spec
   lifecycle_roles: [design]
   language: markdown
@@ -308,7 +308,7 @@ components:
   - TODO.md
   rationale: 'Planning/spec directory; purpose noted in README.'
 
-- id: TestAnyware
+- id: test-anyware
   kind: tool
   lifecycle_roles: [dev-workflow]
   role: tool
@@ -323,7 +323,7 @@ components:
   - LLM_INSTRUCTIONS.md
   rationale: 'agents/ + cli/ + LLM_INSTRUCTIONS.md suggests an LLM-driven testing/agents harness; language uncertain without opening files.'
 
-- id: IDEs
+- id: ides
   kind: monorepo-collection
   lifecycle_roles: [build]
   role: subprojects
@@ -336,7 +336,7 @@ components:
   - subdirectories
   rationale: 'Folder of sub-projects (AppleDylan, ChezPro, ClozurePro, GerbilPro, HaskellPro) — a workspace collection, not a single component. v2 should expand into per-sub-IDE components.'
 
-- id: Legacy
+- id: legacy
   kind: monorepo-collection
   lifecycle_roles: [design]
   role: archive
@@ -349,7 +349,7 @@ components:
   - subdirectories
   rationale: 'Archive of older projects (asdf-mercury, asdf-racket, BaselineFinder, ...). Treated as a single archival bucket for v1.'
 
-- id: MaxLovesBlue
+- id: max-loves-blue
   kind: art-asset-collection
   lifecycle_roles: [runtime]
   role: art

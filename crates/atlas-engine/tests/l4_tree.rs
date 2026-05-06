@@ -118,13 +118,13 @@ fn workspace_with_members_produces_parent_and_children() {
         .iter()
         .find(|c| c.kind == "rust-library")
         .expect("alpha present");
-    assert_eq!(alpha.parent.as_deref(), Some(workspace.id.as_str()));
+    assert_eq!(alpha.parent.as_ref(), Some(&workspace.id));
 
     let beta = tree
         .iter()
         .find(|c| c.kind == "rust-cli")
         .expect("beta present");
-    assert_eq!(beta.parent.as_deref(), Some(workspace.id.as_str()));
+    assert_eq!(beta.parent.as_ref(), Some(&workspace.id));
 }
 
 #[test]
@@ -216,7 +216,7 @@ fn identifier_preserved_across_directory_rename_via_rename_match() {
         generated_at: "prior".into(),
         cache_fingerprints: Default::default(),
         components: vec![ComponentEntry {
-            id: "my-original-id".into(),
+            id: component_ontology::ComponentId::parse("my-original-id").unwrap(),
             parent: None,
             kind: "rust-library".into(),
             lifecycle_roles: vec![],
@@ -241,7 +241,8 @@ fn identifier_preserved_across_directory_rename_via_rename_match() {
     let live: Vec<&ComponentEntry> = tree.iter().filter(|c| !c.deleted).collect();
     assert_eq!(live.len(), 1, "expected one live component");
     assert_eq!(
-        live[0].id, "my-original-id",
+        live[0].id.as_str(),
+        "my-original-id",
         "rename-match should carry the prior id forward"
     );
 }
@@ -259,7 +260,7 @@ fn orphan_prior_component_emitted_as_deleted_tombstone_once() {
         generated_at: "prior".into(),
         cache_fingerprints: Default::default(),
         components: vec![ComponentEntry {
-            id: "gone".into(),
+            id: component_ontology::ComponentId::parse("gone").unwrap(),
             parent: None,
             kind: "rust-library".into(),
             lifecycle_roles: vec![],
@@ -284,7 +285,7 @@ fn orphan_prior_component_emitted_as_deleted_tombstone_once() {
     let tree = all_components(&db);
     let tomb = tree
         .iter()
-        .find(|c| c.id == "gone")
+        .find(|c| c.id.as_str() == "gone")
         .expect("tombstone should be present");
     assert!(tomb.deleted, "orphan prior entry should be marked deleted");
 
@@ -301,7 +302,7 @@ fn orphan_prior_component_emitted_as_deleted_tombstone_once() {
     db2.set_prior_components(tree2_prior);
     let tree2 = all_components(&db2);
     assert!(
-        tree2.iter().all(|c| c.id != "gone"),
+        tree2.iter().all(|c| c.id.as_str() != "gone"),
         "tombstone should be dropped on the following run; got {tree2:#?}"
     );
 }
@@ -322,7 +323,7 @@ fn overrides_addition_appears_in_tree_even_without_signals() {
         schema_version: OVERRIDES_SCHEMA_VERSION,
         pins: BTreeMap::new(),
         additions: vec![ComponentEntry {
-            id: "api-spec".into(),
+            id: component_ontology::ComponentId::parse("api-spec").unwrap(),
             parent: None,
             kind: "spec".into(),
             lifecycle_roles: vec![],
@@ -345,7 +346,7 @@ fn overrides_addition_appears_in_tree_even_without_signals() {
 
     let tree = all_components(&db);
     assert!(
-        tree.iter().any(|c| c.id == "api-spec"),
+        tree.iter().any(|c| c.id.as_str() == "api-spec"),
         "addition should be in tree: {tree:#?}"
     );
 }
@@ -369,7 +370,10 @@ fn suppress_pin_removes_component_from_tree() {
         },
     );
     let mut pins = BTreeMap::new();
-    pins.insert("crates/alpha".to_string(), field_pins);
+    pins.insert(
+        component_ontology::ComponentId::parse("crates/alpha").unwrap(),
+        field_pins,
+    );
     let overrides = OverridesFile {
         schema_version: OVERRIDES_SCHEMA_VERSION,
         pins,
@@ -500,8 +504,8 @@ fn cycle_in_additions_triggers_hard_error_not_infinite_loop() {
     std::fs::write(root.join("b/.keep"), "").unwrap();
 
     let comp_a = ComponentEntry {
-        id: "comp-a".into(),
-        parent: Some("comp-b".into()),
+        id: component_ontology::ComponentId::parse("comp-a").unwrap(),
+        parent: Some(component_ontology::ComponentId::parse("comp-b").unwrap()),
         kind: "spec".into(),
         lifecycle_roles: vec![],
         language: None,
@@ -519,8 +523,8 @@ fn cycle_in_additions_triggers_hard_error_not_infinite_loop() {
         deleted: false,
     };
     let comp_b = ComponentEntry {
-        id: "comp-b".into(),
-        parent: Some("comp-a".into()),
+        id: component_ontology::ComponentId::parse("comp-b").unwrap(),
+        parent: Some(component_ontology::ComponentId::parse("comp-a").unwrap()),
         path_segments: vec![PathSegment {
             path: PathBuf::from("b"),
             content_sha: "0".into(),

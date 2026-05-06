@@ -36,7 +36,7 @@ fn plausible_tiny_output(
         cache_fingerprints: CacheFingerprints::default(),
         components: vec![
             ComponentEntry {
-                id: "mycli".into(),
+                id: component_ontology::ComponentId::parse("mycli").unwrap(),
                 parent: None,
                 kind: "rust-cli".into(),
                 lifecycle_roles: vec![LifecycleScope::Build, LifecycleScope::Runtime],
@@ -55,7 +55,7 @@ fn plausible_tiny_output(
                 deleted: false,
             },
             ComponentEntry {
-                id: "mylib".into(),
+                id: component_ontology::ComponentId::parse("mylib").unwrap(),
                 parent: None,
                 kind: "rust-library".into(),
                 lifecycle_roles: vec![LifecycleScope::Build],

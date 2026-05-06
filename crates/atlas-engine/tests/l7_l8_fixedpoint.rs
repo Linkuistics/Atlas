@@ -121,7 +121,7 @@ fn back_edge_adds_subcarve_sub_dirs_to_workspace_carve_back_edge() {
 
     let plan = result
         .back_edge
-        .get(&lib_id)
+        .get(lib_id.as_str())
         .expect("library must have a carve plan in the back edge")
         .clone();
     let plan_as_strings: Vec<String> = plan

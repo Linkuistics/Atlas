@@ -135,7 +135,7 @@ fn rename_stable_glob_re_matches_after_directory_rename() {
     assert_eq!(out1.subsystems.len(), 1);
     let s1 = &out1.subsystems[0];
     assert!(
-        s1.members.contains(&"identity-core".to_string()),
+        s1.members.contains(&component_ontology::ComponentId::parse("identity-core").unwrap()),
         "first run: identity-core must be a member; members: {:?}",
         s1.members
     );
@@ -168,7 +168,7 @@ fn rename_stable_glob_re_matches_after_directory_rename() {
     assert_eq!(out2.subsystems.len(), 1);
     let s2 = &out2.subsystems[0];
     assert!(
-        s2.members.contains(&"identity-core".to_string()),
+        s2.members.contains(&component_ontology::ComponentId::parse("identity-core").unwrap()),
         "second run: identity-core must still be a member after rename; members: {:?}",
         s2.members
     );

@@ -13,7 +13,7 @@ use component_ontology::{Edge, EdgeKind, EvidenceGrade, LifecycleScope, RelatedC
 
 fn component(id: &str) -> ComponentEntry {
     ComponentEntry {
-        id: id.into(),
+        id: component_ontology::ComponentId::parse(id).unwrap(),
         parent: None,
         kind: "rust-library".into(),
         lifecycle_roles: vec![LifecycleScope::Build],

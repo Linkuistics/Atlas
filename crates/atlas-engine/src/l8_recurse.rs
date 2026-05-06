@@ -99,7 +99,7 @@ pub fn subcarve_decision(db: &AtlasDatabase, id: String) -> SubcarveDecision {
 
 fn compute_decision(db: &AtlasDatabase, id: &str) -> SubcarveDecision {
     let components = all_components(db);
-    let Some(entry) = components.iter().find(|c| c.id == id && !c.deleted) else {
+    let Some(entry) = components.iter().find(|c| c.id.as_str() == id && !c.deleted) else {
         return SubcarveDecision::stopped("unknown component id");
     };
 
@@ -175,13 +175,13 @@ fn compute_depth(components: &[ComponentEntry], id: &str) -> u32 {
     let mut depth = 0u32;
     let mut cursor = id.to_string();
     loop {
-        let Some(entry) = components.iter().find(|c| c.id == cursor) else {
+        let Some(entry) = components.iter().find(|c| c.id.as_str() == cursor) else {
             break;
         };
         match &entry.parent {
             Some(parent) => {
                 depth = depth.saturating_add(1);
-                cursor = parent.clone();
+                cursor = parent.as_str().to_string();
             }
             None => break,
         }
@@ -194,12 +194,23 @@ fn pin_suppressed_children_of(db: &AtlasDatabase, id: &str) -> Vec<String> {
         .workspace()
         .components_overrides(db as &dyn salsa::Database)
         .clone();
+    // Pins are keyed by ComponentId; only well-formed component-id
+    // strings can match. A bad string just yields no pins.
+    let cid = match component_ontology::ComponentId::parse(id) {
+        Ok(cid) => cid,
+        Err(_) => return Vec::new(),
+    };
     overrides
         .pins
-        .get(id)
+        .get(&cid)
         .and_then(|pins| pins.get("suppress_children"))
         .and_then(|pin| match pin {
-            PinValue::SuppressChildren { suppress_children } => Some(suppress_children.clone()),
+            PinValue::SuppressChildren { suppress_children } => Some(
+                suppress_children
+                    .iter()
+                    .map(|c| c.as_str().to_string())
+                    .collect::<Vec<String>>(),
+            ),
             _ => None,
         })
         .unwrap_or_default()
@@ -537,8 +548,8 @@ mod tests {
             .unwrap()
             .id
             .clone();
-        assert!(!should_subcarve(&db, id.clone()));
-        assert!(subcarve_plan(&db, id).is_empty());
+        assert!(!should_subcarve(&db, id.as_str().to_string()));
+        assert!(subcarve_plan(&db, id.as_str().to_string()).is_empty());
     }
 
     #[test]
@@ -557,7 +568,7 @@ mod tests {
             .unwrap()
             .id
             .clone();
-        assert!(!should_subcarve(&db, id));
+        assert!(!should_subcarve(&db, id.as_str().to_string()));
     }
 
     // ---------------------------------------------------------------
@@ -632,7 +643,7 @@ mod tests {
             .id
             .clone();
 
-        let decision = subcarve_decision(&db, id);
+        let decision = subcarve_decision(&db, id.as_str().to_string());
 
         assert!(!decision.should_subcarve);
         let stage1_calls = backend
@@ -662,7 +673,7 @@ mod tests {
             .id
             .clone();
 
-        let decision = subcarve_decision(&db, id);
+        let decision = subcarve_decision(&db, id.as_str().to_string());
 
         assert!(!decision.should_subcarve);
         assert!(
@@ -689,7 +700,7 @@ mod tests {
             .unwrap()
             .id
             .clone();
-        let decision = subcarve_decision(&db, id);
+        let decision = subcarve_decision(&db, id.as_str().to_string());
         assert!(!decision.should_subcarve);
         assert!(decision.sub_dirs.is_empty());
         assert!(
@@ -739,7 +750,7 @@ mod tests {
                 .unwrap()
                 .id
                 .clone();
-            subcarve_decision(&db, id)
+            subcarve_decision(&db, id.as_str().to_string())
         };
 
         let parallel = {
@@ -752,7 +763,7 @@ mod tests {
                 .unwrap()
                 .id
                 .clone();
-            subcarve_decision(&db, id)
+            subcarve_decision(&db, id.as_str().to_string())
         };
 
         assert_eq!(
@@ -768,8 +779,8 @@ mod tests {
 
     fn entry(id: &str, parent: Option<&str>) -> ComponentEntry {
         ComponentEntry {
-            id: id.into(),
-            parent: parent.map(String::from),
+            id: component_ontology::ComponentId::parse(id).unwrap(),
+            parent: parent.map(|p| component_ontology::ComponentId::parse(p).unwrap()),
             kind: "rust-library".into(),
             lifecycle_roles: Vec::new(),
             language: None,

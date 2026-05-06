@@ -96,7 +96,7 @@ pub fn edge_graph(db: &AtlasDatabase) -> Arc<EdgeGraph> {
     let nodes: Vec<String> = components
         .iter()
         .filter(|c| !c.deleted)
-        .map(|c| c.id.clone())
+        .map(|c| c.id.as_str().to_string())
         .collect();
     let edges: Vec<Edge> = (*all_proposed_edges(db)).clone();
     Arc::new(EdgeGraph { nodes, edges })
@@ -252,7 +252,7 @@ fn bron_kerbosch(
 /// Ids at or under `id` in the parent/child tree, including `id` itself.
 fn inside_set(components: &[atlas_index::ComponentEntry], id: &str) -> BTreeSet<String> {
     let mut inside: BTreeSet<String> = BTreeSet::new();
-    if !components.iter().any(|c| c.id == id) {
+    if !components.iter().any(|c| c.id.as_str() == id) {
         return inside;
     }
     inside.insert(id.to_string());
@@ -262,8 +262,8 @@ fn inside_set(components: &[atlas_index::ComponentEntry], id: &str) -> BTreeSet<
         let before = inside.len();
         for c in components {
             if let Some(parent) = &c.parent {
-                if inside.contains(parent) && !inside.contains(&c.id) {
-                    inside.insert(c.id.clone());
+                if inside.contains(parent.as_str()) && !inside.contains(c.id.as_str()) {
+                    inside.insert(c.id.as_str().to_string());
                 }
             }
         }
@@ -645,8 +645,8 @@ mod tests {
 
     fn entry(id: &str, parent: Option<&str>) -> atlas_index::ComponentEntry {
         atlas_index::ComponentEntry {
-            id: id.into(),
-            parent: parent.map(String::from),
+            id: component_ontology::ComponentId::parse(id).unwrap(),
+            parent: parent.map(|p| component_ontology::ComponentId::parse(p).unwrap()),
             kind: "rust-library".into(),
             lifecycle_roles: Vec::new(),
             language: None,

@@ -300,10 +300,14 @@ pub const PROMPT_ID_STRINGS: &[&str] = &["classify", "subcarve", "stage1-surface
 /// (future task) to check edge-participant existence, but exposed here
 /// because it's a natural L9 projection.
 pub fn known_component_ids(db: &AtlasDatabase) -> Arc<BTreeSet<String>> {
+    // Union of internal component ids and external `crate:serde`-style
+    // ids. Externals share the participant namespace with components in
+    // edges but are not valid `ComponentId`s, so the union is on the
+    // string form.
     let mut ids: BTreeSet<String> = BTreeSet::new();
     for c in all_components(db).iter() {
         if !c.deleted {
-            ids.insert(c.id.clone());
+            ids.insert(c.id.as_str().to_string());
         }
     }
     for e in external_components_yaml_snapshot(db).externals.iter() {

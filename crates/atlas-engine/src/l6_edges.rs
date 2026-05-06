@@ -74,7 +74,7 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
     let surfaces: Vec<SurfaceWithId> = live
         .iter()
         .map(|c| SurfaceWithId {
-            id: c.id.clone(),
+            id: c.id.as_str().to_string(),
             surface: (*surface_of(db, c.id.clone())).clone(),
         })
         .collect();
@@ -359,15 +359,19 @@ mod tests {
         let ids: Vec<String> = components
             .iter()
             .filter(|c| !c.deleted)
-            .map(|c| c.id.clone())
+            .map(|c| c.id.as_str().to_string())
             .collect();
         for id in &ids {
             let peer_ids: Vec<String> = ids.iter().filter(|p| *p != id).cloned().collect();
-            let entry = components.iter().find(|c| &c.id == id).unwrap();
+            let entry = components.iter().find(|c| c.id.as_str() == id).unwrap();
             let inputs = crate::l5_surface::build_inputs_for_tests(entry, &peer_ids);
             backend.respond(PromptId::Stage1Surface, inputs, minimal_surface(id));
         }
         ids
+    }
+
+    fn cid(s: &str) -> component_ontology::ComponentId {
+        component_ontology::ComponentId::parse(s).unwrap()
     }
 
     #[test]
@@ -382,7 +386,7 @@ mod tests {
             .iter()
             .map(|id| SurfaceWithId {
                 id: id.clone(),
-                surface: (*surface_of(&db, id.clone())).clone(),
+                surface: (*surface_of(&db, cid(id))).clone(),
             })
             .collect();
         let inputs = build_inputs(&surfaces);
@@ -423,7 +427,7 @@ mod tests {
             .iter()
             .map(|id| SurfaceWithId {
                 id: id.clone(),
-                surface: (*surface_of(&db, id.clone())).clone(),
+                surface: (*surface_of(&db, cid(id))).clone(),
             })
             .collect();
         let inputs = build_inputs(&surfaces);
@@ -465,7 +469,7 @@ mod tests {
             .iter()
             .map(|id| SurfaceWithId {
                 id: id.clone(),
-                surface: (*surface_of(&db, id.clone())).clone(),
+                surface: (*surface_of(&db, cid(id))).clone(),
             })
             .collect();
         let inputs = build_inputs(&surfaces);

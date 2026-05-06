@@ -102,7 +102,7 @@ pub fn run_fixedpoint(db: &mut AtlasDatabase, config: FixedpointConfig) -> Fixed
         let live: Vec<(String, PathBuf)> = components
             .iter()
             .filter(|c| !c.deleted)
-            .map(|c| (c.id.clone(), crate::progress::relpath_of(c)))
+            .map(|c| (c.id.as_str().to_string(), crate::progress::relpath_of(c)))
             .collect();
         drop(components);
 
@@ -312,7 +312,7 @@ mod tests {
             "expected at least one productive iteration"
         );
         assert!(
-            result.back_edge.contains_key(&live_id),
+            result.back_edge.contains_key(live_id.as_str()),
             "library should have a carve plan, got {:?}",
             result.back_edge
         );

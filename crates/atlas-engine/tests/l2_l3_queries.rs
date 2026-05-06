@@ -138,7 +138,7 @@ fn l2_emits_candidate_for_overrides_addition_at_empty_dir() {
         schema_version: OVERRIDES_SCHEMA_VERSION,
         pins: BTreeMap::new(),
         additions: vec![ComponentEntry {
-            id: "my-spec".into(),
+            id: component_ontology::ComponentId::parse("my-spec").unwrap(),
             parent: None,
             kind: "spec".into(),
             lifecycle_roles: Vec::new(),
@@ -296,7 +296,10 @@ fn overrides_with_kind_pin(id: &str, kind: &str) -> OverridesFile {
             reason: Some("test".into()),
         },
     );
-    pins.insert(id.to_string(), field_pins);
+    pins.insert(
+        component_ontology::ComponentId::parse(id).unwrap(),
+        field_pins,
+    );
     OverridesFile {
         schema_version: OVERRIDES_SCHEMA_VERSION,
         pins,
@@ -340,7 +343,7 @@ fn l3_pin_short_circuits_for_override_addition_without_manifests() {
     let mut db = db_without_llm(&root);
     let mut overrides = overrides_with_kind_pin("api", "spec");
     overrides.additions.push(ComponentEntry {
-        id: "api".into(),
+        id: component_ontology::ComponentId::parse("api").unwrap(),
         parent: None,
         kind: "spec".into(),
         lifecycle_roles: Vec::new(),
@@ -384,8 +387,27 @@ fn l3_suppress_pin_sets_is_boundary_false() {
             suppress: AlwaysTrue,
         },
     );
+    // Pin against the slugified form of the workspace root's basename
+    // — that's the id form a user sees in components.yaml and is what
+    // L3's pin lookup tries via `slugify_segment`.
+    let basename = root.file_name().unwrap().to_string_lossy();
+    let slug: String = basename
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
     overrides.pins.insert(
-        root.file_name().unwrap().to_string_lossy().into_owned(),
+        component_ontology::ComponentId::parse(&slug).unwrap(),
         field_pins,
     );
 

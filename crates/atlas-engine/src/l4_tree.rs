@@ -36,6 +36,7 @@ use std::sync::Arc;
 use atlas_index::{
     ComponentEntry, ComponentsFile, DocAnchor, OverridesFile, PathSegment, PinValue,
 };
+use component_ontology::ComponentId;
 
 use crate::db::{AtlasDatabase, Workspace};
 use crate::identifiers::allocate_id;
@@ -88,19 +89,19 @@ pub fn try_assemble(db: &AtlasDatabase) -> Result<Arc<Vec<ComponentEntry>>, Tree
 
 /// Parent component id of `id` per the assembled tree, or `None` when
 /// `id` is at the root or does not exist.
-pub fn component_parent(db: &AtlasDatabase, id: &str) -> Option<String> {
+pub fn component_parent(db: &AtlasDatabase, id: &ComponentId) -> Option<ComponentId> {
     all_components(db)
         .iter()
-        .find(|c| c.id == id)
+        .find(|c| &c.id == id)
         .and_then(|c| c.parent.clone())
 }
 
 /// Immediate children of `id` — any component whose `parent` field
 /// equals `id`. Returned sorted by id for determinism.
-pub fn component_children(db: &AtlasDatabase, id: &str) -> Arc<Vec<String>> {
-    let mut out: Vec<String> = all_components(db)
+pub fn component_children(db: &AtlasDatabase, id: &ComponentId) -> Arc<Vec<ComponentId>> {
+    let mut out: Vec<ComponentId> = all_components(db)
         .iter()
-        .filter(|c| c.parent.as_deref() == Some(id))
+        .filter(|c| c.parent.as_ref() == Some(id))
         .map(|c| c.id.clone())
         .collect();
     out.sort();
@@ -109,10 +110,10 @@ pub fn component_children(db: &AtlasDatabase, id: &str) -> Arc<Vec<String>> {
 
 /// Path segments of the component with id `id`, or an empty vector if
 /// the id does not exist.
-pub fn component_path_segments(db: &AtlasDatabase, id: &str) -> Arc<Vec<PathSegment>> {
+pub fn component_path_segments(db: &AtlasDatabase, id: &ComponentId) -> Arc<Vec<PathSegment>> {
     let segments = all_components(db)
         .iter()
-        .find(|c| c.id == id)
+        .find(|c| &c.id == id)
         .map(|c| c.path_segments.clone())
         .unwrap_or_default();
     Arc::new(segments)
@@ -134,10 +135,10 @@ struct LiveComponent {
     manifests: Vec<PathBuf>,
     doc_anchors: Vec<DocAnchor>,
     provisional_parent_dir: Option<PathBuf>,
-    explicit_parent_id: Option<String>,
+    explicit_parent_id: Option<ComponentId>,
     /// Explicit id for override-additions entries; `None` for
     /// signal-derived components (which pick an id during allocation).
-    explicit_id: Option<String>,
+    explicit_id: Option<ComponentId>,
 }
 
 fn gather_live_components(
@@ -282,7 +283,8 @@ fn resolve_ids_and_tombstones(
         .iter()
         .enumerate()
         .map(|(i, lc)| ComponentEntry {
-            id: format!("provisional-{i}"),
+            id: ComponentId::parse(&format!("provisional-{i}"))
+                .expect("provisional-N is a valid ComponentId"),
             parent: None,
             kind: lc.classification.kind.as_str().into(),
             lifecycle_roles: lc.classification.lifecycle_roles.clone(),
@@ -305,7 +307,7 @@ fn resolve_ids_and_tombstones(
     ));
 
     // Build a map: live index → matched prior id (if any).
-    let mut live_to_prior_id: HashMap<usize, String> = HashMap::new();
+    let mut live_to_prior_id: HashMap<usize, ComponentId> = HashMap::new();
     for (prior_idx, live_idx) in &match_out.matches {
         live_to_prior_id.insert(*live_idx, prior_live[*prior_idx].id.clone());
     }
@@ -316,8 +318,8 @@ fn resolve_ids_and_tombstones(
     let mut order: Vec<usize> = (0..live.len()).collect();
     order.sort_by_key(|i| live[*i].dir.components().count());
 
-    let mut allocated_ids: Vec<String> = vec![String::new(); live.len()];
-    let mut existing_ids: HashSet<String> = HashSet::new();
+    let mut allocated_ids: Vec<Option<ComponentId>> = vec![None; live.len()];
+    let mut existing_ids: HashSet<ComponentId> = HashSet::new();
 
     for &i in &order {
         let lc = &live[i];
@@ -326,26 +328,33 @@ fn resolve_ids_and_tombstones(
         } else if let Some(prior_id) = live_to_prior_id.get(&i) {
             prior_id.clone()
         } else {
-            let parent_id = lc
+            let parent_id: Option<ComponentId> = lc
                 .provisional_parent_dir
                 .as_ref()
                 .and_then(|p| dir_to_live_index(p, &live))
-                .map(|idx| allocated_ids[idx].clone());
-            allocate_id(&lc.dir, parent_id.as_deref(), &existing_ids)
+                .and_then(|idx| allocated_ids[idx].clone());
+            allocate_id(&lc.dir, parent_id.as_ref(), &existing_ids)
         };
         existing_ids.insert(id.clone());
-        allocated_ids[i] = id;
+        allocated_ids[i] = Some(id);
     }
 
     // Now build the final ComponentEntry list.
     let mut out: Vec<ComponentEntry> = Vec::new();
-    let mut id_by_dir: HashMap<PathBuf, String> = HashMap::new();
+    let mut id_by_dir: HashMap<PathBuf, ComponentId> = HashMap::new();
     for i in 0..live.len() {
-        id_by_dir.insert(live[i].dir.clone(), allocated_ids[i].clone());
+        id_by_dir.insert(
+            live[i].dir.clone(),
+            allocated_ids[i]
+                .clone()
+                .expect("every live component has an allocated id"),
+        );
     }
     for i in 0..live.len() {
         let lc = &live[i];
-        let id = allocated_ids[i].clone();
+        let id = allocated_ids[i]
+            .clone()
+            .expect("every live component has an allocated id");
         let parent = lc.explicit_parent_id.clone().or_else(|| {
             lc.provisional_parent_dir
                 .as_ref()
@@ -394,8 +403,8 @@ fn dir_to_live_index(dir: &Path, live: &[LiveComponent]) -> Option<usize> {
 fn collect_suppressed_children(
     components: &[ComponentEntry],
     overrides: &OverridesFile,
-) -> HashSet<String> {
-    let mut out: HashSet<String> = HashSet::new();
+) -> HashSet<ComponentId> {
+    let mut out: HashSet<ComponentId> = HashSet::new();
     for (key, pins) in &overrides.pins {
         if let Some(PinValue::SuppressChildren { suppress_children }) =
             pins.get("suppress_children")
@@ -412,7 +421,7 @@ fn collect_suppressed_children(
     out
 }
 
-fn is_suppressed_by_pin(overrides: &OverridesFile, id: &str) -> bool {
+fn is_suppressed_by_pin(overrides: &OverridesFile, id: &ComponentId) -> bool {
     overrides
         .pins
         .get(id)
@@ -442,22 +451,22 @@ fn addition_to_classification(addition: &ComponentEntry) -> Classification {
 // ---------------------------------------------------------------------
 
 fn enforce_acyclicity(components: &[ComponentEntry]) -> Result<(), TreeAssemblyError> {
-    let parent_by_id: HashMap<&str, Option<&str>> = components
+    let parent_by_id: HashMap<&ComponentId, Option<&ComponentId>> = components
         .iter()
-        .map(|c| (c.id.as_str(), c.parent.as_deref()))
+        .map(|c| (&c.id, c.parent.as_ref()))
         .collect();
 
     for entry in components {
-        let mut seen: HashSet<&str> = HashSet::new();
-        let mut cursor: Option<&str> = Some(entry.id.as_str());
+        let mut seen: HashSet<&ComponentId> = HashSet::new();
+        let mut cursor: Option<&ComponentId> = Some(&entry.id);
         while let Some(id) = cursor {
             if !seen.insert(id) {
                 return Err(TreeAssemblyError::Cycle {
-                    id: entry.id.clone(),
+                    id: entry.id.as_str().to_string(),
                 });
             }
             cursor = match parent_by_id.get(id) {
-                Some(Some(parent)) => Some(parent),
+                Some(Some(parent)) => Some(*parent),
                 _ => None,
             };
         }
@@ -495,8 +504,8 @@ mod tests {
 
     fn entry_with_parent(id: &str, parent: Option<&str>) -> ComponentEntry {
         ComponentEntry {
-            id: id.into(),
-            parent: parent.map(String::from),
+            id: ComponentId::parse(id).unwrap(),
+            parent: parent.map(|p| ComponentId::parse(p).unwrap()),
             kind: "spec".into(),
             lifecycle_roles: vec![],
             language: None,

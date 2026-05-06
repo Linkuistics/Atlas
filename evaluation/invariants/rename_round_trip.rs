@@ -12,7 +12,7 @@ use component_ontology::{EvidenceGrade, LifecycleScope};
 
 fn component_with_segments(id: &str, segments: Vec<(PathBuf, &str)>) -> ComponentEntry {
     ComponentEntry {
-        id: id.into(),
+        id: component_ontology::ComponentId::parse(id).unwrap(),
         parent: None,
         kind: "rust-library".into(),
         lifecycle_roles: vec![LifecycleScope::Build],
