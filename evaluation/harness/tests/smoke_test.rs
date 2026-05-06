@@ -31,7 +31,7 @@ fn plausible_tiny_output(
     // The tiny fixture has two crates: mycli and mylib.
     let components = ComponentsFile {
         schema_version: COMPONENTS_SCHEMA_VERSION,
-        root: target_root.to_path_buf(),
+        roots: vec![target_root.to_path_buf()],
         generated_at: "2026-04-24T00:00:00Z".into(),
         cache_fingerprints: CacheFingerprints::default(),
         components: vec![
@@ -40,7 +40,7 @@ fn plausible_tiny_output(
                 parent: None,
                 kind: "rust-cli".into(),
                 lifecycle_roles: vec![LifecycleScope::Build, LifecycleScope::Runtime],
-                language: Some("rust".into()),
+                languages: std::collections::BTreeSet::from(["rust".to_string()]),
                 build_system: Some("cargo".into()),
                 role: Some("cli".into()),
                 path_segments: vec![PathSegment {
@@ -59,7 +59,7 @@ fn plausible_tiny_output(
                 parent: None,
                 kind: "rust-library".into(),
                 lifecycle_roles: vec![LifecycleScope::Build],
-                language: Some("rust".into()),
+                languages: std::collections::BTreeSet::from(["rust".to_string()]),
                 build_system: Some("cargo".into()),
                 role: Some("library".into()),
                 path_segments: vec![PathSegment {

@@ -72,9 +72,20 @@ pub enum IndexError {
 
 /// Runtime knobs for [`run_index`]. Constructed by the binary from
 /// parsed command-line flags; tests fill one in by hand.
+///
+/// Atlas vNext is multi-root: `roots[0]` is the primary root (the
+/// directory `atlas index` was invoked from); `additional_roots`
+/// carries peer manifest-roots reached via path-dep walking (PR-4).
+/// In Phase 1 the single-root case is still the natural common case
+/// (the CLI defaults to `vec![primary]`); the multi-root code path is
+/// dormant until path-dep expansion lands.
 #[derive(Debug, Clone)]
 pub struct IndexConfig {
     pub root: PathBuf,
+    /// Peer roots beyond the primary `root`. Defaults to empty;
+    /// PR-4's path-dep walk populates this. The full analysed set
+    /// is `[root].iter().chain(additional_roots.iter())`.
+    pub additional_roots: Vec<PathBuf>,
     pub output_dir: PathBuf,
     pub max_depth: u32,
     /// Bound on parallel `is_component` calls inside L8's map step.
@@ -101,11 +112,13 @@ pub struct IndexConfig {
 
 impl IndexConfig {
     /// Reasonable defaults for a command-line invocation: output
-    /// directory is `<root>/.atlas/`, max depth per §8.2.
+    /// directory is `<root>/.atlas/`, max depth per §8.2, no
+    /// additional roots (single-root run).
     pub fn new(root: PathBuf) -> Self {
         let output_dir = root.join(DEFAULT_OUTPUT_SUBDIR);
         IndexConfig {
             root,
+            additional_roots: Vec::new(),
             output_dir,
             max_depth: atlas_engine::DEFAULT_MAX_DEPTH,
             map_concurrency: atlas_engine::DEFAULT_MAP_CONCURRENCY,
@@ -116,6 +129,17 @@ impl IndexConfig {
             prompt_shas: None,
             fingerprint_override: None,
         }
+    }
+
+    /// Full analysed root set, primary first. Equivalent to
+    /// `[self.root.clone()] + self.additional_roots`; provided as a
+    /// helper because every pipeline call site needs the same
+    /// concatenation.
+    pub fn all_roots(&self) -> Vec<PathBuf> {
+        let mut roots = Vec::with_capacity(1 + self.additional_roots.len());
+        roots.push(self.root.clone());
+        roots.extend(self.additional_roots.iter().cloned());
+        roots
     }
 }
 
@@ -178,9 +202,8 @@ pub fn run_index(
         (OverridesFile::default(), SubsystemsOverridesFile::default())
     } else {
         let overrides = load_or_default_overrides(&overrides_path).map_err(IndexError::Other)?;
-        let subsystems_overrides =
-            load_or_default_subsystems_overrides(&subsystems_overrides_path)
-                .map_err(IndexError::Other)?;
+        let subsystems_overrides = load_or_default_subsystems_overrides(&subsystems_overrides_path)
+            .map_err(IndexError::Other)?;
         let validation =
             crate::validate::validate_overrides_with_subsystems(&overrides, &subsystems_overrides);
         if validation.has_any() {
@@ -209,7 +232,8 @@ pub fn run_index(
         fingerprint.backend_version.push_str("+overrides=disabled");
     }
 
-    let mut db = AtlasDatabase::new(backend.clone(), config.root.clone(), fingerprint.clone());
+    let roots = config.all_roots();
+    let mut db = AtlasDatabase::new(backend.clone(), roots.clone(), fingerprint.clone());
     let cache_path = config.output_dir.join("llm-cache.json");
     cache_io::load_into(&cache_path, db.llm_cache());
     {
@@ -220,14 +244,19 @@ pub fn run_index(
             let _ = cache_io::save_from(&cache_path, cache);
         });
     }
-    seed_filesystem_excluding(
-        &mut db,
-        &config.root,
-        &config.output_dir,
-        config.respect_gitignore,
-    )
-    .context("failed to seed filesystem")
-    .map_err(IndexError::Other)?;
+    // The output_dir lives under the primary root only; peer roots
+    // get an empty exclusion (no per-root output dir is written
+    // beneath them in Phase 1). The slice positions matter — each
+    // `excluded_dirs[i]` is paired with `roots[i]`.
+    let mut excluded_dirs: Vec<PathBuf> = Vec::with_capacity(roots.len());
+    excluded_dirs.push(config.output_dir.clone());
+    for _ in &config.additional_roots {
+        // Empty PathBuf → not under the peer root → pruning is a no-op.
+        excluded_dirs.push(PathBuf::new());
+    }
+    seed_filesystem_excluding(&mut db, &roots, &excluded_dirs, config.respect_gitignore)
+        .context("failed to seed filesystem")
+        .map_err(IndexError::Other)?;
 
     if config.recarve {
         // Discard prior components so L4's rename-match does not anchor
@@ -330,16 +359,18 @@ pub fn run_index(
             .expect("rayon thread pool construction is infallible at sane sizes");
         let seed_db = db.clone();
         pool.install(|| {
-            live_components.par_iter().for_each_with(seed_db, |db_handle, comp| {
-                let k = progress.fetch_add(1, Ordering::Relaxed) + 1;
-                reporter.on_event(ProgressEvent::Surface {
-                    component_id: comp.id.as_str().to_string(),
-                    relpath: atlas_engine::relpath_of(comp),
-                    k,
-                    n,
+            live_components
+                .par_iter()
+                .for_each_with(seed_db, |db_handle, comp| {
+                    let k = progress.fetch_add(1, Ordering::Relaxed) + 1;
+                    reporter.on_event(ProgressEvent::Surface {
+                        component_id: comp.id.as_str().to_string(),
+                        relpath: atlas_engine::relpath_of(comp),
+                        k,
+                        n,
+                    });
+                    let _ = atlas_engine::surface_of(db_handle, comp.id.clone());
                 });
-                let _ = atlas_engine::surface_of(db_handle, comp.id.clone());
-            });
         });
     }
     let prompt_shas = config.prompt_shas.clone().unwrap_or_default();

@@ -6,9 +6,15 @@
 //! There is one [`Workspace`] input per database (the handle is created
 //! in [`AtlasDatabase::new`]) holding:
 //!
-//! - The filesystem root.
+//! - The list of filesystem roots being analysed. Atlas vNext is
+//!   multi-root: `roots[0]` is the primary root (where `atlas index`
+//!   was invoked) and any additional roots are peer manifest-roots
+//!   reached via path-dep walking (PR-4). Single-root behaviour is the
+//!   `roots.len() == 1` natural common case.
 //! - The list of registered [`File`] inputs (each carries a path and
-//!   its byte contents).
+//!   its byte contents). A single file vector covers all roots
+//!   transparently — Salsa cares about the file set, not which root a
+//!   file came from.
 //! - The list of directories that contain a `.git` marker (a separate
 //!   field because `.git` directories are typically not registered as
 //!   regular files).
@@ -51,10 +57,16 @@ pub struct File {
 
 /// Run-wide L0 inputs. A single `Workspace` handle is created in
 /// [`AtlasDatabase::new`] and read by every downstream query.
+///
+/// `roots` carries every analysed filesystem root. The first entry is
+/// the primary root (the directory `atlas index` was invoked from); any
+/// additional entries are peer manifest-roots reached via path-dep
+/// walking (PR-4). Most engine code paths walk every root in turn; the
+/// few that genuinely only need the primary use [`Workspace::primary_root`].
 #[salsa::input(debug)]
 pub struct Workspace {
     #[returns(ref)]
-    pub root: PathBuf,
+    pub roots: Vec<PathBuf>,
     #[returns(ref)]
     pub files: Vec<File>,
     /// Directories that contain a `.git` marker (as directory or file
@@ -82,6 +94,22 @@ pub struct Workspace {
     /// Empty on a fresh run (no back-edge fired yet).
     #[returns(ref)]
     pub carve_back_edge: Arc<BTreeMap<String, Vec<PathBuf>>>,
+}
+
+impl Workspace {
+    /// First analysed root — the directory `atlas index` was invoked
+    /// from. The vast majority of single-root code paths read this;
+    /// multi-root drivers iterate [`Workspace::roots`] instead.
+    ///
+    /// Panics if `roots` is empty, which would be a programmer error:
+    /// [`AtlasDatabase::new`] enforces non-emptiness on construction.
+    pub fn primary_root(self, db: &dyn salsa::Database) -> &Path {
+        let roots = self.roots(db);
+        roots
+            .first()
+            .map(|p| p.as_path())
+            .expect("Workspace.roots must be non-empty (enforced by AtlasDatabase::new)")
+    }
 }
 
 /// Event-log entry recorded when Salsa executes (not cache-hits) a
@@ -134,11 +162,23 @@ pub const DEFAULT_MAX_DEPTH: u32 = 8;
 pub const DEFAULT_MAP_CONCURRENCY: usize = 8;
 
 impl AtlasDatabase {
-    /// Construct a database seeded with an LLM backend, a root path,
-    /// and an initial LLM fingerprint. Prior-run YAMLs default to
-    /// empty; callers that have them on hand install them with
+    /// Construct a database seeded with an LLM backend, the analysed
+    /// roots, and an initial LLM fingerprint. Prior-run YAMLs default
+    /// to empty; callers that have them on hand install them with
     /// [`AtlasDatabase::set_prior_components`] and friends.
-    pub fn new(backend: Arc<dyn LlmBackend>, root: PathBuf, fingerprint: LlmFingerprint) -> Self {
+    ///
+    /// `roots` must be non-empty; `roots[0]` is the primary root. Most
+    /// callers in Phase 1 pass `vec![primary]` (single-root); PR-4
+    /// will populate additional peer roots via path-dep walking.
+    pub fn new(
+        backend: Arc<dyn LlmBackend>,
+        roots: Vec<PathBuf>,
+        fingerprint: LlmFingerprint,
+    ) -> Self {
+        assert!(
+            !roots.is_empty(),
+            "AtlasDatabase::new: `roots` must be non-empty (the primary root is `roots[0]`)"
+        );
         let execution_log: Arc<Mutex<Option<Vec<ExecutedEvent>>>> = Arc::default();
         let storage = salsa::Storage::new(Some(Box::new({
             let execution_log = execution_log.clone();
@@ -169,7 +209,7 @@ impl AtlasDatabase {
         };
         let workspace = Workspace::new(
             &db,
-            root,
+            roots,
             Vec::new(),
             Vec::new(),
             Arc::new(ComponentsFile::default()),
@@ -397,7 +437,11 @@ mod tests {
     #[test]
     fn set_subsystems_overrides_skip_if_equal_preserves_arc_identity() {
         let backend: Arc<dyn LlmBackend> = Arc::new(TestBackend::new());
-        let mut db = AtlasDatabase::new(backend, std::path::PathBuf::from("/tmp/x"), fingerprint());
+        let mut db = AtlasDatabase::new(
+            backend,
+            vec![std::path::PathBuf::from("/tmp/x")],
+            fingerprint(),
+        );
         let initial = SubsystemsOverridesFile::default();
         db.set_subsystems_overrides(initial.clone());
         let ws = db.workspace();

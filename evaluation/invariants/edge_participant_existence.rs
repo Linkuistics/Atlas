@@ -17,7 +17,7 @@ fn component(id: &str) -> ComponentEntry {
         parent: None,
         kind: "rust-library".into(),
         lifecycle_roles: vec![LifecycleScope::Build],
-        language: Some("rust".into()),
+        languages: std::collections::BTreeSet::from(["rust".to_string()]),
         build_system: Some("cargo".into()),
         role: None,
         path_segments: vec![PathSegment {
@@ -36,7 +36,7 @@ fn component(id: &str) -> ComponentEntry {
 fn components(ids: &[&str]) -> ComponentsFile {
     ComponentsFile {
         schema_version: COMPONENTS_SCHEMA_VERSION,
-        root: PathBuf::from("."),
+        roots: vec![PathBuf::from(".")],
         generated_at: String::new(),
         cache_fingerprints: CacheFingerprints::default(),
         components: ids.iter().map(|id| component(id)).collect(),

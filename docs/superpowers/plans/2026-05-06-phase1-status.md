@@ -16,7 +16,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-0  — Companion specs (docs only) — *blocks PR-1+*
 - [x] PR-1  — Schema definitions for new types
 - [ ] PR-2  — Persistent content-addressed cache (no wiring)
-- [ ] PR-3  — Multi-root `Workspace` (Salsa input)
+- [x] PR-3  — Multi-root `Workspace` (Salsa input)
 - [ ] PR-4  — Path-dep root expansion to fixed point
 - [ ] PR-5  — Plugin protocol + three reference analysers
 - [ ] PR-6  — Scattered per-component `.atlas/` writers
@@ -108,7 +108,33 @@ Notes for downstream PRs:
 (none yet)
 
 ### PR-3
-(none yet)
+2026-05-06 — Landed on Atlas main as a single commit (see git log).
+Atlas main repo went from red (post-PR-1 contract break) back to green:
+the Atlas-side schema adoption, multi-root Salsa input rename, and per-root
+L1/L2/L3/L4/L9 walks all flowed through this PR.
+
+Key shape changes downstream PRs depend on:
+- `Workspace.roots: Vec<PathBuf>` is the canonical shape; `set_roots`
+  is the setter; `Workspace::primary_root(db)` returns `roots[0]` for
+  single-root call paths.
+- `AtlasDatabase::new(backend, roots: Vec<PathBuf>, fp)` — `roots` must
+  be non-empty (asserted at construction).
+- `seed_filesystem(db, &[PathBuf], respect_gitignore)` and
+  `seed_filesystem_excluding(db, &[PathBuf], &[PathBuf], respect_gitignore)`
+  take slices. Single-root convenience wrappers
+  (`seed_filesystem_one`, `seed_filesystem_excluding_one`) are exported
+  for tests / out-of-tree callers.
+- `Classification.languages: BTreeSet<String>` everywhere; the v1
+  `language: Option<String>` field is gone. Pin form is unchanged
+  (`pins[id]["language"]: Value`); the engine widens it to a
+  one-element set on read.
+- `IndexConfig.additional_roots: Vec<PathBuf>` plumbs the multi-root
+  set into the CLI; the new `--additional-root` repeated flag exposes
+  it. PR-4 will populate it automatically; today it's manual.
+
+PR-4 owns the path-dep walk that auto-populates `additional_roots`.
+PR-4 also owns `<output>/.atlas/config.yaml#roots` persistence (mentioned
+under PR-4 in the plan).
 
 ### PR-4
 (none yet)

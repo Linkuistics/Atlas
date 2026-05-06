@@ -404,8 +404,8 @@ fn component_field_delta(a: &ComponentEntry, b: &ComponentEntry) -> Vec<String> 
     if a.kind != b.kind {
         fields.push("kind".into());
     }
-    if a.language != b.language {
-        fields.push("language".into());
+    if a.languages != b.languages {
+        fields.push("languages".into());
     }
     if a.build_system != b.build_system {
         fields.push("build_system".into());
@@ -491,7 +491,7 @@ mod tests {
             parent: None,
             kind: "rust-library".into(),
             lifecycle_roles: vec![],
-            language: Some("rust".into()),
+            languages: std::collections::BTreeSet::from(["rust".to_string()]),
             build_system: Some("cargo".into()),
             role: None,
             path_segments: vec![PathSegment {
@@ -510,7 +510,7 @@ mod tests {
     fn file_of(components: Vec<ComponentEntry>) -> ComponentsFile {
         ComponentsFile {
             schema_version: COMPONENTS_SCHEMA_VERSION,
-            root: PathBuf::from("."),
+            roots: vec![PathBuf::from(".")],
             generated_at: String::new(),
             cache_fingerprints: CacheFingerprints::default(),
             components,

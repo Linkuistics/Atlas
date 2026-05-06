@@ -171,7 +171,7 @@ pub(crate) fn build_inputs_with_stubs_for_tests() -> Value {
         parent: None,
         kind: "rust-library".into(),
         lifecycle_roles: Vec::new(),
-        language: None,
+        languages: std::collections::BTreeSet::new(),
         build_system: None,
         role: None,
         path_segments: vec![atlas_index::PathSegment {
@@ -361,8 +361,8 @@ mod tests {
     fn db_with_shared_backend(tmp: &TempDir) -> (AtlasDatabase, Arc<TestBackend>) {
         let backend = Arc::new(TestBackend::with_fingerprint(fingerprint()));
         let backend_dyn: Arc<dyn atlas_llm::LlmBackend> = backend.clone();
-        let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
-        seed_filesystem(&mut db, tmp.path(), false).unwrap();
+        let mut db = AtlasDatabase::new(backend_dyn, vec![tmp.path().to_path_buf()], fingerprint());
+        seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
         (db, backend)
     }
 
@@ -462,7 +462,7 @@ mod tests {
         // path_segments[0].content_sha, invalidating the cache key.
         let lib_path = tmp.path().join("gamma").join("src").join("lib.rs");
         std::fs::write(&lib_path, "// modified\n").unwrap();
-        seed_filesystem(&mut db, tmp.path(), false).unwrap();
+        seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
 
         // The new content_sha produces a new input shape. Register
         // the new inputs with the same canned response so the

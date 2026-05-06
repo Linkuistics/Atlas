@@ -212,7 +212,7 @@ mod tests {
             parent: None,
             kind: "rust-library".into(),
             lifecycle_roles: vec![],
-            language: None,
+            languages: std::collections::BTreeSet::new(),
             build_system: None,
             role: None,
             path_segments: vec![PathSegment {

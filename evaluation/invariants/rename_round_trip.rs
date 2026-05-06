@@ -16,7 +16,7 @@ fn component_with_segments(id: &str, segments: Vec<(PathBuf, &str)>) -> Componen
         parent: None,
         kind: "rust-library".into(),
         lifecycle_roles: vec![LifecycleScope::Build],
-        language: Some("rust".into()),
+        languages: std::collections::BTreeSet::from(["rust".to_string()]),
         build_system: Some("cargo".into()),
         role: None,
         path_segments: segments
@@ -38,7 +38,7 @@ fn component_with_segments(id: &str, segments: Vec<(PathBuf, &str)>) -> Componen
 fn file_of(components: Vec<ComponentEntry>) -> ComponentsFile {
     ComponentsFile {
         schema_version: COMPONENTS_SCHEMA_VERSION,
-        root: PathBuf::from("."),
+        roots: vec![PathBuf::from(".")],
         generated_at: String::new(),
         cache_fingerprints: CacheFingerprints::default(),
         components,

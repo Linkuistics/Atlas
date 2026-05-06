@@ -170,8 +170,7 @@ mod tests {
         let mut tokens = BTreeMap::new();
         tokens.insert("NAME".to_string(), "atlas".to_string());
 
-        let (prefix, suffix) =
-            render_split("Hello {{NAME}}.", &tokens).expect("render_split ok");
+        let (prefix, suffix) = render_split("Hello {{NAME}}.", &tokens).expect("render_split ok");
 
         assert_eq!(prefix, "Hello atlas.");
         assert!(suffix.is_none());

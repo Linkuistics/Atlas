@@ -649,7 +649,7 @@ mod tests {
             parent: parent.map(|p| component_ontology::ComponentId::parse(p).unwrap()),
             kind: "rust-library".into(),
             lifecycle_roles: Vec::new(),
-            language: None,
+            languages: std::collections::BTreeSet::new(),
             build_system: None,
             role: None,
             path_segments: Vec::new(),

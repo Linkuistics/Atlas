@@ -457,8 +457,8 @@ operations:
              defaults:\n  model: \"claude-code/claude-sonnet-4-6\"\n\
              operations:\n  classify:\n    model: \"openrouter/anthropic/claude-sonnet-4-6\"\n    params: {}\n",
         );
-        let err =
-            AtlasConfig::load(f.path()).expect_err("openrouter must require max_tokens like other HTTP providers");
+        let err = AtlasConfig::load(f.path())
+            .expect_err("openrouter must require max_tokens like other HTTP providers");
         assert!(matches!(err, ConfigError::MissingMaxTokens { .. }));
         std::env::remove_var("_ATLAS_TEST_KEY_OPENROUTER_NO_MAX");
     }
@@ -469,8 +469,8 @@ operations:
             "defaults:\n  model: \"claude-code/claude-sonnet-4-6\"\n\
              operations:\n  classify:\n    model: \"openrouter/anthropic/claude-sonnet-4-6\"\n    params:\n      max_tokens: 1024\n",
         );
-        let err =
-            AtlasConfig::load(f.path()).expect_err("openrouter usage without providers entry must fail");
+        let err = AtlasConfig::load(f.path())
+            .expect_err("openrouter usage without providers entry must fail");
         let ConfigError::MissingProviderEntry { provider } = err else {
             panic!("expected MissingProviderEntry, got different error");
         };

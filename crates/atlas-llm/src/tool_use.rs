@@ -131,11 +131,7 @@ pub struct ListDirOutput {
 /// root, and `..` / absolute-path / symlink-escape attempts must be
 /// rejected with [`ToolError::SandboxEscape`].
 pub trait FilesystemTools: Send + Sync {
-    fn read_file(
-        &self,
-        path: &str,
-        max_bytes: Option<usize>,
-    ) -> Result<ReadFileOutput, ToolError>;
+    fn read_file(&self, path: &str, max_bytes: Option<usize>) -> Result<ReadFileOutput, ToolError>;
 
     fn glob(&self, pattern: &str) -> Result<GlobOutput, ToolError>;
 
@@ -194,9 +190,7 @@ impl SandboxedFilesystem {
             use std::path::Component;
             match component {
                 Component::ParentDir => {
-                    return Err(ToolError::SandboxEscape(format!(
-                        "`..` not allowed: {rel}"
-                    )));
+                    return Err(ToolError::SandboxEscape(format!("`..` not allowed: {rel}")));
                 }
                 Component::Prefix(_) | Component::RootDir => {
                     return Err(ToolError::SandboxEscape(format!(
@@ -208,13 +202,11 @@ impl SandboxedFilesystem {
         }
         let joined = self.root.join(rel_path);
         if joined.exists() {
-            let canonical = joined.canonicalize().map_err(|e| {
-                ToolError::Io(format!("canonicalize {}: {e}", joined.display()))
-            })?;
+            let canonical = joined
+                .canonicalize()
+                .map_err(|e| ToolError::Io(format!("canonicalize {}: {e}", joined.display())))?;
             if !canonical.starts_with(&self.root) {
-                return Err(ToolError::SandboxEscape(format!(
-                    "symlink escape: {rel}"
-                )));
+                return Err(ToolError::SandboxEscape(format!("symlink escape: {rel}")));
             }
             Ok(canonical)
         } else {
@@ -224,23 +216,13 @@ impl SandboxedFilesystem {
 }
 
 impl FilesystemTools for SandboxedFilesystem {
-    fn read_file(
-        &self,
-        path: &str,
-        max_bytes: Option<usize>,
-    ) -> Result<ReadFileOutput, ToolError> {
+    fn read_file(&self, path: &str, max_bytes: Option<usize>) -> Result<ReadFileOutput, ToolError> {
         let resolved = self.sanitize(path)?;
         if !resolved.is_file() {
-            return Err(ToolError::NotFound(format!(
-                "{} is not a file",
-                path
-            )));
+            return Err(ToolError::NotFound(format!("{} is not a file", path)));
         }
         let prev = self.bytes_read.load(Ordering::Relaxed);
-        let remaining_budget = self
-            .budget
-            .max_total_bytes_read
-            .saturating_sub(prev);
+        let remaining_budget = self.budget.max_total_bytes_read.saturating_sub(prev);
         if remaining_budget == 0 {
             return Err(ToolError::BudgetExceeded(format!(
                 "max_total_bytes_read ({} bytes) reached",
@@ -250,8 +232,8 @@ impl FilesystemTools for SandboxedFilesystem {
         let user_cap = max_bytes.unwrap_or(self.budget.default_read_max_bytes);
         let effective_cap = std::cmp::min(user_cap as u64, remaining_budget) as usize;
 
-        let bytes = std::fs::read(&resolved)
-            .map_err(|e| ToolError::Io(format!("read {}: {e}", path)))?;
+        let bytes =
+            std::fs::read(&resolved).map_err(|e| ToolError::Io(format!("read {}: {e}", path)))?;
         let truncated = bytes.len() > effective_cap;
         let slice = if truncated {
             &bytes[..effective_cap]
@@ -278,9 +260,7 @@ impl FilesystemTools for SandboxedFilesystem {
         let glob = globset::GlobBuilder::new(pattern)
             .literal_separator(true)
             .build()
-            .map_err(|e| {
-                ToolError::InvalidArgument(format!("invalid glob `{pattern}`: {e}"))
-            })?;
+            .map_err(|e| ToolError::InvalidArgument(format!("invalid glob `{pattern}`: {e}")))?;
         let matcher = glob.compile_matcher();
 
         let walker = ignore::WalkBuilder::new(&self.root).build();
@@ -314,9 +294,7 @@ impl FilesystemTools for SandboxedFilesystem {
         let regex = regex::RegexBuilder::new(pattern)
             .size_limit(1024 * 1024)
             .build()
-            .map_err(|e| {
-                ToolError::InvalidArgument(format!("invalid regex `{pattern}`: {e}"))
-            })?;
+            .map_err(|e| ToolError::InvalidArgument(format!("invalid regex `{pattern}`: {e}")))?;
         let cap = max_matches.unwrap_or(self.budget.max_grep_matches);
 
         let mut matches = Vec::new();
@@ -348,17 +326,14 @@ impl FilesystemTools for SandboxedFilesystem {
     fn list_dir(&self, path: &str) -> Result<ListDirOutput, ToolError> {
         let resolved = self.sanitize(path)?;
         if !resolved.is_dir() {
-            return Err(ToolError::NotFound(format!(
-                "{} is not a directory",
-                path
-            )));
+            return Err(ToolError::NotFound(format!("{} is not a directory", path)));
         }
         let read = std::fs::read_dir(&resolved)
             .map_err(|e| ToolError::Io(format!("read_dir {}: {e}", path)))?;
         let mut entries = Vec::new();
         for entry in read {
-            let entry = entry
-                .map_err(|e| ToolError::Io(format!("read_dir entry {}: {e}", path)))?;
+            let entry =
+                entry.map_err(|e| ToolError::Io(format!("read_dir entry {}: {e}", path)))?;
             let name = entry.file_name().to_string_lossy().into_owned();
             let kind = match entry.file_type() {
                 Ok(ft) if ft.is_file() => DirEntryKind::File,
@@ -420,11 +395,7 @@ mod tests {
         let outside = TempDir::new().unwrap();
         fs::write(outside.path().join("secret"), b"top secret\n").unwrap();
         let inside = TempDir::new().unwrap();
-        symlink(
-            outside.path().join("secret"),
-            inside.path().join("escape"),
-        )
-        .unwrap();
+        symlink(outside.path().join("secret"), inside.path().join("escape")).unwrap();
         let sb = SandboxedFilesystem::new(inside.path(), ToolBudget::default()).unwrap();
         let err = sb.read_file("escape", None).unwrap_err();
         assert!(matches!(err, ToolError::SandboxEscape(_)), "got {err:?}");
@@ -563,9 +534,7 @@ mod tests {
     #[test]
     fn grep_finds_literal_match() {
         let (_tmp, sb) = fs_with_layout();
-        let out = sb
-            .grep("foo", &["readme.md".to_string()], None)
-            .unwrap();
+        let out = sb.grep("foo", &["readme.md".to_string()], None).unwrap();
         assert_eq!(out.matches.len(), 1);
         assert_eq!(out.matches[0].path, "readme.md");
         assert_eq!(out.matches[0].line, 3);
@@ -604,9 +573,7 @@ mod tests {
         }
         fs::write(tmp.path().join("many"), content.as_bytes()).unwrap();
         let sb = SandboxedFilesystem::new(tmp.path(), ToolBudget::default()).unwrap();
-        let out = sb
-            .grep("hit", &["many".to_string()], Some(3))
-            .unwrap();
+        let out = sb.grep("hit", &["many".to_string()], Some(3)).unwrap();
         assert_eq!(out.matches.len(), 3);
     }
 

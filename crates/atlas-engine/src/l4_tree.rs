@@ -70,7 +70,7 @@ pub fn all_components(db: &AtlasDatabase) -> Arc<Vec<ComponentEntry>> {
 /// catch a panic.
 pub fn try_assemble(db: &AtlasDatabase) -> Result<Arc<Vec<ComponentEntry>>, TreeAssemblyError> {
     let workspace = db.workspace();
-    let root = workspace.root(db as &dyn salsa::Database).clone();
+    let roots = workspace.roots(db as &dyn salsa::Database).clone();
     let overrides = workspace
         .components_overrides(db as &dyn salsa::Database)
         .clone();
@@ -78,8 +78,16 @@ pub fn try_assemble(db: &AtlasDatabase) -> Result<Arc<Vec<ComponentEntry>>, Tree
         .prior_components(db as &dyn salsa::Database)
         .clone();
 
-    let live = gather_live_components(db, workspace, &root, &overrides);
-    let finalised = resolve_ids_and_tombstones(&prior, &overrides, live);
+    // Multi-root: gather live components per root, then union.
+    // Per-root walks are independent under the L4 prior-filter
+    // semantics — the rename-match step that follows (in
+    // `resolve_ids_and_tombstones`) sees the unioned live set against
+    // the unioned prior set, which is the single-root case generalised.
+    let mut live: Vec<LiveComponent> = Vec::new();
+    for root in &roots {
+        live.extend(gather_live_components(db, workspace, root, &overrides));
+    }
+    let finalised = resolve_ids_and_tombstones(&prior, &overrides, &roots, live);
     enforce_acyclicity(&finalised)?;
 
     let mut out: Vec<ComponentEntry> = finalised;
@@ -139,6 +147,19 @@ struct LiveComponent {
     /// Explicit id for override-additions entries; `None` for
     /// signal-derived components (which pick an id during allocation).
     explicit_id: Option<ComponentId>,
+    /// The workspace root that owns this component's directory. Stored
+    /// so id allocation and parent-derivation reason about the right
+    /// root in the multi-root case (a component under
+    /// `/ravel-lite/...` allocates its id under the `ravel-lite`
+    /// namespace; a peer-root component under `/atlas-contracts/...`
+    /// gets `atlas-contracts/...`). Equal to `dir`-trimmed-to-root for
+    /// signal-derived components; equal to the matching root for
+    /// override-addition entries (with absolute path resolution).
+    /// Reserved for future per-root id-namespace prefixing — Phase 1
+    /// keeps id allocation root-agnostic, so the field is not yet
+    /// consumed.
+    #[allow(dead_code)]
+    owning_root: PathBuf,
 }
 
 fn gather_live_components(
@@ -212,28 +233,36 @@ fn gather_live_components(
             provisional_parent_dir: parent_dir,
             explicit_parent_id: None,
             explicit_id: None,
+            owning_root: root.to_path_buf(),
         });
     }
 
-    // Overrides.additions: append as explicit-id entries. A pin with
-    // `suppress: true` at the addition's id removes it.
+    // Overrides.additions: append as explicit-id entries scoped to
+    // this root. The `gather_live_components` driver is called once
+    // per root, and additions that resolve to a path *inside* this
+    // root are owned by it; additions that resolve elsewhere are
+    // skipped here and handled when the loop reaches their owning
+    // root. A pin with `suppress: true` at the addition's id removes
+    // it.
     for addition in &overrides.additions {
         if is_suppressed_by_pin(overrides, &addition.id) {
             continue;
         }
-        let classification = addition_to_classification(addition);
-        let parent_dir = addition
-            .path_segments
-            .first()
-            .map(|seg| absolute_under_root(root, &seg.path))
-            .and_then(|abs| nearest_confirmed_ancestor(&abs, &confirmed_dirs));
-        let dir = addition
+        let abs_dir = addition
             .path_segments
             .first()
             .map(|seg| absolute_under_root(root, &seg.path))
             .unwrap_or_else(|| root.to_path_buf());
+        // Skip additions whose first path segment doesn't fall under
+        // *this* root — they'll be picked up on a different
+        // per-root pass.
+        if !abs_dir.starts_with(root) {
+            continue;
+        }
+        let classification = addition_to_classification(addition);
+        let parent_dir = nearest_confirmed_ancestor(&abs_dir, &confirmed_dirs);
         live.push(LiveComponent {
-            dir,
+            dir: abs_dir,
             classification,
             path_segments: addition.path_segments.clone(),
             manifests: addition.manifests.clone(),
@@ -241,6 +270,7 @@ fn gather_live_components(
             provisional_parent_dir: parent_dir,
             explicit_parent_id: addition.parent.clone(),
             explicit_id: Some(addition.id.clone()),
+            owning_root: root.to_path_buf(),
         });
     }
 
@@ -265,6 +295,7 @@ fn nearest_confirmed_ancestor(dir: &Path, confirmed: &BTreeSet<PathBuf>) -> Opti
 fn resolve_ids_and_tombstones(
     prior: &ComponentsFile,
     overrides: &OverridesFile,
+    roots: &[PathBuf],
     live: Vec<LiveComponent>,
 ) -> Vec<ComponentEntry> {
     // Filter prior to live (non-deleted) entries — tombstones must not
@@ -288,7 +319,7 @@ fn resolve_ids_and_tombstones(
             parent: None,
             kind: lc.classification.kind.as_str().into(),
             lifecycle_roles: lc.classification.lifecycle_roles.clone(),
-            language: lc.classification.language.clone(),
+            languages: lc.classification.languages.clone(),
             build_system: lc.classification.build_system.clone(),
             role: lc.classification.role.clone(),
             path_segments: lc.path_segments.clone(),
@@ -300,6 +331,12 @@ fn resolve_ids_and_tombstones(
             deleted: false,
         })
         .collect();
+    // `roots` is reserved for cross-root id-namespace prefixing in a
+    // future PR. Phase 1 leaves identifier allocation root-agnostic
+    // because `identifiers::allocate_id` already uses the directory
+    // basename + parent-id chain — multi-root naturally yields
+    // distinct ids when the per-root basename sets disjoin.
+    let _ = roots;
 
     let match_out = atlas_index::rename_match(atlas_index::RenameMatchInput::new(
         &prior_live,
@@ -365,7 +402,7 @@ fn resolve_ids_and_tombstones(
             parent,
             kind: lc.classification.kind.as_str().into(),
             lifecycle_roles: lc.classification.lifecycle_roles.clone(),
-            language: lc.classification.language.clone(),
+            languages: lc.classification.languages.clone(),
             build_system: lc.classification.build_system.clone(),
             role: lc.classification.role.clone(),
             path_segments: lc.path_segments.clone(),
@@ -435,7 +472,7 @@ fn addition_to_classification(addition: &ComponentEntry) -> Classification {
     let kind = ComponentKind::parse(&addition.kind).unwrap_or(ComponentKind::NonComponent);
     Classification {
         kind,
-        language: addition.language.clone(),
+        languages: addition.languages.clone(),
         build_system: addition.build_system.clone(),
         lifecycle_roles: addition.lifecycle_roles.clone(),
         role: addition.role.clone(),
@@ -508,7 +545,7 @@ mod tests {
             parent: parent.map(|p| ComponentId::parse(p).unwrap()),
             kind: "spec".into(),
             lifecycle_roles: vec![],
-            language: None,
+            languages: std::collections::BTreeSet::new(),
             build_system: None,
             role: None,
             path_segments: vec![],

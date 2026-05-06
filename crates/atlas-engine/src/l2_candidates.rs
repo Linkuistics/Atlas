@@ -56,15 +56,22 @@ pub fn candidate_components_at<'db>(
     }
 
     // Source 3: overrides.additions. Use the first path_segment's path
-    // as the candidate dir.  A path_segment is stored relative to the
-    // workspace root, so reconstruct the absolute form.
+    // as the candidate dir.  A path_segment is stored relative to one
+    // of the workspace roots, so reconstruct the absolute form by
+    // probing each root and accepting the first one whose joined path
+    // falls under `dir`. The query is keyed on `(workspace, dir)`, so
+    // L4's per-root driver visits each root in turn and L2 sees one
+    // root-prefix at a time as the calling `dir`.
     let overrides = workspace.components_overrides(db);
-    let root = workspace.root(db);
+    let roots = workspace.roots(db);
     for addition in &overrides.additions {
         if let Some(first_segment) = addition.path_segments.first() {
-            let abs_path = absolute_under_root(root, &first_segment.path);
-            if path_is_inside(&abs_path, &dir) {
-                candidate_dirs.insert(abs_path);
+            for root in roots {
+                let abs_path = absolute_under_root(root, &first_segment.path);
+                if path_is_inside(&abs_path, &dir) {
+                    candidate_dirs.insert(abs_path);
+                    break;
+                }
             }
         }
     }
@@ -79,9 +86,12 @@ pub fn candidate_components_at<'db>(
     let back_edge = workspace.carve_back_edge(db);
     for sub_dirs in back_edge.values() {
         for sub_dir in sub_dirs {
-            let abs_path = absolute_under_root(root, sub_dir);
-            if path_is_inside(&abs_path, &dir) {
-                candidate_dirs.insert(abs_path);
+            for root in roots {
+                let abs_path = absolute_under_root(root, sub_dir);
+                if path_is_inside(&abs_path, &dir) {
+                    candidate_dirs.insert(abs_path);
+                    break;
+                }
             }
         }
     }

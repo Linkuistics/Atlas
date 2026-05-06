@@ -34,8 +34,8 @@ fn default_fingerprint() -> LlmFingerprint {
 }
 
 fn build_db(backend: Arc<TestBackend>, root: &Path) -> AtlasDatabase {
-    let mut db = AtlasDatabase::new(backend, root.to_path_buf(), default_fingerprint());
-    seed_filesystem(&mut db, root, false).expect("seed_filesystem must succeed");
+    let mut db = AtlasDatabase::new(backend, vec![root.to_path_buf()], default_fingerprint());
+    seed_filesystem(&mut db, &[root.to_path_buf()], false).expect("seed_filesystem must succeed");
     db
 }
 
@@ -142,7 +142,7 @@ fn l2_emits_candidate_for_overrides_addition_at_empty_dir() {
             parent: None,
             kind: "spec".into(),
             lifecycle_roles: Vec::new(),
-            language: None,
+            languages: std::collections::BTreeSet::new(),
             build_system: None,
             role: None,
             path_segments: vec![PathSegment {
@@ -347,7 +347,7 @@ fn l3_pin_short_circuits_for_override_addition_without_manifests() {
         parent: None,
         kind: "spec".into(),
         lifecycle_roles: Vec::new(),
-        language: None,
+        languages: std::collections::BTreeSet::new(),
         build_system: None,
         role: None,
         path_segments: vec![PathSegment {

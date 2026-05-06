@@ -231,7 +231,7 @@ mod tests {
             parent: None,
             kind: "rust-library".into(),
             lifecycle_roles: vec![LifecycleScope::Build],
-            language: Some("rust".into()),
+            languages: std::collections::BTreeSet::from(["rust".to_string()]),
             build_system: Some("cargo".into()),
             role: None,
             path_segments: vec![PathSegment {
@@ -272,7 +272,7 @@ mod tests {
         c.manifests = vec![PathBuf::from("pkg/Cargo.toml")];
         let components = ComponentsFile {
             schema_version: COMPONENTS_SCHEMA_VERSION,
-            root: target.path().to_path_buf(),
+            roots: vec![target.path().to_path_buf()],
             generated_at: "".into(),
             cache_fingerprints: CacheFingerprints::default(),
             components: vec![c],
@@ -310,7 +310,7 @@ mod tests {
         c.manifests = vec![PathBuf::from("pkg/Cargo.toml")];
         let components_file = ComponentsFile {
             schema_version: COMPONENTS_SCHEMA_VERSION,
-            root: target.path().to_path_buf(),
+            roots: vec![target.path().to_path_buf()],
             generated_at: "".into(),
             cache_fingerprints: CacheFingerprints::default(),
             components: vec![c],

@@ -309,7 +309,7 @@ mod tests {
             parent: None,
             kind: "rust-binary".into(),
             lifecycle_roles: Vec::new(),
-            language: None,
+            languages: std::collections::BTreeSet::new(),
             build_system: None,
             role: None,
             path_segments: Vec::new(),

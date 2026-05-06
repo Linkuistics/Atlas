@@ -195,9 +195,7 @@ impl LlmBackend for BackendRouter {
     /// configuration have *any* filesystem-aware backend wired in" —
     /// per-prompt eligibility is decided at routing time.
     fn supports_filesystem_tools(&self) -> bool {
-        self.table
-            .values()
-            .any(|b| b.supports_filesystem_tools())
+        self.table.values().any(|b| b.supports_filesystem_tools())
     }
 }
 

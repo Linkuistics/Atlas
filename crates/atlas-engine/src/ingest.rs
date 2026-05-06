@@ -1,7 +1,15 @@
-//! Seeding a freshly-constructed [`AtlasDatabase`] from a filesystem
-//! root. One call to [`seed_filesystem`] registers every file under
-//! `root` as an L0 [`File`] input and records every `.git`-containing
-//! directory for use by the `git_boundaries` query.
+//! Seeding a freshly-constructed [`AtlasDatabase`] from a slice of
+//! filesystem roots. One call to [`seed_filesystem`] (or its
+//! single-root convenience [`seed_filesystem_one`]) registers every
+//! file under each root as an L0 [`File`] input and records every
+//! `.git`-containing directory for use by the `git_boundaries` query.
+//!
+//! Multi-root semantics: each root is walked independently, the file
+//! sets are unioned (deduped by path inside [`AtlasDatabase::register_file`]),
+//! and the git-boundary set is the union of per-root boundaries. The
+//! resulting `Vec<File>` and `Vec<PathBuf>` are sorted for determinism
+//! so Salsa sees the same input shape across re-runs that walk the
+//! same roots in the same order.
 //!
 //! Binary files larger than [`DEFAULT_BINARY_SIZE_LIMIT`] bytes are
 //! elided (registered with empty bytes) so that a single enormous
@@ -25,39 +33,79 @@ pub const DEFAULT_BINARY_SIZE_LIMIT: u64 = 1 << 20;
 /// "binary" — any NUL byte in this prefix trips the heuristic.
 const BINARY_SNIFF_PREFIX: usize = 8192;
 
-/// Walk `root`, registering every file as an L0 [`File`] input on
-/// `db` and recording every directory that contains a `.git` marker.
+/// Walk every root in `roots`, registering every file as an L0
+/// [`File`] input on `db` and recording every directory that contains
+/// a `.git` marker.
 ///
 /// `respect_gitignore` turns on `.gitignore` filtering via the
 /// `ignore` crate; when `false`, every readable file (except those
 /// inside a `.git` directory, which we explicitly skip because their
 /// contents are not source code) is registered.
-pub fn seed_filesystem(db: &mut AtlasDatabase, root: &Path, respect_gitignore: bool) -> Result<()> {
-    seed_filesystem_inner(db, root, None, respect_gitignore, DEFAULT_BINARY_SIZE_LIMIT)
+///
+/// Per-root walks are concatenated; the file set is deduped (by
+/// absolute path) and sorted, the git-boundary set is the union of
+/// per-root boundaries, also sorted+deduped.
+pub fn seed_filesystem(
+    db: &mut AtlasDatabase,
+    roots: &[PathBuf],
+    respect_gitignore: bool,
+) -> Result<()> {
+    seed_filesystem_inner(db, roots, &[], respect_gitignore, DEFAULT_BINARY_SIZE_LIMIT)
+}
+
+/// Single-root convenience wrapper around [`seed_filesystem`]. Most
+/// tests in atlas-engine seed exactly one root at a time; this saves
+/// the `&[root.to_path_buf()]` boilerplate at every call site.
+pub fn seed_filesystem_one(
+    db: &mut AtlasDatabase,
+    root: &Path,
+    respect_gitignore: bool,
+) -> Result<()> {
+    seed_filesystem(db, &[root.to_path_buf()], respect_gitignore)
 }
 
 /// Like [`seed_filesystem`] but additionally prunes any path inside
-/// `excluded_dir` from the walk. The CLI uses this to keep its own
+/// `excluded_dirs` from the walks. The CLI uses this to keep its own
 /// output directory (default `.atlas/`, override via `--output-dir`)
 /// from being ingested as analysis input on a re-run, which would
 /// otherwise feed prior `components.yaml` and `llm-cache.json` back
 /// into L0 even when the target's `.gitignore` does not list it.
 ///
-/// When `excluded_dir` does not resolve to a path under `root`, the
-/// pruning is silently skipped — `output_dir` outside the analysis
-/// tree is harmless on its own, since the walker would never reach it.
+/// `excluded_dirs.len()` should typically equal `roots.len()` (one
+/// excluded dir per root), but the function does not enforce that —
+/// each excluded dir is resolved against the matching root by
+/// position; surplus exclusions are ignored, surplus roots get no
+/// exclusion. When an excluded path does not resolve to a path under
+/// its corresponding root, the pruning is silently skipped — output
+/// directories outside the analysis tree are harmless on their own,
+/// since the walker would never reach them.
 pub fn seed_filesystem_excluding(
+    db: &mut AtlasDatabase,
+    roots: &[PathBuf],
+    excluded_dirs: &[PathBuf],
+    respect_gitignore: bool,
+) -> Result<()> {
+    seed_filesystem_inner(
+        db,
+        roots,
+        excluded_dirs,
+        respect_gitignore,
+        DEFAULT_BINARY_SIZE_LIMIT,
+    )
+}
+
+/// Single-root convenience wrapper around [`seed_filesystem_excluding`].
+pub fn seed_filesystem_excluding_one(
     db: &mut AtlasDatabase,
     root: &Path,
     excluded_dir: &Path,
     respect_gitignore: bool,
 ) -> Result<()> {
-    seed_filesystem_inner(
+    seed_filesystem_excluding(
         db,
-        root,
-        Some(excluded_dir),
+        &[root.to_path_buf()],
+        &[excluded_dir.to_path_buf()],
         respect_gitignore,
-        DEFAULT_BINARY_SIZE_LIMIT,
     )
 }
 
@@ -66,23 +114,64 @@ pub fn seed_filesystem_excluding(
 /// file loaded regardless of size.
 pub fn seed_filesystem_with_limit(
     db: &mut AtlasDatabase,
-    root: &Path,
+    roots: &[PathBuf],
     respect_gitignore: bool,
     binary_size_limit: u64,
 ) -> Result<()> {
-    seed_filesystem_inner(db, root, None, respect_gitignore, binary_size_limit)
+    seed_filesystem_inner(db, roots, &[], respect_gitignore, binary_size_limit)
 }
 
 fn seed_filesystem_inner(
+    db: &mut AtlasDatabase,
+    roots: &[PathBuf],
+    excluded_dirs: &[PathBuf],
+    respect_gitignore: bool,
+    binary_size_limit: u64,
+) -> Result<()> {
+    if roots.is_empty() {
+        anyhow::bail!("seed_filesystem: at least one root is required");
+    }
+
+    let mut registered: Vec<File> = Vec::new();
+    let mut git_boundary_dirs: Vec<PathBuf> = Vec::new();
+    let mut seen_paths: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+
+    for (idx, root) in roots.iter().enumerate() {
+        let excluded_dir = excluded_dirs.get(idx).map(|p| p.as_path());
+        seed_one_root(
+            db,
+            root,
+            excluded_dir,
+            respect_gitignore,
+            binary_size_limit,
+            &mut registered,
+            &mut git_boundary_dirs,
+            &mut seen_paths,
+        )?;
+    }
+
+    // Deterministic order for tests and for Salsa: same inputs → same
+    // ordering. The dedup-by-path already happened via `seen_paths`.
+    registered.sort_by_key(|f| f.path(db).clone());
+    git_boundary_dirs.sort();
+    git_boundary_dirs.dedup();
+
+    db.set_workspace_files(registered);
+    db.set_git_boundary_dirs(git_boundary_dirs);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn seed_one_root(
     db: &mut AtlasDatabase,
     root: &Path,
     excluded_dir: Option<&Path>,
     respect_gitignore: bool,
     binary_size_limit: u64,
+    registered: &mut Vec<File>,
+    git_boundary_dirs: &mut Vec<PathBuf>,
+    seen_paths: &mut std::collections::HashSet<PathBuf>,
 ) -> Result<()> {
-    let mut registered: Vec<File> = Vec::new();
-    let mut git_boundary_dirs: Vec<PathBuf> = Vec::new();
-
     let mut builder = WalkBuilder::new(root);
     builder
         .hidden(false)
@@ -136,20 +225,21 @@ fn seed_filesystem_inner(
             continue;
         }
 
+        // Multi-root dedup: a file path that already appeared under an
+        // earlier root (e.g. nested roots, symlink-walked overlap) is
+        // skipped here so the registered vector matches the file set
+        // by-path, not by-discovery-order.
+        let path_buf = path.to_path_buf();
+        if !seen_paths.insert(path_buf.clone()) {
+            continue;
+        }
+
         let bytes = read_file_bounded(path, binary_size_limit)
             .with_context(|| format!("reading {}", path.display()))?;
-        let file = db.register_file(path.to_path_buf(), bytes);
+        let file = db.register_file(path_buf, bytes);
         registered.push(file);
     }
 
-    // Deterministic order for tests and for Salsa: same inputs → same
-    // ordering.
-    registered.sort_by_key(|f| f.path(db).clone());
-    git_boundary_dirs.sort();
-    git_boundary_dirs.dedup();
-
-    db.set_workspace_files(registered);
-    db.set_git_boundary_dirs(git_boundary_dirs);
     Ok(())
 }
 

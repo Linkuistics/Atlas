@@ -166,9 +166,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn existing(ids: &[&str]) -> HashSet<ComponentId> {
-        ids.iter()
-            .map(|s| ComponentId::parse(s).unwrap())
-            .collect()
+        ids.iter().map(|s| ComponentId::parse(s).unwrap()).collect()
     }
 
     fn parent(s: &str) -> ComponentId {

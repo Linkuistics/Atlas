@@ -129,7 +129,7 @@ mod tests {
             parent: None,
             kind: "rust-library".into(),
             lifecycle_roles: Vec::new(),
-            language: None,
+            languages: std::collections::BTreeSet::new(),
             build_system: None,
             role: None,
             path_segments: vec![
@@ -160,7 +160,7 @@ mod tests {
             parent: None,
             kind: "rust-library".into(),
             lifecycle_roles: Vec::new(),
-            language: None,
+            languages: std::collections::BTreeSet::new(),
             build_system: None,
             role: None,
             path_segments: Vec::new(),

@@ -636,12 +636,14 @@ fn subsystems_glob_and_id_membership_both_resolve() {
     let s = &out.subsystems[0];
     assert_eq!(s.id, "my-services");
     assert!(
-        s.members.contains(&component_ontology::ComponentId::parse("mylib").unwrap()),
+        s.members
+            .contains(&component_ontology::ComponentId::parse("mylib").unwrap()),
         "id-form member 'mylib' must resolve; members: {:?}",
         s.members
     );
     assert!(
-        s.members.contains(&component_ontology::ComponentId::parse("mycli").unwrap()),
+        s.members
+            .contains(&component_ontology::ComponentId::parse("mycli").unwrap()),
         "glob 'm*' must resolve mycli; members: {:?}",
         s.members
     );

@@ -121,10 +121,7 @@ impl LlmBackend for OpenAiHttpBackend {
             .json(&body)
             .send()
             .map_err(|e| {
-                LlmError::Invocation(format!(
-                    "{} HTTP request failed: {e}",
-                    self.provider_label
-                ))
+                LlmError::Invocation(format!("{} HTTP request failed: {e}", self.provider_label))
             })?;
 
         let status = response.status();

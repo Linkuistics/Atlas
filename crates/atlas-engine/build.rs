@@ -33,7 +33,8 @@ const TEMPLATES: &[(&str, &str)] = &[
 ];
 
 fn main() {
-    let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let manifest_dir =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     // crates/atlas-engine -> ../../  is workspace root
     let workspace_root = manifest_dir
         .parent()

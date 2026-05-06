@@ -140,11 +140,7 @@ pub fn no_path_overlap(file: &ComponentsFile) -> Result<(), InvariantFailure> {
 fn parent_index(file: &ComponentsFile) -> BTreeMap<&str, &str> {
     file.components
         .iter()
-        .filter_map(|c| {
-            c.parent
-                .as_ref()
-                .map(|p| (c.id.as_str(), p.as_str()))
-        })
+        .filter_map(|c| c.parent.as_ref().map(|p| (c.id.as_str(), p.as_str())))
         .collect()
 }
 
@@ -394,7 +390,7 @@ mod tests {
             parent: None,
             kind: "rust-library".into(),
             lifecycle_roles: vec![LifecycleScope::Build],
-            language: Some("rust".into()),
+            languages: std::collections::BTreeSet::from(["rust".to_string()]),
             build_system: Some("cargo".into()),
             role: None,
             path_segments: vec![PathSegment {
@@ -413,7 +409,7 @@ mod tests {
     fn file_of(components: Vec<ComponentEntry>) -> ComponentsFile {
         ComponentsFile {
             schema_version: COMPONENTS_SCHEMA_VERSION,
-            root: PathBuf::from("."),
+            roots: vec![PathBuf::from(".")],
             generated_at: "2026-04-24T00:00:00Z".into(),
             cache_fingerprints: CacheFingerprints::default(),
             components,

@@ -9,6 +9,7 @@
 //! downstream consumer on every new term (see the memory entry
 //! "ComponentKind enum deferred to atlas-engine").
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use component_ontology::{EvidenceGrade, LifecycleScope};
@@ -186,10 +187,16 @@ pub struct Candidate {
 /// Outcome of L3 classification for a single candidate. `is_boundary`
 /// separates confirmed components (which L4 includes in the tree) from
 /// candidates that the engine enumerated but decided against.
+///
+/// Atlas vNext: `languages` is a set, not a single value. A polyglot
+/// component (e.g., a Rust crate with embedded Python tooling) carries
+/// every language in one record (design §3.1). For Phase 1 most
+/// components have a single-element set; the multi-language path is
+/// dormant until subsequent analyser PRs populate it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Classification {
     pub kind: ComponentKind,
-    pub language: Option<String>,
+    pub languages: BTreeSet<String>,
     pub build_system: Option<String>,
     pub lifecycle_roles: Vec<LifecycleScope>,
     pub role: Option<String>,

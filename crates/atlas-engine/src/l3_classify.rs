@@ -19,7 +19,7 @@
 //! type to primitives. This avoids forcing `salsa::Update` onto
 //! nested signal types.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -69,8 +69,13 @@ pub fn is_component(
     // LLM expense.
     let dyn_db: &dyn salsa::Database = db;
     let overrides = workspace.components_overrides(dyn_db).clone();
-    let root = workspace.root(dyn_db).clone();
-    if let Some(classification) = pinned_classification(&overrides, &candidate_dir, &root) {
+    // Multi-root: pin lookup tries every root in turn, since a
+    // candidate dir under root[i] is relativised against root[i] for
+    // the relative-path key form. The "best" root is the longest
+    // prefix of the candidate, which `pinned_classification` selects
+    // internally via the supplied roots slice.
+    let roots = workspace.roots(dyn_db).clone();
+    if let Some(classification) = pinned_classification(&overrides, &candidate_dir, &roots) {
         return Arc::new(classification);
     }
 
@@ -98,14 +103,31 @@ pub fn is_component(
 
     // LLM fallback. Errors propagate as a weak "unknown" classification
     // — the engine intentionally does not panic on an LLM hiccup, so
-    // higher-level tooling can surface the rationale.
+    // higher-level tooling can surface the rationale. The owning root
+    // (longest matching prefix among `workspace.roots()`) is what the
+    // LLM sees as `workspace_root`; if no root matches, fall back to
+    // the primary root so paths are always relativised against
+    // *something*.
+    let owning_root = best_root_for(&candidate_dir, &roots)
+        .cloned()
+        .unwrap_or_else(|| roots[0].clone());
     Arc::new(classify_via_llm(
         db,
-        &root,
+        &owning_root,
         &candidate_dir,
         &bundle,
         &snippets,
     ))
+}
+
+/// Pick the longest root in `roots` that is a prefix of `path`. Used
+/// at L3 to relativise pin keys and LLM-input paths against the root
+/// that owns the candidate.
+fn best_root_for<'a>(path: &Path, roots: &'a [PathBuf]) -> Option<&'a PathBuf> {
+    roots
+        .iter()
+        .filter(|r| path.starts_with(r))
+        .max_by_key(|r| r.components().count())
 }
 
 fn build_bundle(db: &AtlasDatabase, workspace: Workspace, candidate_dir: &Path) -> RationaleBundle {
@@ -175,10 +197,17 @@ fn snippet_text<'a>(snippets: &'a BTreeMap<PathBuf, String>, basename: &str) -> 
 fn pinned_classification(
     overrides: &OverridesFile,
     candidate_dir: &Path,
-    workspace_root: &Path,
+    roots: &[PathBuf],
 ) -> Option<Classification> {
+    // Multi-root: relativise the candidate against the longest root
+    // that contains it. Pre-vNext callers (single-root) see the same
+    // behaviour because `roots = vec![root]` returns that one root as
+    // the longest prefix.
+    let owning_root = best_root_for(candidate_dir, roots)
+        .map(|p| p.as_path())
+        .unwrap_or_else(|| roots.first().map(|p| p.as_path()).unwrap_or(candidate_dir));
     let rel = candidate_dir
-        .strip_prefix(workspace_root)
+        .strip_prefix(owning_root)
         .unwrap_or(candidate_dir);
     let rel_str = path_to_forward_slash(rel);
     let basename = candidate_dir
@@ -205,7 +234,7 @@ fn pinned_classification(
             let abs_path = if first_seg.path.is_absolute() {
                 first_seg.path.clone()
             } else {
-                workspace_root.join(&first_seg.path)
+                owning_root.join(&first_seg.path)
             };
             if abs_path == candidate_dir {
                 push_unique(&mut keys_tried, addition.id.as_str().to_string());
@@ -234,13 +263,21 @@ fn pins_to_classification(pins: &BTreeMap<String, PinValue>) -> Classification {
         .as_deref()
         .and_then(ComponentKind::parse)
         .unwrap_or(ComponentKind::NonComponent);
+    // Pin name is `language` (singular) — a hand-authored pin still
+    // names one language at a time. The engine widens it to a
+    // `BTreeSet<String>` because the rest of the schema uses the set
+    // form; an empty pin produces an empty set.
     let language = pin_string(pins.get("language"));
+    let mut languages = BTreeSet::new();
+    if let Some(l) = language {
+        languages.insert(l);
+    }
     let build_system = pin_string(pins.get("build_system"));
     let role = pin_string(pins.get("role"));
 
     Classification {
         kind,
-        language,
+        languages,
         build_system,
         lifecycle_roles: Vec::new(),
         role,
@@ -409,10 +446,22 @@ fn parse_llm_response(value: Value) -> Result<Classification, String> {
     let kind =
         ComponentKind::parse(kind_str).ok_or_else(|| format!("unknown kind `{kind_str}`"))?;
 
-    let language = object
-        .get("language")
-        .and_then(|v| v.as_str())
-        .map(String::from);
+    // The classifier prompt template asks the LLM for a single
+    // `language` string (the v1 prompt has not been re-trained for
+    // the polyglot case). Lift that single value into a one-element
+    // `languages` set; if the LLM returns no language at all, the
+    // set is empty.
+    let mut languages: BTreeSet<String> = BTreeSet::new();
+    if let Some(l) = object.get("language").and_then(|v| v.as_str()) {
+        languages.insert(l.to_string());
+    }
+    if let Some(arr) = object.get("languages").and_then(|v| v.as_array()) {
+        for item in arr {
+            if let Some(s) = item.as_str() {
+                languages.insert(s.to_string());
+            }
+        }
+    }
     let build_system = object
         .get("build_system")
         .and_then(|v| v.as_str())
@@ -456,7 +505,7 @@ fn parse_llm_response(value: Value) -> Result<Classification, String> {
 
     Ok(Classification {
         kind,
-        language,
+        languages,
         build_system,
         lifecycle_roles,
         role,
@@ -474,7 +523,7 @@ fn parse_llm_response(value: Value) -> Result<Classification, String> {
 pub(crate) fn unknown_classification(reason: String) -> Classification {
     Classification {
         kind: ComponentKind::NonComponent,
-        language: None,
+        languages: BTreeSet::new(),
         build_system: None,
         lifecycle_roles: Vec::new(),
         role: None,
@@ -516,8 +565,12 @@ mod tests {
     #[test]
     fn pin_matches_relative_path_key() {
         let overrides = overrides_with_pin("crates/foo", "kind", "spec");
-        let got = pinned_classification(&overrides, Path::new("/ws/crates/foo"), Path::new("/ws"))
-            .expect("pin should match relative path key");
+        let got = pinned_classification(
+            &overrides,
+            Path::new("/ws/crates/foo"),
+            &[PathBuf::from("/ws")],
+        )
+        .expect("pin should match relative path key");
         assert_eq!(got.kind, ComponentKind::Spec);
         assert_eq!(got.rationale, "human pin");
     }
@@ -527,8 +580,12 @@ mod tests {
         // User-friendly fallback: pin by bare basename when the
         // relative-path form isn't used.
         let overrides = overrides_with_pin("foo", "kind", "spec");
-        let got = pinned_classification(&overrides, Path::new("/ws/crates/foo"), Path::new("/ws"))
-            .expect("pin should match basename key");
+        let got = pinned_classification(
+            &overrides,
+            Path::new("/ws/crates/foo"),
+            &[PathBuf::from("/ws")],
+        )
+        .expect("pin should match basename key");
         assert_eq!(got.kind, ComponentKind::Spec);
     }
 
@@ -542,7 +599,7 @@ mod tests {
         let got = pinned_classification(
             &overrides,
             Path::new("/ws/crates/Atlas-Engine"),
-            Path::new("/ws"),
+            &[PathBuf::from("/ws")],
         )
         .expect("pin should match slugified relative path");
         assert_eq!(got.kind, ComponentKind::RustLibrary);
@@ -554,7 +611,7 @@ mod tests {
         let got = pinned_classification(
             &overrides,
             Path::new("/ws/crates/Atlas-Engine"),
-            Path::new("/ws"),
+            &[PathBuf::from("/ws")],
         )
         .expect("pin should match slugified basename");
         assert_eq!(got.kind, ComponentKind::RustLibrary);
@@ -570,7 +627,7 @@ mod tests {
             parent: None,
             kind: "spec".into(),
             lifecycle_roles: Vec::new(),
-            language: None,
+            languages: BTreeSet::new(),
             build_system: None,
             role: None,
             path_segments: vec![PathSegment {
@@ -584,9 +641,12 @@ mod tests {
             rationale: "spec".into(),
             deleted: false,
         });
-        let got =
-            pinned_classification(&overrides, Path::new("/ws/specs/my-spec"), Path::new("/ws"))
-                .expect("pin should match via addition id");
+        let got = pinned_classification(
+            &overrides,
+            Path::new("/ws/specs/my-spec"),
+            &[PathBuf::from("/ws")],
+        )
+        .expect("pin should match via addition id");
         assert_eq!(got.kind, ComponentKind::Spec);
     }
 
@@ -608,7 +668,7 @@ mod tests {
             pins,
             ..OverridesFile::default()
         };
-        let got = pinned_classification(&overrides, Path::new("/ws/foo"), Path::new("/ws"))
+        let got = pinned_classification(&overrides, Path::new("/ws/foo"), &[PathBuf::from("/ws")])
             .expect("suppress pin should produce a classification");
         assert!(!got.is_boundary);
     }

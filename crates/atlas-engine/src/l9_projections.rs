@@ -34,15 +34,16 @@ use crate::l4_tree::all_components;
 use crate::l6_edges::all_proposed_edges;
 
 /// Build the `components.yaml` projection from the live engine state.
-/// The `root` is taken from the workspace input so a caller that seeded
-/// the database with an absolute path sees the same absolute path here.
+/// The `roots` are taken from the workspace input so a caller that
+/// seeded the database with absolute paths sees the same absolute
+/// paths here.
 ///
 /// `generated_at` is left empty; the CLI stamps the wall clock just
 /// before writing. Leaving it empty in the projection keeps the Salsa
 /// return value stable across re-runs that changed nothing.
 pub fn components_yaml_snapshot(db: &AtlasDatabase) -> Arc<ComponentsFile> {
     let workspace = db.workspace();
-    let root = workspace.root(db as &dyn salsa::Database).clone();
+    let roots = workspace.roots(db as &dyn salsa::Database).clone();
     let fingerprint = workspace
         .llm_fingerprint(db as &dyn salsa::Database)
         .clone();
@@ -56,7 +57,7 @@ pub fn components_yaml_snapshot(db: &AtlasDatabase) -> Arc<ComponentsFile> {
     let components = all_components(db);
     Arc::new(ComponentsFile {
         schema_version: COMPONENTS_SCHEMA_VERSION,
-        root,
+        roots,
         generated_at: String::new(),
         cache_fingerprints,
         components: (*components).clone(),
@@ -81,11 +82,34 @@ pub fn components_yaml_snapshot_with_prompt_shas(
 /// references.
 pub fn external_components_yaml_snapshot(db: &AtlasDatabase) -> Arc<ExternalsFile> {
     let workspace = db.workspace();
-    let root = workspace.root(db as &dyn salsa::Database).clone();
-    let externals = externals_from_manifests(db as &dyn salsa::Database, workspace, root);
+    let roots = workspace.roots(db as &dyn salsa::Database).clone();
+    // Per-root externals are unioned by id (deduped on push) so a crate
+    // that appears in two roots is reported once with both manifests in
+    // `discovered_from`.
+    let mut by_id: BTreeMap<String, ExternalEntry> = BTreeMap::new();
+    for root in &roots {
+        let per_root =
+            externals_from_manifests(db as &dyn salsa::Database, workspace, root.clone());
+        for entry in per_root.iter() {
+            let slot = by_id
+                .entry(entry.id.clone())
+                .or_insert_with(|| entry.clone());
+            for source in &entry.discovered_from {
+                if !slot.discovered_from.iter().any(|d| d == source) {
+                    slot.discovered_from.push(source.clone());
+                }
+            }
+        }
+    }
+    let mut externals: Vec<ExternalEntry> = by_id.into_values().collect();
+    for entry in &mut externals {
+        entry.discovered_from.sort();
+        entry.discovered_from.dedup();
+    }
+    externals.sort_by(|a, b| a.id.cmp(&b.id));
     Arc::new(ExternalsFile {
         schema_version: EXTERNALS_SCHEMA_VERSION,
-        externals: (*externals).clone(),
+        externals,
     })
 }
 
@@ -117,9 +141,12 @@ pub fn externals_from_manifests<'db>(
     workspace: Workspace,
     dir: PathBuf,
 ) -> Arc<Vec<ExternalEntry>> {
-    let manifests = manifests_in(db, workspace, dir);
+    let manifests = manifests_in(db, workspace, dir.clone());
     let mut by_id: BTreeMap<String, ExternalEntry> = BTreeMap::new();
-    let root = workspace.root(db);
+    // Multi-root: relativise manifest paths against the root they live
+    // under (the longest matching prefix among `workspace.roots()`),
+    // falling back to the query's `dir` if no root matches.
+    let roots = workspace.roots(db);
 
     for path in manifests.iter() {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
@@ -138,7 +165,8 @@ pub fn externals_from_manifests<'db>(
             continue;
         };
 
-        let rel = path_relative(path, root);
+        let owning_root = best_matching_root(path, roots).unwrap_or(&dir);
+        let rel = path_relative(path, owning_root);
         let rel_str = rel.to_string_lossy().into_owned();
 
         match name {
@@ -155,6 +183,17 @@ pub fn externals_from_manifests<'db>(
     }
     externals.sort_by(|a, b| a.id.cmp(&b.id));
     Arc::new(externals)
+}
+
+/// Pick the longest root in `roots` that is a prefix of `path`. Used
+/// to relativise paths in multi-root projections so the recorded
+/// `discovered_from` / path segments are stable against which root the
+/// CLI was invoked from.
+fn best_matching_root<'a>(path: &std::path::Path, roots: &'a [PathBuf]) -> Option<&'a PathBuf> {
+    roots
+        .iter()
+        .filter(|r| path.starts_with(r))
+        .max_by_key(|r| r.components().count())
 }
 
 fn collect_cargo_externals(
@@ -336,10 +375,10 @@ mod tests {
     fn db_no_llm(root: &Path) -> AtlasDatabase {
         let mut db = AtlasDatabase::new(
             Arc::new(TestBackend::new()),
-            root.to_path_buf(),
+            vec![root.to_path_buf()],
             fingerprint(),
         );
-        seed_filesystem(&mut db, root, false).unwrap();
+        seed_filesystem(&mut db, &[root.to_path_buf()], false).unwrap();
         db
     }
 
@@ -364,7 +403,7 @@ mod tests {
 
         let file = components_yaml_snapshot(&db);
         assert_eq!(file.schema_version, COMPONENTS_SCHEMA_VERSION);
-        assert_eq!(file.root, tmp.path());
+        assert_eq!(file.roots, vec![tmp.path().to_path_buf()]);
         assert!(file.cache_fingerprints.ontology_sha.len() == 64);
         assert_eq!(file.cache_fingerprints.model_id, "test-backend");
         assert!(

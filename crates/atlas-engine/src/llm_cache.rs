@@ -125,10 +125,7 @@ impl LlmResponseCache {
         let value = match backend.call(request) {
             Ok(v) => v,
             Err(e) => {
-                self.inner
-                    .lock()
-                    .expect("llm cache poisoned")
-                    .error_count += 1;
+                self.inner.lock().expect("llm cache poisoned").error_count += 1;
                 return Err(e);
             }
         };

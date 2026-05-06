@@ -35,10 +35,10 @@ fn default_fingerprint() -> LlmFingerprint {
 fn db_without_llm(root: &Path) -> AtlasDatabase {
     let mut db = AtlasDatabase::new(
         Arc::new(TestBackend::new()),
-        root.to_path_buf(),
+        vec![root.to_path_buf()],
         default_fingerprint(),
     );
-    seed_filesystem(&mut db, root, false).expect("seed_filesystem must succeed");
+    seed_filesystem(&mut db, &[root.to_path_buf()], false).expect("seed_filesystem must succeed");
     db
 }
 
@@ -212,7 +212,7 @@ fn identifier_preserved_across_directory_rename_via_rename_match() {
     let mut db = db_without_llm(&root);
     let prior = ComponentsFile {
         schema_version: COMPONENTS_SCHEMA_VERSION,
-        root: root.clone(),
+        roots: vec![root.clone()],
         generated_at: "prior".into(),
         cache_fingerprints: Default::default(),
         components: vec![ComponentEntry {
@@ -220,7 +220,7 @@ fn identifier_preserved_across_directory_rename_via_rename_match() {
             parent: None,
             kind: "rust-library".into(),
             lifecycle_roles: vec![],
-            language: None,
+            languages: std::collections::BTreeSet::new(),
             build_system: None,
             role: None,
             path_segments: vec![PathSegment {
@@ -256,7 +256,7 @@ fn orphan_prior_component_emitted_as_deleted_tombstone_once() {
     let mut db = db_without_llm(&root);
     let prior = ComponentsFile {
         schema_version: COMPONENTS_SCHEMA_VERSION,
-        root: root.clone(),
+        roots: vec![root.clone()],
         generated_at: "prior".into(),
         cache_fingerprints: Default::default(),
         components: vec![ComponentEntry {
@@ -264,7 +264,7 @@ fn orphan_prior_component_emitted_as_deleted_tombstone_once() {
             parent: None,
             kind: "rust-library".into(),
             lifecycle_roles: vec![],
-            language: None,
+            languages: std::collections::BTreeSet::new(),
             build_system: None,
             role: None,
             path_segments: vec![PathSegment {
@@ -293,7 +293,7 @@ fn orphan_prior_component_emitted_as_deleted_tombstone_once() {
     // tombstone). The tombstone should NOT be re-emitted.
     let tree2_prior = ComponentsFile {
         schema_version: COMPONENTS_SCHEMA_VERSION,
-        root: root.clone(),
+        roots: vec![root.clone()],
         generated_at: "prior2".into(),
         cache_fingerprints: Default::default(),
         components: tree.as_ref().clone(),
@@ -327,7 +327,7 @@ fn overrides_addition_appears_in_tree_even_without_signals() {
             parent: None,
             kind: "spec".into(),
             lifecycle_roles: vec![],
-            language: None,
+            languages: std::collections::BTreeSet::new(),
             build_system: None,
             role: None,
             path_segments: vec![PathSegment {
@@ -481,7 +481,7 @@ fn assembled_tree_round_trips_through_components_file_yaml() {
 
     let file = ComponentsFile {
         schema_version: COMPONENTS_SCHEMA_VERSION,
-        root: root.clone(),
+        roots: vec![root.clone()],
         generated_at: "test".into(),
         cache_fingerprints: Default::default(),
         components: tree.as_ref().clone(),
@@ -508,7 +508,7 @@ fn cycle_in_additions_triggers_hard_error_not_infinite_loop() {
         parent: Some(component_ontology::ComponentId::parse("comp-b").unwrap()),
         kind: "spec".into(),
         lifecycle_roles: vec![],
-        language: None,
+        languages: std::collections::BTreeSet::new(),
         build_system: None,
         role: None,
         path_segments: vec![PathSegment {

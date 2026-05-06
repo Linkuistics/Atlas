@@ -99,7 +99,10 @@ pub fn subcarve_decision(db: &AtlasDatabase, id: String) -> SubcarveDecision {
 
 fn compute_decision(db: &AtlasDatabase, id: &str) -> SubcarveDecision {
     let components = all_components(db);
-    let Some(entry) = components.iter().find(|c| c.id.as_str() == id && !c.deleted) else {
+    let Some(entry) = components
+        .iter()
+        .find(|c| c.id.as_str() == id && !c.deleted)
+    else {
         return SubcarveDecision::stopped("unknown component id");
     };
 
@@ -235,11 +238,11 @@ fn map_reduce_subcarve(
     signals: &SubcarveSignals,
 ) -> SubcarveDecision {
     let workspace = db.workspace();
-    let workspace_root = workspace.root(db as &dyn salsa::Database).clone();
+    let roots = workspace.roots(db as &dyn salsa::Database).clone();
 
     let suppressed = pin_suppressed_keys(&signals.pin_suppressed_children);
     let candidates: Vec<PathBuf> =
-        enumerate_immediate_subdirs(db, workspace, &workspace_root, &entry.path_segments)
+        enumerate_immediate_subdirs(db, workspace, &roots, &entry.path_segments)
             .into_iter()
             .filter(|abs_dir| !is_pin_suppressed(abs_dir, &suppressed))
             .collect();
@@ -260,7 +263,14 @@ fn map_reduce_subcarve(
     let mut rejected = 0usize;
     for (abs_dir, classification) in candidates.iter().zip(verdicts.iter()) {
         if classification.is_boundary {
-            let rel = abs_dir.strip_prefix(&workspace_root).unwrap_or(abs_dir);
+            // Multi-root: relativise against the longest matching root
+            // so a sub-dir under a peer root appears as `crate-name`
+            // rather than `../peer/crate-name`.
+            let owning_root = best_root_for(abs_dir, &roots);
+            let rel = match owning_root {
+                Some(root) => abs_dir.strip_prefix(root).unwrap_or(abs_dir),
+                None => abs_dir.as_path(),
+            };
             sub_dirs.push(rel.to_path_buf());
             accepted_summaries.push(format!(
                 "{} ({})",
@@ -403,13 +413,19 @@ fn is_pin_suppressed(abs_dir: &Path, suppressed: &BTreeSet<String>) -> bool {
 fn enumerate_immediate_subdirs(
     db: &AtlasDatabase,
     workspace: Workspace,
-    workspace_root: &Path,
+    roots: &[PathBuf],
     path_segments: &[PathSegment],
 ) -> Vec<PathBuf> {
     let dyn_db: &dyn salsa::Database = db;
+    // Multi-root: each path segment is relative to one of the roots.
+    // For each segment, try every root and keep the absolutised
+    // version that actually corresponds to a file the workspace knows
+    // about — i.e. for which at least one registered file's path
+    // starts with the candidate. Falling back to the primary root
+    // matches the old single-root behaviour for the common case.
     let owned_dirs: BTreeSet<PathBuf> = path_segments
         .iter()
-        .map(|seg| absolutise(workspace_root, &seg.path))
+        .map(|seg| absolutise_under_any_root(roots, workspace, dyn_db, &seg.path))
         .collect();
 
     let mut immediate: BTreeSet<PathBuf> = BTreeSet::new();
@@ -447,6 +463,44 @@ fn absolutise(workspace_root: &Path, segment_path: &Path) -> PathBuf {
     } else {
         workspace_root.join(segment_path)
     }
+}
+
+/// Resolve a relative path segment against the most plausible root.
+/// Strategy: try each root in order; if the absolutised path is a
+/// prefix of any registered file's path, accept it. Falls back to
+/// `roots[0]` if no root matches — matching the v1 single-root
+/// behaviour.
+fn absolutise_under_any_root(
+    roots: &[PathBuf],
+    workspace: Workspace,
+    dyn_db: &dyn salsa::Database,
+    segment_path: &Path,
+) -> PathBuf {
+    if segment_path.is_absolute() {
+        return segment_path.to_path_buf();
+    }
+    if roots.is_empty() {
+        return segment_path.to_path_buf();
+    }
+    if roots.len() == 1 {
+        return absolutise(&roots[0], segment_path);
+    }
+    let files = workspace.files(dyn_db);
+    for root in roots {
+        let candidate = root.join(segment_path);
+        if files.iter().any(|f| f.path(dyn_db).starts_with(&candidate)) {
+            return candidate;
+        }
+    }
+    absolutise(&roots[0], segment_path)
+}
+
+/// Pick the longest root in `roots` that is a prefix of `path`.
+fn best_root_for<'a>(path: &Path, roots: &'a [PathBuf]) -> Option<&'a PathBuf> {
+    roots
+        .iter()
+        .filter(|r| path.starts_with(r))
+        .max_by_key(|r| r.components().count())
 }
 
 fn build_rationale(
@@ -530,8 +584,8 @@ mod tests {
         builder(tmp.path());
         let backend = Arc::new(TestBackend::with_fingerprint(fingerprint()));
         let backend_dyn: Arc<dyn atlas_llm::LlmBackend> = backend.clone();
-        let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
-        seed_filesystem(&mut db, tmp.path(), false).unwrap();
+        let mut db = AtlasDatabase::new(backend_dyn, vec![tmp.path().to_path_buf()], fingerprint());
+        seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
         (db, backend, tmp)
     }
 
@@ -623,8 +677,8 @@ mod tests {
         builder(tmp.path());
         let backend = Arc::new(RecordingBackend::new(fingerprint()));
         let backend_dyn: Arc<dyn atlas_llm::LlmBackend> = backend.clone();
-        let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
-        seed_filesystem(&mut db, tmp.path(), false).unwrap();
+        let mut db = AtlasDatabase::new(backend_dyn, vec![tmp.path().to_path_buf()], fingerprint());
+        seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
         (db, backend, tmp)
     }
 
@@ -783,7 +837,7 @@ mod tests {
             parent: parent.map(|p| component_ontology::ComponentId::parse(p).unwrap()),
             kind: "rust-library".into(),
             lifecycle_roles: Vec::new(),
-            language: None,
+            languages: std::collections::BTreeSet::new(),
             build_system: None,
             role: None,
             path_segments: Vec::new(),

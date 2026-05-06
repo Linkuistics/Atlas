@@ -100,8 +100,8 @@ fn back_edge_adds_subcarve_sub_dirs_to_workspace_carve_back_edge() {
         (PromptId::Stage2Edges, Value::Array(Vec::new())),
     ]));
     let backend_dyn: Arc<dyn LlmBackend> = backend.clone();
-    let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
-    seed_filesystem(&mut db, tmp.path(), false).unwrap();
+    let mut db = AtlasDatabase::new(backend_dyn, vec![tmp.path().to_path_buf()], fingerprint());
+    seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
 
     let lib_id = all_components(&db)
         .iter()
@@ -142,8 +142,8 @@ fn max_depth_zero_blocks_every_sub_carve() {
     write_lib_crate(tmp.path(), "lib");
     let backend = Arc::new(ScriptedBackend::new(Vec::new()));
     let backend_dyn: Arc<dyn LlmBackend> = backend.clone();
-    let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
-    seed_filesystem(&mut db, tmp.path(), false).unwrap();
+    let mut db = AtlasDatabase::new(backend_dyn, vec![tmp.path().to_path_buf()], fingerprint());
+    seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
 
     let result = run_fixedpoint(
         &mut db,
@@ -187,8 +187,8 @@ fn converged_run_stops_growing_back_edge_on_the_stable_iteration() {
         (PromptId::Stage2Edges, Value::Array(Vec::new())),
     ]));
     let backend_dyn: Arc<dyn LlmBackend> = backend.clone();
-    let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
-    seed_filesystem(&mut db, tmp.path(), false).unwrap();
+    let mut db = AtlasDatabase::new(backend_dyn, vec![tmp.path().to_path_buf()], fingerprint());
+    seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
 
     let result = run_fixedpoint(
         &mut db,

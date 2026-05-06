@@ -8,6 +8,7 @@
 //! if/else: the table is the documentation of the deterministic
 //! surface, and adding a new rule is one entry rather than a re-nest.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use component_ontology::{EvidenceGrade, LifecycleScope};
@@ -16,6 +17,15 @@ use crate::manifest_parse::{
     parse_cargo_toml, parse_package_json, CargoTomlShape, PackageJsonShape,
 };
 use crate::types::{Candidate, Classification, ComponentKind};
+
+/// Single-element language set helper. Phase 1 deterministic rules
+/// always emit a one-element set; PR-9+ can grow this to a real set
+/// when polyglot detection lands.
+fn one_lang(lang: &str) -> BTreeSet<String> {
+    let mut set = BTreeSet::new();
+    set.insert(lang.to_string());
+    set
+}
 
 /// Contents of any manifest the classifier may want to inspect. The
 /// L3 query loads these before consulting the rule table so rule
@@ -107,7 +117,7 @@ fn rule_cargo_workspace(
     }
     Some(Classification {
         kind: ComponentKind::Workspace,
-        language: Some("rust".into()),
+        languages: one_lang("rust"),
         build_system: Some("cargo".into()),
         lifecycle_roles: vec![LifecycleScope::Build],
         role: None,
@@ -130,7 +140,7 @@ fn rule_cargo_bin(
     }
     Some(Classification {
         kind: ComponentKind::RustCli,
-        language: Some("rust".into()),
+        languages: one_lang("rust"),
         build_system: Some("cargo".into()),
         lifecycle_roles: vec![LifecycleScope::Build, LifecycleScope::Runtime],
         role: None,
@@ -153,7 +163,7 @@ fn rule_cargo_lib(
     }
     Some(Classification {
         kind: ComponentKind::RustLibrary,
-        language: Some("rust".into()),
+        languages: one_lang("rust"),
         build_system: Some("cargo".into()),
         lifecycle_roles: vec![LifecycleScope::Build, LifecycleScope::Runtime],
         role: None,
@@ -176,7 +186,7 @@ fn rule_package_json_bin(
     }
     Some(Classification {
         kind: ComponentKind::NodeCli,
-        language: Some("javascript".into()),
+        languages: one_lang("javascript"),
         build_system: Some("npm".into()),
         lifecycle_roles: vec![LifecycleScope::Build, LifecycleScope::Runtime],
         role: None,
@@ -199,7 +209,7 @@ fn rule_package_json_library(
     }
     Some(Classification {
         kind: ComponentKind::NodeLibrary,
-        language: Some("javascript".into()),
+        languages: one_lang("javascript"),
         build_system: Some("npm".into()),
         lifecycle_roles: vec![LifecycleScope::Build, LifecycleScope::Runtime],
         role: None,
@@ -219,7 +229,7 @@ fn rule_pyproject_toml(
     manifests.pyproject_toml?;
     Some(Classification {
         kind: ComponentKind::PythonLibrary,
-        language: Some("python".into()),
+        languages: one_lang("python"),
         build_system: Some("pyproject".into()),
         lifecycle_roles: vec![LifecycleScope::Build, LifecycleScope::Runtime],
         role: None,
@@ -255,7 +265,7 @@ fn rule_bare_git_no_manifests(
     }
     Some(Classification {
         kind: ComponentKind::NonComponent,
-        language: None,
+        languages: BTreeSet::new(),
         build_system: None,
         lifecycle_roles: Vec::new(),
         role: None,
