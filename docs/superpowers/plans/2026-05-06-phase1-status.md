@@ -5,7 +5,7 @@ This file tracks per-PR completion state across sessions. The session
 prompt at `docs/superpowers/plans/2026-05-06-phase1-session-prompt.md`
 reads this file to find the next PR to dispatch.
 
-**Last updated:** 2026-05-06 (PR-0 landed).
+**Last updated:** 2026-05-07 (PR-5 landed).
 
 ## PR status
 
@@ -18,7 +18,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-2  — Persistent content-addressed cache (no wiring)
 - [x] PR-3  — Multi-root `Workspace` (Salsa input)
 - [x] PR-4  — Path-dep root expansion to fixed point
-- [ ] PR-5  — Plugin protocol + three reference analysers
+- [x] PR-5  — Plugin protocol + three reference analysers
 - [ ] PR-6  — Scattered per-component `.atlas/` writers
 - [ ] PR-7  — `surfaces.yaml` emission (Rust binding shape)
 - [ ] PR-8  — Contract participants in `related-components.yaml`
