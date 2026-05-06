@@ -49,10 +49,17 @@ use atlas_index::Stage;
 
 pub use fingerprint::FingerprintBuilder;
 
-/// Lowercase 64-character sha256 hex string. Matches the convention
-/// used throughout the engine (see `crate::sha256_hex`). A `String`
-/// alias keeps the API ergonomic — callers pass `&String` (which
-/// derefs to `&str`); a future newtype refactor stays a one-liner.
+/// A SHA-256 digest rendered as 64-character lowercase hex.
+///
+/// The cache uses `Sha256Hex` values as filename components, so callers
+/// must produce well-formed hex; non-hex characters are silently
+/// embedded in the filename and behave unpredictably across
+/// filesystems. Use `crate::sha256_hex` (or any conventional sha2 hex
+/// output, e.g. [`FingerprintBuilder::finalise`]) to construct.
+///
+/// A `String` alias keeps the API ergonomic — callers pass `&String`
+/// (which derefs to `&str`); a future newtype refactor stays a
+/// one-liner.
 pub type Sha256Hex = String;
 
 /// Persistent content-addressed cache rooted at a directory.
@@ -215,8 +222,15 @@ impl PersistentCache {
                         report.bytes_freed += size;
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        // Race with a concurrent unlink — already
-                        // collected, no work left to do.
+                        // Race with a concurrent unlink — the entry is
+                        // already gone. Count it as a successful
+                        // eviction: from the caller's perspective the
+                        // post-condition (this `(stage, sha)` no longer
+                        // exists in the cache) is what was wanted, and
+                        // `metadata().len()` already paid the cost of
+                        // observing the blob's size.
+                        report.removed += 1;
+                        report.bytes_freed += size;
                     }
                     Err(e) => {
                         return Err(e)

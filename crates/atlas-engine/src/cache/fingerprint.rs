@@ -62,7 +62,7 @@ const TAG_PARTICIPANT_SURFACE_SHA: u8 = 0x04;
 /// Framing: each contribution is hashed as `tag (1 byte) || len (8
 /// bytes LE) || bytes`. The tag distinguishes contributions whose
 /// payloads might otherwise collide.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct FingerprintBuilder {
     /// Stage / analyzer-id / analyzer-version preamble. Hashed first
     /// in `finalise` so the same set of contributions across two
