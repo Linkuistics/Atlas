@@ -22,10 +22,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use atlas_index::{
-    CacheFingerprints, ComponentsFile, ExternalEntry, ExternalsFile, RelatedComponentsFile,
-    COMPONENTS_SCHEMA_VERSION, EXTERNALS_SCHEMA_VERSION,
+    CacheFingerprints, ComponentsFile, ExternalEntry, ExternalsFile, PerComponentFile,
+    RelatedComponentsFile, COMPONENTS_SCHEMA_VERSION, EXTERNALS_SCHEMA_VERSION,
+    PER_COMPONENT_SCHEMA_VERSION,
 };
-use component_ontology::{EvidenceGrade, SCHEMA_VERSION as RELATED_SCHEMA_VERSION};
+use component_ontology::{ComponentId, EvidenceGrade, SCHEMA_VERSION as RELATED_SCHEMA_VERSION};
 use sha2::{Digest, Sha256};
 
 use crate::db::{AtlasDatabase, Workspace};
@@ -84,6 +85,74 @@ pub fn components_yaml_snapshot_with_prompt_shas(
     file.cache_fingerprints.prompt_shas = prompt_shas;
     Arc::new(file)
 }
+
+/// Build a per-component `<component-path>/.atlas/component.yaml`
+/// projection for a single component. The output carries the
+/// component's `ComponentEntry` (identical to its slot in the
+/// top-level `components.yaml`) plus an envelope of analyser
+/// identity, fingerprint, and pointers to the co-located
+/// `surfaces.yaml` / `overrides.yaml` files.
+///
+/// **PR-6 placeholders.** Three envelope fields are placeholders this
+/// PR; PR-7 swaps them for the real values once the analyser
+/// dispatch carries identity through to L9.
+///
+/// - `analyser_id` is `"l3-driver"` and `analyser_version` is
+///   [`L3_DRIVER_VERSION`]. PR-7 plumbs the per-component analyser
+///   identity (e.g. `cargo-toml-classifier`) through L3's
+///   [`crate::types::Classification`] result.
+/// - `fingerprint` is the sha256 hex of the canonical YAML form of
+///   the component's [`atlas_index::ComponentEntry`]. PR-7 lands
+///   per-component `surfaces.yaml` writers and replaces this with
+///   the surfaces fingerprint per design §6.2; the entry-sha
+///   computed here is a deterministic stand-in that already changes
+///   when the component's classification or path changes.
+/// - `surfaces_path` and `overrides_path` are the relative
+///   filenames `surfaces.yaml` / `overrides.yaml` — pointers within
+///   the component's own `.atlas/` directory. The latter is
+///   `Some(...)` unconditionally; readers must check the file's
+///   existence on disk.
+///
+/// Errors when `component_id` does not resolve to any component in
+/// the live tree.
+pub fn per_component_yaml_snapshot(
+    db: &AtlasDatabase,
+    component_id: &ComponentId,
+) -> anyhow::Result<Arc<PerComponentFile>> {
+    let components = components_yaml_snapshot(db);
+    let entry = components
+        .components
+        .iter()
+        .find(|c| &c.id == component_id)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "component id `{}` not found in the live component tree",
+                component_id.as_str()
+            )
+        })?
+        .clone();
+
+    let entry_yaml = serde_yaml::to_string(&entry)
+        .map_err(|e| anyhow::anyhow!("failed to canonicalise component entry as YAML: {e}"))?;
+    let fingerprint = sha256_hex(entry_yaml.as_bytes());
+
+    Ok(Arc::new(PerComponentFile {
+        schema_version: PER_COMPONENT_SCHEMA_VERSION,
+        component: entry,
+        surfaces_path: PathBuf::from("surfaces.yaml"),
+        overrides_path: Some(PathBuf::from("overrides.yaml")),
+        analyser_id: "l3-driver".to_string(),
+        analyser_version: L3_DRIVER_VERSION.to_string(),
+        fingerprint,
+    }))
+}
+
+/// Stable analyser version string recorded in per-component records
+/// produced before per-analyser identity is plumbed through L3
+/// (PR-7). The string is independent of `crate::version()` so a Cargo
+/// publish bump does not invalidate every PR-6 era per-component
+/// fingerprint.
+pub const L3_DRIVER_VERSION: &str = "1.0.0";
 
 /// Build the `external-components.yaml` projection by walking every
 /// manifest under the workspace root and lifting out external package

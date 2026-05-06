@@ -184,15 +184,36 @@ fn seed_one_root(
     // When the caller designated an excluded directory inside `root`
     // (typically Atlas's own output dir), prune descent into it so
     // prior-run artefacts cannot be re-ingested as L0 inputs.
-    if let Some(excluded) = excluded_dir {
-        if let Some(excluded_rel) = excluded_relative_to(root, excluded) {
-            let root_owned = root.to_path_buf();
-            builder.filter_entry(move |entry| match entry.path().strip_prefix(&root_owned) {
-                Ok(rel) => !rel.starts_with(&excluded_rel),
-                Err(_) => true,
-            });
+    //
+    // Additionally — universally — prune every `.atlas/` directory
+    // anywhere under the walk. PR-6's per-component writers create
+    // `<component>/.atlas/component.yaml` (and PR-7+ adds more); on
+    // re-run the file walk would otherwise pick those up and L8's
+    // immediate-subdir enumeration would treat `<component>/.atlas`
+    // as a candidate component directory. Per the design (§4.6,
+    // §5.4), `.atlas/` is tool-owned: its contents are projections
+    // of the engine's own outputs, never analysis input. The
+    // override-merge walk in `l4_tree.rs` reads per-component
+    // override files directly from disk, side-stepping this
+    // exclusion.
+    let excluded_owned: Option<PathBuf> =
+        excluded_dir.and_then(|excluded| excluded_relative_to(root, excluded));
+    let root_owned = root.to_path_buf();
+    builder.filter_entry(move |entry| {
+        let path = entry.path();
+        // Universal `.atlas/` prune. The check is against the file
+        // name component, so it fires regardless of nesting depth.
+        if path.file_name().and_then(|n| n.to_str()) == Some(".atlas") {
+            return false;
         }
-    }
+        match path.strip_prefix(&root_owned) {
+            Ok(rel) => match &excluded_owned {
+                Some(excluded_rel) => !rel.starts_with(excluded_rel),
+                None => true,
+            },
+            Err(_) => true,
+        }
+    });
 
     let walker = builder.build();
 

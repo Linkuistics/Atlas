@@ -63,7 +63,7 @@ pub use l2_candidates::candidate_components_at;
 pub use l3_classify::is_component;
 pub use l4_tree::{
     all_components, component_children, component_parent, component_path_segments, try_assemble,
-    TreeAssemblyError,
+    try_assemble_with_warnings, TreeAssemblyError,
 };
 pub use l5_surface::{surface_of, EMBEDDED_STAGE1_SURFACE_PROMPT};
 pub use l6_edges::{all_proposed_edges, candidate_edges_for, EMBEDDED_STAGE2_EDGES_PROMPT};
@@ -75,7 +75,8 @@ pub use l8_recurse::{should_subcarve, subcarve_decision, subcarve_plan, Subcarve
 pub use l9_projections::{
     components_yaml_snapshot, components_yaml_snapshot_with_prompt_shas,
     external_components_yaml_snapshot, externals_from_manifests, known_component_ids,
-    related_components_yaml_snapshot, sha256_hex, PROMPT_ID_STRINGS,
+    per_component_yaml_snapshot, related_components_yaml_snapshot, sha256_hex, L3_DRIVER_VERSION,
+    PROMPT_ID_STRINGS,
 };
 pub use l9_subsystems::{
     check_subsystem_id_members, check_subsystem_namespace, subsystems_yaml_snapshot,

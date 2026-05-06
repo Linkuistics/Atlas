@@ -33,8 +33,8 @@ use anyhow::{Context, Result};
 use atlas_analyzers::AnalyzerRegistry;
 use atlas_engine::{
     components_yaml_snapshot_with_prompt_shas, expand_roots, external_components_yaml_snapshot,
-    related_components_yaml_snapshot, run_fixedpoint, seed_filesystem_excluding, AtlasDatabase,
-    FixedpointConfig, Phase, ProgressEvent, ProgressSink,
+    per_component_yaml_snapshot, related_components_yaml_snapshot, run_fixedpoint,
+    seed_filesystem_excluding, AtlasDatabase, FixedpointConfig, Phase, ProgressEvent, ProgressSink,
 };
 use atlas_index::{
     load_or_default_components, load_or_default_externals, load_or_default_overrides,
@@ -545,6 +545,14 @@ pub fn run_index(
             .map_err(IndexError::Other)?;
         save_subsystems_atomic(&subsystems_path, &subsystems_file).map_err(IndexError::Other)?;
 
+        // PR-6: walk every component and write its per-component
+        // `<component-path>/.atlas/component.yaml` projection. The
+        // top-level `components.yaml` remains the canonical source;
+        // per-component files are projections, so a failed write is
+        // a degraded-but-correct state (warning on stderr, run
+        // continues) rather than a hard error.
+        write_per_component_files(&db, &components_file, &roots);
+
         // Persist the LLM response cache. A failed save is not fatal —
         // the outputs are already committed; we just lose the cache hit
         // on the next run, which is a perf regression, not a
@@ -650,6 +658,118 @@ fn persist_discovered_roots(output_dir: &Path, roots: &[PathBuf]) -> Result<()> 
         .with_context(|| format!("failed to write temp file {}", tmp.display()))?;
     std::fs::rename(&tmp, &path)
         .with_context(|| format!("failed to rename {} to {}", tmp.display(), path.display()))?;
+    Ok(())
+}
+
+/// Walk every (non-deleted) component in `components_file` and emit
+/// a per-component `<component-path>/.atlas/component.yaml` (PR-6).
+/// The component's on-disk path is resolved by joining its
+/// first-`path_segments[0].path` against the matching root (longest
+/// path-prefix among `roots`, via `best_root_for`). One `mkdir -p`
+/// per component path; atomic write via tempfile-then-rename.
+///
+/// Per-component write failures are non-fatal warnings on stderr —
+/// the top-level `components.yaml` is the canonical source, and
+/// per-component files are projections. Continuing on failure
+/// preserves the partial write (some components got their files,
+/// some did not) rather than aborting the run after the top-level
+/// writes have committed.
+fn write_per_component_files(
+    db: &AtlasDatabase,
+    components_file: &ComponentsFile,
+    roots: &[PathBuf],
+) {
+    for entry in &components_file.components {
+        if entry.deleted {
+            continue;
+        }
+        let segment = match entry.path_segments.first() {
+            Some(seg) => seg,
+            None => {
+                eprintln!(
+                    "warning: component `{}` has no path_segments; skipping per-component write",
+                    entry.id.as_str()
+                );
+                continue;
+            }
+        };
+
+        // Resolve the component's absolute on-disk directory. The
+        // segment path is relative to one of `roots`; use the same
+        // longest-prefix matcher as the engine.
+        let candidate_abs = if segment.path.is_absolute() {
+            segment.path.clone()
+        } else {
+            // Try every root in turn — the segment is relative to the
+            // root that owns the component. We don't have explicit
+            // ownership recorded on the segment, so probe by joining
+            // and accepting the first root whose `<root>/<segment>`
+            // exists. Fall back to the primary root if nothing
+            // exists (the writer's mkdir will create whatever the
+            // join names; the path will still be correct because
+            // segment paths are unambiguous under their root).
+            let mut chosen: Option<PathBuf> = None;
+            for root in roots {
+                let candidate = root.join(&segment.path);
+                if candidate.exists() {
+                    chosen = Some(candidate);
+                    break;
+                }
+            }
+            match chosen {
+                Some(p) => p,
+                None => roots
+                    .first()
+                    .map(|r| r.join(&segment.path))
+                    .unwrap_or_else(|| segment.path.clone()),
+            }
+        };
+
+        let snapshot = match per_component_yaml_snapshot(db, &entry.id) {
+            Ok(arc) => arc,
+            Err(err) => {
+                eprintln!(
+                    "warning: failed to project component `{}`: {err:#}; skipping per-component write",
+                    entry.id.as_str()
+                );
+                continue;
+            }
+        };
+
+        let target_dir = candidate_abs.join(".atlas");
+        let target_file = target_dir.join("component.yaml");
+        if let Err(err) = write_per_component_atomic(&target_dir, &target_file, &snapshot) {
+            eprintln!(
+                "warning: failed to write {}: {err:#}; the top-level components.yaml is unaffected",
+                target_file.display()
+            );
+        }
+    }
+}
+
+fn write_per_component_atomic(
+    target_dir: &Path,
+    target_file: &Path,
+    file: &atlas_index::PerComponentFile,
+) -> Result<()> {
+    std::fs::create_dir_all(target_dir)
+        .with_context(|| format!("failed to create {}", target_dir.display()))?;
+    let yaml = serde_yaml::to_string(file).context("failed to serialise component.yaml")?;
+    let file_name = target_file
+        .file_name()
+        .with_context(|| format!("{} has no file name", target_file.display()))?
+        .to_string_lossy()
+        .into_owned();
+    let tmp = target_dir.join(format!(".{file_name}.tmp"));
+    std::fs::write(&tmp, yaml.as_bytes())
+        .with_context(|| format!("failed to write temp file {}", tmp.display()))?;
+    std::fs::rename(&tmp, target_file).with_context(|| {
+        format!(
+            "failed to rename {} to {}",
+            tmp.display(),
+            target_file.display()
+        )
+    })?;
     Ok(())
 }
 
