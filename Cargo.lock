@@ -89,11 +89,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-analyzers"
+version = "1.3.0"
+dependencies = [
+ "anyhow",
+ "atlas-index",
+ "atlas-llm",
+ "component-ontology",
+ "globset",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "atlas-cli"
 version = "1.3.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "atlas-analyzers",
  "atlas-engine",
  "atlas-index",
  "atlas-llm",
@@ -115,6 +133,7 @@ name = "atlas-engine"
 version = "1.3.0"
 dependencies = [
  "anyhow",
+ "atlas-analyzers",
  "atlas-index",
  "atlas-llm",
  "component-ontology",

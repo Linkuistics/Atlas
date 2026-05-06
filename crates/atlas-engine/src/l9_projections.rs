@@ -48,11 +48,18 @@ pub fn components_yaml_snapshot(db: &AtlasDatabase) -> Arc<ComponentsFile> {
     let fingerprint = workspace
         .llm_fingerprint(db as &dyn salsa::Database)
         .clone();
+    // PR-5: include the analyser-registry sha. The value is the
+    // canonical sha256 of the merged AnalyzersFile (see
+    // `atlas_analyzers::AnalyzerRegistry::registry_sha`); recording
+    // it here makes the fingerprint diffable in the on-disk
+    // `components.yaml` and gives downstream tooling a single field
+    // to compare across runs.
     let cache_fingerprints = CacheFingerprints {
         ontology_sha: hex_encode(&fingerprint.ontology_sha),
         prompt_shas: BTreeMap::new(),
         model_id: fingerprint.model_id.clone(),
         backend_version: fingerprint.backend_version.clone(),
+        analyzer_registry_sha: db.analyzer_registry().registry_sha(),
     };
 
     let components = all_components(db);

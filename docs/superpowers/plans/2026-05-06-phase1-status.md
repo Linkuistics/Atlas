@@ -250,7 +250,169 @@ Carry-over for downstream PRs:
   extend `AtlasConfigFile`, not introduce parallel YAML writers.
 
 ### PR-5
-(none yet)
+2026-05-07 — Landed as two stacked commits:
+1. atlas-contracts: `Stage` gains `PartialOrd + Ord`;
+   `CacheFingerprints.analyzer_registry_sha: String` (with
+   `#[serde(default)]`) + docstring pinning the
+   `sha256(serde_yaml::to_string(&AnalyzersFile))` computation.
+   Tests + golden snapshot updated.
+2. Atlas: new crate `atlas-analyzers`, plus engine/CLI wiring,
+   plus FingerprintBuilder.add_analyzer_registry_sha + GC mark-set
+   restored to `BTreeSet<(Stage, Sha256Hex)>`.
+
+**New public API (from `atlas_analyzers::*`):**
+- `Analyzer` trait — `id() / stage() / cost_class() / version() /
+  applies() / fingerprint_inputs() / analyse()`.
+- `AnalyzerRegistry::builtin / empty / register / len / is_empty /
+  iter_dispatch_order / analyzers_for_stage / merge_yaml /
+  registry_sha / declared / dispatch / dispatch_with_filter`.
+- `DispatchOutcome { Confident, Graded, AllDeclined { errors } }`.
+- `AnalyzerResult { Confident, Graded, Declines, Error }`.
+- `AnalyzerError { MalformedInput, CallFailed, Internal }`.
+- `Target { dir, languages, manifests, top_level_files }` +
+  `TargetFile { name, relpath, bytes, content_sha }`.
+- `AnalysisContext::deterministic_only / with_llm`.
+- `FingerprintInput { FileContentSha, Custom { tag, bytes } }`.
+- `StageOutput` marker trait + `impl_stage_output!` macro (must be
+  invoked by every external crate that registers its own analyser
+  output type — a blanket impl was deliberately rejected because
+  `Box<dyn StageOutput>` would itself satisfy a blanket impl,
+  breaking downcasts).
+- Three reference analysers: `CargoClassifier`,
+  `DockerfileClassifier`, `LlmClassifyAnalyzer` plus their output
+  structs (`CargoClassificationOutput`,
+  `DockerfileClassificationOutput`, `LlmClassifyOutput`).
+- `LlmHook` trait (`Send` only — *not* `Sync` — see below) with
+  `LlmHookError { Setup, Call }`.
+- `REGISTRY_HASH_NAMESPACE` const.
+
+**New atlas-engine wiring:**
+- `AtlasDatabase::new_with_registry(backend, roots, fp,
+  Arc<AnalyzerRegistry>)` — explicit-registry constructor.
+  `AtlasDatabase::new` now defers to it with
+  `AnalyzerRegistry::builtin()`.
+- `AtlasDatabase::analyzer_registry() -> &Arc<AnalyzerRegistry>`.
+- `FingerprintBuilder::add_analyzer_registry_sha(&Sha256Hex)` (tag
+  byte `0x05`). Tag table in `cache/fingerprint.rs` updated.
+- `PersistentCache::gc(&BTreeSet<(Stage, Sha256Hex)>)` — `Stage` now
+  derives `Ord`, so the plan's literal API is honoured. (PR-2
+  shipped `&HashSet<...>` and noted the temporary divergence.)
+
+**Carry-over obligations paid off:**
+- PR-1 status note: `CacheFingerprints.analyzer_registry_sha` —
+  added in atlas-contracts with `#[serde(default)]` for backward-
+  compat parsing; populated by `l9_projections::components_yaml_snapshot`.
+- PR-2 status note: `BTreeSet` GC signature restored.
+
+**Deviations from the brief (PR-6+ reviewers please note):**
+- `AnalyzerRegistry::dispatch` takes an extra `stage: Stage` filter
+  not shown in the brief's stub. This is necessary because PR-7
+  will add L5 analysers to the same registry — without a stage
+  filter the L3 driver would dispatch them and produce nonsense
+  outputs. Same reason for the `dispatch_with_filter` helper
+  (cost-class filter), which the L3 adapter uses to interleave the
+  legacy non-Cargo deterministic rules between the registry's
+  deterministic and LLM passes.
+- `dispatch` returns `DispatchOutcome` rather than the brief's
+  `AnalyzerResult`. The dispatcher accumulates errors that a single
+  analyser would lose; a single `AnalyzerResult` value cannot
+  express "all declined, here are the errors I saw along the way".
+  Functionally equivalent at the L3 adapter — the adapter
+  translates `AllDeclined` into "fall through".
+- `LlmHook: Send` (not `Send + Sync`) because the engine-side
+  hook impl closes over a `!Sync` `AtlasDatabase` (Salsa's
+  `ZalsaLocal` is `!Sync`). The hook is constructed and used
+  on the same thread inside `is_component`. Clippy flagged the
+  resulting `Arc<dyn LlmHook>` wrap with `arc_with_non_send_sync`;
+  the call site has a documented `#[allow]`.
+- `StageOutput` is *not* a blanket-impl trait. Adding a blanket
+  impl over `T: Any + Send + Sync` made `Box<dyn StageOutput>`
+  itself satisfy the trait, and method resolution silently routed
+  `boxed.as_any()` through the box rather than the inner value —
+  downcasts silently failed. The `impl_stage_output!` macro is the
+  one stamping path; every concrete output type must opt in.
+  External crates that register their own analyser outputs must
+  call `atlas_analyzers::impl_stage_output!(MyOutput);` at the
+  type's definition site. This is documented on the trait.
+
+**L3 driver flow (now):**
+1. Pin short-circuit (unchanged).
+2. Registry dispatch — deterministic cost classes only (Cargo,
+   Dockerfile). Adapter downcasts to `*ClassificationOutput` and
+   builds a `Classification`.
+3. Legacy non-Cargo deterministic rules in `heuristics::classify_deterministic`
+   (npm, pyproject, bare-git). The Cargo rules previously here have
+   moved into `CargoClassifier`.
+4. Registry dispatch — LLM cost classes only. The
+   `LlmClassifyAnalyzer` (the only LLM analyser shipped in PR-5)
+   wraps an engine-side `EngineLlmHook` that routes through
+   `db.call_llm_cached(...)`, preserving v1 LLM behaviour.
+5. Weak-unknown fallback.
+
+**Cache-wiring deferral for PR-10:**
+- `is_component` computes an L3 fingerprint via
+  `FingerprintBuilder::new(L3, "l3-driver", "1.0.0")` +
+  `add_analyzer_registry_sha` + `add_llm_fingerprint` +
+  `add_file_content_sha` per loaded manifest, and stores the
+  result in a `_l3_fingerprint` binding. **The fingerprint is not
+  yet consulted to skip the call** — that's PR-10's job. The
+  binding is named with a leading underscore so the unused-variable
+  lint stays quiet without reaching for `#[allow]`. PR-10 should
+  swap the binding into a `cache.get(L3, &fp)?` short-circuit.
+- Analyser `fingerprint_inputs` is callable and deterministic on
+  every PR-5 analyser. PR-10 will pull these into the dispatcher's
+  fingerprint loop; PR-5 calls `analyse` directly.
+
+**Per-PR notes for PR-6 reviewers:**
+- The new `<output>/.atlas/analyzers.yaml` reader lives in
+  `atlas-cli/src/pipeline.rs`; PR-6's per-component scattered
+  layout will need a similar `<component>/.atlas/analyzers.yaml`
+  read path *if* per-component analyser overrides land in Phase 1
+  (not currently planned — `analyzers.yaml` is workspace-wide for
+  PR-5).
+- The `AnalyzersFile.merge_yaml` path emits a stderr warning for
+  invalid specs; PR-6's `--strict-overrides` flag (Phase 2 per the
+  spec) is the place to escalate to a hard error.
+
+**Files created:**
+- `crates/atlas-analyzers/Cargo.toml`
+- `crates/atlas-analyzers/src/lib.rs`
+- `crates/atlas-analyzers/src/registry.rs`
+- `crates/atlas-analyzers/src/dispatcher.rs`
+- `crates/atlas-analyzers/src/cargo_classifier.rs`
+- `crates/atlas-analyzers/src/dockerfile_classifier.rs`
+- `crates/atlas-analyzers/src/llm_classify.rs`
+
+**Files modified (Atlas):**
+- `Cargo.toml` — `atlas-analyzers` added to members.
+- `crates/atlas-engine/Cargo.toml` — `atlas-analyzers` dep.
+- `crates/atlas-engine/src/db.rs` — registry field + accessor +
+  `new_with_registry`.
+- `crates/atlas-engine/src/cache/mod.rs` — GC `BTreeSet` signature.
+- `crates/atlas-engine/src/cache/fingerprint.rs` —
+  `add_analyzer_registry_sha` + tag table + tests + proptest.
+- `crates/atlas-engine/src/heuristics.rs` — Cargo rules removed
+  (moved to `CargoClassifier`).
+- `crates/atlas-engine/src/l3_classify.rs` — registry dispatch
+  driver.
+- `crates/atlas-engine/src/l9_projections.rs` —
+  `analyzer_registry_sha` field populated.
+- `crates/atlas-cli/Cargo.toml` — `atlas-analyzers` dep.
+- `crates/atlas-cli/src/pipeline.rs` — `analyzers.yaml` load and
+  `AtlasDatabase::new_with_registry` call.
+- `crates/atlas-engine/tests/l2_l3_queries.rs` — two new
+  acceptance tests (`pr5_cargo_lib_classified_via_registry_without_llm`,
+  `pr5_dockerfile_classified_as_docker_image_without_llm`).
+
+**Files modified (atlas-contracts):**
+- `crates/atlas-index/src/analyzers.rs` — `Stage` derives
+  `PartialOrd + Ord` + total-order test.
+- `crates/atlas-index/src/schema.rs` —
+  `CacheFingerprints.analyzer_registry_sha` field + tests.
+- `crates/atlas-index/src/yaml_io.rs` — fixture updated.
+- `crates/atlas-index/tests/golden_snapshots.rs` — fixture updated.
+- `crates/atlas-index/tests/snapshots/components.yaml` — golden
+  output now includes `analyzer_registry_sha:` line.
 
 ### PR-6
 (none yet)

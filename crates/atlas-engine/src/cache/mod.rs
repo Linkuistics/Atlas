@@ -40,7 +40,7 @@ pub mod layout;
 #[cfg(test)]
 pub mod test_fixtures;
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -134,12 +134,10 @@ impl PersistentCache {
     /// **not** in `mark_set` are deleted. Returns counts and total
     /// bytes freed.
     ///
-    /// The mark-set is a `HashSet` rather than a `BTreeSet`
-    /// (a deviation from the plan's literal API in §4 PR-2): the
-    /// `Stage` enum from `atlas_index::analyzers` derives only
-    /// `Hash + Eq`, not `Ord`, and atlas-contracts is out of scope
-    /// for this PR. The behavioural contract — set semantics for
-    /// "is this key live?" — is identical between the two.
+    /// The mark-set is a `BTreeSet` per the plan's literal API.
+    /// PR-2 originally shipped `HashSet` because `Stage` did not
+    /// derive `Ord`; PR-5 added `PartialOrd, Ord` to `Stage` and
+    /// restored the `BTreeSet` signature.
     ///
     /// The walk is deterministic (per-stage in declaration order;
     /// per-stage entries sorted by filename) so test failures are
@@ -154,7 +152,7 @@ impl PersistentCache {
     /// orphaned `.tmp*` files must do so out of band — they have no
     /// effect on cache correctness because `get()` never matches
     /// them.
-    pub fn gc(&self, mark_set: &HashSet<(Stage, Sha256Hex)>) -> Result<GcReport> {
+    pub fn gc(&self, mark_set: &BTreeSet<(Stage, Sha256Hex)>) -> Result<GcReport> {
         let mut report = GcReport::default();
         let cache_root = self.root.join(layout::CACHE_DIRNAME);
         if !cache_root.exists() {
@@ -332,7 +330,7 @@ mod tests {
     #[test]
     fn gc_on_empty_cache_is_noop() {
         let cache = TempCache::new();
-        let mark_set = HashSet::new();
+        let mark_set = BTreeSet::new();
         let report = cache.gc(&mark_set).unwrap();
         assert_eq!(
             report,
@@ -356,7 +354,7 @@ mod tests {
             .unwrap();
         cache.put(Stage::L5, &kept_sha, b"L5-keep").unwrap();
 
-        let mut mark_set = HashSet::new();
+        let mut mark_set = BTreeSet::new();
         mark_set.insert((Stage::L3, kept_sha.clone()));
         mark_set.insert((Stage::L5, kept_sha.clone()));
 
@@ -378,7 +376,7 @@ mod tests {
         let stray = stage_dir.join(".tmpDEAD");
         fs::write(&stray, b"junk").unwrap();
 
-        let mut mark_set = HashSet::new();
+        let mut mark_set = BTreeSet::new();
         mark_set.insert((Stage::L3, "keep".to_string()));
 
         let report = cache.gc(&mark_set).unwrap();
@@ -394,7 +392,7 @@ mod tests {
         cache.put(Stage::L5, &"b".to_string(), b"bb").unwrap();
         cache.put(Stage::L6, &"c".to_string(), b"ccc").unwrap();
 
-        let report = cache.gc(&HashSet::new()).unwrap();
+        let report = cache.gc(&BTreeSet::new()).unwrap();
         assert_eq!(report.kept, 0);
         assert_eq!(report.removed, 3);
         assert_eq!(report.bytes_freed, 1 + 2 + 3);
@@ -412,7 +410,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = PersistentCache::open(dir.path()).unwrap();
         assert!(!Path::new(&dir.path().join("cache")).exists());
-        let report = cache.gc(&HashSet::new()).unwrap();
+        let report = cache.gc(&BTreeSet::new()).unwrap();
         assert_eq!(report, GcReport::default());
     }
 }

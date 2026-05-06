@@ -23,10 +23,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use atlas_index::{OverridesFile, PinValue};
+use atlas_analyzers::{
+    cargo_classifier::CargoClassificationOutput,
+    dispatcher::DispatchOutcome,
+    dockerfile_classifier::DockerfileClassificationOutput,
+    llm_classify::{LlmClassifyOutput, LlmHook, LlmHookError},
+    AnalysisContext, Target, TargetFile,
+};
+use atlas_index::{CostClass, OverridesFile, PinValue, Stage};
 use atlas_llm::{LlmRequest, PromptId, ResponseSchema};
 use component_ontology::{EvidenceGrade, LifecycleScope};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::db::{AtlasDatabase, Workspace};
 use crate::defaults::{
@@ -60,14 +68,36 @@ pub(crate) const CACHE_ONLY_KEYS: &[&str] = &[];
 
 /// Classify the candidate whose directory is `candidate_dir`. Returns
 /// `Arc<Classification>` so callers can cache the result cheaply.
+///
+/// Resolution order under PR-5's analyser-registry seam:
+///
+/// 1. **Pin short-circuit.** A user pin trumps every analyser.
+/// 2. **Deterministic registry pass.** The
+///    [`atlas_analyzers::AnalyzerRegistry`] dispatches every
+///    `DeterministicCheap` / `DeterministicExpensive` analyser at
+///    L3. Cargo and Dockerfile classification live here.
+/// 3. **Legacy non-Cargo deterministic rules.** npm, pyproject, and
+///    bare-git rules live in [`crate::heuristics::classify_deterministic`].
+///    They run only after the registry's deterministic pass declines.
+/// 4. **LLM-classify analyser.** The registry's LLM-cost-class pass
+///    runs against an [`AnalysisContext`] carrying a hook bound to
+///    [`AtlasDatabase::call_llm_cached`].
+/// 5. **Weak-unknown fallback.** A last-resort classification when
+///    even the LLM cannot produce a verdict (e.g. Setup error).
+///
+/// The L3+ stage cache fingerprint (PR-10's responsibility for
+/// wiring) includes the analyser registry's
+/// [`add_analyzer_registry_sha`](crate::FingerprintBuilder::add_analyzer_registry_sha)
+/// contribution, so a registry shape change invalidates every
+/// downstream entry automatically.
 pub fn is_component(
     db: &AtlasDatabase,
     workspace: Workspace,
     candidate_dir: PathBuf,
 ) -> Arc<Classification> {
-    // Pin short-circuit runs before any expensive read of manifest
-    // bytes so a user's hand-authored decision always wins without
-    // LLM expense.
+    // 1. Pin short-circuit runs before any expensive read of
+    //    manifest bytes so a user's hand-authored decision always
+    //    wins without LLM expense.
     let dyn_db: &dyn salsa::Database = db;
     let overrides = workspace.components_overrides(dyn_db).clone();
     // Multi-root: pin lookup tries every root in turn, since a
@@ -88,12 +118,54 @@ pub fn is_component(
     // inputs.  Content reads go through `file_content` (untracked
     // helper), which pulls through the tracked `File::bytes` edge.
     let snippets = load_manifest_snippets(db, &bundle.manifests);
+
+    let owning_root = best_root_for(&roots, &candidate_dir)
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| roots[0].clone());
+
+    // 2. Build the analyser Target from the candidate's pre-loaded
+    //    manifests and dispatch the registry's deterministic pass
+    //    (cost class `Deterministic*`). Cargo + Dockerfile live here.
+    let target = build_analyzer_target(&candidate_dir, &snippets, db);
+    let registry = db.analyzer_registry();
+    let registry_sha = registry.registry_sha();
+    let _ = registry_sha; // PR-5: declared, contributes to FingerprintBuilder via PR-10's L3 cache wiring.
+
+    // PR-5 note: the `FingerprintBuilder` add_analyzer_registry_sha
+    // method is now callable, but the L3 cache short-circuit itself
+    // is wired by PR-10. The fingerprint computed below is computed
+    // for completeness (unit-tested at the FingerprintBuilder level)
+    // but not yet consulted to skip the call.
+    let _l3_fingerprint = {
+        let llm_fp = workspace.llm_fingerprint(dyn_db);
+        let mut fb = crate::FingerprintBuilder::new(Stage::L3, "l3-driver", "1.0.0");
+        fb.add_analyzer_registry_sha(&registry.registry_sha());
+        fb.add_llm_fingerprint(llm_fp.as_ref());
+        for tf in &target.manifests {
+            fb.add_file_content_sha(&tf.content_sha);
+        }
+        fb.finalise()
+    };
+
+    let det_ctx = AnalysisContext::deterministic_only();
+    let det_outcome = registry.dispatch_with_filter(&det_ctx, &target, Stage::L3, |c| {
+        matches!(
+            c,
+            CostClass::DeterministicCheap | CostClass::DeterministicExpensive
+        )
+    });
+    if let Some(classification) = adapt_dispatch_outcome(det_outcome) {
+        return Arc::new(classification);
+    }
+
+    // 3. Legacy non-Cargo deterministic rules (npm, pyproject,
+    //    bare-git). PR-5 keeps these in `crate::heuristics`; future
+    //    PRs may migrate them to the registry too.
     let manifest_contents = ManifestContents {
         cargo_toml: snippet_text(&snippets, "Cargo.toml"),
         package_json: snippet_text(&snippets, "package.json"),
         pyproject_toml: snippet_text(&snippets, "pyproject.toml"),
     };
-
     let candidate = crate::types::Candidate {
         dir: candidate_dir.clone(),
         rationale_bundle: bundle.clone(),
@@ -102,23 +174,247 @@ pub fn is_component(
         return Arc::new(classification);
     }
 
-    // LLM fallback. Errors propagate as a weak "unknown" classification
-    // — the engine intentionally does not panic on an LLM hiccup, so
-    // higher-level tooling can surface the rationale. The owning root
-    // (longest matching prefix among `workspace.roots()`) is what the
-    // LLM sees as `workspace_root`; if no root matches, fall back to
-    // the primary root so paths are always relativised against
-    // *something*.
-    let owning_root = best_root_for(&roots, &candidate_dir)
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| roots[0].clone());
-    Arc::new(classify_via_llm(
-        db,
-        &owning_root,
-        &candidate_dir,
-        &bundle,
-        &snippets,
+    // 4. LLM-classify analyser via the registry. The hook routes
+    //    through `db.call_llm_cached(...)` so per-candidate LLM
+    //    verdicts are memoised. The `Arc<dyn LlmHook>` here holds a
+    //    `!Sync` `AtlasDatabase` (Salsa's `ZalsaLocal` is `!Sync`),
+    //    which clippy correctly flags. The `LlmHook` trait drops
+    //    `Sync` from its bounds (see its docstring) and the hook is
+    //    only ever invoked from the same thread that constructed
+    //    it; the `Arc` shape is dictated by the analyser
+    //    crate's `AnalysisContext` API.
+    #[allow(clippy::arc_with_non_send_sync)]
+    let hook: Arc<dyn LlmHook> = Arc::new(EngineLlmHook {
+        db: db.clone(),
+        workspace_root: owning_root.clone(),
+        candidate_dir: candidate_dir.clone(),
+        bundle: bundle.clone(),
+        snippets: snippets.clone(),
+    });
+    let llm_ctx = AnalysisContext::with_llm(hook);
+    let llm_outcome = registry.dispatch_with_filter(&llm_ctx, &target, Stage::L3, |c| {
+        matches!(c, CostClass::LlmCheap | CostClass::LlmExpensive)
+    });
+    if let Some(classification) = adapt_dispatch_outcome(llm_outcome) {
+        return Arc::new(classification);
+    }
+
+    // 5. Weak-unknown fallback.
+    Arc::new(unknown_classification(
+        "no analyser produced a verdict (deterministic and LLM passes both declined)".into(),
     ))
+}
+
+/// Build a [`Target`] for the registry from the candidate's
+/// pre-loaded manifests. Manifests live on `Target.manifests` keyed
+/// by basename; `top_level_files` exposes the entry names directly
+/// under `candidate_dir` so analysers can do quick presence checks.
+fn build_analyzer_target(
+    candidate_dir: &Path,
+    snippets: &BTreeMap<PathBuf, String>,
+    db: &AtlasDatabase,
+) -> Target {
+    let mut manifests = Vec::with_capacity(snippets.len());
+    for (path, text) in snippets {
+        if path.parent() != Some(candidate_dir) {
+            // Only consider manifests that live directly under the
+            // candidate dir — sub-component manifests should not feed
+            // into the parent's classification.
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let content_sha = sha256_hex_bytes(text.as_bytes());
+        manifests.push(TargetFile {
+            name,
+            relpath: path
+                .strip_prefix(candidate_dir)
+                .unwrap_or(path)
+                .to_path_buf(),
+            bytes: text.as_bytes().to_vec(),
+            content_sha,
+        });
+    }
+
+    // For Dockerfile detection we also accept the file even when the
+    // engine did not classify it as a "manifest" in
+    // `manifest_patterns`. Probe the live filesystem via `file_content`
+    // for a `Dockerfile` next to the candidate dir.
+    if !manifests.iter().any(|m| m.name == "Dockerfile") {
+        let dockerfile_path = candidate_dir.join("Dockerfile");
+        if let Some(bytes) = file_content(db, &dockerfile_path) {
+            let bytes_vec: Vec<u8> = bytes.as_ref().clone();
+            let content_sha = sha256_hex_bytes(&bytes_vec);
+            manifests.push(TargetFile {
+                name: "Dockerfile".into(),
+                relpath: PathBuf::from("Dockerfile"),
+                bytes: bytes_vec,
+                content_sha,
+            });
+        }
+    }
+
+    let mut top_level_files: Vec<String> = manifests.iter().map(|m| m.name.clone()).collect();
+    // Best-effort: enumerate directory entries so analysers can probe
+    // for `src/`, `Dockerfile`, etc. Failures are silently swallowed —
+    // the engine's L1 walk owns canonical truth; this listing is only
+    // an analyser hint.
+    if let Ok(entries) = std::fs::read_dir(candidate_dir) {
+        for e in entries.flatten() {
+            if let Some(name) = e.file_name().to_str() {
+                if !top_level_files.iter().any(|n| n == name) {
+                    top_level_files.push(name.to_string());
+                }
+            }
+        }
+    }
+
+    Target {
+        dir: candidate_dir.to_path_buf(),
+        languages: BTreeSet::new(),
+        manifests,
+        top_level_files,
+    }
+}
+
+fn sha256_hex_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest: [u8; 32] = hasher.finalize().into();
+    let mut hex = String::with_capacity(64);
+    use std::fmt::Write;
+    for b in digest {
+        write!(&mut hex, "{b:02x}").expect("writing to String never fails");
+    }
+    hex
+}
+
+/// Translate a [`DispatchOutcome`] from the registry into a
+/// `Classification`. Returns `None` for `AllDeclined` so the caller
+/// can fall through to the next pass.
+fn adapt_dispatch_outcome(outcome: DispatchOutcome) -> Option<Classification> {
+    match outcome {
+        DispatchOutcome::AllDeclined { errors } => {
+            for err in errors {
+                eprintln!("warning: L3 analyser error: {err}");
+            }
+            None
+        }
+        DispatchOutcome::Confident { output, .. } => Some(classification_from_output(output)),
+        DispatchOutcome::Graded { output, .. } => Some(classification_from_output(output)),
+    }
+}
+
+/// Downcast a [`Box<dyn StageOutput>`] to one of the three concrete
+/// output types this PR knows about, then translate to
+/// [`Classification`]. Returns the weak-unknown classification on a
+/// downcast miss (which would indicate an analyser registered with
+/// an unexpected output type — a Phase 2 plugin).
+fn classification_from_output(output: Box<dyn atlas_analyzers::StageOutput>) -> Classification {
+    if let Some(cargo) = (*output)
+        .as_any()
+        .downcast_ref::<CargoClassificationOutput>()
+    {
+        return cargo_to_classification(cargo);
+    }
+    if let Some(docker) = (*output)
+        .as_any()
+        .downcast_ref::<DockerfileClassificationOutput>()
+    {
+        return docker_to_classification(docker);
+    }
+    if let Some(llm) = (*output).as_any().downcast_ref::<LlmClassifyOutput>() {
+        return parse_llm_response(llm.response.clone()).unwrap_or_else(|reason| {
+            unknown_classification(format!("LLM response parse failed: {reason}"))
+        });
+    }
+    unknown_classification(
+        "analyser produced an output type the L3 adapter does not recognise".into(),
+    )
+}
+
+fn cargo_to_classification(out: &CargoClassificationOutput) -> Classification {
+    let kind = ComponentKind::parse(&out.kind).unwrap_or(ComponentKind::NonComponent);
+    let lifecycle_roles = out
+        .lifecycle_roles
+        .iter()
+        .filter_map(|s| LifecycleScope::parse(s))
+        .collect();
+    let mut languages = BTreeSet::new();
+    languages.insert("rust".to_string());
+    Classification {
+        kind,
+        languages,
+        build_system: out.build_system.clone(),
+        lifecycle_roles,
+        role: out.role.clone(),
+        evidence_grade: EvidenceGrade::Strong,
+        evidence_fields: out.evidence_fields.clone(),
+        rationale: out.rationale.clone(),
+        is_boundary: out.is_boundary,
+    }
+}
+
+fn docker_to_classification(out: &DockerfileClassificationOutput) -> Classification {
+    let kind = ComponentKind::parse(&out.kind).unwrap_or(ComponentKind::NonComponent);
+    let lifecycle_roles = out
+        .lifecycle_roles
+        .iter()
+        .filter_map(|s| LifecycleScope::parse(s))
+        .collect();
+    Classification {
+        kind,
+        languages: BTreeSet::new(),
+        build_system: out.build_system.clone(),
+        lifecycle_roles,
+        role: out.role.clone(),
+        evidence_grade: EvidenceGrade::Strong,
+        evidence_fields: out.evidence_fields.clone(),
+        rationale: out.rationale.clone(),
+        is_boundary: out.is_boundary,
+    }
+}
+
+/// Engine-side [`LlmHook`] implementation. The
+/// [`atlas_analyzers::LlmClassifyAnalyzer`] holds the trait shape;
+/// this struct provides the actual prompt build + cached call. Lives
+/// inside `atlas-engine` because building the inputs requires the
+/// engine's prompt-rendering helpers.
+struct EngineLlmHook {
+    db: AtlasDatabase,
+    workspace_root: PathBuf,
+    candidate_dir: PathBuf,
+    bundle: RationaleBundle,
+    snippets: BTreeMap<PathBuf, String>,
+}
+
+impl LlmHook for EngineLlmHook {
+    fn classify(
+        &self,
+        _inputs: &serde_json::Value,
+    ) -> Result<Arc<serde_json::Value>, LlmHookError> {
+        // Build the canonical inputs from the engine's rationale
+        // bundle (the analyser passes a placeholder payload — the
+        // real prompt structure lives here).
+        let inputs = build_llm_inputs(
+            &self.workspace_root,
+            &self.candidate_dir,
+            &self.bundle,
+            &self.snippets,
+        );
+        let request = LlmRequest {
+            prompt_template: PromptId::Classify,
+            inputs,
+            schema: ResponseSchema::accept_any(),
+        };
+        match self.db.call_llm_cached(&request) {
+            Ok(value) => Ok(value),
+            Err(err) => Err(LlmHookError::Call(err.to_string())),
+        }
+    }
 }
 
 fn build_bundle(db: &AtlasDatabase, workspace: Workspace, candidate_dir: &Path) -> RationaleBundle {
@@ -292,37 +588,10 @@ fn path_to_forward_slash(path: &Path) -> String {
         .join("/")
 }
 
-fn classify_via_llm(
-    db: &AtlasDatabase,
-    workspace_root: &Path,
-    candidate_dir: &Path,
-    bundle: &RationaleBundle,
-    snippets: &BTreeMap<PathBuf, String>,
-) -> Classification {
-    let request = LlmRequest {
-        prompt_template: PromptId::Classify,
-        inputs: build_llm_inputs(workspace_root, candidate_dir, bundle, snippets),
-        schema: ResponseSchema::accept_any(),
-    };
-
-    // Route through the engine's `LlmResponseCache` so per-candidate
-    // verdicts are memoised. Required for two reasons:
-    //
-    // 1. **No-op re-run byte identity.** The L8 map/reduce step calls
-    //    `is_component` for each immediate sub-dir of every component
-    //    being carved; without caching, a re-run repeats every
-    //    map-step LLM call and `backend.call_count()` is non-zero on
-    //    a cache-only re-run.
-    // 2. **Cross-component reuse.** Two candidates with byte-equal
-    //    `LlmRequest` shapes share one cache entry, so a monorepo
-    //    with N nearly-identical Rust crates pays one map call, not N.
-    match db.call_llm_cached(&request) {
-        Ok(value) => parse_llm_response((*value).clone()).unwrap_or_else(|reason| {
-            unknown_classification(format!("LLM response parse failed: {reason}"))
-        }),
-        Err(err) => unknown_classification(format!("LLM call failed: {err}")),
-    }
-}
+// `classify_via_llm` previously called `db.call_llm_cached` directly
+// from `is_component`. PR-5 replaces it with the
+// `EngineLlmHook` plus the `LlmClassifyAnalyzer` registered on the
+// analyser registry — see the top of this file.
 
 fn build_llm_inputs(
     workspace_root: &Path,

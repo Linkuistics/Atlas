@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+atlas-analyzers = { path = "../atlas-analyzers" }
 atlas-engine = { path = "../atlas-engine" }
 atlas-index = { workspace = true }
 atlas-llm = { path = "../atlas-llm" }

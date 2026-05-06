@@ -1,4 +1,4 @@
-//! Deterministic classification rules. Each rule reads a
+//! Non-Cargo deterministic classification rules. Each rule reads a
 //! [`Candidate`]'s rationale bundle (plus any manifest contents the
 //! caller can supply) and either produces a [`Classification`] — with
 //! `evidence_grade: Strong` and an explicit `evidence_fields` list —
@@ -7,15 +7,22 @@
 //! Rules are tabulated as a flat array rather than a chain of
 //! if/else: the table is the documentation of the deterministic
 //! surface, and adding a new rule is one entry rather than a re-nest.
+//!
+//! **PR-5 note:** the Cargo classification rules previously lived
+//! here and have moved into
+//! [`atlas_analyzers::cargo_classifier::CargoClassifier`]. The
+//! L3 driver dispatches the analyser registry first; only when the
+//! registry's deterministic analysers all decline does the engine
+//! consult the rule table below. The Dockerfile-image rule similarly
+//! lives in
+//! [`atlas_analyzers::dockerfile_classifier::DockerfileClassifier`].
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
 use component_ontology::{EvidenceGrade, LifecycleScope};
 
-use crate::manifest_parse::{
-    parse_cargo_toml, parse_package_json, CargoTomlShape, PackageJsonShape,
-};
+use crate::manifest_parse::{parse_package_json, PackageJsonShape};
 use crate::types::{Candidate, Classification, ComponentKind};
 
 /// Single-element language set helper. Phase 1 deterministic rules
@@ -39,21 +46,20 @@ pub struct ManifestContents<'a> {
 
 /// Try every deterministic rule in order; return the first match.
 /// `None` means no rule applied — the caller should fall back to the
-/// LLM classifier.
+/// analyser registry's LLM-classify path.
+///
+/// PR-5: the rule table no longer contains Cargo rules — those live
+/// in [`atlas_analyzers::cargo_classifier::CargoClassifier`]. The L3
+/// driver dispatches the registry first; the rule table here covers
+/// the remaining deterministic vocabulary (npm, pyproject, bare-git).
 pub fn classify_deterministic(
     candidate: &Candidate,
     manifest_contents: &ManifestContents<'_>,
 ) -> Option<Classification> {
-    let cargo = manifest_contents.cargo_toml.map(parse_cargo_toml);
     let package = manifest_contents.package_json.map(parse_package_json);
 
     for rule in RULES {
-        if let Some(classification) = (rule.apply)(
-            candidate,
-            manifest_contents,
-            cargo.as_ref(),
-            package.as_ref(),
-        ) {
+        if let Some(classification) = (rule.apply)(candidate, manifest_contents, package.as_ref()) {
             return Some(classification);
         }
     }
@@ -63,7 +69,6 @@ pub fn classify_deterministic(
 type RuleFn = fn(
     candidate: &Candidate,
     manifests: &ManifestContents<'_>,
-    cargo: Option<&CargoTomlShape>,
     package: Option<&PackageJsonShape>,
 ) -> Option<Classification>;
 
@@ -75,18 +80,6 @@ struct Rule {
 }
 
 const RULES: &[Rule] = &[
-    Rule {
-        name: "cargo-workspace",
-        apply: rule_cargo_workspace,
-    },
-    Rule {
-        name: "cargo-bin",
-        apply: rule_cargo_bin,
-    },
-    Rule {
-        name: "cargo-lib",
-        apply: rule_cargo_lib,
-    },
     Rule {
         name: "package-json-bin",
         apply: rule_package_json_bin,
@@ -105,79 +98,9 @@ const RULES: &[Rule] = &[
     },
 ];
 
-fn rule_cargo_workspace(
-    _candidate: &Candidate,
-    _manifests: &ManifestContents<'_>,
-    cargo: Option<&CargoTomlShape>,
-    _package: Option<&PackageJsonShape>,
-) -> Option<Classification> {
-    let shape = cargo?;
-    if !shape.has_workspace_section {
-        return None;
-    }
-    Some(Classification {
-        kind: ComponentKind::Workspace,
-        languages: one_lang("rust"),
-        build_system: Some("cargo".into()),
-        lifecycle_roles: vec![LifecycleScope::Build],
-        role: None,
-        evidence_grade: EvidenceGrade::Strong,
-        evidence_fields: vec!["Cargo.toml:[workspace]".into()],
-        rationale: "Cargo.toml declares a [workspace] section.".into(),
-        is_boundary: true,
-    })
-}
-
-fn rule_cargo_bin(
-    _candidate: &Candidate,
-    _manifests: &ManifestContents<'_>,
-    cargo: Option<&CargoTomlShape>,
-    _package: Option<&PackageJsonShape>,
-) -> Option<Classification> {
-    let shape = cargo?;
-    if !shape.has_bin_section || shape.has_workspace_section {
-        return None;
-    }
-    Some(Classification {
-        kind: ComponentKind::RustCli,
-        languages: one_lang("rust"),
-        build_system: Some("cargo".into()),
-        lifecycle_roles: vec![LifecycleScope::Build, LifecycleScope::Runtime],
-        role: None,
-        evidence_grade: EvidenceGrade::Strong,
-        evidence_fields: vec!["Cargo.toml:[[bin]]".into()],
-        rationale: "Cargo.toml declares a [[bin]] section.".into(),
-        is_boundary: true,
-    })
-}
-
-fn rule_cargo_lib(
-    _candidate: &Candidate,
-    _manifests: &ManifestContents<'_>,
-    cargo: Option<&CargoTomlShape>,
-    _package: Option<&PackageJsonShape>,
-) -> Option<Classification> {
-    let shape = cargo?;
-    if !shape.has_lib_section || shape.has_bin_section || shape.has_workspace_section {
-        return None;
-    }
-    Some(Classification {
-        kind: ComponentKind::RustLibrary,
-        languages: one_lang("rust"),
-        build_system: Some("cargo".into()),
-        lifecycle_roles: vec![LifecycleScope::Build, LifecycleScope::Runtime],
-        role: None,
-        evidence_grade: EvidenceGrade::Strong,
-        evidence_fields: vec!["Cargo.toml:[lib]".into()],
-        rationale: "Cargo.toml declares a [lib] section with no [[bin]].".into(),
-        is_boundary: true,
-    })
-}
-
 fn rule_package_json_bin(
     _candidate: &Candidate,
     _manifests: &ManifestContents<'_>,
-    _cargo: Option<&CargoTomlShape>,
     package: Option<&PackageJsonShape>,
 ) -> Option<Classification> {
     let shape = package?;
@@ -200,7 +123,6 @@ fn rule_package_json_bin(
 fn rule_package_json_library(
     _candidate: &Candidate,
     _manifests: &ManifestContents<'_>,
-    _cargo: Option<&CargoTomlShape>,
     package: Option<&PackageJsonShape>,
 ) -> Option<Classification> {
     let shape = package?;
@@ -223,7 +145,6 @@ fn rule_package_json_library(
 fn rule_pyproject_toml(
     _candidate: &Candidate,
     manifests: &ManifestContents<'_>,
-    _cargo: Option<&CargoTomlShape>,
     _package: Option<&PackageJsonShape>,
 ) -> Option<Classification> {
     manifests.pyproject_toml?;
@@ -243,7 +164,6 @@ fn rule_pyproject_toml(
 fn rule_bare_git_no_manifests(
     candidate: &Candidate,
     _manifests: &ManifestContents<'_>,
-    _cargo: Option<&CargoTomlShape>,
     _package: Option<&PackageJsonShape>,
 ) -> Option<Classification> {
     let bundle = &candidate.rationale_bundle;
@@ -303,38 +223,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn cargo_lib_rule_fires_on_lib_only_manifest() {
-        let contents = "[package]\nname = \"x\"\n[lib]\npath = \"src/lib.rs\"\n";
-        let manifests = ManifestContents {
-            cargo_toml: Some(contents),
-            ..Default::default()
-        };
-        let c = classify_deterministic(&bare_candidate("."), &manifests).unwrap();
-        assert_eq!(c.kind, ComponentKind::RustLibrary);
-    }
-
-    #[test]
-    fn cargo_bin_rule_fires_on_bin_section() {
-        let contents = "[package]\nname = \"x\"\n[[bin]]\nname = \"tool\"\n";
-        let manifests = ManifestContents {
-            cargo_toml: Some(contents),
-            ..Default::default()
-        };
-        let c = classify_deterministic(&bare_candidate("."), &manifests).unwrap();
-        assert_eq!(c.kind, ComponentKind::RustCli);
-    }
-
-    #[test]
-    fn cargo_workspace_rule_wins_over_lib() {
-        let contents = "[workspace]\nmembers = [\"a\"]\n[lib]\n";
-        let manifests = ManifestContents {
-            cargo_toml: Some(contents),
-            ..Default::default()
-        };
-        let c = classify_deterministic(&bare_candidate("."), &manifests).unwrap();
-        assert_eq!(c.kind, ComponentKind::Workspace);
-    }
+    // Note: Cargo classification rules (workspace / bin / lib) moved
+    // to `atlas_analyzers::cargo_classifier::CargoClassifier` in PR-5.
+    // The corresponding tests live in that crate's `cargo_classifier`
+    // module.
 
     #[test]
     fn bare_git_with_readme_declines_deterministic_rule() {

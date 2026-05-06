@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+  "crates/atlas-analyzers",
   "crates/atlas-engine",
   "crates/atlas-llm",
   "crates/atlas-cli",

@@ -505,3 +505,74 @@ fn l3_deterministic_fixtures_never_dispatch_to_llm() {
         assert_eq!(c.evidence_grade, EvidenceGrade::Strong);
     }
 }
+
+// ---------------------------------------------------------------------
+// PR-5 acceptance criteria: Cargo and Dockerfile analysers run
+// without any LLM dispatch.
+// ---------------------------------------------------------------------
+
+#[test]
+fn pr5_cargo_lib_classified_via_registry_without_llm() {
+    // PR-5 acceptance: a `Cargo.toml` containing a `[lib]` section
+    // is classified `rust-library` by the Cargo analyser without an
+    // LLM call. The TestBackend has no canned responses; we further
+    // assert that `db.llm_cache().call_count()` is zero so a
+    // future regression where the registry fell through to the LLM
+    // surfaces immediately.
+    let td = TempDir::new().unwrap();
+    let root = td.path().to_path_buf();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname=\"x\"\n[lib]\npath = \"src/lib.rs\"\n",
+    )
+    .unwrap();
+
+    let db = db_without_llm(&root);
+    let ws = db.workspace();
+    let c = is_component(&db, ws, root.clone());
+    assert_eq!(c.kind, ComponentKind::RustLibrary);
+    assert_eq!(c.evidence_grade, EvidenceGrade::Strong);
+    assert!(
+        c.evidence_fields.iter().any(|f| f.contains("[lib]")),
+        "evidence_fields must mention `[lib]`; got {:?}",
+        c.evidence_fields
+    );
+    assert_eq!(
+        db.llm_cache().call_count(),
+        0,
+        "Cargo classifier must not dispatch to the LLM"
+    );
+}
+
+#[test]
+fn pr5_dockerfile_classified_as_docker_image_without_llm() {
+    // PR-5 acceptance: a fixture with a `Dockerfile` produces a
+    // `kind: docker-image` component without any LLM call.
+    let td = TempDir::new().unwrap();
+    let root = td.path().to_path_buf();
+    let docker_text = "FROM rust:1.79 AS builder\n\
+                       COPY src/ /app/src\n\
+                       FROM debian:bookworm-slim\n\
+                       COPY --from=builder /app/target/release/atlas /usr/local/bin/atlas\n\
+                       EXPOSE 8080\n\
+                       CMD [\"atlas\", \"--help\"]\n";
+    std::fs::write(root.join("Dockerfile"), docker_text).unwrap();
+
+    let db = db_without_llm(&root);
+    let ws = db.workspace();
+    let c = is_component(&db, ws, root.clone());
+    assert_eq!(c.kind, ComponentKind::DockerImage);
+    assert_eq!(c.evidence_grade, EvidenceGrade::Strong);
+    assert!(c.is_boundary);
+    assert_eq!(
+        c.build_system.as_deref(),
+        Some("docker"),
+        "build_system must be docker; got {:?}",
+        c.build_system
+    );
+    assert_eq!(
+        db.llm_cache().call_count(),
+        0,
+        "Dockerfile classifier must not dispatch to the LLM"
+    );
+}

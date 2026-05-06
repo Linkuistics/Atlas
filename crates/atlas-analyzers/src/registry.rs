@@ -1,0 +1,401 @@
+//! Analyser registry — ordered list of [`Analyzer`] trait objects
+//! consulted by [`crate::dispatcher`].
+//!
+//! Two construction paths:
+//!
+//! - [`AnalyzerRegistry::builtin`] — three reference analysers
+//!   (Cargo, Dockerfile, LLM-classify) shipped in this crate. The
+//!   default registry every workspace gets.
+//! - [`AnalyzerRegistry::merge_yaml`] — declarative override / extend
+//!   from `<output>/.atlas/analyzers.yaml`. PR-5 ships the merge but
+//!   does not yet emit per-analyser instances for every spec the
+//!   YAML can name (subprocess transport is Phase 2). Specs whose
+//!   `id` matches a built-in analyser update its applicability and
+//!   version metadata in place; specs naming an unknown id are
+//!   recorded for fingerprint purposes but do not produce a runnable
+//!   analyser instance.
+//!
+//! Dispatch order (design §7.3): the registry is sorted by
+//! `(stage, cost_class)` ascending. Tie-breaks fall to insertion
+//! order. The dispatcher iterates the sorted view; the source list
+//! is preserved so callers (and the fingerprint computation) see a
+//! stable shape regardless of dispatch order.
+
+use std::sync::Arc;
+
+use atlas_index::{AnalyzerSpec, AnalyzersFile, Stage, ANALYZERS_SCHEMA_VERSION};
+use sha2::{Digest, Sha256};
+
+use crate::cargo_classifier::CargoClassifier;
+use crate::dockerfile_classifier::DockerfileClassifier;
+use crate::llm_classify::LlmClassifyAnalyzer;
+use crate::Analyzer;
+
+/// Namespace string mixed into the `analyzer_registry_sha` so a future
+/// hash redefinition can be distinguished from the v1 form. The hash
+/// computation is documented on
+/// [`atlas_index::CacheFingerprints::analyzer_registry_sha`].
+pub const REGISTRY_HASH_NAMESPACE: &str = "atlas-analyzers/v1";
+
+/// Ordered analyser list. Public methods are immutable except for
+/// [`AnalyzerRegistry::merge_yaml`], which is the one mutation path.
+#[derive(Clone)]
+pub struct AnalyzerRegistry {
+    /// Analyser instances. Order is registration order; dispatch
+    /// iterates a sorted view.
+    analyzers: Vec<Arc<dyn Analyzer>>,
+    /// Declarative shape for the merged registry, used to compute
+    /// the canonical [`AnalyzersFile`] and its sha256.
+    declared: AnalyzersFile,
+}
+
+impl std::fmt::Debug for AnalyzerRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnalyzerRegistry")
+            .field("analyzer_count", &self.analyzers.len())
+            .field("declared_count", &self.declared.analyzers.len())
+            .finish()
+    }
+}
+
+impl AnalyzerRegistry {
+    /// Three reference analysers shipped in this crate. Every
+    /// workspace starts here; `analyzers.yaml` (when present) merges
+    /// on top.
+    pub fn builtin() -> Self {
+        let cargo = Arc::new(CargoClassifier::new()) as Arc<dyn Analyzer>;
+        let docker = Arc::new(DockerfileClassifier::new()) as Arc<dyn Analyzer>;
+        let llm = Arc::new(LlmClassifyAnalyzer::new()) as Arc<dyn Analyzer>;
+
+        let analyzers = vec![cargo.clone(), docker.clone(), llm.clone()];
+        let declared = AnalyzersFile {
+            schema_version: ANALYZERS_SCHEMA_VERSION,
+            analyzers: analyzers.iter().map(spec_for_analyzer).collect(),
+            config: Default::default(),
+        };
+
+        AnalyzerRegistry {
+            analyzers,
+            declared,
+        }
+    }
+
+    /// Empty registry. Tests use this to construct a controlled
+    /// dispatch order; production code always starts from
+    /// [`AnalyzerRegistry::builtin`].
+    pub fn empty() -> Self {
+        AnalyzerRegistry {
+            analyzers: Vec::new(),
+            declared: AnalyzersFile::default(),
+        }
+    }
+
+    /// Register an analyser. Used by [`AnalyzerRegistry::empty`]'s
+    /// test path and by future Phase 2 wiring (subprocess analysers).
+    /// The declared spec is built from the analyser's metadata.
+    pub fn register(&mut self, analyzer: Arc<dyn Analyzer>) {
+        self.declared.analyzers.push(spec_for_analyzer(&analyzer));
+        self.analyzers.push(analyzer);
+    }
+
+    /// Number of registered analyser instances (built-ins plus any
+    /// added via [`AnalyzerRegistry::register`]).
+    pub fn len(&self) -> usize {
+        self.analyzers.len()
+    }
+
+    /// True when no analysers are registered (test convenience; the
+    /// production builtin registry is non-empty).
+    pub fn is_empty(&self) -> bool {
+        self.analyzers.is_empty()
+    }
+
+    /// Iterate analysers in dispatch order (`(stage, cost_class)`
+    /// ascending; insertion order on ties).
+    pub fn iter_dispatch_order(&self) -> impl Iterator<Item = &Arc<dyn Analyzer>> {
+        let mut indexed: Vec<(usize, &Arc<dyn Analyzer>)> =
+            self.analyzers.iter().enumerate().collect();
+        indexed.sort_by(|a, b| {
+            a.1.stage()
+                .cmp(&b.1.stage())
+                .then(cost_class_rank(a.1.cost_class()).cmp(&cost_class_rank(b.1.cost_class())))
+                .then(a.0.cmp(&b.0))
+        });
+        // Collect into a Vec then return an owned iterator so the
+        // caller is not borrow-locked to the registry beyond the
+        // sort.
+        indexed
+            .into_iter()
+            .map(|(_, a)| a)
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    /// Collect analysers for a particular stage in dispatch order.
+    /// L3 dispatch uses this filter to skip L5+ analysers entirely.
+    pub fn analyzers_for_stage(&self, stage: Stage) -> Vec<Arc<dyn Analyzer>> {
+        self.iter_dispatch_order()
+            .filter(|a| a.stage() == stage)
+            .cloned()
+            .collect()
+    }
+
+    /// Merge a declarative `analyzers.yaml` file. Specs whose `id`
+    /// matches a built-in update that built-in's `declared` spec in
+    /// place; unknown ids accumulate so the fingerprint reflects the
+    /// user's intent. Phase 1 does not yet instantiate subprocess
+    /// analysers — those land in Phase 2.
+    ///
+    /// Validates each spec via [`AnalyzerSpec::validate`]; an invalid
+    /// pair (e.g. `transport: subprocess` with no `subprocess:` map)
+    /// is dropped with a warning to stderr — the merge is otherwise
+    /// best-effort.
+    pub fn merge_yaml(&mut self, yaml: &AnalyzersFile) {
+        for spec in &yaml.analyzers {
+            if let Err(e) = spec.validate() {
+                eprintln!(
+                    "warning: analyzers.yaml spec `{}` failed validation: {e}; skipping",
+                    spec.id
+                );
+                continue;
+            }
+            if let Some(existing) = self.declared.analyzers.iter_mut().find(|s| s.id == spec.id) {
+                // Update applicability + version + cost class so the
+                // user's overrides flow into the dispatcher's
+                // fingerprint. The instance is not replaced — Phase 1
+                // built-ins ignore the YAML applicability filter
+                // because their `applies` predicates have richer
+                // semantics (e.g. parsed-Cargo workspace detection)
+                // than the YAML can express. Phase 2 will tighten
+                // this once subprocess analysers and full
+                // `applies`-by-YAML are wired.
+                *existing = spec.clone();
+            } else {
+                // Unknown id: record but do not instantiate. The
+                // fingerprint includes the spec, so a user-authored
+                // analyser declaration invalidates the cache as
+                // expected even when the runtime cannot yet honour
+                // it.
+                self.declared.analyzers.push(spec.clone());
+            }
+        }
+        // Merge the optional config map last-writer-wins.
+        for (k, v) in &yaml.config {
+            self.declared.config.insert(k.clone(), v.clone());
+        }
+    }
+
+    /// Canonical sha256 hex of the merged [`AnalyzersFile`]. The
+    /// computation is `sha256(serde_yaml::to_string(&file).as_bytes())`
+    /// rendered as 64-character lowercase hex; the hash is mixed
+    /// with [`REGISTRY_HASH_NAMESPACE`] so a future wire-form change
+    /// can be disambiguated.
+    pub fn registry_sha(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(REGISTRY_HASH_NAMESPACE.as_bytes());
+        hasher.update([0u8]); // separator
+        let yaml = serde_yaml::to_string(&self.declared)
+            .expect("AnalyzersFile must serialise — every field is plain serde");
+        hasher.update(yaml.as_bytes());
+        let digest: [u8; 32] = hasher.finalize().into();
+        let mut hex = String::with_capacity(64);
+        use std::fmt::Write;
+        for b in digest {
+            write!(&mut hex, "{b:02x}").expect("writing to String never fails");
+        }
+        hex
+    }
+
+    /// View of the merged declarative registry. Useful for tests
+    /// and for the L9 projection that emits
+    /// `<output>/.atlas/analyzers.yaml`-derived metadata.
+    pub fn declared(&self) -> &AnalyzersFile {
+        &self.declared
+    }
+}
+
+/// Total order on `CostClass` matching the dispatch order in
+/// design §7.3: cheapest first.
+fn cost_class_rank(c: atlas_index::CostClass) -> u8 {
+    use atlas_index::CostClass::*;
+    match c {
+        DeterministicCheap => 0,
+        DeterministicExpensive => 1,
+        LlmCheap => 2,
+        LlmExpensive => 3,
+    }
+}
+
+/// Build an [`AnalyzerSpec`] from an analyser instance. The spec is
+/// the declarative form mirrored into `analyzers.yaml`.
+fn spec_for_analyzer(analyzer: &Arc<dyn Analyzer>) -> AnalyzerSpec {
+    let id = analyzer.id().to_string();
+    let stage = analyzer.stage();
+    let cost_class = analyzer.cost_class();
+    let version = analyzer.version().to_string();
+
+    // Built-in confidence flavours. The dispatcher ignores this
+    // field today (it makes its decisions on the runtime
+    // `AnalyzerResult` arms) but the wire form is canonical.
+    let confidence = if id == crate::llm_classify::ANALYZER_ID {
+        Some(atlas_index::Confidence::Declines)
+    } else {
+        Some(atlas_index::Confidence::Binary)
+    };
+
+    let applicability = if id == crate::cargo_classifier::ANALYZER_ID {
+        atlas_index::ApplicabilityPredicate {
+            file_globs: vec!["**/Cargo.toml".into()],
+            ..Default::default()
+        }
+    } else if id == crate::dockerfile_classifier::ANALYZER_ID {
+        atlas_index::ApplicabilityPredicate {
+            file_globs: vec!["**/Dockerfile".into()],
+            ..Default::default()
+        }
+    } else if id == crate::llm_classify::ANALYZER_ID {
+        atlas_index::ApplicabilityPredicate {
+            always: true,
+            ..Default::default()
+        }
+    } else {
+        atlas_index::ApplicabilityPredicate::default()
+    };
+
+    AnalyzerSpec {
+        id,
+        stage,
+        applicability,
+        cost_class,
+        confidence,
+        transport: atlas_index::Transport::InProcess,
+        subprocess: None,
+        version,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_lists_three_analysers() {
+        let r = AnalyzerRegistry::builtin();
+        assert_eq!(r.len(), 3);
+        let ids: Vec<&str> = r.iter_dispatch_order().map(|a| a.id()).collect();
+        // Cargo and Dockerfile both have `DeterministicCheap`; LLM
+        // sits last.
+        assert_eq!(*ids.last().unwrap(), crate::llm_classify::ANALYZER_ID);
+        assert!(ids.contains(&crate::cargo_classifier::ANALYZER_ID));
+        assert!(ids.contains(&crate::dockerfile_classifier::ANALYZER_ID));
+    }
+
+    #[test]
+    fn registry_sha_is_64_char_hex() {
+        let sha = AnalyzerRegistry::builtin().registry_sha();
+        assert_eq!(sha.len(), 64);
+        assert!(sha
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn registry_sha_changes_when_config_changes() {
+        let a = AnalyzerRegistry::builtin().registry_sha();
+        let mut r = AnalyzerRegistry::builtin();
+        let mut yaml = AnalyzersFile::default();
+        yaml.config.insert(
+            "cargo-toml-classifier".into(),
+            serde_yaml::Value::String("custom".into()),
+        );
+        r.merge_yaml(&yaml);
+        assert_ne!(a, r.registry_sha());
+    }
+
+    #[test]
+    fn merge_yaml_accepts_unknown_id_and_keeps_builtin_count() {
+        let mut r = AnalyzerRegistry::builtin();
+        let mut yaml = AnalyzersFile::default();
+        yaml.analyzers.push(AnalyzerSpec {
+            id: "future-cool-analyzer".into(),
+            stage: Stage::L5,
+            applicability: atlas_index::ApplicabilityPredicate::default(),
+            cost_class: atlas_index::CostClass::DeterministicCheap,
+            confidence: None,
+            transport: atlas_index::Transport::InProcess,
+            subprocess: None,
+            version: "0.1.0".into(),
+        });
+        r.merge_yaml(&yaml);
+        // The built-in analyser instances are unchanged in count
+        // (unknown spec is recorded but does not produce a runnable
+        // instance).
+        assert_eq!(r.len(), 3);
+        // The declared list grew by one.
+        assert_eq!(r.declared().analyzers.len(), 4);
+    }
+
+    #[test]
+    fn merge_yaml_updates_existing_built_in_spec_in_place() {
+        let mut r = AnalyzerRegistry::builtin();
+        let mut yaml = AnalyzersFile::default();
+        yaml.analyzers.push(AnalyzerSpec {
+            id: crate::cargo_classifier::ANALYZER_ID.into(),
+            stage: Stage::L3,
+            applicability: atlas_index::ApplicabilityPredicate {
+                file_globs: vec!["**/Cargo.toml".into(), "**/Cargo.lock".into()],
+                ..Default::default()
+            },
+            cost_class: atlas_index::CostClass::DeterministicCheap,
+            confidence: Some(atlas_index::Confidence::Binary),
+            transport: atlas_index::Transport::InProcess,
+            subprocess: None,
+            version: "9.9.9".into(),
+        });
+        r.merge_yaml(&yaml);
+        assert_eq!(r.declared().analyzers.len(), 3);
+        let cargo = r
+            .declared()
+            .analyzers
+            .iter()
+            .find(|s| s.id == crate::cargo_classifier::ANALYZER_ID)
+            .unwrap();
+        assert_eq!(cargo.version, "9.9.9");
+        assert_eq!(cargo.applicability.file_globs.len(), 2);
+    }
+
+    #[test]
+    fn merge_yaml_skips_invalid_specs() {
+        let mut r = AnalyzerRegistry::builtin();
+        let before = r.registry_sha();
+        let mut yaml = AnalyzersFile::default();
+        yaml.analyzers.push(AnalyzerSpec {
+            id: "broken-spec".into(),
+            stage: Stage::L3,
+            applicability: atlas_index::ApplicabilityPredicate::default(),
+            cost_class: atlas_index::CostClass::DeterministicCheap,
+            confidence: None,
+            // Mismatched transport / subprocess pair fails validate().
+            transport: atlas_index::Transport::Subprocess,
+            subprocess: None,
+            version: "0".into(),
+        });
+        r.merge_yaml(&yaml);
+        // The invalid spec is dropped silently; the registry is
+        // unchanged.
+        assert_eq!(r.registry_sha(), before);
+    }
+
+    #[test]
+    fn built_in_ids_match_analyser_self_reports() {
+        // Sanity check that the analyser-id constants match the
+        // analyser instances' own `id()` returns. A drift here would
+        // silently break `merge_yaml`'s in-place update behaviour.
+        assert_eq!(CargoClassifier.id(), crate::cargo_classifier::ANALYZER_ID);
+        assert_eq!(
+            DockerfileClassifier.id(),
+            crate::dockerfile_classifier::ANALYZER_ID
+        );
+        assert_eq!(LlmClassifyAnalyzer.id(), crate::llm_classify::ANALYZER_ID);
+    }
+}

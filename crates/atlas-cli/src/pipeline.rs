@@ -30,6 +30,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use anyhow::{Context, Result};
+use atlas_analyzers::AnalyzerRegistry;
 use atlas_engine::{
     components_yaml_snapshot_with_prompt_shas, expand_roots, external_components_yaml_snapshot,
     related_components_yaml_snapshot, run_fixedpoint, seed_filesystem_excluding, AtlasDatabase,
@@ -304,7 +305,39 @@ pub fn run_index(
         }
     }
 
-    let mut db = AtlasDatabase::new(backend.clone(), roots.clone(), fingerprint.clone());
+    // PR-5: build the analyser registry. Start from the built-in
+    // defaults (Cargo, Dockerfile, LLM-classify), then merge any
+    // per-workspace overrides from `<output>/.atlas/analyzers.yaml`
+    // — when present. A missing or unparseable file degrades to the
+    // default registry with a warning so a typo does not break the
+    // run.
+    let mut registry = AnalyzerRegistry::builtin();
+    let analyzers_yaml_path = config.output_dir.join("analyzers.yaml");
+    if analyzers_yaml_path.exists() {
+        match std::fs::read_to_string(&analyzers_yaml_path) {
+            Ok(text) => match serde_yaml::from_str::<atlas_index::AnalyzersFile>(&text) {
+                Ok(parsed) => registry.merge_yaml(&parsed),
+                Err(e) => eprintln!(
+                    "warning: failed to parse {}: {}; using built-in analyser defaults",
+                    analyzers_yaml_path.display(),
+                    e
+                ),
+            },
+            Err(e) => eprintln!(
+                "warning: failed to read {}: {}; using built-in analyser defaults",
+                analyzers_yaml_path.display(),
+                e
+            ),
+        }
+    }
+    let registry = std::sync::Arc::new(registry);
+
+    let mut db = AtlasDatabase::new_with_registry(
+        backend.clone(),
+        roots.clone(),
+        fingerprint.clone(),
+        registry,
+    );
     let cache_path = config.output_dir.join("llm-cache.json");
     cache_io::load_into(&cache_path, db.llm_cache());
     {

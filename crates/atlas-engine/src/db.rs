@@ -35,6 +35,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use atlas_analyzers::AnalyzerRegistry;
 use atlas_index::{
     ComponentsFile, ExternalsFile, OverridesFile, RelatedComponentsFile, SubsystemsOverridesFile,
 };
@@ -150,6 +151,11 @@ pub struct AtlasDatabase {
     /// outside Salsa storage for the same reason as `max_depth`. A value
     /// of 1 forces serial execution (preserving the pre-rayon path).
     map_concurrency: Arc<Mutex<usize>>,
+    /// Plugin analyser registry consulted by L3 (and PR-7+ by L5/L6).
+    /// Lives outside Salsa storage because the registry is read-only
+    /// at run time; mutating it requires a fresh database. Defaults
+    /// to [`AnalyzerRegistry::builtin`] when not explicitly supplied.
+    analyzer_registry: Arc<AnalyzerRegistry>,
 }
 
 /// Default value for [`AtlasDatabase::max_depth`]. Mirrors design §8.2.
@@ -170,10 +176,33 @@ impl AtlasDatabase {
     /// `roots` must be non-empty; `roots[0]` is the primary root. Most
     /// callers in Phase 1 pass `vec![primary]` (single-root); PR-4
     /// will populate additional peer roots via path-dep walking.
+    ///
+    /// The analyser registry defaults to [`AnalyzerRegistry::builtin`].
+    /// Callers that want to install per-workspace overrides
+    /// (`<output>/.atlas/analyzers.yaml`) should construct the
+    /// registry first and pass it through
+    /// [`AtlasDatabase::new_with_registry`].
     pub fn new(
         backend: Arc<dyn LlmBackend>,
         roots: Vec<PathBuf>,
         fingerprint: LlmFingerprint,
+    ) -> Self {
+        Self::new_with_registry(
+            backend,
+            roots,
+            fingerprint,
+            Arc::new(AnalyzerRegistry::builtin()),
+        )
+    }
+
+    /// Construct a database with an explicit analyser registry. The
+    /// registry is shared (`Arc`) so multiple database clones from
+    /// L8's map step see the same plugin set without rebuilding.
+    pub fn new_with_registry(
+        backend: Arc<dyn LlmBackend>,
+        roots: Vec<PathBuf>,
+        fingerprint: LlmFingerprint,
+        analyzer_registry: Arc<AnalyzerRegistry>,
     ) -> Self {
         assert!(
             !roots.is_empty(),
@@ -206,6 +235,7 @@ impl AtlasDatabase {
             max_depth: Arc::new(Mutex::new(DEFAULT_MAX_DEPTH)),
             fixedpoint_iterations: Arc::new(Mutex::new(0)),
             map_concurrency: Arc::new(Mutex::new(DEFAULT_MAP_CONCURRENCY)),
+            analyzer_registry,
         };
         let workspace = Workspace::new(
             &db,
@@ -226,6 +256,14 @@ impl AtlasDatabase {
 
     pub fn backend(&self) -> &Arc<dyn LlmBackend> {
         &self.backend
+    }
+
+    /// Active analyser registry (built-in by default; overridden via
+    /// [`AtlasDatabase::new_with_registry`]). Used by L3 dispatch and
+    /// by L9 to compute the `analyzer_registry_sha` written into
+    /// `components.yaml`.
+    pub fn analyzer_registry(&self) -> &Arc<AnalyzerRegistry> {
+        &self.analyzer_registry
     }
 
     /// Memoised backend call. Every LLM-adjacent query (L3's

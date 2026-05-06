@@ -22,6 +22,7 @@
 //! | `0x02` | `add_prompt_sha`               | UTF-8 bytes of the sha256 hex string  |
 //! | `0x03` | `add_llm_fingerprint`          | length-framed concatenation of `template_sha` ‖ `ontology_sha` ‖ `model_id` ‖ `backend_version` |
 //! | `0x04` | `add_participant_surface_sha`  | UTF-8 bytes of the sha256 hex string  |
+//! | `0x05` | `add_analyzer_registry_sha`    | UTF-8 bytes of the sha256 hex string (per design §8.1, contributes to L3+ stage cache keys so a registry shape change invalidates every downstream cache entry automatically) |
 //!
 //! Each entry in the `BTreeSet` is `(tag, bytes)`; sort order is by
 //! tag first, then lex order on bytes. New tags must be appended (never
@@ -46,6 +47,7 @@ const TAG_FILE_CONTENT_SHA: u8 = 0x01;
 const TAG_PROMPT_SHA: u8 = 0x02;
 const TAG_LLM_FINGERPRINT: u8 = 0x03;
 const TAG_PARTICIPANT_SURFACE_SHA: u8 = 0x04;
+const TAG_ANALYZER_REGISTRY_SHA: u8 = 0x05;
 
 /// Builder for a stage cache fingerprint.
 ///
@@ -147,6 +149,19 @@ impl FingerprintBuilder {
     pub fn add_participant_surface_sha(&mut self, sha: &Sha256Hex) {
         self.entries
             .insert((TAG_PARTICIPANT_SURFACE_SHA, sha.as_bytes().to_vec()));
+    }
+
+    /// Contribute the merged analyser registry's canonical sha256
+    /// (per design §8.1; computed by
+    /// [`atlas_analyzers::AnalyzerRegistry::registry_sha`]). Every
+    /// L3+ cache key includes this contribution, so a registry
+    /// shape change — a new analyser, a version bump, an
+    /// `analyzers.yaml` override — invalidates every downstream
+    /// cache entry automatically. PR-5 wires the call site at L3;
+    /// PR-7/PR-8/PR-10 extend it to the other LLM-bearing stages.
+    pub fn add_analyzer_registry_sha(&mut self, sha: &Sha256Hex) {
+        self.entries
+            .insert((TAG_ANALYZER_REGISTRY_SHA, sha.as_bytes().to_vec()));
     }
 
     /// Finalise the builder and return the lowercase 64-character
@@ -307,6 +322,27 @@ mod tests {
     }
 
     #[test]
+    fn add_analyzer_registry_sha_changes_fingerprint() {
+        // PR-5: the analyser-registry sha contributes to L3+ keys.
+        let base = FingerprintBuilder::new(Stage::L3, "an", "v").finalise();
+        let mut with_one = FingerprintBuilder::new(Stage::L3, "an", "v");
+        with_one.add_analyzer_registry_sha(&"abc".to_string());
+        assert_ne!(base, with_one.finalise());
+    }
+
+    #[test]
+    fn analyzer_registry_sha_tag_disambiguates_from_participant_surface() {
+        // The two single-line sha contributions live on distinct
+        // tags (`0x04` vs `0x05`); identical bytes contributed via
+        // each method must NOT collide.
+        let mut a = FingerprintBuilder::new(Stage::L6, "an", "v");
+        a.add_participant_surface_sha(&"abc".to_string());
+        let mut b = FingerprintBuilder::new(Stage::L6, "an", "v");
+        b.add_analyzer_registry_sha(&"abc".to_string());
+        assert_ne!(a.finalise(), b.finalise());
+    }
+
+    #[test]
     fn equal_inputs_produce_equal_fingerprints() {
         let mut a = FingerprintBuilder::new(Stage::L6, "edges-llm", "1.0");
         a.add_llm_fingerprint(&fp());
@@ -345,6 +381,7 @@ mod tests {
         Prompt(String),
         Llm(String, String, [u8; 32], [u8; 32]),
         ParticipantSurface(String),
+        AnalyzerRegistry(String),
     }
 
     fn arb_hex_sha() -> impl Strategy<Value = String> {
@@ -368,6 +405,7 @@ mod tests {
                     model, backend, t_sha, o_sha
                 )),
             arb_hex_sha().prop_map(Contribution::ParticipantSurface),
+            arb_hex_sha().prop_map(Contribution::AnalyzerRegistry),
         ]
     }
 
@@ -384,6 +422,7 @@ mod tests {
                 });
             }
             Contribution::ParticipantSurface(s) => builder.add_participant_surface_sha(s),
+            Contribution::AnalyzerRegistry(s) => builder.add_analyzer_registry_sha(s),
         }
     }
 
