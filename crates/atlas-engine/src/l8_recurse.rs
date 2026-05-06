@@ -48,6 +48,7 @@ use rayon::prelude::*;
 use crate::db::{AtlasDatabase, Workspace};
 use crate::l4_tree::all_components;
 use crate::l7_structural::modularity_hint;
+use crate::roots::best_root_for;
 use crate::subcarve_policy::{decide, decide_kind_only, PolicyDecision, SubcarveSignals};
 use crate::types::{Classification, ComponentKind};
 
@@ -266,7 +267,7 @@ fn map_reduce_subcarve(
             // Multi-root: relativise against the longest matching root
             // so a sub-dir under a peer root appears as `crate-name`
             // rather than `../peer/crate-name`.
-            let owning_root = best_root_for(abs_dir, &roots);
+            let owning_root = best_root_for(&roots, abs_dir);
             let rel = match owning_root {
                 Some(root) => abs_dir.strip_prefix(root).unwrap_or(abs_dir),
                 None => abs_dir.as_path(),
@@ -493,14 +494,6 @@ fn absolutise_under_any_root(
         }
     }
     absolutise(&roots[0], segment_path)
-}
-
-/// Pick the longest root in `roots` that is a prefix of `path`.
-fn best_root_for<'a>(path: &Path, roots: &'a [PathBuf]) -> Option<&'a PathBuf> {
-    roots
-        .iter()
-        .filter(|r| path.starts_with(r))
-        .max_by_key(|r| r.components().count())
 }
 
 fn build_rationale(

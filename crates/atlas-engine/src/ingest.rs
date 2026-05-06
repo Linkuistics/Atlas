@@ -243,10 +243,12 @@ fn seed_one_root(
     Ok(())
 }
 
-/// Compute `excluded` as a non-empty relative path under `root`, or
-/// return `None` when no exclusion should apply (e.g., `excluded` lives
-/// outside `root`, or equals `root` — pruning the latter would empty
-/// the walk).
+/// Returns `Some(rel)` where `rel` is `excluded`'s path relative to
+/// `root`, or `None` if `excluded` is not under `root` (or equals
+/// `root` — pruning that would empty the walk). An empty `excluded`
+/// always returns `None` because `canonicalize("")` fails — callers
+/// (e.g. atlas-cli's pipeline) rely on this as a no-op sentinel for
+/// roots that don't have an exclusion.
 ///
 /// Uses a lexical `strip_prefix` first (no syscalls, sufficient for the
 /// common case where the CLI builds `output_dir = root.join(".atlas")`)

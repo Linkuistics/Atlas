@@ -251,7 +251,9 @@ pub fn run_index(
     let mut excluded_dirs: Vec<PathBuf> = Vec::with_capacity(roots.len());
     excluded_dirs.push(config.output_dir.clone());
     for _ in &config.additional_roots {
-        // Empty PathBuf → not under the peer root → pruning is a no-op.
+        // Empty PathBuf is the no-op sentinel: excluded_relative_to silently
+        // drops paths not under any root (canonicalize("") fails), so per-root
+        // excluded vectors that lack an entry just contribute nothing.
         excluded_dirs.push(PathBuf::new());
     }
     seed_filesystem_excluding(&mut db, &roots, &excluded_dirs, config.respect_gitignore)

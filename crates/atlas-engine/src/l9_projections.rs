@@ -32,6 +32,7 @@ use crate::db::{AtlasDatabase, Workspace};
 use crate::l1_queries::manifests_in;
 use crate::l4_tree::all_components;
 use crate::l6_edges::all_proposed_edges;
+use crate::roots::best_root_for;
 
 /// Build the `components.yaml` projection from the live engine state.
 /// The `roots` are taken from the workspace input so a caller that
@@ -83,29 +84,37 @@ pub fn components_yaml_snapshot_with_prompt_shas(
 pub fn external_components_yaml_snapshot(db: &AtlasDatabase) -> Arc<ExternalsFile> {
     let workspace = db.workspace();
     let roots = workspace.roots(db as &dyn salsa::Database).clone();
-    // Per-root externals are unioned by id (deduped on push) so a crate
-    // that appears in two roots is reported once with both manifests in
-    // `discovered_from`.
+    // Per-root externals are unioned by id so a crate that appears in
+    // two roots is reported once with both manifests in
+    // `discovered_from`. Sources accumulate in a `BTreeSet` keyed by
+    // path string to avoid the O(n²) `.any` scan per push; the final
+    // sorted Vec is built at output time. The set's lex ordering is
+    // deterministic, so the resulting YAML is byte-stable.
     let mut by_id: BTreeMap<String, ExternalEntry> = BTreeMap::new();
+    let mut sources_by_id: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for root in &roots {
         let per_root =
             externals_from_manifests(db as &dyn salsa::Database, workspace, root.clone());
         for entry in per_root.iter() {
-            let slot = by_id
+            by_id
                 .entry(entry.id.clone())
                 .or_insert_with(|| entry.clone());
+            let bucket = sources_by_id.entry(entry.id.clone()).or_default();
             for source in &entry.discovered_from {
-                if !slot.discovered_from.iter().any(|d| d == source) {
-                    slot.discovered_from.push(source.clone());
-                }
+                bucket.insert(source.clone());
             }
         }
     }
-    let mut externals: Vec<ExternalEntry> = by_id.into_values().collect();
-    for entry in &mut externals {
-        entry.discovered_from.sort();
-        entry.discovered_from.dedup();
-    }
+    let mut externals: Vec<ExternalEntry> = by_id
+        .into_iter()
+        .map(|(id, mut entry)| {
+            entry.discovered_from = sources_by_id
+                .remove(&id)
+                .map(|set| set.into_iter().collect())
+                .unwrap_or_default();
+            entry
+        })
+        .collect();
     externals.sort_by(|a, b| a.id.cmp(&b.id));
     Arc::new(ExternalsFile {
         schema_version: EXTERNALS_SCHEMA_VERSION,
@@ -165,7 +174,7 @@ pub fn externals_from_manifests<'db>(
             continue;
         };
 
-        let owning_root = best_matching_root(path, roots).unwrap_or(&dir);
+        let owning_root = best_root_for(roots, path).unwrap_or(dir.as_path());
         let rel = path_relative(path, owning_root);
         let rel_str = rel.to_string_lossy().into_owned();
 
@@ -183,17 +192,6 @@ pub fn externals_from_manifests<'db>(
     }
     externals.sort_by(|a, b| a.id.cmp(&b.id));
     Arc::new(externals)
-}
-
-/// Pick the longest root in `roots` that is a prefix of `path`. Used
-/// to relativise paths in multi-root projections so the recorded
-/// `discovered_from` / path segments are stable against which root the
-/// CLI was invoked from.
-fn best_matching_root<'a>(path: &std::path::Path, roots: &'a [PathBuf]) -> Option<&'a PathBuf> {
-    roots
-        .iter()
-        .filter(|r| path.starts_with(r))
-        .max_by_key(|r| r.components().count())
 }
 
 fn collect_cargo_externals(

@@ -34,6 +34,7 @@ use crate::defaults::{
 };
 use crate::heuristics::{classify_deterministic, ManifestContents};
 use crate::l1_queries::{doc_headings, file_content, git_boundaries, manifests_in, shebangs};
+use crate::roots::best_root_for;
 use crate::types::{Classification, ComponentKind, RationaleBundle};
 
 /// Maximum bytes of each manifest passed to the LLM. Generous enough
@@ -108,8 +109,8 @@ pub fn is_component(
     // LLM sees as `workspace_root`; if no root matches, fall back to
     // the primary root so paths are always relativised against
     // *something*.
-    let owning_root = best_root_for(&candidate_dir, &roots)
-        .cloned()
+    let owning_root = best_root_for(&roots, &candidate_dir)
+        .map(|p| p.to_path_buf())
         .unwrap_or_else(|| roots[0].clone());
     Arc::new(classify_via_llm(
         db,
@@ -118,16 +119,6 @@ pub fn is_component(
         &bundle,
         &snippets,
     ))
-}
-
-/// Pick the longest root in `roots` that is a prefix of `path`. Used
-/// at L3 to relativise pin keys and LLM-input paths against the root
-/// that owns the candidate.
-fn best_root_for<'a>(path: &Path, roots: &'a [PathBuf]) -> Option<&'a PathBuf> {
-    roots
-        .iter()
-        .filter(|r| path.starts_with(r))
-        .max_by_key(|r| r.components().count())
 }
 
 fn build_bundle(db: &AtlasDatabase, workspace: Workspace, candidate_dir: &Path) -> RationaleBundle {
@@ -203,8 +194,7 @@ fn pinned_classification(
     // that contains it. Pre-vNext callers (single-root) see the same
     // behaviour because `roots = vec![root]` returns that one root as
     // the longest prefix.
-    let owning_root = best_root_for(candidate_dir, roots)
-        .map(|p| p.as_path())
+    let owning_root = best_root_for(roots, candidate_dir)
         .unwrap_or_else(|| roots.first().map(|p| p.as_path()).unwrap_or(candidate_dir));
     let rel = candidate_dir
         .strip_prefix(owning_root)
