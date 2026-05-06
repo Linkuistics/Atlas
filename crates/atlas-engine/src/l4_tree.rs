@@ -341,7 +341,7 @@ fn resolve_ids_and_tombstones(
 
     // Now build the final ComponentEntry list.
     let mut out: Vec<ComponentEntry> = Vec::new();
-    let mut id_by_dir: HashMap<PathBuf, ComponentId> = HashMap::new();
+    let mut id_by_dir: BTreeMap<PathBuf, ComponentId> = BTreeMap::new();
     for i in 0..live.len() {
         id_by_dir.insert(
             live[i].dir.clone(),
