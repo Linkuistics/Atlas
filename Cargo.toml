@@ -40,6 +40,7 @@ atlas-index = { path = "../atlas-contracts/crates/atlas-index" }
 # Test-only deps shared by multiple crates.
 assert_cmd = "2"
 predicates = "3"
+proptest = "1"
 regex = "1"
 tempfile = "3"
 

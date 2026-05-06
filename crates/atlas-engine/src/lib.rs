@@ -12,6 +12,7 @@
 //! - L9 projections — live.
 //! - CLI — lives in the `atlas-cli` crate.
 
+pub mod cache;
 pub mod db;
 pub mod defaults;
 pub mod fixedpoint;
@@ -39,6 +40,7 @@ pub mod types;
 
 mod prompt_token_coverage;
 
+pub use cache::{FingerprintBuilder, GcReport, PersistentCache, Sha256Hex};
 pub use db::{
     AtlasDatabase, ExecutedEvent, File, Workspace, DEFAULT_MAP_CONCURRENCY, DEFAULT_MAX_DEPTH,
 };
