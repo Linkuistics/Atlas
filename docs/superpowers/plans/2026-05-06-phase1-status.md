@@ -136,6 +136,11 @@ PR-4 owns the path-dep walk that auto-populates `additional_roots`.
 PR-4 also owns `<output>/.atlas/config.yaml#roots` persistence (mentioned
 under PR-4 in the plan).
 
+Quality fixes follow-up at commit `09f19e4`:
+- New shared helper `crates/atlas-engine/src/roots.rs::best_root_for(&[PathBuf], &Path) -> Option<&Path>`. Re-exported from `lib.rs`. Three identical longest-prefix matchers (in `l3_classify.rs`, `l8_recurse.rs`, and the misnamed `best_matching_root` in `l9_projections.rs`) are consolidated onto it. Future PRs adding root-disambiguation logic should extend this helper, not introduce new copies.
+- `external_components_yaml_snapshot` `discovered_from` dedup now uses `BTreeSet` (was O(n²)).
+- `pipeline.rs` per-root exclusion-vector empty-`PathBuf` sentinel documented.
+
 ### PR-4
 (none yet)
 
