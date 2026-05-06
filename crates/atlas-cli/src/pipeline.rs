@@ -24,13 +24,14 @@
 //! touches `components.overrides.yaml` — it is user-authored and lives
 //! untouched.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use anyhow::{Context, Result};
 use atlas_engine::{
-    components_yaml_snapshot_with_prompt_shas, external_components_yaml_snapshot,
+    components_yaml_snapshot_with_prompt_shas, expand_roots, external_components_yaml_snapshot,
     related_components_yaml_snapshot, run_fixedpoint, seed_filesystem_excluding, AtlasDatabase,
     FixedpointConfig, Phase, ProgressEvent, ProgressSink,
 };
@@ -38,8 +39,8 @@ use atlas_index::{
     load_or_default_components, load_or_default_externals, load_or_default_overrides,
     load_or_default_related_components, load_or_default_subsystems,
     load_or_default_subsystems_overrides, save_components_atomic, save_externals_atomic,
-    save_related_components_atomic, save_subsystems_atomic, ComponentsFile, OverridesFile,
-    SubsystemsFile, SubsystemsOverridesFile,
+    save_related_components_atomic, save_subsystems_atomic, AtlasConfigFile, ComponentsFile,
+    OverridesFile, SubsystemsFile, SubsystemsOverridesFile,
 };
 use atlas_llm::{LlmBackend, LlmFingerprint, TokenCounter};
 
@@ -232,7 +233,53 @@ pub fn run_index(
         fingerprint.backend_version.push_str("+overrides=disabled");
     }
 
-    let roots = config.all_roots();
+    // PR-4: walk path-deps under the primary root to discover peer
+    // manifest-roots automatically. The discovered roots are merged
+    // with any manual `--additional-root` paths from the CLI; the
+    // manual escape hatch coexists with the auto-discovery so users
+    // can still extend the analysed set with paths that have no
+    // path-dep edge (e.g. a sibling docs repo). Dedup is by
+    // canonicalised path via `BTreeSet` so a manual flag pointing at
+    // the same root the walk would have found does not double-count.
+    let auto_expanded = expand_roots(&config.root).context("failed to expand path-dep roots")?;
+    let auto_additional: Vec<PathBuf> = auto_expanded.iter().skip(1).cloned().collect();
+
+    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
+    let canonical_primary = auto_expanded
+        .first()
+        .cloned()
+        .unwrap_or_else(|| config.root.clone());
+    seen.insert(canonical_primary.clone());
+
+    let mut all_additional: Vec<PathBuf> = Vec::new();
+    // Manual `--additional-root` paths win the ordering tie: users
+    // who explicitly listed a root expect it adjacent to the primary
+    // in `components.yaml`. Auto-discovered peers follow.
+    for r in config.additional_roots.iter().chain(auto_additional.iter()) {
+        let canonical = r.canonicalize().unwrap_or_else(|_| r.clone());
+        if seen.insert(canonical.clone()) {
+            all_additional.push(canonical);
+        }
+    }
+
+    let mut roots: Vec<PathBuf> = Vec::with_capacity(1 + all_additional.len());
+    roots.push(canonical_primary);
+    roots.extend(all_additional.iter().cloned());
+
+    // Persist the discovered roots to `<output>/.atlas/config.yaml`
+    // for auditability (plan §4 PR-4). The file is otherwise
+    // user-authored — preserve fields we don't own. A failure to
+    // write here is non-fatal: the pipeline can still complete and
+    // the user can always re-discover the roots by re-running.
+    if !config.dry_run {
+        if let Err(err) = persist_discovered_roots(&config.output_dir, &roots) {
+            eprintln!(
+                "warning: failed to persist discovered roots to {}: {err:#}",
+                config.output_dir.join("config.yaml").display()
+            );
+        }
+    }
+
     let mut db = AtlasDatabase::new(backend.clone(), roots.clone(), fingerprint.clone());
     let cache_path = config.output_dir.join("llm-cache.json");
     cache_io::load_into(&cache_path, db.llm_cache());
@@ -250,7 +297,7 @@ pub fn run_index(
     // `excluded_dirs[i]` is paired with `roots[i]`.
     let mut excluded_dirs: Vec<PathBuf> = Vec::with_capacity(roots.len());
     excluded_dirs.push(config.output_dir.clone());
-    for _ in &config.additional_roots {
+    for _ in 1..roots.len() {
         // Empty PathBuf is the no-op sentinel: excluded_relative_to silently
         // drops paths not under any root (canonicalize("") fails), so per-root
         // excluded vectors that lack an entry just contribute nothing.
@@ -509,6 +556,44 @@ fn stable_generated_at_subsystems(
     } else {
         format_utc_rfc3339(now)
     }
+}
+
+/// Persist the discovered root set to `<output>/.atlas/config.yaml#roots`
+/// (plan §4 PR-4 acceptance criterion). The file is otherwise
+/// user-authored (operations / override_search are user knobs); we
+/// load-or-default, overwrite only `roots`, and write back. The write
+/// is via tempfile-then-rename so a crash mid-write cannot corrupt
+/// the file.
+fn persist_discovered_roots(output_dir: &Path, roots: &[PathBuf]) -> Result<()> {
+    let path = output_dir.join("config.yaml");
+    std::fs::create_dir_all(output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
+    let mut existing = if path.exists() {
+        let contents = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        // The file may be hand-written and missing fields the schema
+        // requires; degrade to default rather than refusing to update
+        // `roots` because of an unrelated parse miss.
+        serde_yaml::from_str::<AtlasConfigFile>(&contents).unwrap_or_default()
+    } else {
+        AtlasConfigFile::default()
+    };
+    existing.roots = roots.to_vec();
+    let yaml = serde_yaml::to_string(&existing).context("failed to serialise config.yaml")?;
+    let parent = path
+        .parent()
+        .with_context(|| format!("{} has no parent directory", path.display()))?;
+    let file_name = path
+        .file_name()
+        .with_context(|| format!("{} has no file name", path.display()))?
+        .to_string_lossy()
+        .into_owned();
+    let tmp = parent.join(format!(".{file_name}.tmp"));
+    std::fs::write(&tmp, yaml.as_bytes())
+        .with_context(|| format!("failed to write temp file {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path)
+        .with_context(|| format!("failed to rename {} to {}", tmp.display(), path.display()))?;
+    Ok(())
 }
 
 /// Helper the binary uses to write the one-line summary banner.

@@ -5,6 +5,8 @@
 //! malformed document degrades to the default "all false" shape so
 //! the classifier falls back to the LLM.
 
+use std::path::PathBuf;
+
 /// Facts lifted from a `Cargo.toml`. True for each table that exists
 /// at the document root. Cargo's own spec defines these as top-level
 /// tables (`[lib]`, `[[bin]]`, `[workspace]`), so a proper TOML parse
@@ -26,6 +28,60 @@ pub fn parse_cargo_toml(contents: &str) -> CargoTomlShape {
         has_lib_section: table.get("lib").is_some_and(toml::Value::is_table),
         has_bin_section: table.get("bin").is_some_and(toml::Value::is_array),
         has_workspace_section: table.get("workspace").is_some_and(toml::Value::is_table),
+    }
+}
+
+/// Returns every path-dep target declared in a `Cargo.toml` manifest,
+/// as paths relative to the manifest's parent directory (callers
+/// canonicalise). Includes `[dependencies]`, `[dev-dependencies]`,
+/// `[build-dependencies]`, and `[workspace.dependencies]`. Skips git
+/// deps, registry deps, version-only specs.
+///
+/// On a malformed manifest the function returns an empty Vec rather
+/// than erroring — the same degrade-to-default policy `parse_cargo_toml`
+/// uses. PR-4's [`crate::root_expansion::expand_roots`] is the primary
+/// caller; an opaque parse failure there should not abort the entire
+/// fixed-point walk.
+///
+/// Per-target tables (`[target.'cfg(...)'.dependencies]`) are not
+/// walked in Phase 1 — Atlas vNext analysers do not yet cross
+/// platform-conditional boundaries. Phase 2 may extend this.
+pub fn extract_path_deps(contents: &str) -> Vec<PathBuf> {
+    let Ok(table) = contents.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = Vec::new();
+
+    // Top-level dependency tables.
+    for key in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        collect_path_deps_from_table(table.get(key), &mut out);
+    }
+
+    // Workspace inheritance: `[workspace.dependencies]` is a Cargo-2024
+    // affordance that lifts member deps into the workspace root. PR-4
+    // walks through these too because the path-dep edges they carry are
+    // semantically identical to `[dependencies]` edges.
+    if let Some(ws) = table.get("workspace").and_then(toml::Value::as_table) {
+        collect_path_deps_from_table(ws.get("dependencies"), &mut out);
+    }
+
+    out
+}
+
+/// Walks a single dependency-table-shaped TOML value, pushing every
+/// `path = "..."` value as a `PathBuf` onto `out`. Non-table specs and
+/// path-less entries (registry / git deps) are skipped silently.
+fn collect_path_deps_from_table(block: Option<&toml::Value>, out: &mut Vec<PathBuf>) {
+    let Some(deps) = block.and_then(toml::Value::as_table) else {
+        return;
+    };
+    for (_name, spec) in deps {
+        let Some(spec_table) = spec.as_table() else {
+            continue;
+        };
+        if let Some(toml::Value::String(p)) = spec_table.get("path") {
+            out.push(PathBuf::from(p));
+        }
     }
 }
 
@@ -141,5 +197,67 @@ path = "src/lib.rs"
     fn package_json_malformed_input_degrades_to_default() {
         let shape = parse_package_json("{ not valid json");
         assert_eq!(shape, PackageJsonShape::default());
+    }
+
+    #[test]
+    fn extract_path_deps_returns_empty_for_no_deps() {
+        let deps = extract_path_deps(
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        );
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn extract_path_deps_returns_empty_for_registry_only_deps() {
+        let deps = extract_path_deps(
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n[dependencies]\nserde = \"1\"\nanyhow = { version = \"1\" }\n",
+        );
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn extract_path_deps_picks_up_path_in_dependencies() {
+        let deps = extract_path_deps(
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n[dependencies]\nsibling = { path = \"../sibling\" }\nserde = \"1\"\n",
+        );
+        assert_eq!(deps, vec![PathBuf::from("../sibling")]);
+    }
+
+    #[test]
+    fn extract_path_deps_picks_up_path_in_dev_and_build_dependencies() {
+        let deps = extract_path_deps(
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n[dev-dependencies]\ntest-utils = { path = \"../test-utils\" }\n[build-dependencies]\nbuild-helpers = { path = \"../build-helpers\" }\n",
+        );
+        let mut sorted = deps.clone();
+        sorted.sort();
+        assert_eq!(
+            sorted,
+            vec![
+                PathBuf::from("../build-helpers"),
+                PathBuf::from("../test-utils"),
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_path_deps_picks_up_workspace_dependencies() {
+        let deps = extract_path_deps(
+            "[workspace]\nmembers = [\"a\"]\n\n[workspace.dependencies]\nshared = { path = \"shared\" }\n",
+        );
+        assert_eq!(deps, vec![PathBuf::from("shared")]);
+    }
+
+    #[test]
+    fn extract_path_deps_skips_git_and_version_specs() {
+        let deps = extract_path_deps(
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n[dependencies]\nfoo = { git = \"https://example.com/foo.git\" }\nbar = { version = \"1\", features = [\"derive\"] }\n",
+        );
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn extract_path_deps_malformed_input_degrades_to_empty() {
+        let deps = extract_path_deps("this is not valid toml at all ][");
+        assert!(deps.is_empty());
     }
 }

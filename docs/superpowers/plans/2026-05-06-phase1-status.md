@@ -17,7 +17,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-1  — Schema definitions for new types
 - [ ] PR-2  — Persistent content-addressed cache (no wiring)
 - [x] PR-3  — Multi-root `Workspace` (Salsa input)
-- [ ] PR-4  — Path-dep root expansion to fixed point
+- [x] PR-4  — Path-dep root expansion to fixed point
 - [ ] PR-5  — Plugin protocol + three reference analysers
 - [ ] PR-6  — Scattered per-component `.atlas/` writers
 - [ ] PR-7  — `surfaces.yaml` emission (Rust binding shape)
@@ -142,7 +142,59 @@ Quality fixes follow-up at commit `09f19e4`:
 - `pipeline.rs` per-root exclusion-vector empty-`PathBuf` sentinel documented.
 
 ### PR-4
-(none yet)
+2026-05-06 — Landed on Atlas main as a single commit. Implements the
+fixed-point path-dep walk and config.yaml#roots persistence.
+
+Public API (atlas-engine):
+- `expand_roots(primary: &Path) -> anyhow::Result<Vec<PathBuf>>`,
+  re-exported from `lib.rs`. Always returns the canonicalised primary
+  as element 0; peer roots follow in discovery (BFS) order.
+- `manifest_parse::extract_path_deps(contents: &str) -> Vec<PathBuf>`
+  reads `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`,
+  and `[workspace.dependencies]`. Malformed manifest degrades to empty
+  Vec (matches `parse_cargo_toml`'s policy).
+
+Walk semantics: per-root recursive `Cargo.toml` enumeration (skipping
+`target/`, `node_modules/`, `.git/`); for each path-dep, canonicalise
+the resolved target; if it's inside any known root, skip (the existing
+root's L1 walk covers it); otherwise walk up to the enclosing
+`[workspace]` manifest (or fall through to the crate's own directory)
+and add the canonicalised manifest-root as a peer. Visited-set guard
+on canonical paths terminates cycles cleanly with a `warning:` line on
+stderr.
+
+Pipeline integration (`crates/atlas-cli/src/pipeline.rs`):
+- `run_index` now calls `expand_roots(&config.root)` before
+  constructing the database. Discovered peer roots are merged with the
+  manual `--additional-root` set; manual paths come first (they're the
+  user's explicit ordering choice), auto-discovered peers follow,
+  dedup is by canonicalised path via `BTreeSet`. The `--additional-root`
+  CLI flag remains as the manual escape hatch (paths with no
+  path-dep edge, e.g. a sibling docs repo).
+- After the merge, the discovered root set is persisted to
+  `<output>/.atlas/config.yaml#roots` via `serde_yaml`. The file is
+  load-or-default-then-overwrite-`roots` so user-authored fields
+  (`operations`, `override_search`) survive. Atomic write
+  (tempfile-then-rename). Persistence failure is non-fatal (warning on
+  stderr; the run continues).
+- `--dry-run` skips the persistence step.
+
+Tests:
+- `crates/atlas-engine/tests/multi_root_path_deps.rs` (8 tests):
+  single-root no-op, two-root path-dep, two-root with workspace-at-target,
+  short cycle (back-into-primary), cross-tree cycle (visited-set guards
+  the second-pass), missing path-dep skipped, in-primary path-dep not
+  promoted, transitive a→b→c chain across three trees.
+- New unit tests in `manifest_parse::tests` for `extract_path_deps`
+  (no deps, registry-only, dependencies, dev/build, workspace, git/version
+  skip, malformed-input).
+
+Concurrency note: PR-2 (persistent cache) was dispatched in parallel.
+The `lib.rs` re-exports for `expand_roots` and PR-2's
+`PersistentCache`/`FingerprintBuilder` co-exist in the file naturally
+(both add their own `pub mod` line and `pub use` re-export). No merge
+conflict observed at this point; the controller still owns final
+resolution if PR-2 lands separately.
 
 ### PR-5
 (none yet)

@@ -33,6 +33,7 @@ pub mod llm_cache;
 pub mod manifest_parse;
 pub mod manifest_patterns;
 pub mod progress;
+pub mod root_expansion;
 pub mod roots;
 pub mod subcarve_policy;
 pub mod surface_types;
@@ -82,6 +83,7 @@ pub use l9_subsystems::{
 pub use llm_cache::{LlmCacheKey, LlmResponseCache};
 pub use manifest_patterns::is_manifest_file;
 pub use progress::{relpath_of, Phase, ProgressEvent, ProgressSink, PromptBreakdown};
+pub use root_expansion::expand_roots;
 pub use roots::best_root_for;
 pub use surface_types::{InteractionRoleHint, SurfaceRecord};
 pub use types::{Candidate, Classification, ComponentKind, RationaleBundle};

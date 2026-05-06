@@ -1,0 +1,319 @@
+//! Path-dep root expansion to fixed point (PR-4 of Atlas vNext Phase 1).
+//!
+//! Atlas vNext is multi-root: a Ravel-Lite checkout that path-deps
+//! `../atlas-contracts/...` should index both repositories as peer
+//! roots so `components.yaml` can name components from each. PR-3
+//! plumbed the `Vec<PathBuf>` shape; this module fills it.
+//!
+//! [`expand_roots`] takes the primary root (the directory `atlas
+//! index` was invoked from) and walks the path-deps in every
+//! reachable `Cargo.toml` under it. For each path-dep target whose
+//! resolved path lies *outside* the primary root, the algorithm walks
+//! up the directory tree looking for an enclosing Cargo workspace
+//! manifest. If found, that workspace's directory is the new peer
+//! root; otherwise the target's own crate directory is the peer root.
+//! The walk iterates over every newly-discovered peer until no new
+//! roots are added — a textbook fixed-point.
+//!
+//! Cycle handling: `crate-a → crate-b → crate-a` is silently
+//! terminated by a `BTreeSet<PathBuf>` of visited roots. A `warning:`
+//! line on stderr names both endpoints of the cycle. The CLI continues
+//! — escalating to a hard error is reserved for Phase 2 if real-world
+//! experience demands it (plan §6 risk row "Cross-tree path-dep
+//! cycles").
+//!
+//! Phase 1 only handles `Cargo.toml`. `package.json`, `pyproject.toml`,
+//! and friends are skipped — Phase 2 adds npm-workspace support.
+
+use std::collections::{BTreeSet, VecDeque};
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+
+use crate::manifest_parse::extract_path_deps;
+
+/// Expand `primary` into the full set of roots reachable via Cargo
+/// path-deps. The returned Vec always begins with the canonicalised
+/// primary; peer roots follow in discovery order. Cycles terminate
+/// silently after emitting a `warning:` line on stderr.
+///
+/// Walk semantics:
+///
+/// - Start a queue with `[primary']` and a visited set `{primary'}`
+///   (where `primary'` is the canonicalised primary root).
+/// - For each root popped from the queue, enumerate every `Cargo.toml`
+///   under it (recursive walk, skipping `target/` and `.git/`).
+/// - For each path-dep declared in those manifests, resolve the path
+///   relative to its manifest's parent directory and canonicalise it.
+///   A canonicalisation failure (target not yet checked out, broken
+///   symlink) is silently skipped — that's data, not error.
+/// - If the resolved path is inside any already-known root, skip — its
+///   contents are covered by that root's L1 walk.
+/// - Otherwise walk upwards looking for a `[workspace]` manifest. If
+///   found, that's the new peer root; if not, the target's enclosing
+///   crate directory is the new peer root.
+/// - If the candidate is in `visited`, emit the cycle warning and
+///   skip; otherwise add it to the result, the queue, and `visited`.
+///
+/// The recursion order does not matter for correctness; each
+/// manifest's path-deps are sorted by manifest path before walking so
+/// the discovery order — and the resulting `Vec` order — is stable
+/// across runs.
+pub fn expand_roots(primary: &Path) -> Result<Vec<PathBuf>> {
+    let primary_canonical = primary
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize primary root {}", primary.display()))?;
+
+    let mut visited: BTreeSet<PathBuf> = BTreeSet::new();
+    visited.insert(primary_canonical.clone());
+
+    let mut result: Vec<PathBuf> = vec![primary_canonical.clone()];
+    let mut queue: VecDeque<PathBuf> = VecDeque::from([primary_canonical]);
+
+    while let Some(root) = queue.pop_front() {
+        let manifests = enumerate_cargo_manifests(&root);
+        for manifest in manifests {
+            let Ok(contents) = std::fs::read_to_string(&manifest) else {
+                continue;
+            };
+            let manifest_dir = match manifest.parent() {
+                Some(p) => p.to_path_buf(),
+                None => continue,
+            };
+
+            for rel in extract_path_deps(&contents) {
+                let target = manifest_dir.join(&rel);
+                let Ok(target_canonical) = target.canonicalize() else {
+                    // Target may not be checked out yet — that's not an
+                    // error, just skip. Emitting a debug log here is
+                    // overkill for Phase 1.
+                    continue;
+                };
+
+                // Skip if the target is already covered by a known
+                // root: its contents will be enumerated under that
+                // root's L1 walk.
+                if is_inside_any(&target_canonical, &result) {
+                    continue;
+                }
+
+                let candidate = enclosing_manifest_root(&target_canonical);
+                let Ok(candidate_canonical) = candidate.canonicalize() else {
+                    continue;
+                };
+
+                if visited.contains(&candidate_canonical) {
+                    eprintln!(
+                        "warning: path-dep cycle detected: {} <-> {}",
+                        manifest.display(),
+                        candidate_canonical.display()
+                    );
+                    continue;
+                }
+
+                // Defence in depth: if the candidate happens to be
+                // inside a known root (e.g. a workspace member of the
+                // primary that a peer's path-dep aliased through), do
+                // not double-count it. `is_inside_any` already covered
+                // the target check; the candidate may have walked up
+                // into another known root.
+                if is_inside_any(&candidate_canonical, &result) {
+                    continue;
+                }
+
+                visited.insert(candidate_canonical.clone());
+                result.push(candidate_canonical.clone());
+                queue.push_back(candidate_canonical);
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// Walk up from `start` looking for the enclosing Cargo workspace
+/// manifest. Returns the workspace's directory if one is found;
+/// otherwise the directory containing `start` itself if `start` is a
+/// path to (or inside) a Cargo crate. The fall-through case — `start`
+/// is some random directory with no Cargo manifest above or inside —
+/// returns `start` unchanged; the caller already canonicalised so
+/// every return value is absolute.
+///
+/// `start` may be either a directory or a file; in the file case the
+/// walk begins at the file's parent.
+fn enclosing_manifest_root(start: &Path) -> PathBuf {
+    // If `start` is a file, work from its parent. Otherwise work from
+    // `start` directly. (Path::is_dir / is_file follow symlinks; if
+    // the caller already canonicalised, the answer is stable.)
+    let mut cursor: PathBuf = if start.is_dir() {
+        start.to_path_buf()
+    } else {
+        start
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| start.to_path_buf())
+    };
+
+    // The crate-root candidate is the highest directory that contains
+    // a `Cargo.toml`; the workspace-root candidate is the highest such
+    // directory whose `Cargo.toml` declares `[workspace]`. Phase 1
+    // returns the workspace if it exists, else the crate.
+    let mut crate_root: Option<PathBuf> = None;
+    let mut workspace_root: Option<PathBuf> = None;
+
+    loop {
+        let manifest = cursor.join("Cargo.toml");
+        if manifest.is_file() {
+            if let Ok(contents) = std::fs::read_to_string(&manifest) {
+                let shape = crate::manifest_parse::parse_cargo_toml(&contents);
+                if shape.has_workspace_section {
+                    workspace_root = Some(cursor.clone());
+                    // Don't stop — a higher [workspace] could still
+                    // enclose this one (rare but legal in Cargo). The
+                    // outermost wins.
+                } else if crate_root.is_none() {
+                    crate_root = Some(cursor.clone());
+                }
+            }
+        }
+        match cursor.parent() {
+            Some(parent) if parent != cursor => cursor = parent.to_path_buf(),
+            _ => break,
+        }
+    }
+
+    workspace_root
+        .or(crate_root)
+        .unwrap_or_else(|| start.to_path_buf())
+}
+
+/// Returns `true` when `path` is the same as, or a descendant of, any
+/// of the directories in `roots`. All inputs must already be
+/// canonicalised; the comparison is a literal prefix check.
+fn is_inside_any(path: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| path.starts_with(root))
+}
+
+/// Recursively enumerate every `Cargo.toml` under `root`, skipping
+/// `target/`, `node_modules/`, and `.git/`. Manifests are returned in
+/// lexicographic order so the path-dep walk is deterministic across
+/// runs.
+///
+/// This is a fresh filesystem walk rather than a Salsa-tracked query
+/// because [`expand_roots`] runs once before the database is seeded —
+/// the tracked-query plumbing is not yet available. The walk uses
+/// `walkdir` semantics via `std::fs::read_dir` to avoid pulling in a
+/// new dependency; the output volume (one entry per Cargo manifest in
+/// the tree) is small enough that the naive walk is comfortable.
+fn enumerate_cargo_manifests(root: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    walk(root, &mut out);
+    out.sort();
+    out
+}
+
+fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            // Skip the obvious build-product directories. The full
+            // gitignore-aware walk is overkill here — `target/` alone
+            // can balloon a Rust workspace by 10x, and is the only
+            // directory that materially matters for path-dep walking.
+            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                if matches!(name, "target" | "node_modules" | ".git") {
+                    continue;
+                }
+            }
+            walk(&path, out);
+        } else if file_type.is_file()
+            && path.file_name().and_then(|s| s.to_str()) == Some("Cargo.toml")
+        {
+            out.push(path);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn write(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn enumerate_cargo_manifests_finds_nested_manifests_in_lex_order() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            &tmp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"a\", \"b\"]\n",
+        );
+        write(
+            &tmp.path().join("a/Cargo.toml"),
+            "[package]\nname = \"a\"\nversion = \"0.1.0\"\n",
+        );
+        write(
+            &tmp.path().join("b/Cargo.toml"),
+            "[package]\nname = \"b\"\nversion = \"0.1.0\"\n",
+        );
+        // target/ should be skipped:
+        write(
+            &tmp.path().join("target/zzz/Cargo.toml"),
+            "[package]\nname = \"build-leftover\"\nversion = \"0.0.0\"\n",
+        );
+
+        let manifests = enumerate_cargo_manifests(tmp.path());
+        let names: Vec<_> = manifests
+            .iter()
+            .map(|p| {
+                p.strip_prefix(tmp.path())
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        assert_eq!(names, vec!["Cargo.toml", "a/Cargo.toml", "b/Cargo.toml"]);
+    }
+
+    #[test]
+    fn enclosing_manifest_root_finds_workspace_when_present() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        write(
+            &root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/a\"]\n",
+        );
+        write(
+            &root.join("crates/a/Cargo.toml"),
+            "[package]\nname = \"a\"\nversion = \"0.1.0\"\n",
+        );
+
+        let result = enclosing_manifest_root(&root.join("crates/a"));
+        assert_eq!(result, root);
+    }
+
+    #[test]
+    fn enclosing_manifest_root_falls_back_to_crate_root_when_no_workspace() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let crate_dir = root.join("standalone");
+        write(
+            &crate_dir.join("Cargo.toml"),
+            "[package]\nname = \"standalone\"\nversion = \"0.1.0\"\n",
+        );
+
+        let result = enclosing_manifest_root(&crate_dir);
+        assert_eq!(result, crate_dir);
+    }
+}
