@@ -74,6 +74,7 @@ pub fn decide_kind_only(kind: ComponentKind) -> Option<PolicyDecision> {
         | ComponentKind::Website
         | ComponentKind::DockerImage
         | ComponentKind::DockerComposeBundle
+        | ComponentKind::ComposeOrchestration
         | ComponentKind::Installer
         | ComponentKind::ShellScripts
         | ComponentKind::SqlScripts

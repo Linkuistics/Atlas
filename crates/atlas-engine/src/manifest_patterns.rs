@@ -30,9 +30,16 @@ const EXACT_MANIFEST_BASENAMES: &[&str] = &[
 ];
 
 /// Return `true` when the file's basename matches any known manifest
-/// pattern. Matching is by exact basename, plus the suffix rule
-/// `*.nix` (which subsumes `flake.nix` but the explicit entry is kept
-/// above as self-documentation for readers).
+/// pattern. Matching is by exact basename, plus:
+///
+/// - `*.nix` suffix rule (subsumes `flake.nix`; explicit entry kept above
+///   for reader clarity).
+/// - Docker Compose filename patterns: `docker-compose.yml`,
+///   `docker-compose.yaml`, `docker-compose.*.yml`,
+///   `docker-compose.*.yaml`, `compose.yml`, `compose.yaml`,
+///   `compose.*.yml`, `compose.*.yaml`. Recognised here so the engine's
+///   L1 manifest walk pre-loads them into the candidate's
+///   `Target.manifests` for the `compose-classifier` (PR-11).
 pub fn is_manifest_file(path: &Path) -> bool {
     let Some(basename) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
@@ -40,7 +47,49 @@ pub fn is_manifest_file(path: &Path) -> bool {
     if EXACT_MANIFEST_BASENAMES.contains(&basename) {
         return true;
     }
-    basename.ends_with(".nix")
+    if basename.ends_with(".nix") {
+        return true;
+    }
+    is_compose_manifest_basename(basename)
+}
+
+/// Return `true` when `basename` matches one of the four canonical Docker
+/// Compose filename patterns:
+///
+/// - `docker-compose.yml` / `docker-compose.yaml`
+/// - `docker-compose.<override>.yml` / `docker-compose.<override>.yaml`
+/// - `compose.yml` / `compose.yaml`
+/// - `compose.<override>.yml` / `compose.<override>.yaml`
+///
+/// The function is pub(crate) so `compose_classifier.rs` can reuse it
+/// without duplication.
+pub(crate) fn is_compose_manifest_basename(basename: &str) -> bool {
+    // Fast exact-match for the two canonical "bare" names first.
+    if matches!(
+        basename,
+        "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml"
+    ) {
+        return true;
+    }
+    // Override forms: `docker-compose.<something>.yml|yaml` and
+    // `compose.<something>.yml|yaml`.  The <something> must be non-empty
+    // so we do not accidentally match `docker-compose..yml`.
+    for prefix in ["docker-compose.", "compose."] {
+        if let Some(rest) = basename.strip_prefix(prefix) {
+            if let Some(inner) = rest
+                .strip_suffix(".yml")
+                .or_else(|| rest.strip_suffix(".yaml"))
+            {
+                // `inner` is the override segment; must be non-empty and
+                // must not contain a further `.` at the boundaries that
+                // would make it look like the bare form again.
+                if !inner.is_empty() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -64,5 +113,43 @@ mod tests {
     fn does_not_recognise_source_files() {
         assert!(!is_manifest_file(&PathBuf::from("src/lib.rs")));
         assert!(!is_manifest_file(&PathBuf::from("README.md")));
+    }
+
+    #[test]
+    fn recognises_canonical_compose_files() {
+        for name in &[
+            "docker-compose.yml",
+            "docker-compose.yaml",
+            "compose.yml",
+            "compose.yaml",
+        ] {
+            assert!(
+                is_manifest_file(&PathBuf::from(name)),
+                "{name} should be recognised as a manifest"
+            );
+        }
+    }
+
+    #[test]
+    fn recognises_override_compose_files() {
+        for name in &[
+            "docker-compose.override.yml",
+            "docker-compose.prod.yaml",
+            "compose.dev.yml",
+            "compose.ci.yaml",
+        ] {
+            assert!(
+                is_manifest_file(&PathBuf::from(name)),
+                "{name} should be recognised as a manifest"
+            );
+        }
+    }
+
+    #[test]
+    fn does_not_recognise_malformed_compose_names() {
+        // Double-dot edge cases and non-compose names.
+        assert!(!is_manifest_file(&PathBuf::from("docker-compose..yml")));
+        assert!(!is_manifest_file(&PathBuf::from("not-compose.yml")));
+        assert!(!is_manifest_file(&PathBuf::from("compose")));
     }
 }

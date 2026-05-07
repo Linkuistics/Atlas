@@ -35,6 +35,7 @@
 //! The L3 dispatcher in this PR calls `analyse` directly.
 
 pub mod cargo_classifier;
+pub mod compose_classifier;
 pub mod dispatcher;
 pub mod dockerfile_classifier;
 pub mod llm_classify;
@@ -54,6 +55,7 @@ use std::sync::Arc;
 use atlas_index::{CostClass, Stage};
 
 pub use cargo_classifier::CargoClassifier;
+pub use compose_classifier::{ComposeClassificationOutput, ComposeClassifier, ComposeShape};
 pub use dispatcher::{DispatchOutcome, NONE_ANALYZER_ID, NONE_ANALYZER_VERSION};
 pub use dockerfile_classifier::DockerfileClassifier;
 pub use llm_classify::{LlmClassifyAnalyzer, LlmHook, LlmHookError};
@@ -356,6 +358,7 @@ pub trait Analyzer: Send + Sync {
 // definition site.
 impl_stage_output!(
     cargo_classifier::CargoClassificationOutput,
+    compose_classifier::ComposeClassificationOutput,
     dockerfile_classifier::DockerfileClassificationOutput,
     llm_classify::LlmClassifyOutput,
     python_classifier::PythonClassificationOutput,

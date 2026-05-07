@@ -32,6 +32,7 @@ use sha2::{Digest, Sha256};
 use crate::db::AtlasDatabase;
 use crate::l4_tree::all_components;
 use crate::l5_surface::{surface_artefacts_of, surface_of};
+use crate::l6_compose_edges::composition_edges_from_compose;
 use crate::l6_composition::composition_edges_from_dockerfiles;
 use crate::l9_projections::surfaces_yaml_snapshot;
 use crate::surface_types::SurfaceRecord;
@@ -88,15 +89,25 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
     // canonicalisation; canonicalise_edges dedupes any overlap.
     let composition_edges = composition_edges_from_dockerfiles(db);
 
+    // PR-11: deterministic composition edges from Docker Compose files.
+    // `bundled-into` (image/build → orchestration) and `deployed-with`
+    // (between co-declared services). Computed unconditionally —
+    // single-component workspaces can still have a compose orchestration
+    // that references external images, and those `bundled-into` edges
+    // are load-bearing even without an LLM batch.
+    let compose_edges = composition_edges_from_compose(db);
+
     if live.len() < 2 {
         // A single-component run has no pairs to consider for the
         // LLM Stage 2 batch; skip the prompt to avoid wasting tokens
-        // on a no-op. Contract edges and composition edges still flow
-        // — see above.
-        let mut combined: Vec<Edge> =
-            Vec::with_capacity(contract_edges.len() + composition_edges.len());
+        // on a no-op. Contract edges, Dockerfile composition edges, and
+        // Compose edges still flow — see above.
+        let mut combined: Vec<Edge> = Vec::with_capacity(
+            contract_edges.len() + composition_edges.len() + compose_edges.len(),
+        );
         combined.extend(contract_edges);
         combined.extend(composition_edges);
+        combined.extend(compose_edges);
         return Arc::new(canonicalise_edges(combined));
     }
 
@@ -145,27 +156,32 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
     let value = match db.call_llm_cached_with_fp(Stage::L6, &l6_fingerprint, &request) {
         Ok(v) => v,
         Err(_) => {
-            // LLM call failed — return only the deterministic edges.
-            let mut combined: Vec<Edge> =
-                Vec::with_capacity(contract_edges.len() + composition_edges.len());
+            // LLM call failed — return only the deterministic edges
+            // (contract + Dockerfile composition + Compose composition).
+            let mut combined: Vec<Edge> = Vec::with_capacity(
+                contract_edges.len() + composition_edges.len() + compose_edges.len(),
+            );
             combined.extend(contract_edges);
             combined.extend(composition_edges);
+            combined.extend(compose_edges);
             return Arc::new(canonicalise_edges(combined));
         }
     };
 
     let mut parsed = parse_edges_response(&value).unwrap_or_default();
-    // PR-8: merge deterministic contract edges + composition edges
-    // with the LLM batch before canonicalisation. Deterministic edges
-    // go first so that on a `(kind, lifecycle, participants)` collision
-    // the deterministic edge wins (`canonicalise_edges` keeps the
-    // first insertion per canonical key). Contract edges precede
-    // composition edges for readability; neither can collide with the
-    // other on canonical key (different EdgeKinds).
-    let mut combined: Vec<Edge> =
-        Vec::with_capacity(contract_edges.len() + composition_edges.len() + parsed.len());
+    // PR-8/PR-11: merge deterministic edges (contract, Dockerfile
+    // composition, Compose composition) with the LLM batch before
+    // canonicalisation.  Deterministic edges go first so that on a
+    // `(kind, lifecycle, participants)` collision the deterministic edge
+    // wins (`canonicalise_edges` keeps the first insertion per canonical
+    // key).  Order: contract → Dockerfile composition → Compose
+    // composition → LLM batch (ascending confidence precedence).
+    let mut combined: Vec<Edge> = Vec::with_capacity(
+        contract_edges.len() + composition_edges.len() + compose_edges.len() + parsed.len(),
+    );
     combined.extend(contract_edges);
     combined.extend(composition_edges);
+    combined.extend(compose_edges);
     combined.append(&mut parsed);
     let canonicalised = canonicalise_edges(combined);
     Arc::new(canonicalised)

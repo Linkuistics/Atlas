@@ -177,6 +177,17 @@ kinds:
       (or `compose.yaml`) declaring a multi-image deployment. Used
       for grouping a set of related services into one component.
 
+  - name: compose-orchestration
+    description: |
+      A Docker Compose file (`docker-compose.yml`, `docker-compose.*.yml`,
+      `compose.yml`, `compose.*.yml`) that declares an orchestrated set
+      of services. Recognised deterministically at L3 by the
+      `compose-classifier`. Each service is a deployment unit; the
+      `compose-orchestration` component represents the whole file.
+      Edges: `bundled-into` from image/Dockerfile-derived components
+      into this orchestration; `deployed-with` between co-declared
+      services. Typical lifecycle: deploy.
+
   - name: installer
     description: |
       A directory whose purpose is producing an end-user installer

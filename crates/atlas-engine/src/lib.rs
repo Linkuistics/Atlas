@@ -25,6 +25,7 @@ pub mod l2_candidates;
 pub mod l3_classify;
 pub mod l4_tree;
 pub mod l5_surface;
+pub mod l6_compose_edges;
 pub mod l6_composition;
 pub mod l6_edges;
 pub mod l7_structural;
@@ -75,6 +76,7 @@ pub use l5_surface::{
     surface_artefacts_of, surface_of, SurfaceArtefacts, EMBEDDED_STAGE1_SURFACE_PROMPT,
     L5_DRIVER_VERSION,
 };
+pub use l6_compose_edges::composition_edges_from_compose;
 pub use l6_composition::{composition_edges_arc, composition_edges_from_dockerfiles};
 pub use l6_edges::{
     all_proposed_edges, candidate_edges_for, compute_l6_batch_fingerprint,

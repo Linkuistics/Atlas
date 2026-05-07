@@ -28,6 +28,7 @@ use atlas_index::{AnalyzerSpec, AnalyzersFile, Stage, ANALYZERS_SCHEMA_VERSION};
 use sha2::{Digest, Sha256};
 
 use crate::cargo_classifier::CargoClassifier;
+use crate::compose_classifier::ComposeClassifier;
 use crate::dockerfile_classifier::DockerfileClassifier;
 use crate::llm_classify::LlmClassifyAnalyzer;
 use crate::python_classifier::PythonClassifier;
@@ -86,9 +87,12 @@ impl AnalyzerRegistry {
     /// matching surface analyser at L5 is the out-of-process
     /// `python-surface-analyzer` (registered separately when its
     /// binary is locatable — see [`AnalyzerRegistry::builtin_with_python_surface`]).
+    /// Phase 2 PR-11 adds `compose-classifier` (L3 deterministic,
+    /// in-process) for Docker Compose files.
     pub fn builtin() -> Self {
         let cargo = Arc::new(CargoClassifier::new()) as Arc<dyn Analyzer>;
         let docker = Arc::new(DockerfileClassifier::new()) as Arc<dyn Analyzer>;
+        let compose = Arc::new(ComposeClassifier::new()) as Arc<dyn Analyzer>;
         let ts_js = Arc::new(TsJsClassifier::new()) as Arc<dyn Analyzer>;
         let python = Arc::new(PythonClassifier::new()) as Arc<dyn Analyzer>;
         let llm = Arc::new(LlmClassifyAnalyzer::new()) as Arc<dyn Analyzer>;
@@ -98,6 +102,7 @@ impl AnalyzerRegistry {
         let analyzers = vec![
             cargo.clone(),
             docker.clone(),
+            compose.clone(),
             ts_js.clone(),
             python.clone(),
             llm.clone(),
@@ -373,6 +378,22 @@ fn spec_for_analyzer(analyzer: &Arc<dyn Analyzer>) -> AnalyzerSpec {
             ],
             ..Default::default()
         }
+    } else if id == crate::compose_classifier::ANALYZER_ID {
+        // Compose classifier keys on the four canonical Docker Compose
+        // filename patterns (exact and override forms).
+        atlas_index::ApplicabilityPredicate {
+            file_globs: vec![
+                "**/docker-compose.yml".into(),
+                "**/docker-compose.yaml".into(),
+                "**/docker-compose.*.yml".into(),
+                "**/docker-compose.*.yaml".into(),
+                "**/compose.yml".into(),
+                "**/compose.yaml".into(),
+                "**/compose.*.yml".into(),
+                "**/compose.*.yaml".into(),
+            ],
+            ..Default::default()
+        }
     } else {
         atlas_index::ApplicabilityPredicate::default()
     };
@@ -394,11 +415,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_lists_seven_analysers() {
+    fn builtin_lists_eight_analysers() {
         let r = AnalyzerRegistry::builtin();
-        assert_eq!(r.len(), 7);
+        assert_eq!(r.len(), 8);
         let ids: Vec<&str> = r.iter_dispatch_order().map(|a| a.id()).collect();
         assert!(ids.contains(&crate::cargo_classifier::ANALYZER_ID));
+        assert!(ids.contains(&crate::compose_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::dockerfile_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::ts_js_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::python_classifier::ANALYZER_ID));
@@ -454,9 +476,9 @@ mod tests {
         // The built-in analyser instances are unchanged in count
         // (unknown spec is recorded but does not produce a runnable
         // instance).
-        assert_eq!(r.len(), 7);
+        assert_eq!(r.len(), 8);
         // The declared list grew by one.
-        assert_eq!(r.declared().analyzers.len(), 8);
+        assert_eq!(r.declared().analyzers.len(), 9);
     }
 
     #[test]
@@ -477,7 +499,7 @@ mod tests {
             version: "9.9.9".into(),
         });
         r.merge_yaml(&yaml);
-        assert_eq!(r.declared().analyzers.len(), 7);
+        assert_eq!(r.declared().analyzers.len(), 8);
         let cargo = r
             .declared()
             .analyzers
@@ -531,5 +553,9 @@ mod tests {
             crate::ts_js_surface_analyzer::ANALYZER_ID
         );
         assert_eq!(PythonClassifier.id(), crate::python_classifier::ANALYZER_ID);
+        assert_eq!(
+            ComposeClassifier.id(),
+            crate::compose_classifier::ANALYZER_ID
+        );
     }
 }

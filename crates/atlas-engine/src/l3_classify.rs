@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 use atlas_analyzers::{
     cargo_classifier::CargoClassificationOutput,
+    compose_classifier::ComposeClassificationOutput,
     dispatcher::DispatchOutcome,
     dockerfile_classifier::DockerfileClassificationOutput,
     llm_classify::{LlmClassifyOutput, LlmHook, LlmHookError},
@@ -293,6 +294,39 @@ fn build_analyzer_target(
         }
     }
 
+    // For Compose detection: probe canonical compose filenames that the
+    // engine's manifest walk may not have picked up (e.g. if the L1 walk
+    // ran before `manifest_patterns::is_compose_manifest_basename` was
+    // added). We probe in preference order; the compose-classifier's
+    // `applies` predicate will pick the first one it finds.
+    let compose_names = [
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "compose.yml",
+        "compose.yaml",
+    ];
+    for cname in compose_names {
+        if !manifests.iter().any(|m| m.name == cname) {
+            let compose_path = candidate_dir.join(cname);
+            if let Some(bytes) = file_content(db, &compose_path) {
+                let bytes_vec: Vec<u8> = bytes.as_ref().clone();
+                let content_sha = sha256_hex_bytes(&bytes_vec);
+                manifests.push(TargetFile {
+                    name: cname.into(),
+                    relpath: PathBuf::from(cname),
+                    bytes: bytes_vec,
+                    content_sha,
+                });
+                // Only probe further names if the first wasn't found;
+                // one compose manifest per candidate dir is the common case.
+                break;
+            }
+        } else {
+            // Already pre-loaded; stop.
+            break;
+        }
+    }
+
     let mut top_level_files: Vec<String> = manifests.iter().map(|m| m.name.clone()).collect();
     // Best-effort: enumerate directory entries so analysers can probe
     // for `src/`, `Dockerfile`, etc. Failures are silently swallowed —
@@ -384,6 +418,12 @@ fn classification_from_output(
     {
         return docker_to_classification(docker, analyser_id, analyser_version);
     }
+    if let Some(compose) = (*output)
+        .as_any()
+        .downcast_ref::<ComposeClassificationOutput>()
+    {
+        return compose_to_classification(compose, analyser_id, analyser_version);
+    }
     if let Some(ts_js) = (*output)
         .as_any()
         .downcast_ref::<TsJsClassificationOutput>()
@@ -437,6 +477,35 @@ fn cargo_to_classification(
 
 fn docker_to_classification(
     out: &DockerfileClassificationOutput,
+    analyser_id: &str,
+    analyser_version: &str,
+) -> Classification {
+    let kind = ComponentKind::parse(&out.kind).unwrap_or(ComponentKind::NonComponent);
+    let lifecycle_roles = out
+        .lifecycle_roles
+        .iter()
+        .filter_map(|s| LifecycleScope::parse(s))
+        .collect();
+    Classification {
+        kind,
+        languages: BTreeSet::new(),
+        build_system: out.build_system.clone(),
+        lifecycle_roles,
+        role: out.role.clone(),
+        evidence_grade: EvidenceGrade::Strong,
+        evidence_fields: out.evidence_fields.clone(),
+        rationale: out.rationale.clone(),
+        is_boundary: out.is_boundary,
+        analyser_id: analyser_id.to_string(),
+        analyser_version: analyser_version.to_string(),
+    }
+}
+
+/// Translate a [`ComposeClassificationOutput`] into a [`Classification`].
+/// PR-11: `compose-orchestration` kind, deploy lifecycle, docker-compose
+/// build system.
+fn compose_to_classification(
+    out: &ComposeClassificationOutput,
     analyser_id: &str,
     analyser_version: &str,
 ) -> Classification {
