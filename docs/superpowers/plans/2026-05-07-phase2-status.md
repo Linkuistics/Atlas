@@ -6,7 +6,7 @@ prompt at `docs/superpowers/prompts/2026-05-07-vnext-continue.md` reads
 this file (via the `*phase2-plan*` wildcard match) to find the next PR
 to dispatch.
 
-**Last updated:** 2026-05-07 (PR-13 landed; Wave 1 in progress).
+**Last updated:** 2026-05-07 (PR-5 + PR-13 landed; Wave 1 in progress).
 
 ## PR status
 
@@ -19,7 +19,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [ ] PR-2  — Subprocess analyser transport (stdio JSON)
 - [ ] PR-3  — Python surface analyser (first subprocess analyser)
 - [ ] PR-4  — Per-analyser `analyser_id` / `analyser_version` plumbing through L3 dispatch
-- [ ] PR-5  — Rust binding extractor: regex → `syn`
+- [x] PR-5  — Rust binding extractor: regex → `syn`
 - [ ] PR-6  — C# surface analyser (subprocess)
 - [ ] PR-7  — Dart / Flutter surface analyser (subprocess)
 - [ ] PR-8  — Elixir surface analyser (subprocess)
@@ -114,7 +114,53 @@ Load-bearing context for Wave 1 reviewers:
 (awaiting subagent dispatch)
 
 ### PR-5
-(awaiting subagent dispatch)
+2026-05-07 — Landed as commits `ffe26c1` (main rewrite) + `a5a503e`
+(visibility-guard fix from spec re-review) + `d8549d6` (doc + unused
+feature cleanup from code-quality review). No atlas-contracts changes.
+
+**Schema-mutation contribution:** none — PR-5 only rewrites the existing
+analyser; `Visibility::Conventional` / `attributes` / `module_path` /
+`ContractKind::Behaviour` all remain Phase 2 forward-work (PR-3 / PR-8).
+`ANALYZER_VERSION` constant bumped from `1.0.0` to `2.0.0` as the
+breaking-change marker for downstream cache invalidation.
+
+**Implementation:** `extract_rust_surface` rewritten around `syn::parse_file`;
+the byte-by-byte state-machine walker, brace counter, comment / string-literal
+skipper, raw-string prefix handling, and manual derive parser are all gone.
+File went from 1266 → 810 lines (-36% net; -45% in implementation excluding
+tests). Span byte ranges sourced from `proc_macro2::Span::byte_range`
+(requires `span-locations` feature on `proc-macro2`); the start of each
+binding's span is taken from `vis.span()` (the `pub` keyword) and the end
+from `item.span()` so leading attributes (`#[derive(...)]`, doc comments)
+do not widen the span — preserves the spec §2.1 PR-7 semantics.
+
+**Visibility guard on mod recursion (`a5a503e`):** the spec re-review
+caught that the new `walk_items` recursed into all inline mod bodies
+regardless of visibility, broader than Phase 1's depth-0-only regex. Items
+inside a non-pub mod are not externally reachable. Fix gates recursion on
+`mod_item.vis` matching `Public(_) | Restricted(_)`; `Inherited` mods are
+not walked. Note: `pub(self)` parses as `Restricted` and is therefore
+recursed; this is an academic edge case (`pub(self)` is effectively never
+written) and matches the syntactic-pub-ness criterion used by `is_pub`
+elsewhere.
+
+**Doc + dep cleanup (`d8549d6`):** module-level doc updated to accurately
+describe span semantics (the original claim that "`pub` keyword starts the
+item's span in `syn`'s representation" was wrong — `Item::span()` starts
+at leading attributes); `extra-traits` feature on `syn` removed (unused;
+its `Debug`/`PartialEq`/`Eq`/`Hash`/`Clone` derives on every AST node added
+compile cost without benefit).
+
+**Tests:** All 19 retained Phase 1 tests pass without fixture regeneration
+(span byte ranges happened to coincide with the regex extractor's for the
+covered cases). The Phase 1 `nested_pub_inside_pub_mod_is_phase1_known_limitation`
+limitation-pinning test was replaced by the new
+`syn_extracts_nested_pub_inside_pub_mod` acceptance test which asserts
+`pub mod outer { pub struct Hidden; }` extracts both `outer` and `Hidden`.
+The visibility-guard fix added `non_pub_mod_does_not_surface_inner_pub_items`
+as a regression test. Total test count: 21 (19 retained + 1 acceptance + 1
+regression). The `nested_pub_inside_pub_mod_is_phase1_known_limitation`
+memory note is closed.
 
 ### PR-6
 (awaiting subagent dispatch)
