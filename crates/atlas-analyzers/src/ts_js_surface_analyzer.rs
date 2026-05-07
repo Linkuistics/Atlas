@@ -20,17 +20,25 @@
 //! `package.json#main` / `module` / `exports` is resolved to a
 //! [`LibraryApi`] entrypoint when the manifest contains one.
 //!
-//! ## Phase 1 binding shape (PR-1 caveat)
+//! ## Binding shape (PR-3 migration)
 //!
-//! The plan §4 refers to a `Visibility::Explicit` enum and a
-//! `Binding.attributes` map. Those fields are introduced by PR-3
-//! (Python). For PR-1 the analyser uses the **current** Phase 1
-//! [`Binding`] shape (`language`, `symbol`, `file`, `span`,
-//! `content_sha`). Module-system metadata (`commonjs` vs `esm`) and
-//! type-only flags are encoded by suffixing the `language` field —
-//! `typescript`, `typescript-type`, `javascript`, `javascript-cjs` —
-//! as the only field available to the current schema. PR-3 will
-//! migrate to the structured `attributes` map.
+//! PR-3 landed `Visibility::Explicit { keyword }`, `module_path`, and
+//! `attributes` on `Binding`; PR-1's `language`-field-suffix workaround
+//! (`typescript-type`, `javascript-cjs`, `javascript-esm`) is now
+//! retired:
+//!
+//! - `language` is plain `"typescript"` or `"javascript"`.
+//! - `visibility` is `Visibility::Explicit { keyword: "export" }` for
+//!   ESM `export` declarations and CommonJS property-style assignments
+//!   (`exports.foo = …`); CommonJS object-shorthand re-exports
+//!   (`module.exports = { foo, bar }`) carry
+//!   `Visibility::Conventional` because the underlying definitions
+//!   themselves are not annotated `export` and the surface visibility
+//!   is only conveyed by the assigning shape.
+//! - `attributes.module_system` is `"esm"` or `"commonjs"` per file.
+//! - `attributes.type_only` is `true` for TS type-only exports
+//!   (`export type`, `export interface`, named-export specifier with
+//!   `is_type_only`).
 //!
 //! ## Span convention
 //!
@@ -39,11 +47,13 @@
 //! we subtract `SourceFile.start_pos` to get file-local offsets that
 //! match Phase 1's contract-content-sha algorithm.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use atlas_index::{
-    Binding, Contract, ContractKind, CostClass, LibraryApi, PubItem, PubItemKind, Stage,
+    Binding, Contract, ContractKind, CostClass, LibraryApi, PubItem, PubItemKind, Stage, Visibility,
 };
+use serde_yaml::Value as YamlValue;
 use swc_common::{sync::Lrc, BytePos, FileName, SourceMap, Spanned};
 use swc_ecma_ast::{
     Decl, DefaultDecl, ExportSpecifier, Expr, Lit, ModuleDecl, ModuleExportName, ModuleItem, Pat,
@@ -288,11 +298,23 @@ fn parse_javascript_jsx(rel: &Path, text: &str) -> FileResult {
     parse_with_syntax(rel, text, syntax, "javascript")
 }
 
+/// Module-system label carried on every binding via
+/// `attributes.module_system`. ESM is the default for TS/JSX; CJS is
+/// detected when a script-level `module.exports = …` or
+/// `exports.foo = …` assignment appears in a `.js`/`.cjs` file.
+const MODULE_SYSTEM_ESM: &str = "esm";
+const MODULE_SYSTEM_CJS: &str = "commonjs";
+
 /// Run swc against `text` with the given `syntax`. Best-effort: parse
 /// failures (recoverable errors) are tolerated — the analyser emits
 /// whatever items it could recognise. A *catastrophic* parser failure
 /// (the parser returns `Err`) yields an empty FileResult so the
 /// caller still gets a deterministic empty output for that file.
+///
+/// `language_label` is plain `"typescript"` or `"javascript"` (PR-3
+/// retired the suffix encoding). The module-system label
+/// (`esm` / `commonjs`) is determined per-call at the binding-emission
+/// site based on the syntactic shape that produced the binding.
 fn parse_with_syntax(
     rel: &Path,
     text: &str,
@@ -338,6 +360,24 @@ fn parse_with_syntax(
     result
 }
 
+/// Build the metadata block for an ESM `export …` binding.
+fn esm_meta(type_only: bool) -> BindingMeta {
+    let mut attributes: BTreeMap<String, YamlValue> = BTreeMap::new();
+    attributes.insert(
+        "module_system".into(),
+        YamlValue::String(MODULE_SYSTEM_ESM.into()),
+    );
+    if type_only {
+        attributes.insert("type_only".into(), YamlValue::Bool(true));
+    }
+    BindingMeta {
+        visibility: Visibility::Explicit {
+            keyword: "export".into(),
+        },
+        attributes,
+    }
+}
+
 /// Extract any exports from one ESM module-level declaration.
 fn extract_module_decl(
     decl: &ModuleDecl,
@@ -358,9 +398,8 @@ fn extract_module_decl(
             // The latter is a re-export; we still record the symbol
             // because surface analysis cares about the public-API
             // shape regardless of whether the implementation is
-            // local. The `is_type_only` flag flows through to the
-            // language label so PR-3's `attributes` upgrade preserves
-            // the distinction.
+            // local. The `is_type_only` flag flows into
+            // `attributes.type_only`.
             for spec in &named.specifiers {
                 if let ExportSpecifier::Named(named_spec) = spec {
                     let exported_name = match &named_spec.exported {
@@ -375,16 +414,21 @@ fn extract_module_decl(
                         byte_offset(named_spec.span.lo, start),
                         byte_offset(named_spec.span.hi, start),
                     );
-                    let lang = language_label_for(
-                        language_label,
-                        named.type_only || named_spec.is_type_only,
+                    let type_only = named.type_only || named_spec.is_type_only;
+                    push_binding(
+                        out,
+                        language_label.to_string(),
+                        exported_name.clone(),
+                        rel,
+                        span,
+                        bytes,
+                        esm_meta(type_only),
                     );
-                    push_binding(out, lang.clone(), exported_name.clone(), rel, span, bytes);
                     push_pub_item(
                         out,
                         exported_name,
                         rel,
-                        if named.type_only || named_spec.is_type_only {
+                        if type_only {
                             PubItemKind::TypeAlias
                         } else {
                             PubItemKind::Fn
@@ -431,6 +475,7 @@ fn extract_module_decl(
                 rel,
                 span,
                 bytes,
+                esm_meta(false),
             );
             push_pub_item(out, name, rel, kind);
         }
@@ -449,6 +494,7 @@ fn extract_module_decl(
                 rel,
                 span,
                 bytes,
+                esm_meta(false),
             );
             push_pub_item(out, "default".into(), rel, PubItemKind::Fn);
         }
@@ -490,6 +536,7 @@ fn extract_decl_for_export(
                 rel,
                 span,
                 bytes,
+                esm_meta(false),
             );
             push_pub_item(out, name, rel, PubItemKind::Fn);
         }
@@ -507,6 +554,7 @@ fn extract_decl_for_export(
                 rel,
                 span,
                 bytes,
+                esm_meta(false),
             );
             push_pub_item(out, name, rel, PubItemKind::Struct);
         }
@@ -529,11 +577,12 @@ fn extract_decl_for_export(
                         rel,
                         span,
                         bytes,
+                        esm_meta(false),
                     );
                     push_pub_item(out, name, rel, PubItemKind::Const);
                 }
                 // Destructuring patterns (`export const { a, b } = x`)
-                // are not yet recovered. PR-3 may revisit.
+                // are not yet recovered. Future work.
             }
         }
         Decl::TsTypeAlias(alias) => {
@@ -542,10 +591,17 @@ fn extract_decl_for_export(
                 byte_offset(alias.span.lo, start),
                 byte_offset(alias.span.hi, start),
             );
-            // Type-only export: encode in the language label until
-            // PR-3 lands `attributes`.
-            let lang = language_label_for(language_label, true);
-            push_binding(out, lang, name.clone(), rel, span, bytes);
+            // PR-3: type-only flag is now structured on
+            // `attributes.type_only`, not on the `language` label.
+            push_binding(
+                out,
+                language_label.to_string(),
+                name.clone(),
+                rel,
+                span,
+                bytes,
+                esm_meta(true),
+            );
             push_pub_item(out, name, rel, PubItemKind::TypeAlias);
         }
         Decl::TsInterface(iface) => {
@@ -554,8 +610,15 @@ fn extract_decl_for_export(
                 byte_offset(iface.span.lo, start),
                 byte_offset(iface.span.hi, start),
             );
-            let lang = language_label_for(language_label, true);
-            push_binding(out, lang, name.clone(), rel, span, bytes);
+            push_binding(
+                out,
+                language_label.to_string(),
+                name.clone(),
+                rel,
+                span,
+                bytes,
+                esm_meta(true),
+            );
             push_pub_item(out, name, rel, PubItemKind::TypeAlias);
         }
         Decl::TsEnum(ts_enum) => {
@@ -571,6 +634,7 @@ fn extract_decl_for_export(
                 rel,
                 span,
                 bytes,
+                esm_meta(false),
             );
             push_pub_item(out, name, rel, PubItemKind::Enum);
         }
@@ -579,6 +643,30 @@ fn extract_decl_for_export(
         }
         #[allow(unreachable_patterns)]
         _ => {}
+    }
+}
+
+/// Build a CommonJS BindingMeta. `visibility` differs by the syntactic
+/// shape that produced the binding:
+///
+/// - Object-shorthand re-exports (`module.exports = { foo, bar }`)
+///   are `Visibility::Conventional`: the underlying `function foo()`
+///   declarations have no surface keyword; the export shape itself
+///   conveys public-ness, so the convention here is "named in the
+///   exports object".
+/// - Property-style assignments (`exports.foo = …`,
+///   `module.exports.foo = …`) carry an explicit `exports` keyword;
+///   we record that as `Visibility::Explicit { keyword: "exports" }`
+///   to distinguish them from the shorthand re-export shape.
+fn cjs_meta(visibility: Visibility) -> BindingMeta {
+    let mut attributes: BTreeMap<String, YamlValue> = BTreeMap::new();
+    attributes.insert(
+        "module_system".into(),
+        YamlValue::String(MODULE_SYSTEM_CJS.into()),
+    );
+    BindingMeta {
+        visibility,
+        attributes,
     }
 }
 
@@ -606,7 +694,6 @@ fn extract_commonjs_stmt(
         _ => return,
     };
 
-    let cjs_lang = format!("{language_label}-cjs");
     if is_module_exports_target(target) {
         // `module.exports = <rhs>`. RHS may be an object literal or
         // an identifier; both shapes contribute.
@@ -620,7 +707,15 @@ fn extract_commonjs_stmt(
                                 byte_offset(prop.span().lo, start),
                                 byte_offset(prop.span().hi, start),
                             );
-                            push_binding(out, cjs_lang.clone(), name.clone(), rel, span, bytes);
+                            push_binding(
+                                out,
+                                language_label.to_string(),
+                                name.clone(),
+                                rel,
+                                span,
+                                bytes,
+                                cjs_meta(Visibility::Conventional),
+                            );
                             push_pub_item(out, name, rel, PubItemKind::Fn);
                         }
                     }
@@ -632,7 +727,15 @@ fn extract_commonjs_stmt(
                     byte_offset(assign.span.lo, start),
                     byte_offset(assign.span.hi, start),
                 );
-                push_binding(out, cjs_lang.clone(), name.clone(), rel, span, bytes);
+                push_binding(
+                    out,
+                    language_label.to_string(),
+                    name.clone(),
+                    rel,
+                    span,
+                    bytes,
+                    cjs_meta(Visibility::Conventional),
+                );
                 push_pub_item(out, name, rel, PubItemKind::Fn);
             }
             _ => {}
@@ -645,7 +748,17 @@ fn extract_commonjs_stmt(
             byte_offset(assign.span.lo, start),
             byte_offset(assign.span.hi, start),
         );
-        push_binding(out, cjs_lang, name.clone(), rel, span, bytes);
+        push_binding(
+            out,
+            language_label.to_string(),
+            name.clone(),
+            rel,
+            span,
+            bytes,
+            cjs_meta(Visibility::Explicit {
+                keyword: "exports".into(),
+            }),
+        );
         push_pub_item(out, name, rel, PubItemKind::Fn);
     }
 }
@@ -732,6 +845,16 @@ fn byte_offset(pos: BytePos, start: BytePos) -> usize {
     (pos.0.saturating_sub(start.0)) as usize
 }
 
+/// Per-binding metadata block emitted by the per-shape helpers
+/// ([`esm_meta`], [`cjs_meta`]). PR-3 introduced this struct in place
+/// of the prior `language`-suffix encoding so visibility and
+/// language-specific attributes ride structured slots.
+#[derive(Debug, Clone)]
+struct BindingMeta {
+    visibility: Visibility,
+    attributes: BTreeMap<String, YamlValue>,
+}
+
 fn push_binding(
     out: &mut FileResult,
     language: String,
@@ -739,6 +862,7 @@ fn push_binding(
     rel: &Path,
     span: (usize, usize),
     bytes: &[u8],
+    meta: BindingMeta,
 ) {
     let content_sha = crate::sha256_hex_of_range(bytes, span);
     out.bindings.push(Binding {
@@ -747,6 +871,12 @@ fn push_binding(
         file: rel.to_path_buf(),
         span,
         content_sha,
+        visibility: meta.visibility,
+        // TS/JS analyser does not currently emit dotted module paths;
+        // future work may resolve `package.json#name` + relative
+        // import path into `[<pkg>, …]`.
+        module_path: Vec::new(),
+        attributes: meta.attributes,
     });
 }
 
@@ -756,17 +886,6 @@ fn push_pub_item(out: &mut FileResult, name: String, rel: &Path, kind: PubItemKi
         file: rel.to_path_buf(),
         kind,
     });
-}
-
-/// Encode the type-only flag into the language label, since PR-1 has
-/// no `attributes` map. PR-3 will refactor to use the structured
-/// attribute slot.
-fn language_label_for(base: &'static str, type_only: bool) -> String {
-    if type_only {
-        format!("{base}-type")
-    } else {
-        base.to_string()
-    }
 }
 
 /// Resolve `package.json#main` / `module` / `exports` to a single
@@ -892,18 +1011,29 @@ mod tests {
 
     #[test]
     fn ts_extracts_type_only_export() {
-        // Acceptance criterion: `export type Foo = string` produces a
-        // `Binding` with the type-only attribute (encoded in the
-        // language label until PR-3's `attributes` lands).
+        // PR-3 acceptance: `export type Foo = string` produces a
+        // `Binding` whose `attributes.type_only == true`. The
+        // PR-1-era `language: "typescript-type"` suffix is retired.
         let body = "export type Foo = string;\n";
         let out = extract_ts_js_surface("demo/comp", &input("src/types.ts", body));
         assert_eq!(out.bindings.len(), 1, "got: {:?}", out.bindings);
         let b = &out.bindings[0];
         assert_eq!(b.symbol, "Foo");
+        assert_eq!(b.language, "typescript");
         assert_eq!(
-            b.language, "typescript-type",
-            "type-only flag must be encoded in language label"
+            b.attributes.get("type_only"),
+            Some(&serde_yaml::Value::Bool(true)),
+            "type-only flag must be in attributes.type_only, got: {:?}",
+            b.attributes
         );
+        assert_eq!(
+            b.attributes.get("module_system"),
+            Some(&serde_yaml::Value::String("esm".into())),
+        );
+        assert!(matches!(
+            b.visibility,
+            atlas_index::Visibility::Explicit { ref keyword } if keyword == "export"
+        ));
         assert_eq!(
             out.library_apis[0].pub_items[0].kind,
             PubItemKind::TypeAlias
@@ -915,7 +1045,11 @@ mod tests {
         let body = "export interface Foo { a: number; }\n";
         let out = extract_ts_js_surface("demo/comp", &input("src/types.ts", body));
         assert_eq!(out.bindings.len(), 1);
-        assert_eq!(out.bindings[0].language, "typescript-type");
+        assert_eq!(out.bindings[0].language, "typescript");
+        assert_eq!(
+            out.bindings[0].attributes.get("type_only"),
+            Some(&serde_yaml::Value::Bool(true)),
+        );
         assert_eq!(
             out.library_apis[0].pub_items[0].kind,
             PubItemKind::TypeAlias
@@ -952,14 +1086,21 @@ mod tests {
 
     #[test]
     fn js_extracts_commonjs_exports() {
-        // Acceptance criterion: `module.exports = { foo, bar }`
-        // produces two `Binding` records.
+        // PR-3 acceptance: `module.exports = { foo, bar }` produces
+        // two `Binding` records, each carrying
+        // `attributes.module_system: commonjs` and
+        // `Visibility::Conventional` (the underlying definitions are
+        // not annotated `export`; the export shape itself conveys
+        // public-ness).
         let body = "function foo() {}\nfunction bar() {}\nmodule.exports = { foo, bar };\n";
         let out = extract_ts_js_surface("demo/comp", &input("src/index.js", body));
         let cjs_bindings: Vec<&Binding> = out
             .bindings
             .iter()
-            .filter(|b| b.language == "javascript-cjs")
+            .filter(|b| {
+                b.attributes.get("module_system")
+                    == Some(&serde_yaml::Value::String("commonjs".into()))
+            })
             .collect();
         assert_eq!(
             cjs_bindings.len(),
@@ -970,6 +1111,10 @@ mod tests {
         let names: Vec<&str> = cjs_bindings.iter().map(|b| b.symbol.as_str()).collect();
         assert!(names.contains(&"foo"));
         assert!(names.contains(&"bar"));
+        for b in cjs_bindings {
+            assert_eq!(b.language, "javascript");
+            assert!(matches!(b.visibility, atlas_index::Visibility::Conventional));
+        }
     }
 
     #[test]
@@ -979,21 +1124,39 @@ mod tests {
         let names: Vec<&str> = out.bindings.iter().map(|b| b.symbol.as_str()).collect();
         assert!(names.contains(&"alpha"), "got: {names:?}");
         assert!(names.contains(&"beta"), "got: {names:?}");
-        // Both bindings carry the `-cjs` language label so PR-3's
-        // attribute-aware schema can tell them apart from ESM.
+        // PR-3: property-style assignments are
+        // `Visibility::Explicit { keyword: "exports" }` and carry
+        // `attributes.module_system: commonjs`.
         for b in &out.bindings {
-            assert_eq!(b.language, "javascript-cjs");
+            assert_eq!(b.language, "javascript");
+            assert_eq!(
+                b.attributes.get("module_system"),
+                Some(&serde_yaml::Value::String("commonjs".into())),
+            );
+            assert!(matches!(
+                b.visibility,
+                atlas_index::Visibility::Explicit { ref keyword } if keyword == "exports"
+            ));
         }
     }
 
     #[test]
     fn js_esm_export_uses_plain_javascript_label() {
         // When a `.js` file uses ESM `export`, the language label is
-        // `javascript` (not `javascript-cjs`).
+        // `javascript` and `attributes.module_system: esm`.
         let body = "export function foo() {}\n";
         let out = extract_ts_js_surface("demo/comp", &input("src/index.js", body));
         assert_eq!(out.bindings.len(), 1);
-        assert_eq!(out.bindings[0].language, "javascript");
+        let b = &out.bindings[0];
+        assert_eq!(b.language, "javascript");
+        assert_eq!(
+            b.attributes.get("module_system"),
+            Some(&serde_yaml::Value::String("esm".into())),
+        );
+        assert!(matches!(
+            b.visibility,
+            atlas_index::Visibility::Explicit { ref keyword } if keyword == "export"
+        ));
     }
 
     #[test]

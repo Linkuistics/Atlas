@@ -56,8 +56,10 @@
 
 use std::path::{Path, PathBuf};
 
+use std::collections::BTreeMap;
+
 use atlas_index::{
-    Binding, Contract, ContractKind, CostClass, LibraryApi, PubItem, PubItemKind, Stage,
+    Binding, Contract, ContractKind, CostClass, LibraryApi, PubItem, PubItemKind, Stage, Visibility,
 };
 use syn::spanned::Spanned;
 
@@ -326,12 +328,21 @@ fn emit_item(
     if matches!(kind, PubItemKind::Struct) && attrs_have_serde_derive(attrs) {
         let local = kebabify_struct_name(&name);
         let contract_id = format!("{component_id}/{local}");
+        // Phase 2 PR-3: Rust bindings populate the new
+        // `Visibility::Explicit { keyword: "pub" }` slot. `module_path`
+        // is left empty for Rust today (the in-tree path-based module
+        // hierarchy is conveyed by the file path on `Binding.file`,
+        // not by a dotted module path); `attributes` is empty (no
+        // language-specific decorations carried).
         let binding = Binding {
             language: "rust".into(),
             symbol: name.clone(),
             file: rel_path.to_path_buf(),
             span,
             content_sha: content_sha.clone(),
+            visibility: Visibility::pub_keyword(),
+            module_path: Vec::new(),
+            attributes: BTreeMap::new(),
         };
         let contract = Contract {
             id: contract_id,

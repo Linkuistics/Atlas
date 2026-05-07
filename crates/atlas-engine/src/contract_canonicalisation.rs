@@ -301,8 +301,11 @@ type: object
 
     #[test]
     fn compute_surfaces_fingerprint_zeroes_the_fingerprint_field() {
-        use atlas_index::{Binding, Contract, ContractKind, SurfacesFile, SURFACES_SCHEMA_VERSION};
+        use atlas_index::{
+            Binding, Contract, ContractKind, SurfacesFile, Visibility, SURFACES_SCHEMA_VERSION,
+        };
         use component_ontology::ComponentId;
+        use std::collections::BTreeMap;
         use std::path::PathBuf;
 
         let binding = Binding {
@@ -311,6 +314,9 @@ type: object
             file: PathBuf::from("src/lib.rs"),
             span: (0, 10),
             content_sha: "0".repeat(64),
+            visibility: Visibility::pub_keyword(),
+            module_path: Vec::new(),
+            attributes: BTreeMap::new(),
         };
         let contract = Contract {
             id: "demo/foo-shape".into(),
@@ -344,8 +350,11 @@ type: object
 
     #[test]
     fn compute_surfaces_fingerprint_changes_when_contract_changes() {
-        use atlas_index::{Binding, Contract, ContractKind, SurfacesFile, SURFACES_SCHEMA_VERSION};
+        use atlas_index::{
+            Binding, Contract, ContractKind, SurfacesFile, Visibility, SURFACES_SCHEMA_VERSION,
+        };
         use component_ontology::ComponentId;
+        use std::collections::BTreeMap;
         use std::path::PathBuf;
 
         let binding = Binding {
@@ -354,6 +363,9 @@ type: object
             file: PathBuf::from("src/lib.rs"),
             span: (0, 10),
             content_sha: "0".repeat(64),
+            visibility: Visibility::pub_keyword(),
+            module_path: Vec::new(),
+            attributes: BTreeMap::new(),
         };
         let mk = |sha: &str| SurfacesFile {
             schema_version: SURFACES_SCHEMA_VERSION,
