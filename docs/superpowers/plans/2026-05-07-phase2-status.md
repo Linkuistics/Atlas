@@ -6,7 +6,7 @@ prompt at `docs/superpowers/prompts/2026-05-07-vnext-continue.md` reads
 this file (via the `*phase2-plan*` wildcard match) to find the next PR
 to dispatch.
 
-**Last updated:** 2026-05-08 (Wave 3 in flight: PR-6/7/8/9 landed; PR-10/12 worktrees pending merge).
+**Last updated:** 2026-05-08 (Wave 3 in flight: PR-6/7/8/9/10 landed; PR-12 worktree pending merge).
 
 ## PR status
 
@@ -24,7 +24,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-7  — Dart / Flutter surface analyser (subprocess)
 - [x] PR-8  — Elixir surface analyser (subprocess)
 - [x] PR-9  — Racket surface analyser (subprocess)
-- [ ] PR-10 — LispKit surface analyser (subprocess)
+- [x] PR-10 — LispKit surface analyser (subprocess)
 - [x] PR-11 — Compose composition-edge analyser (deterministic, in-process)
 - [ ] PR-12 — Shell-script LLM-fallback analyser (in-process)
 - [x] PR-13 — Phase 1 hangover bundle (L8 phantoms + PR-12-of-Phase-1 polish)
@@ -962,7 +962,86 @@ regression tests for `#t`/`#f`/`#:keyword`/`#'` tokeniser correctness.
   deferral; Wave 4 cleanup PR).
 
 ### PR-10
-(awaiting subagent dispatch)
+2026-05-08 — Landed as Atlas commit `16bbdb8` (squashed integration of
+`phase2-pr10-impl`: scaffold → wiring → quality fixes
+F-CQ-1 / F-CQ-2); atlas-contracts commit `f5f16c0` (kind docstring
+gains lispkit-package paragraph). Per-stage commits preserved on
+the branch ref `phase2-pr10-impl`.
+
+**Schema-mutation contribution:** atlas-contracts
+`crates/atlas-index/src/schema.rs` `kind` docstring extended with a
+PR-10 paragraph (`lispkit-package`).
+
+**Parser library:** hand-rolled S-expression scanner in the
+lispkit-analyzer crate. Plan §4 PR-10 noted the manifest convention
+was TBD; subagent settled on R7RS-standard `*.sld` (Scheme Library
+Definition) files containing `(define-library ...)` forms. The
+classifier matches on file extension; the surface analyser parses
+the `(define-library ...)` form to extract `(export ...)` clauses
+as the public surface.
+
+**Implementation map:**
+- New workspace member `crates/analyzers/lispkit` (lib + `lispkit-analyzer`
+  subprocess binary).
+- `atlas_analyzers::lispkit_classifier` (in-process L3 deterministic):
+  recognises `*.sld` → `lispkit-package`.
+- `atlas_analyzers::lispkit_surface_analyzer` —
+  `lispkit_subprocess_spec(binary_path)` builds the
+  `SubprocessAnalyzerSpec`; `cached_lispkit_subprocess_proxy(spec)`
+  caches the proxy keyed on binary path; `locate_lispkit_analyzer_binary`
+  walks up from `current_exe()` for the runtime sibling-binary
+  lookup.
+- `crates/atlas-engine/src/l5_surface.rs` extended with a LispKit
+  branch in `surface_artefacts_of` that pre-loads any `*.sld` file
+  in the candidate dir, drives the subprocess, and decodes the JSON
+  response into typed `Binding` / `LibraryApi` values.
+- `crates/atlas-engine/src/manifest_patterns.rs` adds `*.sld` to
+  the recognised manifest suffixes.
+- `ComponentKind::LispkitPackage` variant + `lispkit-package` entry
+  in `defaults/component-kinds.yaml`. `subcarve_policy` adds
+  `LispkitPackage` to the library-shaped kinds.
+
+**F-CQ-1 quality fix (`ed38d5a`):** dropped a dead `BASE64` import
+and the unused `base64` dep from the lispkit crate's Cargo.toml
+(the subprocess binary doesn't carry binary blobs in the wire
+payload — only JSON-serialisable text).
+
+**F-CQ-2 quality fix (`03c1186`):** generalised
+`decode_python_surface_payload` to
+`decode_subprocess_surface_payload(payload, component_id,
+default_language)`, factoring out the language-defaulting parameter.
+The Python and LispKit branches now both call the shared decoder
+(passing `"python"` and `"scheme"` respectively). The C# / Dart /
+Elixir / Racket decoders kept their language-specific names — Wave
+4 cleanup may consolidate them onto the shared helper.
+
+**Tests:** §4 PR-10 acceptance criteria covered + classifier unit
+tests + integration tests in
+`crates/analyzers/lispkit/tests/integration_test.rs`.
+
+**Decisions / deviations:**
+- **Manifest convention is `*.sld`.** Plan §4 PR-10 left the
+  convention TBD between `package.scm` and `*.sld`; subagent picked
+  the R7RS-standard `*.sld` form because LispKit (the Linkuistics
+  project's Swift Scheme interpreter) follows R7RS. Recognised by
+  file extension rather than basename.
+- **No `info.rkt`-style path-dep walker.** `*.sld` files don't
+  declare external path-deps in a regular form; LispKit's
+  `(import ...)` clauses name libraries by symbol, not path. The
+  cross-tree fixed-point walker is therefore a no-op for LispKit
+  components — they live in their primary root only. Phase 3 may
+  add a symbolic-import resolver if real-world LispKit projects
+  need cross-tree composition.
+- **Hand-rolled scanner** rather than a tree-sitter-scheme dep.
+  Within per-PR §4 latitude.
+
+**Cleanups deferred:**
+- Cross-tree `(import ...)` resolution (Phase 3+).
+- C# / Dart / Elixir / Racket decoder consolidation onto the shared
+  `decode_subprocess_surface_payload` helper (F-CQ-2 generalisation;
+  Wave 4 cleanup PR).
+- `LenientBackend` test-helper extraction (still warranted; cumulative
+  deferral; Wave 4 cleanup PR).
 
 ### PR-11
 2026-05-07 — Landed as Atlas commits `4da5209` (main implementation) +
