@@ -6,7 +6,7 @@ prompt at `docs/superpowers/prompts/2026-05-07-vnext-continue.md` reads
 this file (via the `*phase2-plan*` wildcard match) to find the next PR
 to dispatch.
 
-**Last updated:** 2026-05-07 (PR-0 plan + status file landed; Phase 2 in flight).
+**Last updated:** 2026-05-07 (PR-13 landed; Wave 1 in progress).
 
 ## PR status
 
@@ -27,7 +27,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [ ] PR-10 — LispKit surface analyser (subprocess)
 - [ ] PR-11 — Compose composition-edge analyser (deterministic, in-process)
 - [ ] PR-12 — Shell-script LLM-fallback analyser (in-process)
-- [ ] PR-13 — Phase 1 hangover bundle (L8 phantoms + PR-12-of-Phase-1 polish)
+- [x] PR-13 — Phase 1 hangover bundle (L8 phantoms + PR-12-of-Phase-1 polish)
 - [ ] PR-14 — Acceptance: polyglot dull-shaped fixture (smoke test)
 
 When every box is `[x]`, Phase 2 is complete and the continuation prompt
@@ -138,7 +138,64 @@ Load-bearing context for Wave 1 reviewers:
 (awaiting subagent dispatch)
 
 ### PR-13
-(awaiting subagent dispatch)
+2026-05-07 — Landed as commits `788fc92` (main change) + `71b8019` (doc fix
+addressing code-quality reviewer's request to make the absolute-path
+`SubcarveDecision.sub_dirs` contract explicit). No atlas-contracts changes.
+
+**L8 fix location and scope:** the L8 fixedpoint enumeration lives in
+`crates/atlas-engine/src/l8_recurse.rs` (the plan's hint at
+`l8_subcomponents.rs` was a renaming artefact; the actual file is
+`l8_recurse.rs`). The phantom-subcomponent fix was bigger than the plan's
+"one-line condition" framing implied and required two related changes:
+
+1. **Manifest disambiguation in `absolutise_under_any_root`** — Pass 1 now
+   prefers a root that has at least one registered manifest under the
+   candidate path before falling back to the legacy "first root with a
+   registered file" pass. This eliminated the
+   `atlas-contracts/consumer-crate` phantom under the peer-root + primary
+   parent-dir-share layout.
+2. **Absolute paths in subcarve back-edge `sub_dirs`** — `map_reduce_subcarve`
+   now stores `abs_dir.clone()` instead of `rel.to_path_buf()`. The relative
+   form was phantom-amplified by L2's source-4 root-walk: for each relative
+   `back_edge` value, L2 tried each root and accepted the first whose
+   `path_is_inside(<root>/<sub_dir>, dir)` matched, so a relative `src`
+   could spuriously route to `<primary>/src` and create a phantom
+   candidate. Pre-PR-13 this hole existed but didn't bite because the
+   relative paths happened to resolve under one root only.
+
+The `SubcarveDecision.sub_dirs` field doc and `subcarve_plan` function doc
+now explicitly state the absolute-path contract (the doc-fix commit
+`71b8019` addresses the code-quality reviewer's concern that this
+load-bearing invariant was implicit).
+
+**Polish items addressed:**
+- `l5_surface.rs` `vec![PathBuf::new()]` sentinel removed; absolute-segment
+  branch now uses an early `continue`.
+- `surface_calls_for` in `atlas_contracts_in_ravel_lite.rs` rewritten to
+  use `serde_json::from_str` + structured `COMPONENT_ID` lookup (was
+  substring matching against canonical input JSON).
+- `pipeline.rs` lifted the inline closure into `resolve_component_abs_dir`
+  helper with a `ResolvedComponentDir { path, fell_back }` return type;
+  caller emits `eprintln!("warning: ...")` when `fell_back` is true.
+  Five new unit tests pin the helper.
+
+**Tests added:**
+- `peer_root_with_empty_segment_does_not_phantom_emit_primary_subdirs` in
+  `crates/atlas-engine/tests/l7_l8_fixedpoint.rs` — hermetic regression
+  fixture mirroring the PR-12-of-Phase-1 layout; asserts zero phantom
+  subcomponents.
+- Five `resolve_component_abs_dir_*` unit tests in `pipeline::tests`
+  exercising the manifest-disambiguation, absolute-segment short-circuit,
+  fallback-to-roots[0], and missing-dir cases.
+- The existing `back_edge_adds_subcarve_sub_dirs_to_workspace_carve_back_edge`
+  test was updated to assert on absolute paths in `sub_dirs`.
+
+**Memory invariants preserved:** `tombstone_emit_once_design` and
+`all_components_not_salsa_tracked` are intact; L4 prior-filter was not
+touched; `resolve_component_abs_dir` is a plain free function in the CLI
+layer (not salsa-tracked).
+
+**Deferred:** none — all four hangover items closed.
 
 ### PR-14
 (awaiting subagent dispatch)
