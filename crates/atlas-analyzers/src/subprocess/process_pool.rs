@@ -33,7 +33,7 @@
 use libc;
 use std::io::BufReader;
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::thread;
@@ -58,6 +58,10 @@ struct ChildProcess {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    /// Stderr handle. `None` only if the OS failed to pipe it (should
+    /// not happen given `Stdio::piped()`). Read on the crash path to
+    /// surface diagnostics in the `CallFailed` message.
+    stderr: Option<ChildStderr>,
 }
 
 impl ChildProcess {
@@ -93,10 +97,16 @@ impl ChildProcess {
                 analyzer_id: expected_caps.id.clone(),
                 message: "child stdout not piped".into(),
             })?;
+        // Capture stderr so crash-path errors can include a tail of the
+        // child's diagnostic output. The handle is stored as `Option`
+        // since `take()` returns `Option`; in practice `Stdio::piped()`
+        // always provides a handle.
+        let stderr = child.stderr.take();
         let mut cp = ChildProcess {
             child,
             stdin,
             stdout: BufReader::new(stdout),
+            stderr,
         };
         // Consume the handshake frame the child must emit on
         // startup. Done synchronously — no point caching a child
@@ -150,6 +160,7 @@ impl ChildProcess {
         // Drop stdin to signal EOF. This helps analysers that do not
         // install a SIGTERM handler but do exit on stdin close.
         let _ = self.stdin;
+        drop(self.stderr);
 
         // Poll for a clean exit up to SHUTDOWN_GRACE; escalate to
         // SIGKILL if the child is still alive after the deadline.
@@ -173,6 +184,30 @@ impl ChildProcess {
             }
         }
     }
+}
+
+/// Read up to `limit` bytes from `stderr` (synchronous). Called only
+/// on the crash path after the child has exited or closed its stdout,
+/// so the kernel has already closed the write end of the pipe —
+/// `read_to_end` returns at EOF without blocking.
+///
+/// Returns an empty string if `stderr` is `None` or the read fails.
+fn read_stderr_tail(stderr: Option<ChildStderr>, limit: usize) -> String {
+    use std::io::Read;
+    let handle = match stderr {
+        Some(h) => h,
+        None => return String::new(),
+    };
+    let mut buf = Vec::with_capacity(limit.min(4096));
+    // Read with a hard byte cap: take() prevents reading past `limit`.
+    let _ = handle.take(limit as u64).read_to_end(&mut buf);
+    if buf.is_empty() {
+        return String::new();
+    }
+    // Convert to UTF-8 lossily so control characters don't panic.
+    let s = String::from_utf8_lossy(&buf);
+    // Trim trailing whitespace for cleaner error messages.
+    s.trim_end().to_string()
 }
 
 /// Per-analyser subprocess pool.
@@ -277,6 +312,7 @@ impl ProcessPool {
             mut child,
             stdin,
             mut stdout,
+            stderr,
         } = cp;
         let timeout = self.timeout;
 
@@ -302,6 +338,7 @@ impl ProcessPool {
                     child,
                     stdin,
                     stdout,
+                    stderr,
                 };
                 *guard = Some(cp);
                 let response: Response = serde_json::from_slice(&bytes).map_err(|e| {
@@ -318,16 +355,26 @@ impl ProcessPool {
             Ok(Err(io_err)) => {
                 // Read errored synchronously (e.g. child closed
                 // its stdout). Reap the child to learn its exit
-                // code.
+                // code. The child has already exited (or closed its
+                // stdout end), so reading stderr returns at EOF
+                // immediately.
                 let _ = child.kill();
                 let exit = child.wait().ok();
                 drop(stdin);
                 let _ = worker.join();
                 // child slot stays None.
                 let exit_msg = exit.map(|s| format!(" (exit: {s})")).unwrap_or_default();
+                let stderr_tail = read_stderr_tail(stderr, 4096);
+                let stderr_msg = if stderr_tail.is_empty() {
+                    String::new()
+                } else {
+                    format!("; stderr: {stderr_tail}")
+                };
                 Err(AnalyzerError::CallFailed {
                     analyzer_id,
-                    message: format!("reading response frame failed: {io_err}{exit_msg}"),
+                    message: format!(
+                        "subprocess exited unexpectedly: {io_err}{exit_msg}{stderr_msg}"
+                    ),
                 })
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -338,9 +385,18 @@ impl ProcessPool {
                 let _ = child.wait();
                 drop(stdin);
                 let _ = worker.join();
+                // After kill+wait the child is gone; read stderr
+                // tail for diagnostics. The `timeout` prefix is kept
+                // for the §4 acceptance pin.
+                let stderr_tail = read_stderr_tail(stderr, 4096);
+                let stderr_msg = if stderr_tail.is_empty() {
+                    String::new()
+                } else {
+                    format!("; stderr: {stderr_tail}")
+                };
                 Err(AnalyzerError::CallFailed {
                     analyzer_id,
-                    message: "timeout".into(),
+                    message: format!("timeout{stderr_msg}"),
                 })
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -350,9 +406,15 @@ impl ProcessPool {
                 let _ = child.wait();
                 drop(stdin);
                 let _ = worker.join();
+                let stderr_tail = read_stderr_tail(stderr, 4096);
+                let stderr_msg = if stderr_tail.is_empty() {
+                    String::new()
+                } else {
+                    format!("; stderr: {stderr_tail}")
+                };
                 Err(AnalyzerError::CallFailed {
                     analyzer_id,
-                    message: "worker disconnected before response".into(),
+                    message: format!("worker disconnected before response{stderr_msg}"),
                 })
             }
         }
@@ -369,6 +431,7 @@ impl ProcessPool {
             let mut child = cp.child;
             drop(cp.stdin);
             drop(cp.stdout);
+            drop(cp.stderr);
             let _ = child.kill();
             let _ = child.wait();
         }

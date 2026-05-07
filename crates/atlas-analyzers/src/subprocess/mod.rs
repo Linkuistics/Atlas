@@ -13,9 +13,9 @@
 //! 4. For each subsequent dispatch, parent writes one
 //!    [`wire_types::Request`] frame and reads one
 //!    [`wire_types::Response`] frame.
-//! 5. Pipeline shutdown drops the proxy; the child receives EOF
-//!    on stdin, then `SIGTERM`, then (after a 5-second grace)
-//!    `SIGKILL`.
+//! 5. Pipeline shutdown drops the proxy; the child receives
+//!    `SIGTERM`, then EOF on stdin (via stdin drop), then
+//!    `SIGKILL` after a 5-second grace period.
 //!
 //! Subprocess analysers are dispatched through the same
 //! [`crate::AnalyzerRegistry::dispatch`] machinery as in-process
