@@ -167,3 +167,35 @@ fn unresolved_contract_participant_fails_run_index() {
         "Stage2Edges must have been called at least once for the canned response to enter the pipeline"
     );
 }
+
+/// Helper: run `run_index` with a `ContractViolationBackend` and the given
+/// `dry_run` flag. Returns the result so each test can assert on it.
+fn setup_violation_run(dry_run: bool) -> Result<atlas_cli::IndexSummary, IndexError> {
+    let tmp = materialise_tiny_fixture();
+    let backend = ContractViolationBackend::new();
+    let mut config = base_config(tmp.path());
+    config.dry_run = dry_run;
+    run_index(
+        &config,
+        backend,
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+}
+
+/// Acceptance criterion (PR-8 follow-up): the validator must run even on
+/// dry-run so that a dry-run surfaces every failure the real run would.
+#[test]
+fn unresolved_contract_participant_fails_dry_run() {
+    let result = setup_violation_run(true);
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, IndexError::Other(_)),
+        "expected IndexError::Other for unresolved contract participant in dry-run, got {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unresolved") || msg.contains("nonexistent/fake-contract"),
+        "dry-run error message must mention 'unresolved' or the unresolved id; got: {msg}"
+    );
+}

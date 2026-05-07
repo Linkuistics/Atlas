@@ -531,6 +531,58 @@ pub fn run_index(
         ));
     }
 
+    // PR-8: validate that every contract participant in the emitted
+    // `related-components.yaml` resolves to a contract defined in some
+    // live component's `surfaces.yaml`. Runs unconditionally — the
+    // same as the subsystem validators above — because a dry-run must
+    // surface every failure the real run would. The validator is purely
+    // structural: no I/O, no writes. On failure the function returns
+    // early; `outputs_written` is `false` because no files are touched
+    // (the writes block below is never reached on this error path,
+    // whether the caller requested a dry-run or not).
+    {
+        let live_ids: Vec<component_ontology::ComponentId> = all_components(&db)
+            .iter()
+            .filter(|c| !c.deleted)
+            .filter_map(|c| component_ontology::ComponentId::parse(c.id.as_str()).ok())
+            .collect();
+        // Collect every contract id defined in any live component's
+        // surfaces.yaml. `surfaces_yaml_snapshot` is Salsa-memoised —
+        // these calls are cheap after the L9 walk above pre-warmed them.
+        let known_ids_owned: Vec<String> = live_ids
+            .iter()
+            .filter_map(|cid| surfaces_yaml_snapshot(&db, cid).ok())
+            .flat_map(|sf| {
+                sf.contracts_defined
+                    .iter()
+                    .map(|c| c.id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let known_contract_ids: std::collections::BTreeSet<&str> =
+            known_ids_owned.iter().map(String::as_str).collect();
+        if let Err(unresolved) =
+            validate_contract_participants_resolve(&related_file.edges, &known_contract_ids)
+        {
+            let lines: Vec<String> = unresolved
+                .iter()
+                .map(|u| {
+                    format!(
+                        "  {} edge: component `{}` → unresolved contract `{}`",
+                        u.edge_kind.as_str(),
+                        u.component_participant,
+                        u.unresolved_contract_id,
+                    )
+                })
+                .collect();
+            return Err(IndexError::Other(anyhow::anyhow!(
+                "related-components.yaml contains {} unresolved contract participant(s):\n{}",
+                unresolved.len(),
+                lines.join("\n"),
+            )));
+        }
+    }
+
     let summary = IndexSummary {
         component_count: components_file
             .components
@@ -559,61 +611,6 @@ pub fn run_index(
             .map_err(IndexError::Other)?;
 
         save_subsystems_atomic(&subsystems_path, &subsystems_file).map_err(IndexError::Other)?;
-
-        // PR-8: validate that every contract participant in the
-        // emitted `related-components.yaml` resolves to a contract
-        // defined in some live component's `surfaces.yaml`. Runs after
-        // every top-level YAML is committed (components, externals,
-        // related-components, subsystems), so the user has the full
-        // canonical set on disk for inspection when diagnosing the
-        // failure. Per-component projections (next step) are skipped on
-        // failure since the canonical files already carry the diagnostic
-        // info. `outputs_written` is `true` for this error path — the
-        // writes already landed.
-        {
-            let live_ids: Vec<component_ontology::ComponentId> = all_components(&db)
-                .iter()
-                .filter(|c| !c.deleted)
-                .filter_map(|c| component_ontology::ComponentId::parse(c.id.as_str()).ok())
-                .collect();
-            // Collect every contract id defined in any live component's
-            // surfaces.yaml. `surfaces_yaml_snapshot` is Salsa-memoised —
-            // these calls are cheap after the L9 walk above pre-warmed them.
-            let known_ids_owned: Vec<String> = live_ids
-                .iter()
-                .filter_map(|cid| surfaces_yaml_snapshot(&db, cid).ok())
-                .flat_map(|sf| {
-                    sf.contracts_defined
-                        .iter()
-                        .map(|c| c.id.clone())
-                        .collect::<Vec<_>>()
-                })
-                .collect();
-            let known_contract_ids: std::collections::BTreeSet<&str> =
-                known_ids_owned.iter().map(String::as_str).collect();
-            if let Err(unresolved) =
-                validate_contract_participants_resolve(&related_file.edges, &known_contract_ids)
-            {
-                let lines: Vec<String> = unresolved
-                    .iter()
-                    .map(|u| {
-                        format!(
-                            "  {} edge: component `{}` → unresolved contract `{}`",
-                            u.edge_kind.as_str(),
-                            u.component_participant,
-                            u.unresolved_contract_id,
-                        )
-                    })
-                    .collect();
-                return Err(IndexError::Other(anyhow::anyhow!(
-                    "related-components.yaml contains {} unresolved contract participant(s);\n\
-                     inspect {} for details:\n{}",
-                    unresolved.len(),
-                    prior_related_path.display(),
-                    lines.join("\n"),
-                )));
-            }
-        }
 
         // PR-6: walk every component and write its per-component
         // `<component-path>/.atlas/component.yaml` projection. The

@@ -216,8 +216,13 @@ pub fn contract_edges_from_surfaces(db: &AtlasDatabase) -> Vec<Edge> {
 
     for entry in live {
         let component_id_str = entry.id.as_str().to_string();
-        // `surface_artefacts_of` is Salsa-memoised — cost is one
-        // Salsa lookup per call; no disk I/O after the first call.
+        // `surface_artefacts_of` is not Salsa-tracked, so each call
+        // re-walks the component's path segments and re-runs the
+        // deterministic Rust-surface analyser. The cost is bounded by
+        // the number of live components × per-component source size and
+        // is acceptable for Phase 1 workspaces. A future PR can wrap it
+        // in `#[salsa::tracked]` if profiling demands it; that change is
+        // outside PR-8's scope.
         let artefacts = surface_artefacts_of(db, entry.id.clone());
 
         // defines-contract edges: one per code-derived contract.
