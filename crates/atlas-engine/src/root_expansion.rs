@@ -31,7 +31,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::manifest_parse::{extract_path_deps, extract_pyproject_path_deps};
+use crate::manifest_parse::{
+    extract_csproj_path_deps, extract_path_deps, extract_pyproject_path_deps,
+};
 
 /// Expand `primary` into the full set of roots reachable via Cargo
 /// path-deps. The returned Vec always begins with the canonicalised
@@ -102,10 +104,14 @@ pub fn expand_roots_with_warnings(
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or_default();
-            let path_deps: Vec<PathBuf> = match basename {
-                "Cargo.toml" => extract_path_deps(&contents),
-                "pyproject.toml" => extract_pyproject_path_deps(&contents),
-                _ => continue,
+            let path_deps: Vec<PathBuf> = if basename == "Cargo.toml" {
+                extract_path_deps(&contents)
+            } else if basename == "pyproject.toml" {
+                extract_pyproject_path_deps(&contents)
+            } else if basename.ends_with(".csproj") {
+                extract_csproj_path_deps(&contents)
+            } else {
+                continue;
             };
             for rel in path_deps {
                 let target = manifest_dir.join(&rel);
@@ -225,6 +231,10 @@ fn enclosing_manifest_root(start: &Path) -> PathBuf {
     // `Cargo.toml`. Treat it as a "crate root" candidate (no workspace
     // shape — Python's analogue is the project root itself).
     let mut python_root: Option<PathBuf> = None;
+    // Phase 2 PR-6: a C# path-dep target may resolve to a directory
+    // containing a `*.csproj`. Treat it as a "crate root" candidate —
+    // no solution-level workspace shape is walked here.
+    let mut csharp_root: Option<PathBuf> = None;
 
     loop {
         let manifest = cursor.join("Cargo.toml");
@@ -243,6 +253,23 @@ fn enclosing_manifest_root(start: &Path) -> PathBuf {
         if pyproject.is_file() && python_root.is_none() {
             python_root = Some(cursor.clone());
         }
+        // A directory containing any `*.csproj` is a C# project root.
+        if csharp_root.is_none() {
+            let has_csproj = std::fs::read_dir(&cursor)
+                .ok()
+                .map(|entries| {
+                    entries.flatten().any(|e| {
+                        e.file_name()
+                            .to_str()
+                            .map(|n| n.ends_with(".csproj"))
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
+            if has_csproj {
+                csharp_root = Some(cursor.clone());
+            }
+        }
         match cursor.parent() {
             Some(parent) if parent != cursor => cursor = parent.to_path_buf(),
             _ => break,
@@ -252,6 +279,7 @@ fn enclosing_manifest_root(start: &Path) -> PathBuf {
     workspace_root
         .or(crate_root)
         .or(python_root)
+        .or(csharp_root)
         .unwrap_or_else(|| start.to_path_buf())
 }
 
@@ -310,7 +338,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
             walk(&path, out);
         } else if file_type.is_file() {
             if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                if matches!(name, "Cargo.toml" | "pyproject.toml") {
+                if matches!(name, "Cargo.toml" | "pyproject.toml") || name.ends_with(".csproj") {
                     out.push(path);
                 }
             }

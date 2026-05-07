@@ -133,6 +133,37 @@ pub fn extract_pyproject_path_deps(contents: &str) -> Vec<PathBuf> {
     out
 }
 
+/// Returns every `<ProjectReference Include="...">` path declared in a
+/// `*.csproj` XML manifest, as paths relative to the manifest's parent
+/// directory (callers canonicalise). This drives the cross-tree
+/// path-dep fixed-point walk introduced in PR-6 for C# projects.
+///
+/// **`<PackageReference>` is intentionally excluded.** A
+/// `<PackageReference Include="Microsoft.Extensions.Hosting"
+/// Version="8.0.0" />` resolves through NuGet, not as a local source
+/// tree. Including NuGet packages in the workspace-local path-dep walk
+/// would require a NuGet resolver (Phase 3 scope). Only
+/// `<ProjectReference>` carries a real relative filesystem path and
+/// therefore participates here.
+///
+/// Parsing is deliberately minimal: a regex-based scanner extracts the
+/// `Include="..."` value from `<ProjectReference ...>` tags. This is
+/// the same Wave-3 pattern used by PR-8's `mix.exs` parser and avoids
+/// pulling in an XML-parser dependency. Malformed XML or missing
+/// attributes degrade to an empty Vec (same policy as
+/// `extract_pyproject_path_deps`).
+pub fn extract_csproj_path_deps(contents: &str) -> Vec<PathBuf> {
+    // Match <ProjectReference Include="some/path/Foo.csproj" ...>
+    // Case-insensitive for the element name; path value is captured.
+    let re = regex::Regex::new(r#"(?i)<ProjectReference\s[^>]*Include\s*=\s*"([^"]+)""#);
+    let Ok(re) = re else {
+        return Vec::new();
+    };
+    re.captures_iter(contents)
+        .filter_map(|cap| cap.get(1).map(|m| PathBuf::from(m.as_str())))
+        .collect()
+}
+
 /// Facts lifted from a `package.json` by serde_json. Missing fields
 /// degrade to `false`; malformed JSON degrades to an all-false shape,
 /// which sends the classifier down the LLM fallback path.

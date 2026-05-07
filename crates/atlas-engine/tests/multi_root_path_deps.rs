@@ -610,3 +610,66 @@ fn pyproject_path_dep_lib_surface_contributes_to_consumer_l6_fingerprint() {
          cache key via participant_surface_sha)"
     );
 }
+
+// ── §4 PR-6 acceptance criterion: csproj <ProjectReference> path-dep ─────────
+
+/// Write a minimal C# project at `dir`:
+/// - `<name>.csproj` with optional `<ProjectReference>` entries.
+/// - `<name>.cs` with a single `public class`.
+fn write_csharp_project(dir: &Path, name: &str, project_refs: &[&str]) {
+    let mut item_group = String::new();
+    if !project_refs.is_empty() {
+        item_group.push_str("  <ItemGroup>\n");
+        for r in project_refs {
+            item_group.push_str(&format!("    <ProjectReference Include=\"{r}\" />\n"));
+        }
+        item_group.push_str("  </ItemGroup>\n");
+    }
+    let csproj = format!(
+        "<Project Sdk=\"Microsoft.NET.Sdk\">\n  \
+         <PropertyGroup>\n    \
+         <TargetFramework>net8.0</TargetFramework>\n  \
+         </PropertyGroup>\n\
+         {item_group}\
+         </Project>\n"
+    );
+    write(&dir.join(format!("{name}.csproj")), &csproj);
+    let cs = format!("namespace {name} {{\n    public class {name}Class {{}}\n}}\n");
+    write(&dir.join(format!("{name}.cs")), &cs);
+}
+
+#[test]
+fn csproj_path_dep_expands_to_peer_root() {
+    // §4 PR-6 acceptance criterion (F2): a C# consumer csproj that
+    // declares `<ProjectReference Include="../lib_a/lib_a.csproj">` must
+    // cause `expand_roots` to discover the `lib_a` directory as a peer
+    // root — mirroring the Python `pyproject_path_dep_expands_to_peer_root`
+    // pattern from PR-3.
+    //
+    // <PackageReference> is intentionally excluded from path-dep
+    // recognition: NuGet packages resolve through the NuGet feed, not as
+    // local source trees. Only <ProjectReference> carries a real relative
+    // filesystem path and participates in the workspace-local walk.
+    let parent = TempDir::new().unwrap();
+    let primary = parent.path().join("primary");
+    let external = parent.path().join("external");
+
+    // Consumer in the primary tree references lib_a in the external tree.
+    write_csharp_project(
+        &primary.join("consumer"),
+        "consumer",
+        &["../../external/lib_a/lib_a.csproj"],
+    );
+    // lib_a lives in a separate tree with no outgoing ProjectReferences.
+    write_csharp_project(&external.join("lib_a"), "lib_a", &[]);
+
+    let roots = expand_roots(&primary).expect("expand_roots succeeds");
+
+    let primary_canonical = primary.canonicalize().unwrap();
+    let lib_a_canonical = external.join("lib_a").canonicalize().unwrap();
+    assert_eq!(
+        roots,
+        vec![primary_canonical, lib_a_canonical],
+        "primary then lib_a's directory (no enclosing sln); got {roots:?}"
+    );
+}
