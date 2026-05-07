@@ -97,10 +97,12 @@ dependencies = [
  "atlas-llm",
  "component-ontology",
  "globset",
+ "proc-macro2",
  "serde",
  "serde_json",
  "serde_yaml",
  "sha2",
+ "syn",
  "thiserror",
  "toml",
 ]

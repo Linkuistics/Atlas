@@ -1,24 +1,25 @@
-//! Phase 1 surface analyser for Rust components.
+//! Rust surface analyser.
 //!
-//! Extracts contracts, bindings, and library-api items by scanning the
-//! component's `src/lib.rs` and `src/main.rs` for `pub` items at the
-//! top level of the file. The scan is regex-driven (rust-analyzer
-//! integration is Phase 2, plan §6 risks); nested `pub` items inside
-//! `pub mod foo { ... }` are missed in Phase 1 — documented at the
-//! call sites.
+//! Extracts contracts, bindings, and library-api items by parsing the
+//! component's `src/lib.rs` and `src/main.rs` with [`syn`] and walking
+//! the AST. Phase 2 (PR-5) replaced the Phase 1 regex byte-walker
+//! wholesale with this `syn`-based implementation; the change closes
+//! the Phase 1 known limitation that nested `pub` items inside
+//! `pub mod foo { ... }` were missed.
 //!
 //! ## Outputs
 //!
-//! For every top-level `pub struct` with `#[derive(... Serialize ...
-//! Deserialize ...)]` preceding it, the analyser emits a `data-format`
-//! contract whose `definition_binding` covers the struct's
-//! `pub`-to-closing-brace byte range. The struct also appears as a
-//! `pub_item` of kind `struct` in the component's `LibraryApi`.
+//! For every `pub struct` (anywhere in the AST, including inside
+//! `pub mod` blocks) carrying a `#[derive(... Serialize ... Deserialize ...)]`
+//! attribute, the analyser emits a `data-format` contract whose
+//! `definition_binding` covers the struct's `pub`-to-closing-brace
+//! byte range. The struct also appears as a `pub_item` of kind
+//! `struct` in the component's `LibraryApi`.
 //!
-//! For every other top-level `pub item` (struct without serde derive,
-//! `pub fn`, `pub trait`, `pub enum`, `pub mod`, `pub type`, `pub const`,
-//! `pub static`, `pub union`, `pub macro_rules!`), a `pub_item` is
-//! recorded under the component's single Rust `LibraryApi`.
+//! For every other `pub item` (struct without serde derive, `pub fn`,
+//! `pub trait`, `pub enum`, `pub mod`, `pub type`, `pub const`,
+//! `pub static`, `pub union`), a `pub_item` is recorded under the
+//! component's single Rust `LibraryApi`.
 //!
 //! ## Span convention (spec §2.1)
 //!
@@ -34,19 +35,26 @@
 //! adjacent items rearranged) does not affect the sha, while
 //! reformatting *inside* the span does (per spec §2.1).
 //!
+//! `proc_macro2::Span::byte_range` (with the `span-locations` feature)
+//! supplies the absolute byte range for each item directly; we do not
+//! re-derive the range from line/column. The `pub` keyword starts the
+//! item's span in `syn`'s representation, so the spec semantics fall
+//! out without per-item adjustment.
+//!
 //! ## Why this lives in `atlas-analyzers`
 //!
-//! The plan §4 PR-7 stub places the analyser in `atlas-analyzers/src/`
-//! so future per-language surface analysers compose under the same
-//! [`crate::Analyzer`] trait. Phase 1 binding extraction is a pure
-//! function of file bytes, so the analyser is materially testable in
-//! isolation without standing up a database.
+//! Surface analysers compose under the same [`crate::Analyzer`]
+//! trait so future per-language analysers slot in alongside this one.
+//! Binding extraction is a pure function of file bytes, so the
+//! analyser is materially testable in isolation without standing up
+//! a database.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use atlas_index::{
     Binding, Contract, ContractKind, CostClass, LibraryApi, PubItem, PubItemKind, Stage,
 };
+use syn::spanned::Spanned;
 
 use crate::{AnalysisContext, Analyzer, AnalyzerResult, FingerprintInput, Target};
 
@@ -54,33 +62,34 @@ use crate::{AnalysisContext, Analyzer, AnalyzerResult, FingerprintInput, Target}
 /// `analyzers.yaml` would carry; design §6.6).
 pub const ANALYZER_ID: &str = "rust-surface-analyzer";
 
-/// Bumped when the extraction algorithm changes shape (e.g. when
-/// nested `pub mod` items start contributing). Phase 2's
-/// rust-analyzer wire-up is the next bump.
-pub const ANALYZER_VERSION: &str = "1.0.0";
+/// Bumped to `2.0.0` in Phase 2 PR-5 to mark the regex → `syn`
+/// breaking change: span byte ranges produced by the new walker do
+/// not match the regex byte-walker's, so any cache keyed on a binding
+/// `content_sha` from the previous version is invalidated by design.
+pub const ANALYZER_VERSION: &str = "2.0.0";
 
 /// Output of a single component's Rust-surface analysis. The L5
 /// driver downcasts the `Box<dyn StageOutput>` back to this struct
 /// via the [`crate::StageOutput`] machinery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustSurfaceOutput {
-    /// Code-derived `data-format` contracts for top-level
-    /// `pub struct` items that carry `#[derive(Serialize, Deserialize)]`.
+    /// Code-derived `data-format` contracts for `pub struct` items
+    /// that carry `#[derive(Serialize, Deserialize)]`.
     pub contracts: Vec<Contract>,
     /// Every binding emitted (one per contract; each contract's
     /// `definition_binding` is also represented here for callers
     /// that want a flat list).
     pub bindings: Vec<Binding>,
-    /// At most one [`LibraryApi`] entry — Phase 1 emits Rust only.
-    /// Empty when the component exposes no `pub` items.
+    /// At most one [`LibraryApi`] entry — the analyser emits Rust
+    /// only. Empty when the component exposes no `pub` items.
     pub library_apis: Vec<LibraryApi>,
 }
 
 crate::impl_stage_output!(RustSurfaceOutput);
 
-/// The analyser itself. Stateless; the only knob is the `ANALYZER_VERSION`
-/// constant, which the registry picks up via the [`Analyzer::version`]
-/// trait method.
+/// The analyser itself. Stateless; the only knob is the
+/// [`ANALYZER_VERSION`] constant, which the registry picks up via the
+/// [`Analyzer::version`] trait method.
 #[derive(Debug, Default)]
 pub struct RustSurfaceAnalyzer;
 
@@ -127,15 +136,12 @@ impl Analyzer for RustSurfaceAnalyzer {
     }
 
     fn analyse(&self, _ctx: &AnalysisContext, _target: &Target) -> AnalyzerResult {
-        // The dispatcher path is reserved for a future Phase 2 driver
-        // that hands a populated `Target` carrying `src/lib.rs`/
-        // `src/main.rs` bytes. Phase 1's L5 driver invokes
-        // [`extract_rust_surface`] directly rather than going through
-        // `analyse`, so this branch returns `Declines` to remain a
-        // well-behaved registry citizen without duplicating the
-        // engine's file-loading logic. Plan §4 PR-7 explicitly favours
-        // option (b): keep deterministic binding-extraction inside the
-        // analyser, but let the L5 driver call into it.
+        // The dispatcher path is reserved for a future driver that
+        // hands a populated `Target` carrying `src/lib.rs`/`src/main.rs`
+        // bytes. Today's L5 driver invokes [`extract_rust_surface`]
+        // directly rather than going through `analyse`, so this branch
+        // returns `Declines` to remain a well-behaved registry citizen
+        // without duplicating the engine's file-loading logic.
         AnalyzerResult::Declines
     }
 }
@@ -163,6 +169,11 @@ pub struct RustSourceInputs {
 /// `component_id` is the owning component's id (e.g.
 /// `atlas-contracts/atlas-index`); contract ids and the library-api
 /// id are namespaced under it per spec §6.3 worked example.
+///
+/// Sources whose bytes are not valid UTF-8 or that fail to parse as
+/// Rust are silently skipped — the analyser is conservative and
+/// prefers emitting nothing for a malformed file over panicking the
+/// pipeline.
 pub fn extract_rust_surface(component_id: &str, inputs: &RustSourceInputs) -> RustSurfaceOutput {
     let mut contracts: Vec<Contract> = Vec::new();
     let mut bindings: Vec<Binding> = Vec::new();
@@ -170,53 +181,27 @@ pub fn extract_rust_surface(component_id: &str, inputs: &RustSourceInputs) -> Ru
 
     for (rel_path, bytes) in &inputs.sources {
         let Ok(text) = std::str::from_utf8(bytes) else {
-            continue; // non-UTF-8 source is rejected silently — Phase 2's parser will be stricter
+            continue;
         };
-        for item in scan_pub_items(text) {
-            // Build the binding span as half-open byte range.
-            let span = (item.start_byte, item.end_byte);
-            let content_sha = crate::sha256_hex_of_range(bytes, span);
-
-            // Every `pub item` shows up in `pub_items` for the
-            // library-api. `pub mod` is recorded too — design §6.3
-            // example shows nested mods are valid library-api members.
-            pub_items.push(PubItem {
-                name: item.name.clone(),
-                file: rel_path.clone(),
-                kind: item.kind,
-            });
-
-            // For `pub struct` with `#[derive(Serialize, Deserialize)]`,
-            // emit a `data-format` contract.
-            if matches!(item.kind, PubItemKind::Struct) && item.has_serde_derive {
-                let local = kebabify_struct_name(&item.name);
-                let contract_id = format!("{component_id}/{local}");
-                let binding = Binding {
-                    language: "rust".into(),
-                    symbol: item.name.clone(),
-                    file: rel_path.clone(),
-                    span,
-                    content_sha: content_sha.clone(),
-                };
-                let contract = Contract {
-                    id: contract_id,
-                    kind: ContractKind::DataFormat,
-                    // Phase 1 §2.1 reduction: contract sha == binding sha.
-                    fingerprint: content_sha.clone(),
-                    definition_binding: binding.clone(),
-                    description: String::new(),
-                };
-                bindings.push(binding);
-                contracts.push(contract);
-            }
-        }
+        let Ok(file) = syn::parse_file(text) else {
+            continue;
+        };
+        walk_items(
+            component_id,
+            rel_path,
+            bytes,
+            &file.items,
+            &mut contracts,
+            &mut bindings,
+            &mut pub_items,
+        );
     }
 
     let library_apis: Vec<LibraryApi> = if pub_items.is_empty() {
         Vec::new()
     } else {
         // Sort pub_items deterministically: by file then by name. The
-        // scan order (file order in `sources`, declaration order
+        // walk order (file order in `sources`, declaration order
         // within a file) is already deterministic, but a fingerprint
         // computed from this list deserves an explicit tie-breaker
         // for sanity.
@@ -232,7 +217,6 @@ pub fn extract_rust_surface(component_id: &str, inputs: &RustSourceInputs) -> Ru
             fingerprint: api_fp,
             pub_items: sorted,
         };
-        // Validate before emitting (PR-1 status note).
         api.validate().expect(
             "RustSurfaceAnalyzer constructs LibraryApi with kind=LibraryApi by construction",
         );
@@ -244,6 +228,262 @@ pub fn extract_rust_surface(component_id: &str, inputs: &RustSourceInputs) -> Ru
         bindings,
         library_apis,
     }
+}
+
+/// Walk every item in `items`, recursing into inline `mod` bodies.
+/// Records each `pub` item (and emits a contract when the item is a
+/// `pub struct` carrying a serde derive). The traversal visits both
+/// `pub` and non-`pub` modules: a non-`pub` mod can still contain
+/// `pub` items, but those items are not externally visible — the
+/// public-API fingerprint relies only on `pub` items at any nesting
+/// depth, and we record them all so callers downstream can decide
+/// what's externally reachable. (Spec §2.1 says nothing about
+/// reachability filtering; the existing tests treat any encountered
+/// `pub` item as a library-api member.)
+fn walk_items(
+    component_id: &str,
+    rel_path: &Path,
+    bytes: &[u8],
+    items: &[syn::Item],
+    contracts: &mut Vec<Contract>,
+    bindings: &mut Vec<Binding>,
+    pub_items: &mut Vec<PubItem>,
+) {
+    for item in items {
+        emit_item(
+            component_id,
+            rel_path,
+            bytes,
+            item,
+            contracts,
+            bindings,
+            pub_items,
+        );
+
+        // Recurse into inline modules so nested `pub` items are
+        // visited. PR-5 closes the Phase 1 limitation by descending
+        // here regardless of the surrounding mod's own visibility.
+        if let syn::Item::Mod(mod_item) = item {
+            if let Some((_, inner_items)) = &mod_item.content {
+                walk_items(
+                    component_id,
+                    rel_path,
+                    bytes,
+                    inner_items,
+                    contracts,
+                    bindings,
+                    pub_items,
+                );
+            }
+        }
+    }
+}
+
+/// If `item` is `pub`, emit a `PubItem` and (when it's a serde-derived
+/// struct) a `data-format` contract.
+fn emit_item(
+    component_id: &str,
+    rel_path: &Path,
+    bytes: &[u8],
+    item: &syn::Item,
+    contracts: &mut Vec<Contract>,
+    bindings: &mut Vec<Binding>,
+    pub_items: &mut Vec<PubItem>,
+) {
+    let Some((kind, name, vis, attrs)) = describe_item(item) else {
+        return;
+    };
+    if !is_pub(vis) {
+        return;
+    }
+    let Some(span) = item_byte_span(item, vis, bytes) else {
+        return;
+    };
+
+    let content_sha = crate::sha256_hex_of_range(bytes, span);
+    pub_items.push(PubItem {
+        name: name.clone(),
+        file: rel_path.to_path_buf(),
+        kind,
+    });
+
+    if matches!(kind, PubItemKind::Struct) && attrs_have_serde_derive(attrs) {
+        let local = kebabify_struct_name(&name);
+        let contract_id = format!("{component_id}/{local}");
+        let binding = Binding {
+            language: "rust".into(),
+            symbol: name.clone(),
+            file: rel_path.to_path_buf(),
+            span,
+            content_sha: content_sha.clone(),
+        };
+        let contract = Contract {
+            id: contract_id,
+            kind: ContractKind::DataFormat,
+            // Spec §2.1 reduction: contract sha == binding sha.
+            fingerprint: content_sha.clone(),
+            definition_binding: binding.clone(),
+            description: String::new(),
+        };
+        bindings.push(binding);
+        contracts.push(contract);
+    }
+}
+
+/// Inspect a [`syn::Item`] and return `(kind, name, visibility, attrs)`
+/// for the variants we surface. Returns `None` for variants that
+/// don't contribute to a library API (e.g. `pub use`, `extern crate`,
+/// `impl`, `macro`, verbatim, etc.). The returned `name` is the
+/// item's identifier; the visibility and attributes references live
+/// inside the original item.
+fn describe_item(
+    item: &syn::Item,
+) -> Option<(PubItemKind, String, &syn::Visibility, &[syn::Attribute])> {
+    match item {
+        syn::Item::Struct(s) => Some((
+            PubItemKind::Struct,
+            s.ident.to_string(),
+            &s.vis,
+            s.attrs.as_slice(),
+        )),
+        syn::Item::Enum(e) => Some((
+            PubItemKind::Enum,
+            e.ident.to_string(),
+            &e.vis,
+            e.attrs.as_slice(),
+        )),
+        syn::Item::Fn(f) => Some((
+            PubItemKind::Fn,
+            f.sig.ident.to_string(),
+            &f.vis,
+            f.attrs.as_slice(),
+        )),
+        syn::Item::Trait(t) => Some((
+            PubItemKind::Trait,
+            t.ident.to_string(),
+            &t.vis,
+            t.attrs.as_slice(),
+        )),
+        syn::Item::Mod(m) => Some((
+            PubItemKind::Mod,
+            m.ident.to_string(),
+            &m.vis,
+            m.attrs.as_slice(),
+        )),
+        syn::Item::Type(t) => Some((
+            PubItemKind::TypeAlias,
+            t.ident.to_string(),
+            &t.vis,
+            t.attrs.as_slice(),
+        )),
+        syn::Item::Const(c) => Some((
+            PubItemKind::Const,
+            c.ident.to_string(),
+            &c.vis,
+            c.attrs.as_slice(),
+        )),
+        syn::Item::Static(s) => Some((
+            PubItemKind::Static,
+            s.ident.to_string(),
+            &s.vis,
+            s.attrs.as_slice(),
+        )),
+        syn::Item::Union(u) => Some((
+            PubItemKind::Union,
+            u.ident.to_string(),
+            &u.vis,
+            u.attrs.as_slice(),
+        )),
+        // `pub use ...` is a re-export, not a declaration site —
+        // explicitly excluded per the existing tests.
+        syn::Item::Use(_) => None,
+        // `pub macro` / `macro_rules!` / `extern crate` / `impl` /
+        // `trait alias` / verbatim / foreign mod / etc. don't
+        // contribute to the library API surface today. Phase 1 also
+        // ignored them — the `PubItemKind::Macro` enum variant
+        // existed but was unreachable in practice, and PR-5 keeps
+        // that posture (no test covers macros).
+        _ => None,
+    }
+}
+
+/// True iff `vis` is the syntactic `pub`. Restricted forms
+/// (`pub(crate)`, `pub(super)`, `pub(in path)`) are also recorded:
+/// the existing test `pub_with_restriction_is_recognised` pins this.
+fn is_pub(vis: &syn::Visibility) -> bool {
+    matches!(
+        vis,
+        syn::Visibility::Public(_) | syn::Visibility::Restricted(_)
+    )
+}
+
+/// Compute the half-open byte range for a `pub`-prefixed [`syn::Item`].
+///
+/// Spec §2.1 says the span begins at the first byte of `pub` and
+/// ends one byte after the closing `}` (block items) or `;`
+/// (statement items). `syn::Item::span()` yields the *entire* item
+/// span including any leading `#[derive(...)]` / doc-comment
+/// attributes — wider than the spec wants. We therefore take:
+///
+/// - **start**: the first byte of `vis.span().byte_range()`. For
+///   `pub` and `pub(crate)`/`pub(super)`/`pub(in path)`, that span
+///   begins at the `pub` keyword.
+/// - **end**: the last byte of `item.span().byte_range()`, which is
+///   one past `}` for block items and one past `;` for statement
+///   items — matching the spec.
+///
+/// `proc_macro2::Span::byte_range` (with the `span-locations`
+/// feature, enabled in the crate's `Cargo.toml`) returns the
+/// absolute file-byte range. Outside a proc-macro context (which is
+/// where we are — we call `syn::parse_file` from a regular library)
+/// the byte range is accurate on stable Rust per the proc-macro2
+/// docs.
+fn item_byte_span(item: &syn::Item, vis: &syn::Visibility, bytes: &[u8]) -> Option<(usize, usize)> {
+    let item_range = item.span().byte_range();
+    let vis_range = vis.span().byte_range();
+    let start = vis_range.start;
+    let end = item_range.end;
+    if end > bytes.len() || start > end {
+        return None;
+    }
+    Some((start, end))
+}
+
+/// Walk an attribute list and return true iff one of them is a
+/// `derive(...)` naming both `Serialize` and `Deserialize`.
+///
+/// The `cfg_attr(..., derive(...))` form is intentionally NOT
+/// supported (matching Phase 1 behaviour and the spec note about
+/// conservative detection): we look only at unconditional `#[derive]`.
+/// Path forms like `serde::Serialize` are accepted — only the last
+/// path segment is compared.
+fn attrs_have_serde_derive(attrs: &[syn::Attribute]) -> bool {
+    for attr in attrs {
+        if !attr.path().is_ident("derive") {
+            continue;
+        }
+        let mut has_serialize = false;
+        let mut has_deserialize = false;
+        // `parse_nested_meta` walks the comma-separated list inside
+        // the `derive(...)` argument. Each element is a `Path`. We
+        // check the last segment's identifier so `serde::Serialize`
+        // matches in addition to bare `Serialize`.
+        let _ = attr.parse_nested_meta(|meta| {
+            if let Some(last) = meta.path.segments.last() {
+                let ident = last.ident.to_string();
+                if ident == "Serialize" {
+                    has_serialize = true;
+                } else if ident == "Deserialize" {
+                    has_deserialize = true;
+                }
+            }
+            Ok(())
+        });
+        if has_serialize && has_deserialize {
+            return true;
+        }
+    }
+    false
 }
 
 /// SHA-256 hex of the canonicalised public-API surface. The
@@ -286,703 +526,6 @@ fn pub_item_kind_str(kind: PubItemKind) -> &'static str {
         PubItemKind::Union => "union",
         PubItemKind::Macro => "macro",
     }
-}
-
-/// One `pub` item discovered by the scanner.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PubItemRecord {
-    name: String,
-    kind: PubItemKind,
-    /// Byte offset of the first character of `pub`.
-    start_byte: usize,
-    /// Byte offset one past the last character of the item (the
-    /// byte immediately after `}` for block items, after `;` for
-    /// statement items).
-    end_byte: usize,
-    /// True when a `#[derive(...)]` attribute *immediately* preceding
-    /// the `pub` keyword (modulo whitespace and doc-comments) names
-    /// both `Serialize` and `Deserialize`. Phase 1 detects only the
-    /// adjacent-attribute form — the cfg_attr-wrapped form is Phase 2.
-    has_serde_derive: bool,
-}
-
-/// Top-level `pub` item scanner. Operates on the raw source bytes
-/// (UTF-8). Phase 1 limitations (documented on the analyser's module
-/// docs):
-///
-/// - Nested `pub mod foo { ... pub struct Bar; }` inner items are
-///   missed (we only consider items at brace depth 0).
-/// - Items inside `cfg_attr(..., derive(...))` are recorded as
-///   non-serde even when one of the conditional branches would
-///   compile to `#[derive(Serialize, Deserialize)]`. This is the
-///   intentionally conservative branch.
-/// - Doc-comments and attributes preceding the `pub` keyword are
-///   *not* part of the item's span; the span starts at `pub`.
-fn scan_pub_items(text: &str) -> Vec<PubItemRecord> {
-    let bytes = text.as_bytes();
-    let mut out: Vec<PubItemRecord> = Vec::new();
-
-    // We walk byte-by-byte tracking brace depth and string/char/
-    // line-comment/block-comment state. At depth 0, when we see the
-    // start of a token that could be `pub`, we attempt to recognise
-    // the item.
-    let mut i: usize = 0;
-    let mut depth: i32 = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-
-        // Skip line comments (`// ...\n`).
-        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-        // Skip block comments (`/* ... */`). Rust nests block comments
-        // syntactically; track the depth.
-        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
-            i += 2;
-            let mut bdepth = 1;
-            while i < bytes.len() && bdepth > 0 {
-                if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                    bdepth += 1;
-                    i += 2;
-                } else if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    bdepth -= 1;
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            continue;
-        }
-        // Skip raw strings and ordinary strings — the scanner ignores
-        // their contents for brace tracking.
-        if b == b'r' && i + 1 < bytes.len() && (bytes[i + 1] == b'"' || bytes[i + 1] == b'#') {
-            // Raw string: `r###"..."###`. Count leading `#`s.
-            let mut j = i + 1;
-            let mut hash_count = 0usize;
-            while j < bytes.len() && bytes[j] == b'#' {
-                hash_count += 1;
-                j += 1;
-            }
-            if j < bytes.len() && bytes[j] == b'"' {
-                // Skip past the closing `"###` matching this prefix.
-                j += 1;
-                while j < bytes.len() {
-                    if bytes[j] == b'"' {
-                        let end = j + 1 + hash_count;
-                        if end <= bytes.len() && bytes[j + 1..end].iter().all(|&c| c == b'#') {
-                            j = end;
-                            break;
-                        }
-                    }
-                    j += 1;
-                }
-                i = j;
-                continue;
-            }
-        }
-        if b == b'"' {
-            // Ordinary string: skip until the next unescaped `"`.
-            i += 1;
-            while i < bytes.len() && bytes[i] != b'"' {
-                if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-            }
-            if i < bytes.len() {
-                i += 1;
-            }
-            continue;
-        }
-        if b == b'\'' {
-            // Char literal or lifetime — distinguish by lookahead.
-            // A char literal starts `'<char>'` or `'\<esc>'`; a
-            // lifetime is `'ident`. We try to skip a char literal
-            // first, falling back to a single-byte advance if the
-            // lookahead doesn't match.
-            if i + 2 < bytes.len() && bytes[i + 1] != b'\\' && bytes[i + 2] == b'\'' {
-                i += 3;
-                continue;
-            }
-            if i + 3 < bytes.len() && bytes[i + 1] == b'\\' {
-                // Escape sequence — find the closing `'`.
-                let mut j = i + 2;
-                while j < bytes.len() && bytes[j] != b'\'' {
-                    j += 1;
-                }
-                if j < bytes.len() {
-                    i = j + 1;
-                    continue;
-                }
-            }
-            // Lifetime or unrecognised — advance one byte.
-            i += 1;
-            continue;
-        }
-
-        if b == b'{' {
-            depth += 1;
-            i += 1;
-            continue;
-        }
-        if b == b'}' {
-            depth -= 1;
-            i += 1;
-            continue;
-        }
-
-        // Top-level (depth == 0) only: try to recognise a `pub` item.
-        if depth == 0 && is_pub_keyword_at(bytes, i) {
-            if let Some(record) = parse_pub_item(bytes, i) {
-                let advance = record.end_byte;
-                out.push(record);
-                i = advance;
-                continue;
-            }
-        }
-
-        i += 1;
-    }
-
-    out
-}
-
-/// True iff `bytes[i..]` starts with the `pub` keyword followed by a
-/// non-identifier byte (whitespace, `(`, `;`, etc.).
-fn is_pub_keyword_at(bytes: &[u8], i: usize) -> bool {
-    if i + 3 > bytes.len() {
-        return false;
-    }
-    if &bytes[i..i + 3] != b"pub" {
-        return false;
-    }
-    // Ensure `pub` is a whole word (the previous byte must not be an
-    // identifier byte; the next byte must not be either).
-    if i > 0 && is_ident_byte(bytes[i - 1]) {
-        return false;
-    }
-    let next = bytes.get(i + 3).copied().unwrap_or(b' ');
-    !is_ident_byte(next)
-}
-
-fn is_ident_byte(b: u8) -> bool {
-    b == b'_' || b.is_ascii_alphanumeric()
-}
-
-/// Parse one top-level `pub` item starting at `start` (the `p` of
-/// `pub`). Returns `None` if the item shape is not recognised
-/// (Phase 1 conservative — we'd rather miss an item than emit wrong
-/// data).
-fn parse_pub_item(bytes: &[u8], start: usize) -> Option<PubItemRecord> {
-    // Detect a `#[derive(... Serialize ... Deserialize ...)]`
-    // attribute attached to this item. The attribute precedes the
-    // `pub` keyword, separated only by whitespace and doc-comments.
-    let has_serde_derive = preceding_block_has_serde_derive(bytes, start);
-
-    // Skip `pub` and any restriction (`pub(crate)`, `pub(super)`).
-    let mut i = start + 3;
-    i = skip_ws_and_comments(bytes, i);
-    if i < bytes.len() && bytes[i] == b'(' {
-        // Skip until the matching `)`. `pub(restriction)` is single-
-        // depth so a naive scan suffices.
-        let mut paren = 1;
-        i += 1;
-        while i < bytes.len() && paren > 0 {
-            match bytes[i] {
-                b'(' => paren += 1,
-                b')' => paren -= 1,
-                _ => {}
-            }
-            i += 1;
-        }
-        i = skip_ws_and_comments(bytes, i);
-    }
-    if i >= bytes.len() {
-        return None;
-    }
-
-    // Read the item-kind keyword (struct, fn, enum, trait, mod,
-    // type, const, static, union, async, unsafe, default, macro_rules!, ...).
-    // Async/unsafe/default modifiers may precede the actual kind
-    // keyword (e.g. `pub unsafe fn ...`, `pub async fn ...`,
-    // `pub default fn ...`). Skip them.
-    loop {
-        let word = read_ident(bytes, i)?;
-        if matches!(word.as_str(), "async" | "unsafe" | "default" | "extern") {
-            i += word.len();
-            i = skip_ws_and_comments(bytes, i);
-            // `extern "C" fn ...` — skip the optional ABI string.
-            if word == "extern" && i < bytes.len() && bytes[i] == b'"' {
-                // Skip ABI string literal.
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'"' {
-                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-                if i < bytes.len() {
-                    i += 1;
-                }
-                i = skip_ws_and_comments(bytes, i);
-            }
-            continue;
-        }
-        break;
-    }
-
-    let kind_word = read_ident(bytes, i)?;
-    // Special-case `macro_rules!` — read the `!` and continue as a
-    // macro item.
-    let (kind, kind_keyword_len) = match kind_word.as_str() {
-        "struct" => (PubItemKind::Struct, kind_word.len()),
-        "enum" => (PubItemKind::Enum, kind_word.len()),
-        "fn" => (PubItemKind::Fn, kind_word.len()),
-        "trait" => (PubItemKind::Trait, kind_word.len()),
-        "mod" => (PubItemKind::Mod, kind_word.len()),
-        "type" => (PubItemKind::TypeAlias, kind_word.len()),
-        "const" => (PubItemKind::Const, kind_word.len()),
-        "static" => (PubItemKind::Static, kind_word.len()),
-        "union" => (PubItemKind::Union, kind_word.len()),
-        "use" => return None, // `pub use` is a re-export, not a declaration site
-        _ => return None,
-    };
-    i += kind_keyword_len;
-    i = skip_ws_and_comments(bytes, i);
-
-    // Read the item's name (or the macro's name; for macros the
-    // identifier follows `macro_rules!`).
-    let name = read_ident(bytes, i)?;
-    if name.is_empty() {
-        return None;
-    }
-
-    // Find the item's terminator. For block items (`struct { }`,
-    // `enum { }`, `fn { }`, `trait { }`, `mod { }`, `union { }`),
-    // the span ends at the matching `}`. For statement items
-    // (`type X = Y;`, `const X: T = ...;`, `static X: T = ...;`,
-    // `struct X;`, `struct X(...);`), the span ends at the first
-    // `;` outside any nested braces / parens / strings.
-    let end_byte = match kind {
-        PubItemKind::TypeAlias | PubItemKind::Const | PubItemKind::Static => {
-            // Statement items always end at `;`.
-            scan_to_semicolon(bytes, i)?
-        }
-        PubItemKind::Mod => {
-            // `pub mod foo;` (file-style) or `pub mod foo { ... }`
-            // (inline). Look for `{` or `;`.
-            scan_to_brace_or_semi(bytes, i)?
-        }
-        PubItemKind::Struct | PubItemKind::Union | PubItemKind::Enum | PubItemKind::Trait => {
-            // Block-bodied. `pub struct X;` (unit-struct) and
-            // `pub struct X(...);` (tuple-struct) end at `;` instead;
-            // probe for that first.
-            scan_to_brace_or_semi(bytes, i)?
-        }
-        PubItemKind::Fn => {
-            // Functions always end at `}` (Rust does not allow `pub fn foo();`
-            // outside a trait body, and `applies` already filters out trait
-            // bodies via brace depth).
-            scan_to_close_brace(bytes, i)?
-        }
-        PubItemKind::Macro => unreachable!(),
-    };
-
-    Some(PubItemRecord {
-        name,
-        kind,
-        start_byte: start,
-        end_byte,
-        has_serde_derive,
-    })
-}
-
-/// Walk backward from `start` over whitespace and doc comments and
-/// collect any preceding `#[derive(...)]` attribute. Returns true
-/// iff one names both `Serialize` and `Deserialize`.
-fn preceding_block_has_serde_derive(bytes: &[u8], start: usize) -> bool {
-    // Walk back over whitespace, line-comments, and block-comments
-    // line-by-line. We collect the textual content of every
-    // `#[derive(...)]` attribute encountered immediately before the
-    // `pub` keyword (with only whitespace / doc-comments between).
-    let mut i: isize = start as isize - 1;
-    // Skip any trailing whitespace immediately before `pub`.
-    while i >= 0
-        && (bytes[i as usize] == b' '
-            || bytes[i as usize] == b'\t'
-            || bytes[i as usize] == b'\n'
-            || bytes[i as usize] == b'\r')
-    {
-        i -= 1;
-    }
-    // Walk backward collecting attribute lines (each `#[ ... ]`) and
-    // doc comments (`/// ...`, `//! ...`). We accept these in any
-    // order — the precise grouping is irrelevant; we only need to
-    // scan their joined text for the serde derives.
-    let mut accumulated = String::new();
-    while i >= 0 {
-        // Skip whitespace.
-        while i >= 0
-            && (bytes[i as usize] == b' '
-                || bytes[i as usize] == b'\t'
-                || bytes[i as usize] == b'\n'
-                || bytes[i as usize] == b'\r')
-        {
-            i -= 1;
-        }
-        if i < 0 {
-            break;
-        }
-        let here = bytes[i as usize];
-        if here == b']' {
-            // Walk back to the matching `[`.
-            let end_excl = i as usize + 1;
-            let mut depth = 1;
-            i -= 1;
-            while i >= 0 && depth > 0 {
-                match bytes[i as usize] {
-                    b']' => depth += 1,
-                    b'[' => depth -= 1,
-                    _ => {}
-                }
-                if depth == 0 {
-                    break;
-                }
-                i -= 1;
-            }
-            if i < 0 || bytes[i as usize] != b'[' {
-                break;
-            }
-            // Now expect `#` immediately before the `[`.
-            let bracket_open = i as usize;
-            i -= 1;
-            // Tolerate `#!` (inner attribute) too — for bindings on
-            // a struct the outer form `#[derive(...)]` is what we
-            // care about.
-            if i < 0 || bytes[i as usize] != b'#' {
-                break;
-            }
-            let hash_pos = i as usize;
-            // Slurp the entire attribute (`#[...]`), prepend with
-            // newline so split-by-newline below sees it as a discrete
-            // attr line. We start at `hash_pos` so the leading `#`
-            // is included; `bracket_open` was the `[` byte position.
-            let _ = bracket_open; // keep the local for clarity in the diff
-            if let Ok(attr) = std::str::from_utf8(&bytes[hash_pos..end_excl]) {
-                accumulated.push_str(attr);
-                accumulated.push('\n');
-            }
-            i -= 1;
-            continue;
-        }
-        // Could be the trailing newline of a line-comment or a
-        // doc-comment, or the start of a non-attribute line.
-        // Conservative: stop walking back the moment we hit a non-
-        // attribute, non-whitespace, non-comment byte.
-        // To detect a line-comment, walk backward to the start of
-        // the current line and check for `//`.
-        let line_start = {
-            let mut j = i;
-            while j >= 0 && bytes[j as usize] != b'\n' {
-                j -= 1;
-            }
-            (j + 1) as usize
-        };
-        // If the line starts with `///` or `//!` or `//` (doc / line
-        // comment), continue walking back. Otherwise we've hit
-        // non-attribute content — stop.
-        let line_first_nonws = {
-            let mut j = line_start;
-            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
-                j += 1;
-            }
-            j
-        };
-        if line_first_nonws + 2 <= bytes.len()
-            && &bytes[line_first_nonws..line_first_nonws + 2] == b"//"
-        {
-            // Line comment — skip past its start.
-            i = line_start as isize - 1;
-            continue;
-        }
-        // Non-attribute non-comment content: stop.
-        break;
-    }
-    if accumulated.is_empty() {
-        return false;
-    }
-    // We accumulated each attribute as a separate `#[...]` block.
-    // Look for one that contains a `derive(` group naming both
-    // `Serialize` and `Deserialize`.
-    for attr in accumulated.split('\n') {
-        let lower = attr.trim();
-        if !lower.starts_with("#[") {
-            continue;
-        }
-        // Find a `derive(...)` substring. Inside the parentheses
-        // identifiers are comma-separated; we accept paths like
-        // `serde::Serialize` too.
-        if let Some(derive_pos) = lower.find("derive(") {
-            // Carve out the inner argument list (up to the matching
-            // `)`). Brittle but sufficient for the conservative
-            // Phase 1 form; nested parens don't appear in derive
-            // arguments in practice.
-            let after = &lower[derive_pos + "derive(".len()..];
-            if let Some(close) = after.find(')') {
-                let args = &after[..close];
-                let names: Vec<&str> = args
-                    .split(',')
-                    .map(|s| s.trim())
-                    .map(|s| s.rsplit("::").next().unwrap_or(s))
-                    .collect();
-                if names.iter().any(|n| n == &"Serialize")
-                    && names.iter().any(|n| n == &"Deserialize")
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Skip whitespace and `// ...` line comments / `/* ... */` block
-/// comments at `i`. Returns the new index.
-fn skip_ws_and_comments(bytes: &[u8], mut i: usize) -> usize {
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
-            i += 1;
-            continue;
-        }
-        if i + 1 < bytes.len() && b == b'/' && bytes[i + 1] == b'/' {
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-        if i + 1 < bytes.len() && b == b'/' && bytes[i + 1] == b'*' {
-            i += 2;
-            let mut depth = 1;
-            while i < bytes.len() && depth > 0 {
-                if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                    depth += 1;
-                    i += 2;
-                } else if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    depth -= 1;
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            continue;
-        }
-        break;
-    }
-    i
-}
-
-/// Read a Rust identifier starting at `i`. Returns the identifier
-/// string (empty if `i` does not point at an identifier byte).
-fn read_ident(bytes: &[u8], i: usize) -> Option<String> {
-    if i >= bytes.len() {
-        return None;
-    }
-    let first = bytes[i];
-    if !(first == b'_' || first.is_ascii_alphabetic()) {
-        return None;
-    }
-    let mut j = i;
-    while j < bytes.len() && is_ident_byte(bytes[j]) {
-        j += 1;
-    }
-    std::str::from_utf8(&bytes[i..j])
-        .ok()
-        .map(|s| s.to_string())
-}
-
-/// Scan forward from `i` to the first `;` outside any nested braces,
-/// brackets, parens, or strings. Returns the index *after* the
-/// terminating `;`.
-fn scan_to_semicolon(bytes: &[u8], i: usize) -> Option<usize> {
-    scan_to_marker(bytes, i, |b| b == b';').map(|p| p + 1)
-}
-
-/// Scan forward from `i` to either a matching `{` (followed by a
-/// brace-balanced scan to its `}`) or a `;` at top depth, whichever
-/// comes first. Returns the index *after* the closing `}` or the `;`.
-fn scan_to_brace_or_semi(bytes: &[u8], i: usize) -> Option<usize> {
-    let pos = scan_to_marker(bytes, i, |b| b == b'{' || b == b';')?;
-    if bytes[pos] == b';' {
-        Some(pos + 1)
-    } else {
-        // pos is the byte position of `{`; advance past matching `}`.
-        scan_brace_body(bytes, pos)
-    }
-}
-
-/// Like [`scan_to_brace_or_semi`] but always expects `{`. Used for
-/// `pub fn` whose body must be a block.
-fn scan_to_close_brace(bytes: &[u8], i: usize) -> Option<usize> {
-    let pos = scan_to_marker(bytes, i, |b| b == b'{')?;
-    scan_brace_body(bytes, pos)
-}
-
-/// Given `bytes[pos] == b'{'`, return the index *after* the matching
-/// `}`. Tracks brace depth and ignores braces inside strings, char
-/// literals, and comments.
-fn scan_brace_body(bytes: &[u8], pos: usize) -> Option<usize> {
-    debug_assert_eq!(bytes[pos], b'{');
-    let mut i = pos + 1;
-    let mut depth = 1i32;
-    while i < bytes.len() && depth > 0 {
-        let b = bytes[i];
-        // Comments first so braces inside `// {` don't count.
-        if i + 1 < bytes.len() && b == b'/' && bytes[i + 1] == b'/' {
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-        if i + 1 < bytes.len() && b == b'/' && bytes[i + 1] == b'*' {
-            i += 2;
-            let mut bdepth = 1;
-            while i < bytes.len() && bdepth > 0 {
-                if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                    bdepth += 1;
-                    i += 2;
-                } else if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    bdepth -= 1;
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            continue;
-        }
-        if b == b'"' {
-            i += 1;
-            while i < bytes.len() && bytes[i] != b'"' {
-                if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            if i < bytes.len() {
-                i += 1;
-            }
-            continue;
-        }
-        if b == b'\'' {
-            // Char literal vs lifetime — skip a char if pattern matches.
-            if i + 2 < bytes.len() && bytes[i + 1] != b'\\' && bytes[i + 2] == b'\'' {
-                i += 3;
-                continue;
-            }
-            if i + 3 < bytes.len() && bytes[i + 1] == b'\\' {
-                let mut j = i + 2;
-                while j < bytes.len() && bytes[j] != b'\'' {
-                    j += 1;
-                }
-                if j < bytes.len() {
-                    i = j + 1;
-                    continue;
-                }
-            }
-            i += 1;
-            continue;
-        }
-        if b == b'{' {
-            depth += 1;
-        } else if b == b'}' {
-            depth -= 1;
-            if depth == 0 {
-                return Some(i + 1);
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Scan forward from `i` until `pred(bytes[k])` is true at brace/
-/// paren/bracket depth 0 and outside any string/char/comment.
-/// Returns the byte index `k`. Does not advance past `k`.
-fn scan_to_marker<F: Fn(u8) -> bool>(bytes: &[u8], mut i: usize, pred: F) -> Option<usize> {
-    let mut depth = 0i32; // {, [, ( all share one depth — sufficient for Phase 1
-    while i < bytes.len() {
-        let b = bytes[i];
-        if i + 1 < bytes.len() && b == b'/' && bytes[i + 1] == b'/' {
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-        if i + 1 < bytes.len() && b == b'/' && bytes[i + 1] == b'*' {
-            i += 2;
-            let mut bdepth = 1;
-            while i < bytes.len() && bdepth > 0 {
-                if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                    bdepth += 1;
-                    i += 2;
-                } else if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    bdepth -= 1;
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            continue;
-        }
-        if b == b'"' {
-            i += 1;
-            while i < bytes.len() && bytes[i] != b'"' {
-                if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            if i < bytes.len() {
-                i += 1;
-            }
-            continue;
-        }
-        if b == b'\'' {
-            if i + 2 < bytes.len() && bytes[i + 1] != b'\\' && bytes[i + 2] == b'\'' {
-                i += 3;
-                continue;
-            }
-            if i + 3 < bytes.len() && bytes[i + 1] == b'\\' {
-                let mut j = i + 2;
-                while j < bytes.len() && bytes[j] != b'\'' {
-                    j += 1;
-                }
-                if j < bytes.len() {
-                    i = j + 1;
-                    continue;
-                }
-            }
-            i += 1;
-            continue;
-        }
-        if depth == 0 && pred(b) {
-            return Some(i);
-        }
-        match b {
-            b'{' | b'[' | b'(' => depth += 1,
-            b'}' | b']' | b')' => depth -= 1,
-            _ => {}
-        }
-        i += 1;
-    }
-    None
 }
 
 /// Convert a Rust struct name (CamelCase) to kebab-case for use as a
@@ -1077,7 +620,7 @@ mod tests {
     fn pub_with_restriction_is_recognised() {
         let body = "pub(crate) struct Restricted;\n";
         let out = extract_rust_surface("demo/comp", &input("src/lib.rs", body));
-        // pub(crate) is technically not exported but Phase 1 records it
+        // pub(crate) is technically not exported but PR-5 records it
         // as a pub_item (the engine-side filter, if any, lives at L9).
         assert_eq!(out.library_apis.len(), 1);
         assert_eq!(out.library_apis[0].pub_items[0].name, "Restricted");
@@ -1112,11 +655,10 @@ mod tests {
     }
 
     #[test]
-    fn nested_pub_inside_pub_mod_is_phase1_known_limitation() {
-        // Plan §6 risks: nested `pub mod foo { pub struct Bar; }` is
-        // missed in Phase 1. This test pins the limitation so a
-        // future change that fixes it has to update this test, not
-        // surprise the reviewer.
+    fn syn_extracts_nested_pub_inside_pub_mod() {
+        // PR-5 closes the Phase 1 known limitation: nested
+        // `pub mod outer { pub struct Hidden; }` now contributes
+        // `Hidden` as a pub_item.
         let body = "pub mod outer { pub struct Hidden; }\n";
         let out = extract_rust_surface("c", &input("src/lib.rs", body));
         let names: Vec<&str> = out.library_apis[0]
@@ -1126,8 +668,8 @@ mod tests {
             .collect();
         assert!(names.contains(&"outer"), "outer mod must be recorded");
         assert!(
-            !names.contains(&"Hidden"),
-            "Phase 1 misses nested `pub` items (plan §6 risks): got {names:?}"
+            names.contains(&"Hidden"),
+            "PR-5 (syn walker) extracts nested pub items: got {names:?}"
         );
     }
 
@@ -1212,6 +754,8 @@ mod tests {
         assert_eq!(an.stage(), Stage::L5);
         assert_eq!(an.cost_class(), CostClass::DeterministicCheap);
         assert_eq!(an.version(), ANALYZER_VERSION);
+        // PR-5 explicit breaking-change marker.
+        assert_eq!(ANALYZER_VERSION, "2.0.0");
     }
 
     #[test]
