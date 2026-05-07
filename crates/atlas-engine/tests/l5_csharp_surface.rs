@@ -343,6 +343,99 @@ fn csharp_sln_fixture_classifies_as_csharp_solution() {
     );
 }
 
+// ── Acceptance criterion 4 (full): sln with two csproj → two surfaces ────────
+
+#[test]
+fn csharp_sln_with_two_csproj_drives_surfaces_for_both_child_components() {
+    // §4 PR-6 acceptance criterion (closure): `MySolution.sln` lists
+    // TWO `*.csproj` entries → two distinct non-deleted components both
+    // classified as `csharp-project`, and `surface_artefacts_of` on
+    // each returns non-empty bindings.
+    if skip_if_binary_missing() {
+        return;
+    }
+    let td = TempDir::new().unwrap();
+    let root = td.path().to_path_buf();
+
+    // Solution file referencing two projects.
+    std::fs::write(
+        root.join("MySolution.sln"),
+        "# VS solution\n\
+         Project(\"{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}\") = \
+         \"Core\", \"Core\\Core.csproj\", \"{11111111-0000-0000-0000-000000000001}\"\n\
+         EndProject\n\
+         Project(\"{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}\") = \
+         \"App\", \"App\\App.csproj\", \"{11111111-0000-0000-0000-000000000002}\"\n\
+         EndProject\n",
+    )
+    .unwrap();
+
+    // Core project: one public class.
+    std::fs::create_dir_all(root.join("Core")).unwrap();
+    std::fs::write(
+        root.join("Core/Core.csproj"),
+        "<Project Sdk=\"Microsoft.NET.Sdk\">\n  \
+         <PropertyGroup>\n    \
+         <TargetFramework>net8.0</TargetFramework>\n  \
+         </PropertyGroup>\n</Project>\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("Core/CoreService.cs"),
+        "namespace Core {\n    public class CoreService {}\n}\n",
+    )
+    .unwrap();
+
+    // App project: one public class.
+    std::fs::create_dir_all(root.join("App")).unwrap();
+    std::fs::write(
+        root.join("App/App.csproj"),
+        "<Project Sdk=\"Microsoft.NET.Sdk\">\n  \
+         <PropertyGroup>\n    \
+         <OutputType>Exe</OutputType>\n    \
+         <TargetFramework>net8.0</TargetFramework>\n  \
+         </PropertyGroup>\n</Project>\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("App/AppMain.cs"),
+        "namespace App {\n    public class AppMain {}\n}\n",
+    )
+    .unwrap();
+
+    let db = build_db_lenient(&root);
+    let components = all_components(&db);
+
+    // (a) Exactly two non-deleted csharp-project components (beyond the
+    //     solution itself, which may or may not be produced as a separate
+    //     component depending on subcarve policy).
+    let project_comps: Vec<_> = components
+        .iter()
+        .filter(|c| !c.deleted && c.kind == "csharp-project")
+        .collect();
+    assert_eq!(
+        project_comps.len(),
+        2,
+        "expected exactly 2 non-deleted csharp-project components, found: {:?}",
+        components
+            .iter()
+            .filter(|c| !c.deleted)
+            .map(|c| (&c.kind, &c.id))
+            .collect::<Vec<_>>()
+    );
+
+    // (b) Each child component must return non-empty bindings from L5.
+    for comp in &project_comps {
+        let artefacts = surface_artefacts_of(&db, comp.id.clone());
+        assert!(
+            !artefacts.bindings.is_empty(),
+            "component id={} (kind={}) must have non-empty bindings from L5 surface",
+            comp.id,
+            comp.kind,
+        );
+    }
+}
+
 // ── L3 no-LLM classification ──────────────────────────────────────────────────
 
 #[test]
