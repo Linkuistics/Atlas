@@ -22,7 +22,7 @@
 
 use std::sync::Arc;
 
-use atlas_index::{ComponentEntry, Stage};
+use atlas_index::{ComponentEntry, Stage, SurfacesFile};
 use atlas_llm::{LlmRequest, PromptId, ResponseSchema};
 use component_ontology::{Edge, EdgeKind, EvidenceGrade, LifecycleScope};
 use serde::Serialize;
@@ -33,6 +33,7 @@ use crate::db::AtlasDatabase;
 use crate::l4_tree::all_components;
 use crate::l5_surface::{surface_artefacts_of, surface_of};
 use crate::l6_composition::composition_edges_from_dockerfiles;
+use crate::l9_projections::surfaces_yaml_snapshot;
 use crate::surface_types::SurfaceRecord;
 
 /// Driver version baked into the L6 stage fingerprint (PR-10). Bump
@@ -114,7 +115,7 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
         schema: ResponseSchema::accept_any(),
     };
 
-    // PR-10: L6 stage fingerprint per design §8.1. Contributors:
+    // PR-10 / PR-11: L6 stage fingerprint per design §8.1. Contributors:
     //
     // - `analyzer_registry_sha` — registry-shape change invalidates;
     // - `llm_fingerprint` — model / backend / template / ontology;
@@ -122,17 +123,12 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
     //   serialised surface records the backend will see);
     // - `file_content_sha` for every component path segment whose
     //   surface contributed to the batch — propagates a per-file
-    //   change up to the batch.
-    //
-    // **PR-11 hand-off:** the design also requires a
-    // `participant_surface_sha` contribution per participant
-    // component. PR-11 wires that in once `surfaces.yaml` carries a
-    // top-level fingerprint (PR-7's job to land, PR-11's job to
-    // make load-bearing). PR-10 deliberately omits it; the
-    // `prompt_sha` above does cite the inline-rendered surface
-    // bytes, so a participant surface change is still observed —
-    // but cross-tree invalidation propagates through the rendered
-    // bytes path, not the participant-sha path. PR-11 fixes that.
+    //   change up to the batch;
+    // - `participant_surface_sha` per participant component whose
+    //   `SurfacesFile` carries contract content (PR-11, design §8.2).
+    //   Components with no contract content contribute nothing so the
+    //   fingerprint shape is byte-identical to PR-10 for workspaces
+    //   with no contracts (no-contract stability invariant).
     let workspace = db.workspace();
     let llm_fp = workspace
         .llm_fingerprint(db as &dyn salsa::Database)
@@ -143,22 +139,8 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
             .as_bytes(),
     );
     let registry_sha = db.analyzer_registry().registry_sha();
-    let l6_fingerprint = {
-        let mut fb = crate::FingerprintBuilder::new(Stage::L6, "l6-driver", L6_DRIVER_VERSION);
-        fb.add_analyzer_registry_sha(&registry_sha);
-        fb.add_llm_fingerprint(llm_fp.as_ref());
-        fb.add_prompt_sha(&rendered_prompt_sha);
-        for c in &live {
-            for seg in &c.path_segments {
-                fb.add_file_content_sha(&seg.content_sha);
-            }
-        }
-        // TODO(PR-11): contribute `participant_surface_sha` per
-        // participant component once `SurfacesFile.fingerprint` is
-        // load-bearing. The contribution shape is already supported
-        // by `FingerprintBuilder::add_participant_surface_sha`.
-        fb.finalise()
-    };
+    let l6_fingerprint =
+        compute_l6_batch_fingerprint(db, &live, &rendered_prompt_sha, &registry_sha, &llm_fp);
 
     let value = match db.call_llm_cached_with_fp(Stage::L6, &l6_fingerprint, &request) {
         Ok(v) => v,
@@ -315,6 +297,72 @@ fn sha256_hex_bytes(bytes: &[u8]) -> String {
         write!(&mut out, "{b:02x}").expect("writing to String never fails");
     }
     out
+}
+
+/// Returns `true` when a `SurfacesFile` carries at least one contract
+/// or library-API entry — i.e. when its surface fingerprint is
+/// load-bearing for cross-component cache invalidation.
+///
+/// Components whose surfaces carry **no** contract content contribute
+/// nothing to the L6 batch fingerprint via
+/// `add_participant_surface_sha`. This preserves the no-contract
+/// stability invariant (acceptance criterion #3 of PR-11): workspaces
+/// with no contracts produce the same L6 fingerprint before and after
+/// PR-11 because no `participant_surface_sha` calls fire.
+fn surface_has_contract_content(sf: &SurfacesFile) -> bool {
+    !sf.contracts_defined.is_empty()
+        || !sf.contracts_implemented.is_empty()
+        || !sf.contracts_consumed.is_empty()
+        || !sf.library_apis.is_empty()
+}
+
+/// Build the L6 batch fingerprint from its constituent inputs.
+///
+/// This is a pure function (no side effects; takes the pre-computed
+/// `prompt_sha`, `registry_sha`, and `llm_fp` as arguments) so that
+/// the stability acceptance test can call it in isolation without
+/// wiring a full `AtlasDatabase`.
+///
+/// Contributors (design §8.1 and §8.2):
+/// - `analyzer_registry_sha` — registry-shape change invalidates all
+///   downstream cache entries.
+/// - `llm_fingerprint` — model / backend / template / ontology drift.
+/// - `prompt_sha` — sha of the canonical-JSON inputs (the serialised
+///   surface records the backend will see).
+/// - `file_content_sha` per component path segment — propagates a
+///   per-file change up to the batch.
+/// - `participant_surface_sha` per live component whose `SurfacesFile`
+///   carries contract content (PR-11, design §8.2). Components with
+///   empty surfaces contribute nothing (no-contract stability
+///   invariant).
+pub fn compute_l6_batch_fingerprint(
+    db: &AtlasDatabase,
+    live: &[&ComponentEntry],
+    prompt_sha: &str,
+    registry_sha: &str,
+    llm_fp: &atlas_llm::LlmFingerprint,
+) -> crate::Sha256Hex {
+    let mut fb = crate::FingerprintBuilder::new(Stage::L6, "l6-driver", L6_DRIVER_VERSION);
+    fb.add_analyzer_registry_sha(&registry_sha.to_string());
+    fb.add_llm_fingerprint(llm_fp);
+    fb.add_prompt_sha(&prompt_sha.to_string());
+    for c in live {
+        for seg in &c.path_segments {
+            fb.add_file_content_sha(&seg.content_sha);
+        }
+    }
+    // PR-11: contribute the surfaces fingerprint of every participant
+    // component that carries contract content. Skip components whose
+    // surfaces are empty — that preserves the no-contract stability
+    // invariant per acceptance criterion #3.
+    for c in live {
+        if let Ok(sf) = surfaces_yaml_snapshot(db, &c.id) {
+            if surface_has_contract_content(&sf) {
+                fb.add_participant_surface_sha(&sf.fingerprint);
+            }
+        }
+    }
+    fb.finalise()
 }
 
 /// Parse the Stage 2 response into a raw edge list. Accepts two
