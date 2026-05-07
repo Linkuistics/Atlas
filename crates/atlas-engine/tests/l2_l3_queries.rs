@@ -342,6 +342,40 @@ fn l3_package_json_with_tsconfig_classifies_as_typescript_package_without_llm_ca
 }
 
 #[test]
+fn l3_main_plus_tsconfig_classifies_as_typescript_package_without_llm_call() {
+    // Integration-level pin for the precedence rule: "package.json with a
+    // `main` field + adjacent `tsconfig.json` → typescript-package" (NOT
+    // node-library). The unit-level pin lives in ts_js_classifier.rs; this
+    // test fixes the rule at the L3 dispatcher level so a future refactor
+    // of dispatch order or legacy_heuristics cannot silently flip the case.
+    let td = TempDir::new().unwrap();
+    let root = td.path().to_path_buf();
+    std::fs::write(
+        root.join("package.json"),
+        "{\"name\":\"my-pkg\",\"version\":\"0.1.0\",\"main\":\"src/index.js\"}",
+    )
+    .unwrap();
+    std::fs::write(root.join("tsconfig.json"), "{\"compilerOptions\":{}}").unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("src/index.ts"),
+        "export function hello(): string { return \"world\"; }\n",
+    )
+    .unwrap();
+
+    let db = db_without_llm(&root);
+    let ws = db.workspace();
+    let c = is_component(&db, ws, root.clone());
+    assert_eq!(
+        c.kind,
+        ComponentKind::TypescriptPackage,
+        "expected typescript-package, got {:?} — main+tsconfig precedence rule broken",
+        c.kind
+    );
+    assert_eq!(c.evidence_grade, EvidenceGrade::Strong);
+}
+
+#[test]
 fn l5_typescript_package_surface_artefacts_include_exported_hello_symbol() {
     // Phase 2 PR-1 spec-review fix: `surface_artefacts_of` must drive
     // `extract_ts_js_surface` for typescript-package components and
