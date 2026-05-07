@@ -210,7 +210,6 @@ fn canonical_replacement(kind: &str) -> Option<String> {
         "dart-package" => "dart-library",
         "typescript-library" => "node-library",
         "wix-installer" | "msi-installer" | "deb-package" | "dmg" => "installer",
-        "shell-script" => "shell-scripts",
         "sql-script" => "sql-scripts",
         "python-cli" => "python-app",
         "python-service" | "node-service" => "service",
@@ -283,11 +282,26 @@ mod tests {
     }
 
     #[test]
-    fn singular_shell_script_suggests_plural() {
+    fn shell_script_is_now_a_valid_kind() {
+        // PR-12 introduced `shell-script` as a first-class kind.
+        // Pins using `shell-script` must be accepted without error.
         let overrides = overrides_with_pin("scripts", "kind", "shell-script");
         let report = validate_overrides(&overrides);
-        let err = report.errors().next().expect("error expected");
-        assert_eq!(err.suggestion.as_deref(), Some("shell-scripts"));
+        assert!(
+            !report.has_errors(),
+            "`shell-script` is now canonical; validate should not error: {report:?}"
+        );
+    }
+
+    #[test]
+    fn makefile_orchestration_is_a_valid_kind() {
+        // PR-12 also introduced `makefile-orchestration`.
+        let overrides = overrides_with_pin("makefiles", "kind", "makefile-orchestration");
+        let report = validate_overrides(&overrides);
+        assert!(
+            !report.has_errors(),
+            "`makefile-orchestration` is now canonical; validate should not error: {report:?}"
+        );
     }
 
     #[test]

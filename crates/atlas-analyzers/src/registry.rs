@@ -38,6 +38,7 @@ use crate::llm_classify::LlmClassifyAnalyzer;
 use crate::python_classifier::PythonClassifier;
 use crate::racket_classifier::RacketClassifier;
 use crate::rust_surface_analyzer::RustSurfaceAnalyzer;
+use crate::shell_script_llm_analyzer::ShellScriptLlmAnalyzer;
 use crate::subprocess::{SubprocessAnalyzerProxy, SubprocessAnalyzerSpec};
 use crate::ts_js_classifier::TsJsClassifier;
 use crate::ts_js_surface_analyzer::TsJsSurfaceAnalyzer;
@@ -123,6 +124,7 @@ impl AnalyzerRegistry {
         let racket = Arc::new(RacketClassifier::new()) as Arc<dyn Analyzer>;
         let lispkit = Arc::new(LispKitClassifier::new()) as Arc<dyn Analyzer>;
         let llm = Arc::new(LlmClassifyAnalyzer::new()) as Arc<dyn Analyzer>;
+        let shell = Arc::new(ShellScriptLlmAnalyzer::new()) as Arc<dyn Analyzer>;
         let rust_surface = Arc::new(RustSurfaceAnalyzer::new()) as Arc<dyn Analyzer>;
         let ts_js_surface = Arc::new(TsJsSurfaceAnalyzer::new()) as Arc<dyn Analyzer>;
 
@@ -138,6 +140,7 @@ impl AnalyzerRegistry {
             racket.clone(),
             lispkit.clone(),
             llm.clone(),
+            shell.clone(),
             rust_surface.clone(),
             ts_js_surface.clone(),
         ];
@@ -361,7 +364,11 @@ fn spec_for_analyzer(analyzer: &Arc<dyn Analyzer>) -> AnalyzerSpec {
     // Built-in confidence flavours. The dispatcher ignores this
     // field today (it makes its decisions on the runtime
     // `AnalyzerResult` arms) but the wire form is canonical.
-    let confidence = if id == crate::llm_classify::ANALYZER_ID {
+    let confidence = if id == crate::llm_classify::ANALYZER_ID
+        || id == crate::shell_script_llm_analyzer::ANALYZER_ID
+    {
+        // Both LLM analysers emit `Graded` results; the wire form
+        // reflects that with `Declines` (threshold-gated confidence).
         Some(atlas_index::Confidence::Declines)
     } else {
         Some(atlas_index::Confidence::Binary)
@@ -451,6 +458,20 @@ fn spec_for_analyzer(analyzer: &Arc<dyn Analyzer>) -> AnalyzerSpec {
             file_globs: vec!["**/*.sld".into()],
             ..Default::default()
         }
+    } else if id == crate::shell_script_llm_analyzer::ANALYZER_ID {
+        // Shell-script / Makefile LLM analyser keys on shell and make
+        // file patterns.
+        atlas_index::ApplicabilityPredicate {
+            file_globs: vec![
+                "**/*.sh".into(),
+                "**/*.bash".into(),
+                "**/*.zsh".into(),
+                "**/Makefile".into(),
+                "**/GNUmakefile".into(),
+                "**/*.mk".into(),
+            ],
+            ..Default::default()
+        }
     } else {
         atlas_index::ApplicabilityPredicate::default()
     };
@@ -472,9 +493,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_lists_thirteen_analysers() {
+    fn builtin_lists_fourteen_analysers() {
         let r = AnalyzerRegistry::builtin();
-        assert_eq!(r.len(), 13);
+        assert_eq!(r.len(), 14);
         let ids: Vec<&str> = r.iter_dispatch_order().map(|a| a.id()).collect();
         assert!(ids.contains(&crate::cargo_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::compose_classifier::ANALYZER_ID));
@@ -486,13 +507,13 @@ mod tests {
         assert!(ids.contains(&crate::racket_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::lispkit_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::llm_classify::ANALYZER_ID));
+        assert!(ids.contains(&crate::shell_script_llm_analyzer::ANALYZER_ID));
         assert!(ids.contains(&crate::rust_surface_analyzer::ANALYZER_ID));
         assert!(ids.contains(&crate::ts_js_surface_analyzer::ANALYZER_ID));
         assert!(ids.contains(&crate::elixir_classifier::ANALYZER_ID));
         // L3 deterministic analysers come first, then L3 LLM, then L5
-        // analysers (sorted by `(stage, cost_class)`). LLM-classify is
-        // the last L3 analyser; the L5 analysers land after every L3
-        // entry.
+        // analysers (sorted by `(stage, cost_class)`). The two L5
+        // analysers land after every L3 entry.
         let last_two: Vec<&str> = ids.iter().rev().take(2).copied().collect();
         assert!(last_two.contains(&crate::rust_surface_analyzer::ANALYZER_ID));
         assert!(last_two.contains(&crate::ts_js_surface_analyzer::ANALYZER_ID));
@@ -538,9 +559,9 @@ mod tests {
         // The built-in analyser instances are unchanged in count
         // (unknown spec is recorded but does not produce a runnable
         // instance).
-        assert_eq!(r.len(), 13);
+        assert_eq!(r.len(), 14);
         // The declared list grew by one.
-        assert_eq!(r.declared().analyzers.len(), 14);
+        assert_eq!(r.declared().analyzers.len(), 15);
     }
 
     #[test]
@@ -561,7 +582,7 @@ mod tests {
             version: "9.9.9".into(),
         });
         r.merge_yaml(&yaml);
-        assert_eq!(r.declared().analyzers.len(), 13);
+        assert_eq!(r.declared().analyzers.len(), 14);
         let cargo = r
             .declared()
             .analyzers
@@ -625,6 +646,10 @@ mod tests {
         assert_eq!(
             LispKitClassifier.id(),
             crate::lispkit_classifier::ANALYZER_ID
+        );
+        assert_eq!(
+            ShellScriptLlmAnalyzer::new().id(),
+            crate::shell_script_llm_analyzer::ANALYZER_ID
         );
     }
 }

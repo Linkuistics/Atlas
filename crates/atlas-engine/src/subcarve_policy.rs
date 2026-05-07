@@ -77,6 +77,8 @@ pub fn decide_kind_only(kind: ComponentKind) -> Option<PolicyDecision> {
         | ComponentKind::DockerComposeBundle
         | ComponentKind::ComposeOrchestration
         | ComponentKind::Installer
+        | ComponentKind::ShellScript
+        | ComponentKind::MakefileOrchestration
         | ComponentKind::ShellScripts
         | ComponentKind::SqlScripts
         | ComponentKind::CodegenTool => Some(PolicyDecision::Stop),

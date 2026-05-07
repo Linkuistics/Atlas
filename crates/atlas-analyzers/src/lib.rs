@@ -53,6 +53,7 @@ pub mod racket_classifier;
 pub mod racket_surface_analyzer;
 pub mod registry;
 pub mod rust_surface_analyzer;
+pub mod shell_script_llm_analyzer;
 pub mod subprocess;
 pub mod ts_js_classifier;
 pub mod ts_js_surface_analyzer;
@@ -102,6 +103,10 @@ pub use racket_surface_analyzer::{
 pub use registry::{AnalyzerRegistry, REGISTRY_HASH_NAMESPACE};
 pub use rust_surface_analyzer::{
     extract_rust_surface, RustSourceInputs, RustSurfaceAnalyzer, RustSurfaceOutput,
+};
+pub use shell_script_llm_analyzer::{
+    extract_shell_surface, ShellScriptClassificationOutput, ShellScriptLlmAnalyzer,
+    ShellScriptSurfaceOutput, ATTR_SHELL_FUNCTION,
 };
 pub use subprocess::{
     handshake::{verify_capabilities, Capabilities, HandshakeError},

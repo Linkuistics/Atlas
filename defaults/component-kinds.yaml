@@ -254,6 +254,25 @@ kinds:
       `docker-image` because installers target host installation
       rather than container runtime.
 
+  - name: shell-script
+    description: |
+      A shell-script component (bash, zsh, sh, or a collection of
+      scripts in a single directory) whose primary purpose is
+      automation — build glue, deploy, dev convenience, or CI step.
+      Recognised at L3 by the shell-script LLM analyser; function
+      definitions are extracted at L5 with `Visibility::Conventional`
+      and `attributes.shell_function: true`. Inputs: `*.sh`, `*.bash`,
+      `*.zsh`.
+
+  - name: makefile-orchestration
+    description: |
+      A `Makefile` or `*.mk` file whose primary purpose is orchestrating
+      build, deploy, or dev-workflow targets. Recognised at L3 by the
+      shell-script LLM analyser (same analyser, different kind verdict).
+      Makefile targets are extracted at L5 as bindings with
+      `Visibility::Conventional` and `attributes.shell_function: true`.
+      Inputs: `Makefile`, `*.mk`.
+
   - name: shell-scripts
     description: |
       A directory of standalone shell scripts (bash, zsh, sh)

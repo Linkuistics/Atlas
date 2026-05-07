@@ -35,6 +35,7 @@ use atlas_analyzers::{
     llm_classify::{LlmClassifyOutput, LlmHook, LlmHookError},
     python_classifier::PythonClassificationOutput,
     racket_classifier::RacketClassificationOutput,
+    shell_script_llm_analyzer::ShellScriptClassificationOutput,
     ts_js_classifier::TsJsClassificationOutput,
     AnalysisContext, Target, TargetFile,
 };
@@ -471,6 +472,12 @@ fn classification_from_output(
     {
         return lispkit_to_classification(lk, analyser_id, analyser_version);
     }
+    if let Some(shell) = (*output)
+        .as_any()
+        .downcast_ref::<ShellScriptClassificationOutput>()
+    {
+        return shell_to_classification(shell, analyser_id, analyser_version);
+    }
     if let Some(llm) = (*output).as_any().downcast_ref::<LlmClassifyOutput>() {
         return parse_llm_response(llm.response.clone(), analyser_id, analyser_version)
             .unwrap_or_else(|reason| {
@@ -770,6 +777,39 @@ fn lispkit_to_classification(
         lifecycle_roles,
         role: out.role.clone(),
         evidence_grade: EvidenceGrade::Strong,
+        evidence_fields: out.evidence_fields.clone(),
+        rationale: out.rationale.clone(),
+        is_boundary: out.is_boundary,
+        analyser_id: analyser_id.to_string(),
+        analyser_version: analyser_version.to_string(),
+    }
+}
+
+/// Translate a [`ShellScriptClassificationOutput`] into a [`Classification`].
+/// PR-12: shell-script LLM analyser; always emits `Graded` confidence.
+/// Evidence grade is mapped from the LLM's `evidence_grade` field via the
+/// [`f32`] confidence — here we materialise it as `EvidenceGrade::Medium`
+/// as a conservative default for LLM-produced verdicts.
+fn shell_to_classification(
+    out: &ShellScriptClassificationOutput,
+    analyser_id: &str,
+    analyser_version: &str,
+) -> Classification {
+    let kind = ComponentKind::parse(&out.kind).unwrap_or(ComponentKind::NonComponent);
+    let lifecycle_roles = out
+        .lifecycle_roles
+        .iter()
+        .filter_map(|s| LifecycleScope::parse(s))
+        .collect();
+    let mut languages = BTreeSet::new();
+    languages.insert(out.language.clone());
+    Classification {
+        kind,
+        languages,
+        build_system: None,
+        lifecycle_roles,
+        role: None,
+        evidence_grade: EvidenceGrade::Medium,
         evidence_fields: out.evidence_fields.clone(),
         rationale: out.rationale.clone(),
         is_boundary: out.is_boundary,

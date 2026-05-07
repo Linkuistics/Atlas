@@ -19,6 +19,7 @@ globset = { workspace = true }
 # Pinned alongside `syn` so PR-5's Rust surface analyser produces
 # byte-range spans consumable by `code_derived_content_sha`.
 proc-macro2 = { version = "1.0.106", features = ["span-locations"] }
+regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

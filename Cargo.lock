@@ -132,6 +132,7 @@ dependencies = [
  "globset",
  "libc",
  "proc-macro2",
+ "regex",
  "serde",
  "serde_json",
  "serde_yaml",

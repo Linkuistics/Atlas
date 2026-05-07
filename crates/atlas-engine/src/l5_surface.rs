@@ -23,11 +23,11 @@ use atlas_analyzers::{
     cached_csharp_subprocess_proxy, cached_dart_subprocess_proxy, cached_elixir_subprocess_proxy,
     cached_lispkit_subprocess_proxy, cached_racket_subprocess_proxy, cached_subprocess_proxy,
     csharp_subprocess_spec, dart_subprocess_spec, elixir_subprocess_spec, extract_rust_surface,
-    extract_ts_js_surface, lispkit_subprocess_spec, locate_csharp_analyzer_binary,
-    locate_dart_analyzer_binary, locate_elixir_analyzer_binary, locate_lispkit_analyzer_binary,
-    locate_python_analyzer_binary, locate_racket_analyzer_binary, python_subprocess_spec,
-    racket_subprocess_spec, Analyzer, AnalyzerResult, RustSourceInputs, SubprocessOutput,
-    TsJsSourceInputs,
+    extract_shell_surface, extract_ts_js_surface, lispkit_subprocess_spec,
+    locate_csharp_analyzer_binary, locate_dart_analyzer_binary, locate_elixir_analyzer_binary,
+    locate_lispkit_analyzer_binary, locate_python_analyzer_binary, locate_racket_analyzer_binary,
+    python_subprocess_spec, racket_subprocess_spec, Analyzer, AnalyzerResult, RustSourceInputs,
+    SubprocessOutput, TsJsSourceInputs,
 };
 use atlas_index::{Binding, ComponentEntry, Contract, LibraryApi, OverridesFile, PinValue, Stage};
 use atlas_llm::{LlmRequest, PromptId, ResponseSchema};
@@ -401,6 +401,15 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
         });
     }
 
+    // 3a-shell. Shell-script / Makefile branch — drive the shell-surface
+    //     extractor in-process. A component is handled here when its
+    //     `kind` is `shell-script` or `makefile-orchestration`, or its
+    //     language set contains `"shell"` or `"makefile"`.
+    if entry_is_shell(entry) {
+        let artefacts = shell_surface_artefacts(db, entry, &roots, &record);
+        return artefacts;
+    }
+
     // 3a. TypeScript / JavaScript branch — drive the TS/JS-surface
     //     extractor in-process. A component is handled here when it
     //     carries "typescript" or "javascript" in its language set, or
@@ -583,6 +592,98 @@ fn entry_is_lispkit(entry: &ComponentEntry) -> bool {
     entry.kind == "lispkit-package"
         || entry.languages.contains("scheme")
         || entry.languages.contains("lispkit")
+}
+
+/// True when the component is a shell-script or Makefile-orchestration
+/// component — handled by the in-process shell-surface extractor.
+fn entry_is_shell(entry: &ComponentEntry) -> bool {
+    entry.languages.contains("shell")
+        || entry.languages.contains("makefile")
+        || entry.kind == "shell-script"
+        || entry.kind == "makefile-orchestration"
+}
+
+/// Drive a shell-script / Makefile component's surface extraction using
+/// the deterministic [`extract_shell_surface`] extractor.
+///
+/// Discovery: walks `entry.path_segments` against the workspace roots to
+/// collect all `*.sh`, `*.bash`, `*.zsh`, `Makefile`, `GNUmakefile`, and
+/// `*.mk` files under the component's directory, then passes them to
+/// [`extract_shell_surface`].
+fn shell_surface_artefacts(
+    db: &AtlasDatabase,
+    entry: &ComponentEntry,
+    roots: &[PathBuf],
+    record: &SurfaceRecord,
+) -> Arc<SurfaceArtefacts> {
+    let mut sources: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+
+    for segment in &entry.path_segments {
+        let candidate_roots: Vec<PathBuf> = if segment.path.is_absolute() {
+            vec![PathBuf::new()]
+        } else if let Some(owning_root) = crate::roots::best_root_for(roots, &segment.path) {
+            vec![owning_root.to_path_buf()]
+        } else {
+            roots.to_vec()
+        };
+
+        for root in &candidate_roots {
+            let absolute_dir = if segment.path.is_absolute() {
+                segment.path.clone()
+            } else {
+                root.join(&segment.path)
+            };
+
+            // Probe well-known shell/make filenames. We do a limited
+            // enumeration of common names rather than a full tree walk
+            // (matching the TS/JS branch posture from PR-1).
+            for filename in &[
+                "Makefile",
+                "GNUmakefile",
+                "deploy.sh",
+                "build.sh",
+                "ci.sh",
+                "run.sh",
+                "setup.sh",
+                "install.sh",
+                "release.sh",
+                "lint.sh",
+                "test.sh",
+                "dev.sh",
+            ] {
+                let candidate = absolute_dir.join(filename);
+                if let Some(bytes) = file_content(db, &candidate) {
+                    let rel = PathBuf::from(filename);
+                    if !sources.iter().any(|(p, _)| p == &rel) {
+                        sources.push((rel, (*bytes).clone()));
+                    }
+                }
+            }
+
+            // Also probe `*.mk` files listed under any manifest that
+            // was pre-loaded (best-effort).
+            for tf in &entry.manifests {
+                let name = tf.display().to_string();
+                if name.ends_with(".mk") {
+                    let candidate = absolute_dir.join(&name);
+                    if let Some(bytes) = file_content(db, &candidate) {
+                        let rel = PathBuf::from(&name);
+                        if !sources.iter().any(|(p, _)| p == &rel) {
+                            sources.push((rel, (*bytes).clone()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let surface_output = extract_shell_surface(entry.id.as_str(), &sources);
+    Arc::new(SurfaceArtefacts {
+        record: record.clone(),
+        contracts: Vec::new(),
+        bindings: surface_output.bindings,
+        library_apis: surface_output.library_apis,
+    })
 }
 
 /// Drive a Python-component's surface extraction through PR-2's
