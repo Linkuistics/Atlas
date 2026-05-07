@@ -25,6 +25,21 @@ use std::path::{Path, PathBuf};
 use atlas_engine::{expand_roots, expand_roots_with_warnings};
 use tempfile::TempDir;
 
+fn write_pyproject_package(dir: &Path, name: &str, path_deps: &[(&str, &str)]) {
+    let mut manifest = format!("[tool.poetry]\nname = \"{name}\"\nversion = \"0.1.0\"\n");
+    if !path_deps.is_empty() {
+        manifest.push_str("\n[tool.poetry.dependencies]\npython = \"^3.11\"\n");
+        for (dep_name, dep_path) in path_deps {
+            manifest.push_str(&format!("{dep_name} = {{ path = \"{dep_path}\" }}\n"));
+        }
+    } else {
+        manifest.push_str("\n[tool.poetry.dependencies]\npython = \"^3.11\"\n");
+    }
+    write(&dir.join("pyproject.toml"), &manifest);
+    let pkg_dir = dir.join(name.replace('-', "_"));
+    write(&pkg_dir.join("__init__.py"), "");
+}
+
 fn write(path: &Path, contents: &str) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).unwrap();
@@ -341,4 +356,87 @@ fn transitive_path_deps_reach_all_peers() {
     let mid_canonical = mid.join("crate-b").canonicalize().unwrap();
     let far_canonical = far.join("crate-c").canonicalize().unwrap();
     assert_eq!(roots, vec![primary_canonical, mid_canonical, far_canonical]);
+}
+
+#[test]
+fn pyproject_path_dep_expands_to_peer_root() {
+    // Phase 2 PR-3 acceptance criterion: a Python component
+    // path-dep'd via `pyproject.toml`'s `[tool.poetry.dependencies]`
+    // from another root contributes its surface to the consumer's L6
+    // cache key (echoes Phase 1 PR-12's cross-tree pattern with
+    // Python in place of Rust).
+    //
+    // Fixture shape: `primary/consumer/` is a pyproject-shaped
+    // package whose Poetry dependencies include a sibling tree's
+    // `external/lib_a/` via `path = "../../external/lib_a"`. The
+    // expanded-roots result must list both the primary and the
+    // external-tree project root.
+    let parent = TempDir::new().unwrap();
+    let primary = parent.path().join("primary");
+    let external = parent.path().join("external");
+
+    write_pyproject_package(
+        &primary.join("consumer"),
+        "consumer",
+        &[("lib_a", "../../external/lib_a")],
+    );
+    write_pyproject_package(&external.join("lib_a"), "lib_a", &[]);
+
+    let roots = expand_roots(&primary).expect("expand_roots succeeds");
+
+    let primary_canonical = primary.canonicalize().unwrap();
+    let lib_a_canonical = external.join("lib_a").canonicalize().unwrap();
+    assert_eq!(
+        roots,
+        vec![primary_canonical, lib_a_canonical],
+        "primary then lib_a's directory (no enclosing workspace)"
+    );
+}
+
+#[test]
+fn pyproject_dev_dependency_path_dep_expands_to_peer_root() {
+    // The `[tool.poetry.dev-dependencies]` table is a peer of the
+    // primary `dependencies` table for path-dep recognition; the
+    // walker must consult both.
+    let parent = TempDir::new().unwrap();
+    let primary = parent.path().join("primary");
+    let external = parent.path().join("external");
+
+    write(
+        &primary.join("consumer/pyproject.toml"),
+        "[tool.poetry]\nname = \"consumer\"\nversion = \"0.1.0\"\n\n\
+         [tool.poetry.dev-dependencies]\n\
+         test_helpers = { path = \"../../external/test_helpers\" }\n",
+    );
+    write(&primary.join("consumer/consumer/__init__.py"), "");
+    write_pyproject_package(&external.join("test_helpers"), "test_helpers", &[]);
+
+    let roots = expand_roots(&primary).expect("expand_roots succeeds");
+    let primary_canonical = primary.canonicalize().unwrap();
+    let helpers_canonical = external.join("test_helpers").canonicalize().unwrap();
+    assert_eq!(roots, vec![primary_canonical, helpers_canonical]);
+}
+
+#[test]
+fn pyproject_uv_sources_path_dep_expands_to_peer_root() {
+    // PEP-621 projects layered with uv use `[tool.uv.sources]` to
+    // declare path-deps. The walker must recognise this convention
+    // alongside the Poetry one.
+    let parent = TempDir::new().unwrap();
+    let primary = parent.path().join("primary");
+    let external = parent.path().join("external");
+
+    write(
+        &primary.join("consumer/pyproject.toml"),
+        "[project]\nname = \"consumer\"\nversion = \"0.1.0\"\n\n\
+         [tool.uv.sources]\n\
+         lib_b = { path = \"../../external/lib_b\" }\n",
+    );
+    write(&primary.join("consumer/consumer/__init__.py"), "");
+    write_pyproject_package(&external.join("lib_b"), "lib_b", &[]);
+
+    let roots = expand_roots(&primary).expect("expand_roots succeeds");
+    let primary_canonical = primary.canonicalize().unwrap();
+    let lib_b_canonical = external.join("lib_b").canonicalize().unwrap();
+    assert_eq!(roots, vec![primary_canonical, lib_b_canonical]);
 }

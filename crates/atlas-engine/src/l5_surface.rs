@@ -133,6 +133,18 @@ pub fn surface_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceRecord> {
             .as_bytes(),
     );
     let registry_sha = db.analyzer_registry().registry_sha();
+    // Phase 2 PR-3: Python components contribute the python-analyzer
+    // binary's content sha to the L5 fingerprint via tag 0x06. A
+    // rebuilt analyser binary therefore invalidates the LLM-cached
+    // `SurfaceRecord` for every Python component, even when the
+    // model / prompt / inputs are byte-identical. The contribution
+    // is conditional so non-Python components are not coupled to the
+    // python-analyzer binary's churn.
+    let python_binary_sha = if entry_is_python(entry) {
+        locate_python_analyzer_binary().and_then(|p| atlas_analyzers::hash_binary(&p).ok())
+    } else {
+        None
+    };
     let l5_fingerprint = {
         let mut fb = crate::FingerprintBuilder::new(Stage::L5, "l5-driver", L5_DRIVER_VERSION);
         fb.add_analyzer_registry_sha(&registry_sha);
@@ -140,6 +152,9 @@ pub fn surface_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceRecord> {
         fb.add_prompt_sha(&rendered_prompt_sha);
         for seg in &entry.path_segments {
             fb.add_file_content_sha(&seg.content_sha);
+        }
+        if let Some(sha) = &python_binary_sha {
+            fb.add_analyzer_binary_sha(sha);
         }
         fb.finalise()
     };
@@ -243,12 +258,7 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
     //     python analyser wasn't built), the artefact set is empty
     //     for the component — same posture as the TS/JS branch when
     //     no source is recognised.
-    let is_python = entry.languages.contains("python")
-        || entry.kind == "python-library"
-        || entry.kind == "python-app"
-        || entry.kind == "python-package";
-
-    if is_python {
+    if entry_is_python(entry) {
         if let Some(artefacts) = python_surface_artefacts(db, entry, &roots, &record) {
             return artefacts;
         }
@@ -417,6 +427,17 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
         bindings: surface_output.bindings,
         library_apis: surface_output.library_apis,
     })
+}
+
+/// True when the component looks like a Python component to the L5
+/// branch logic. Centralised here so `surface_of`'s fingerprint
+/// computation and `surface_artefacts_of`'s python branch share the
+/// same predicate.
+fn entry_is_python(entry: &ComponentEntry) -> bool {
+    entry.languages.contains("python")
+        || entry.kind == "python-library"
+        || entry.kind == "python-app"
+        || entry.kind == "python-package"
 }
 
 /// Drive a Python-component's surface extraction through PR-2's
