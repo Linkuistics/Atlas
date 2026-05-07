@@ -25,7 +25,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [ ] PR-8  — Elixir surface analyser (subprocess)
 - [ ] PR-9  — Racket surface analyser (subprocess)
 - [ ] PR-10 — LispKit surface analyser (subprocess)
-- [ ] PR-11 — Compose composition-edge analyser (deterministic, in-process)
+- [x] PR-11 — Compose composition-edge analyser (deterministic, in-process)
 - [ ] PR-12 — Shell-script LLM-fallback analyser (in-process)
 - [x] PR-13 — Phase 1 hangover bundle (L8 phantoms + PR-12-of-Phase-1 polish)
 - [ ] PR-14 — Acceptance: polyglot dull-shaped fixture (smoke test)
@@ -577,7 +577,65 @@ memory note is closed.
 (awaiting subagent dispatch)
 
 ### PR-11
-(awaiting subagent dispatch)
+2026-05-07 — Landed as Atlas commits `4da5209` (main implementation) +
+`7aacbea` (spec fix F1: lex-sort composition edges in `canonicalise_edges`) +
+`69b2309` (quality fix F-CQ-1: extract shared L6 path utilities into
+`l6_paths.rs`) + `e5f1260` (quality fix F-CQ-2: trim trailing hyphen after
+slug truncation). No atlas-contracts changes.
+
+**Schema-mutation contribution proposal (orchestrator integrates):**
+atlas-contracts `crates/atlas-index/src/schema.rs` `kind` docstring:
+- `compose-orchestration` — A Docker Compose file declaring an orchestrated
+  set of services. Produces `bundled-into` (image/build → this) and
+  `deployed-with` (between co-declared service sources) edges at L6.
+
+**Implementation:** in-process deterministic analyser (no LLM). Two new
+files: `crates/atlas-analyzers/src/compose_classifier.rs` (`ComposeClassifier`,
+L1 enumeration to seed deliverable candidates; L3 classification; `ComposeShape` /
+`ComposeService` types; `parse_compose()`) and `crates/atlas-engine/src/l6_compose_edges.rs`
+(`composition_edges_from_compose`: emits `bundled-into` from `image:`/`build:`
+to compose-orchestration; `deployed-with` between co-declared services).
+Glob coverage for `docker-compose.yml`, `docker-compose.*.yml`, `compose.yml`,
+`compose.*.yml`. External-component id scheme: `external-<slug>` with
+non-alphanumeric→hyphen, 64-char truncation, leading/trailing hyphen trim
+(F-CQ-2 fix moves trim to *after* truncation). Local docker-image matching
+by component-id leaf with tie-break to external fallback on collision.
+
+**F1 spec fix (`7aacbea`):** spec required compose- and Dockerfile-derived
+composition edges to be "interleaved … in lexicographic order". Original
+`all_proposed_edges` extended in fixed order (Dockerfile-then-Compose).
+Fix added a stable sort by canonical key `(kind, lifecycle, participants)`
+to `canonicalise_edges` *before* the dedupe loop, using the same comparator
+as `l9_projections.rs::related_components_yaml_snapshot`. Stable sort
+preserves first-insertion-wins for the dedupe (so contract edges still
+beat composition edges, composition edges still beat LLM edges, where
+their canonical keys collide).
+
+**F-CQ-1 quality fix (`69b2309`):** five path-utility helpers
+(`component_id_leaf`, `build_component_segment_dirs`, `absolute_under_any_root`,
+`absolute_component_dir`, `path_prefix_lookup`, `normalise_path`) were
+duplicated verbatim between `l6_compose_edges.rs` and `l6_composition.rs`.
+Extracted into a new `pub(crate)` module `crates/atlas-engine/src/l6_paths.rs`;
+both call sites now import from there. Net −187 / +130 lines (57 lines of
+duplication eliminated).
+
+**Tests:** 5 integration tests in `crates/atlas-engine/tests/compose_edges.rs`
+covering all spec acceptance criteria + 2 negative-path tests (no compose
+files; single-service no `deployed-with`). Plus a `external_component_id_no_trailing_hyphen_after_truncation`
+regression test pinning F-CQ-2.
+
+**Edge interleaving (post-F1):** all proposed edges flow through `canonicalise_edges`
+which now lex-sorts by `(kind, lifecycle, participants)` before dedupe.
+Output ordering is deterministic and matches §4 PR-11's "interleaved … in
+lexicographic order" requirement.
+
+**Deferred / follow-ups:**
+- `DockerComposeBundle` (existing Phase 1 kind) coexists with the new
+  `ComposeOrchestration`. No producer for `DockerComposeBundle` after
+  PR-11 — it's reachable only via pins/overrides/LLM responses. Safe
+  coexistence; cleanup deferred to Phase-3 sweep.
+- `WireLibraryApi.kind` field is hardcoded `"library-api"` on the wire
+  but ignored by the engine decoder (pre-existing PR-3 debt; not PR-11).
 
 ### PR-12
 (awaiting subagent dispatch)
