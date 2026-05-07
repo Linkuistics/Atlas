@@ -5,7 +5,7 @@ This file tracks per-PR completion state across sessions. The session
 prompt at `docs/superpowers/plans/2026-05-06-phase1-session-prompt.md`
 reads this file to find the next PR to dispatch.
 
-**Last updated:** 2026-05-07 (PR-5 + PR-6 + PR-7 + PR-9 + PR-10 landed).
+**Last updated:** 2026-05-07 (PR-5 + PR-6 + PR-7 + PR-8 + PR-9 + PR-10 landed).
 
 ## PR status
 
@@ -21,7 +21,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-5  — Plugin protocol + three reference analysers
 - [x] PR-6  — Scattered per-component `.atlas/` writers
 - [x] PR-7  — `surfaces.yaml` emission (Rust binding shape)
-- [ ] PR-8  — Contract participants in `related-components.yaml`
+- [x] PR-8  — Contract participants in `related-components.yaml`
 - [x] PR-9  — Composition edges from Dockerfiles
 - [x] PR-10 — Wire persistent cache into L3 / L5 / L6
 - [ ] PR-11 — L6 cache key includes participant surface shas
@@ -663,7 +663,158 @@ Carry-over for downstream PRs:
   surfaces.yaml emission inside `write_per_component_files`.
 
 ### PR-8
-(none yet)
+2026-05-07 — Landed across two repos.
+
+**atlas-contracts:** `d78d2d7` (initial validator + unit tests) +
+`525ccef` (boundary unit tests after code-quality review).
+
+**Atlas:** `c23d63d` (initial — contract edge emission, validator
+wiring) + `c39dd25` (spec-review fix-up — end-to-end validator
+integration test, validator placement after all top-level writes) +
+`d5168e7` (code-quality fix-up — validator runs in dry-run, doc
+accuracy on Salsa memoisation claim).
+
+**Dep-graph correction for the next session:** the status-file dep
+graph lists PR-11 as Wave 4 alongside PR-8 (both depending only on
+PR-7+PR-10). In practice PR-11 sequentially follows PR-8 — both PRs
+modify `l6_edges.rs` and `l9_projections.rs` (merge-conflict risk if
+parallel) and PR-11's two main acceptance tests ("crate-B consumes
+contract from crate-A" + "cross-tree consumes-contract invalidation")
+require PR-8's `consumes-contract` edges to exist. The "no-contract
+stability" test still works without PR-8 but two of three tests can't
+be authored. Treat the dep graph as PR-7 → PR-8 → PR-11 → PR-12.
+
+**New public API (atlas-contracts):**
+- `validate_contract_participants_resolve(edges: &[Edge],
+  known_contract_ids: &BTreeSet<&str>) -> Result<(),
+  Vec<UnresolvedContractParticipant>>` — purely structural validator
+  in `component_ontology::schema`. Re-exported from `lib.rs`.
+- `UnresolvedContractParticipant { edge_kind: EdgeKind,
+  component_participant: String, unresolved_contract_id: String }`.
+- Result vec is sorted by `(edge_kind.as_str(), unresolved_contract_id)`
+  for deterministic error messages.
+- Walks only the three contract edge kinds (`DefinesContract`,
+  `ImplementsContract`, `ConsumesContract`); other kinds ignored.
+- Defensive `.get(1)` / `.first()` skip silently for malformed
+  participants — pinned by the boundary unit test
+  `validate_contract_participants_skips_malformed_edge_with_one_participant`.
+
+**New public API (atlas-engine):**
+- `contract_edges_from_surfaces(db: &AtlasDatabase) -> Vec<Edge>`
+  — deterministic edge contributor in `l6_edges.rs`. For every live
+  component with a code-derived contract, emits one `defines-contract`
+  + one `implements-contract` edge with participants
+  `[component_id, contract.id]`. Lifecycle: `design`. Evidence: `Strong`.
+  Re-exported from `atlas_engine::lib`. `consumes-contract` edges are
+  NOT emitted here — they flow through the existing LLM Stage 2 batch
+  path.
+
+**L6 wiring (`l6_edges.rs::all_proposed_edges`):**
+- Contract edges merge alongside composition edges + LLM batch before
+  canonicalisation. Order: `contract_edges` first, `composition_edges`
+  second, `parsed` (LLM) last. Different EdgeKinds means no canonical-
+  key collision between contract and composition edges; the
+  deterministic-first ordering means an LLM restatement of a
+  deterministic edge is dropped by `canonicalise_edges`'s "first wins"
+  rule.
+- Wired into all three return paths: multi-component (main), `live.len()
+  < 2` early return, and LLM-error fallback. A single-component workspace
+  that defines a contract still emits its `defines-contract` /
+  `implements-contract` edges.
+
+**Pipeline integration (`pipeline.rs`):**
+- `validate_contract_participants_resolve` runs **unconditionally**
+  (matching the precedent set by `check_subsystem_namespace` /
+  `check_subsystem_id_members`), *before* the `if !config.dry_run { ... }`
+  writes block. A dry-run with an unresolvable contract participant
+  fails the same way a real run does — pinned by the dry-run integration
+  test.
+- On validation failure, returns `IndexError::Other` with a multi-line
+  message naming every unresolved edge kind / component / contract id.
+  No files are written on this error path; `outputs_written: false`.
+- Validator builds `known_contract_ids` by walking every live component's
+  `surfaces_yaml_snapshot` and collecting `contracts_defined[*].id`.
+
+**Tests added:**
+- atlas-contracts unit tests in `component-ontology::schema::tests` (5
+  validator function tests + 2 boundary tests added by the code-quality
+  fix-up): happy path, unresolved consumes-contract, non-contract edges
+  ignored, sort order, sort by kind-then-id, empty edges, malformed
+  edge.
+- `crates/atlas-engine/tests/contract_edges.rs` (3 integration tests):
+  defines + implements emission from a serde-derived struct, consumes-
+  contract from canned LLM Stage 2, empty surfaces produce zero contract
+  edges.
+- `crates/atlas-cli/tests/contract_validator_integration.rs` (2
+  end-to-end tests): real-run and dry-run both fail when an unresolvable
+  contract participant is canned into the LLM Stage 2 response. Helper
+  `setup_violation_run(dry_run)` factored out.
+
+**Deviations from the brief (PR-9/PR-11 reviewers please note):**
+- The brief suggested calling `surfaces_yaml_snapshot(db, &cid)` from
+  `contract_edges_from_surfaces`. This would create a circular module
+  dependency (`l6_edges → l9_projections → l6_edges`). Implementation
+  calls `surface_artefacts_of` (from `l5_surface`) directly. The
+  semantics are identical for Phase 1: the L9 projection auto-pairs
+  each `contracts_defined[i]` with a 1-to-1 `contracts_implemented[i]`,
+  and `contract_edges_from_surfaces` reproduces that pairing inline.
+- `consumes-contract` edges flow through the LLM Stage 2 batch — no
+  Stage 2 prompt template change. The {{ONTOLOGY_KINDS}} block already
+  includes the three contract kinds via the bijection-tested
+  `render_embedded_kinds_for_prompt` machinery, so the model can already
+  emit them.
+- `surfaces.yaml.contracts_consumed` remains always-empty in Phase 1
+  output (matching PR-7's hand-off). PR-8 does not populate it.
+- `l9_projections.rs` was NOT modified — the lex sort by
+  `Edge::canonical_key()` was already in place from PR-9 and picks up
+  contract edges automatically. The plan's mention of an l9 modification
+  is stale.
+
+**Carry-over for PR-11 reviewers:**
+- `surface_artefacts_of` (in `l5_surface.rs`) is plain `pub fn` — NOT
+  `#[salsa::tracked]`. Each call from `contract_edges_from_surfaces`
+  re-walks the component's path segments and re-runs
+  `extract_rust_surface`. The doc comment on
+  `contract_edges_from_surfaces` flags this. PR-11 wires participant
+  surface shas into the L6 fingerprint; if it pulls from
+  `surface_artefacts_of`, the same caveat applies. Wrapping the
+  function in `#[salsa::tracked]` is a future cleanup, deliberately
+  outside PR-8's scope.
+- The `TODO(PR-11)` markers in `l6_edges.rs` (in the `let l6_fingerprint
+  = { ... }` block) are unchanged. PR-11 still owns adding
+  `participant_surface_sha` contributions.
+
+**Carry-over for PR-12 reviewers (test-helper extraction):**
+- `crates/atlas-cli/tests/contract_validator_integration.rs` duplicates
+  the fixture-copy harness (`tiny_fixture_root`, `copy_fixture_to_tmp`,
+  `materialise_tiny_fixture`, `base_config`) byte-for-byte from
+  `pipeline_integration.rs`. The `ContractViolationBackend` overlaps
+  ~85% with `LenientBackend`. A `tests/common/mod.rs` (or
+  `tests/support/`) extraction would collapse the file to ~30 lines and
+  give PR-12 a shared helper to lean on. Not done in PR-8 because the
+  refactor touches code outside PR-8's scope (tests other than PR-8's
+  own consume `LenientBackend`); flagged here so PR-12's reviewer can
+  decide whether to land it then.
+
+**Files created (Atlas):**
+- `crates/atlas-engine/tests/contract_edges.rs` (317 lines, 3 tests).
+- `crates/atlas-cli/tests/contract_validator_integration.rs` (~200
+  lines after the dry-run extension, 2 tests).
+
+**Files modified (Atlas):**
+- `crates/atlas-engine/src/l6_edges.rs` — `contract_edges_from_surfaces`
+  + wiring into all three `all_proposed_edges` paths; doc comment
+  accuracy fix.
+- `crates/atlas-engine/src/lib.rs` — re-export
+  `contract_edges_from_surfaces`.
+- `crates/atlas-cli/src/pipeline.rs` — validator wiring (now runs
+  unconditionally; placement before writes block).
+
+**Files modified (atlas-contracts):**
+- `crates/component-ontology/src/schema.rs` —
+  `validate_contract_participants_resolve` +
+  `UnresolvedContractParticipant` + 7 unit tests.
+- `crates/component-ontology/src/lib.rs` — two new re-exports.
 
 ### PR-9
 2026-05-07 — Landed on Atlas main as `0d0e581`.
