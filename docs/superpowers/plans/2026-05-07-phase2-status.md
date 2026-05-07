@@ -6,7 +6,7 @@ prompt at `docs/superpowers/prompts/2026-05-07-vnext-continue.md` reads
 this file (via the `*phase2-plan*` wildcard match) to find the next PR
 to dispatch.
 
-**Last updated:** 2026-05-08 (Wave 3 in flight: PR-6/7/8/9/10 landed; PR-12 worktree pending merge).
+**Last updated:** 2026-05-08 (Wave 3 complete: PR-6/7/8/9/10/11/12 all landed; only PR-14 acceptance smoke-test remains for Phase 2 closeout).
 
 ## PR status
 
@@ -26,7 +26,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-9  — Racket surface analyser (subprocess)
 - [x] PR-10 — LispKit surface analyser (subprocess)
 - [x] PR-11 — Compose composition-edge analyser (deterministic, in-process)
-- [ ] PR-12 — Shell-script LLM-fallback analyser (in-process)
+- [x] PR-12 — Shell-script LLM-fallback analyser (in-process)
 - [x] PR-13 — Phase 1 hangover bundle (L8 phantoms + PR-12-of-Phase-1 polish)
 - [ ] PR-14 — Acceptance: polyglot dull-shaped fixture (smoke test)
 
@@ -1048,10 +1048,16 @@ tests + integration tests in
 `7aacbea` (spec fix F1: lex-sort composition edges in `canonicalise_edges`) +
 `69b2309` (quality fix F-CQ-1: extract shared L6 path utilities into
 `l6_paths.rs`) + `e5f1260` (quality fix F-CQ-2: trim trailing hyphen after
-slug truncation). No atlas-contracts changes.
+slug truncation).
 
-**Schema-mutation contribution proposal (orchestrator integrates):**
-atlas-contracts `crates/atlas-index/src/schema.rs` `kind` docstring:
+**2026-05-08 deferred-companion update:** atlas-contracts commit
+`6708155` lands the `compose-orchestration` paragraph in the `kind`
+field's open-vocabulary docstring (deferred from PR-11's original
+session per the original status note's "schema-mutation contribution
+proposal (orchestrator integrates)" framing).
+
+**Schema-mutation contribution:** atlas-contracts
+`crates/atlas-index/src/schema.rs` `kind` docstring:
 - `compose-orchestration` — A Docker Compose file declaring an orchestrated
   set of services. Produces `bundled-into` (image/build → this) and
   `deployed-with` (between co-declared service sources) edges at L6.
@@ -1105,7 +1111,85 @@ lexicographic order" requirement.
   but ignored by the engine decoder (pre-existing PR-3 debt; not PR-11).
 
 ### PR-12
-(awaiting subagent dispatch)
+2026-05-08 — Landed as Atlas commit `1a08c4a` (squashed integration of
+`phase2-pr12-impl`: vocabulary → analyser → registry+lib.rs →
+engine wiring → tests/validate → spec fix F1 (Confidence::Declines
+threshold gate at 0.6) → quality fix F-CQ-1 (hand-written Default
+delegates to `new()` to preserve the threshold gate));
+atlas-contracts commit `b2b53d8` (kind docstring gains
+shell-script / makefile-orchestration paragraph). Per-stage commits
+preserved on the branch ref `phase2-pr12-impl`.
+
+**Schema-mutation contribution:** atlas-contracts
+`crates/atlas-index/src/schema.rs` `kind` docstring extended with a
+PR-12 paragraph (`shell-script` and `makefile-orchestration`).
+
+**Implementation map:**
+- `atlas_analyzers::shell_script_llm_analyzer` (new module): the
+  `ShellScriptLlmAnalyzer` registers as the 8th built-in (now 14th
+  after Wave-3 PRs 6/7/8/9/10 added their classifiers);
+  `extract_shell_surface` is the L5-side deterministic extractor
+  (function definitions / Make targets) used by the
+  `entry_is_shell` branch in `surface_artefacts_of`.
+- `atlas_analyzers/Cargo.toml` gains a regex dep used by the shell
+  parser.
+- `crates/atlas-engine/src/l3_classify.rs` extended with a
+  `shell_to_classification` adapter that materialises the L3 LLM
+  output into a `Classification` with `EvidenceGrade::Medium`
+  (conservative for LLM verdicts) and `analyser_id` /
+  `analyser_version` plumbing per PR-4.
+- `crates/atlas-engine/src/l5_surface.rs` extended with a Shell
+  branch in `surface_artefacts_of` that probes well-known shell /
+  Makefile filenames (`Makefile`, `GNUmakefile`, `*.sh`, plus
+  `*.mk` from `entry.manifests`), passes them to
+  `extract_shell_surface`, and returns the binding / library-api
+  vecs unchanged.
+- `crates/atlas-cli/src/validate.rs` learns about the new
+  ComponentKind variants.
+- `ComponentKind::ShellScript` / `MakefileOrchestration` variants +
+  `shell-script` / `makefile-orchestration` entries in
+  `defaults/component-kinds.yaml`. `subcarve_policy` adds both as
+  Stop-leaf kinds (one component end-to-end, never carve inside).
+
+**F1 spec fix (`3c31afe`):** the analyser previously emitted
+`Graded` outputs unconditionally; spec required gating on the LLM
+confidence (`Confidence::Declines` below 0.6). The fix splits the
+threshold check into a `should_emit_graded` helper and routes
+sub-threshold outputs into the `Declines` arm of `AnalyzerResult`,
+which the dispatcher then falls through.
+
+**F-CQ-1 quality fix (`aed7295`):** the hand-written `impl Default
+for ShellScriptLlmAnalyzer` previously short-circuited the threshold
+gate (it set `confidence_threshold` to `0.0`, which silently
+emitted Graded outputs for every LLM verdict). The fix delegates
+`Default::default()` to `Self::new()` so the gate stays at the
+class-default `0.6`.
+
+**Tests:** §4 PR-12 acceptance criteria covered + integration
+tests in `crates/atlas-engine/tests/l5_shell_surface.rs`.
+
+**Decisions / deviations:**
+- **In-process, not subprocess.** Phase 2 contract: subprocess
+  analysers are deterministic-only. The shell-script analyser
+  needs LLM access (Phase 1 PR-5's `LlmHook`), so it stays
+  in-process. Phase 3+ may add a bidirectional callback channel
+  for subprocess analysers that need LLM dispatch.
+- **`EvidenceGrade::Medium` for LLM verdicts.** The other Wave-3
+  classifiers emit `EvidenceGrade::Strong` (their inputs are
+  deterministic manifest signals). PR-12's verdict comes from the
+  LLM, so the conservative `Medium` grade tells downstream stages
+  that a hand-authored override / pin should win over this verdict
+  at parity weight.
+- **Probe-list rather than full directory walk.** `entry_is_shell`
+  components' surface candidates are enumerated from a fixed list
+  of well-known shell / make filenames plus any `*.mk` files
+  pre-loaded into `entry.manifests`. Phase 3 may swap to a full
+  walk if real-world fixtures need it.
+
+**Cleanups deferred:**
+- Full directory walk for shell components (Phase 3+).
+- `LenientBackend` test-helper extraction (still warranted; cumulative
+  deferral; Wave 4 cleanup PR).
 
 ### PR-13
 2026-05-07 — Landed as commits `788fc92` (main change) + `71b8019` (doc fix
