@@ -281,6 +281,8 @@ fn resolve_image_to_component(image_ref: &str, docker_images: &[DockerImageEntry
 /// hyphens, truncated to 64 characters.  Leading/trailing hyphens are
 /// stripped so the result is a valid component id segment.
 fn external_component_id(image_ref: &str) -> String {
+    // Truncate first, then trim — trimming before truncation can leave a
+    // trailing hyphen when the character at position 64 is `-`.
     let slug: String = image_ref
         .chars()
         .map(|c| {
@@ -290,13 +292,11 @@ fn external_component_id(image_ref: &str) -> String {
                 '-'
             }
         })
-        .collect::<String>()
-        .trim_matches('-')
-        .chars()
         .take(64)
-        .collect();
+        .collect::<String>();
+    let slug = slug.trim_matches('-');
     // Ensure the slug is non-empty even for a pathological input.
-    let slug = if slug.is_empty() { "image" } else { &slug };
+    let slug = if slug.is_empty() { "image" } else { slug };
     format!("external-{slug}")
 }
 
@@ -338,6 +338,20 @@ mod tests {
         let id = external_component_id("ghcr.io/foo/bar:latest");
         assert!(id.starts_with("external-"), "got: {id}");
         assert!(!id.contains('/'), "slashes must be replaced: {id}");
+    }
+
+    #[test]
+    fn external_component_id_no_trailing_hyphen_after_truncation() {
+        // Construct a 64-character slug that ends with a special char so
+        // that after char-replacement the 64th position is `-`. The trim
+        // must run *after* truncation to strip it.
+        // 62 `a`s + `:` at position 63 (0-indexed 62) → `a…a-` (64 chars).
+        let input = format!("{}:", "a".repeat(63));
+        let id = external_component_id(&input);
+        assert!(
+            !id.ends_with('-'),
+            "id must not end with hyphen after truncation; got: {id}"
+        );
     }
 
     #[test]
