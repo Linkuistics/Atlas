@@ -253,10 +253,26 @@ malformed JSON, etc. Total 12 integration tests in
 2026-05-07 — Landed as Atlas commits `c8afe2a` (migrate existing
 analysers to structured Visibility/attributes) + `6238214`
 (python-analyzer crate, classifier, L5 subprocess wiring) + `d05082d`
-(integration tests + L5 fingerprint binary_sha contribution);
-atlas-contracts commits `0c2621b` (Visibility enum + module_path +
-attributes on Binding) + `6d88650` (re-export Visibility from crate
-root).
+(integration tests + L5 fingerprint binary_sha contribution) +
+`75aba19` (spec-compliance fix: F1 single-test, F2 Visibility
+discriminator, F3 end-to-end cache, F4 L6 cross-tree, F5 module_path
+schema correction) + `21e4eab` (code-quality fix: F-CQ-1 cached
+subprocess proxy, F-CQ-2 dedup pub_item_kind_str, F-CQ-3 lossless
+JSON→YAML, F-CQ-4 ATTR_* consts adoption, F-CQ-5 missing-binary
+warning); atlas-contracts commits `0c2621b` (Visibility enum +
+module_path + attributes on Binding) + `6d88650` (re-export Visibility
+from crate root) + `ec3f535` (module_path docstring excludes symbol)
++ `90d5916` (declare ATTR_* const keys for Binding.attributes).
+
+**Two-stage review outcome:** Spec-compliance review caught 5 partial
+criteria → all five fixed in `75aba19`. Code-quality review verdict
+🟡 ACCEPT WITH FIX-UP, six findings → five fixed in `21e4eab`,
+finding F-CQ-6 (`LenientBackend` test-helper duplication across two
+test files) deliberately deferred until Wave 3 actually copy-pastes a
+third time (per the user's "don't abstract on speculation" rule).
+Independent verification: `cargo test --workspace --no-fail-fast` (42
+test-result groups all green), `cargo clippy --all-targets -- -D
+warnings`, `cargo fmt --check` — all clean on both repos.
 
 **Schema-mutation contribution:** atlas-contracts
 `crates/atlas-index/src/surfaces.rs`:
@@ -399,6 +415,43 @@ tests. Listed by criterion:
   language-tag inference; a polyglot Python+Rust component still
   appears as Rust-only at L1. Not a regression — pre-PR-3 the same
   was true.
+- `LenientBackend` test-helper is duplicated between
+  `tests/multi_root_path_deps.rs` and `tests/l5_python_surface.rs`.
+  Stage-2 review (F-CQ-6) flagged this; deliberately deferred until
+  Wave 3 copy-pastes it a third time, then extract to
+  `tests/common/mod.rs`.
+
+**Wave 3 readiness — load-bearing patterns established by PR-3:**
+
+- **`cached_subprocess_proxy(spec)`** in
+  `crates/atlas-analyzers/src/python_surface_analyzer.rs` is the
+  canonical pattern for caching a `SubprocessAnalyzerProxy` keyed on
+  binary path. Wave 3's C# / Dart / Elixir / Racket / LispKit
+  subprocess analysers should adopt the same pattern (one helper per
+  analyser crate is fine) so an N-component workspace incurs one
+  spawn per analyser, not N×analysers spawns.
+- **`ATTR_*` const keys** in `atlas-contracts` (`ATTR_PRIVATE`,
+  `ATTR_DECORATOR_CHAIN`, `ATTR_MODULE_SYSTEM`, `ATTR_TYPE_ONLY`)
+  define the canonical attribute-key vocabulary on `Binding.attributes`.
+  Wave 3 PRs that introduce new attribute keys (C# `[Attribute]`,
+  Elixir `@spec`, Dart `@annotations`, etc.) should append new
+  `ATTR_*` consts in the same file rather than emitting bare-string
+  keys.
+- **`Visibility::Conventional`** is the load-bearing variant for
+  languages without explicit visibility keywords (Python, Dart,
+  Racket, Elixir `defp`). Use with an `attributes.private: true`
+  flag (via `ATTR_PRIVATE`) when the language has a
+  conventional-private form (leading `_`, `defp`, etc.). Use
+  `Visibility::Explicit { keyword: ... }` for `pub` / `public` /
+  `export` / `provide` etc.
+- **JSON→YAML conversion** in subprocess analyser response decoding:
+  use `serde_json::from_value::<serde_yaml::Value>(v.clone())` (the
+  idiom validated in `decode_python_surface_payload`), NOT
+  `serde_yaml::from_str(&v.to_string())` (lossy on YAML-special
+  characters in attribute values).
+- **`module_path` semantics** are file-path-derived only (excluding
+  symbol). `pkg/sub/mod.py` → `["pkg", "sub", "mod"]`. The dotted
+  identifier is `module_path.join(".") + "." + symbol`.
 
 ### PR-4
 2026-05-07 — Landed as Atlas commits `a1b8f20` (main change) +
