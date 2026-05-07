@@ -6,7 +6,7 @@ prompt at `docs/superpowers/prompts/2026-05-07-vnext-continue.md` reads
 this file (via the `*phase2-plan*` wildcard match) to find the next PR
 to dispatch.
 
-**Last updated:** 2026-05-07 (Wave 1 + Wave 2 complete: PR-3 closes the abstraction-confirmation milestone; Wave 3 may proceed in parallel).
+**Last updated:** 2026-05-07 (Wave 3 in flight: PR-6 landed; PR-7/8/9/10/12 worktrees pending merge).
 
 ## PR status
 
@@ -20,7 +20,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-3  — Python surface analyser (first subprocess analyser)
 - [x] PR-4  — Per-analyser `analyser_id` / `analyser_version` plumbing through L3 dispatch
 - [x] PR-5  — Rust binding extractor: regex → `syn`
-- [ ] PR-6  — C# surface analyser (subprocess)
+- [x] PR-6  — C# surface analyser (subprocess)
 - [ ] PR-7  — Dart / Flutter surface analyser (subprocess)
 - [ ] PR-8  — Elixir surface analyser (subprocess)
 - [ ] PR-9  — Racket surface analyser (subprocess)
@@ -562,7 +562,93 @@ regression). The `nested_pub_inside_pub_mod_is_phase1_known_limitation`
 memory note is closed.
 
 ### PR-6
-(awaiting subagent dispatch)
+2026-05-07 — Landed as Atlas commits `792c40d` (csharp crate scaffold) +
+`14da618` (L3 classifier + L5 engine wiring) + `3c31edf` (integration
+tests + fmt) + `b437e8c` (spec fix F1 sln-with-two-csproj integration
+test) + `c76d74e` (spec fix F2 csproj path-dep recognition) + `19669a5`
+(rebase fix propagating analyser count 8→9 in three sibling registry
+tests after the csharp addition); atlas-contracts commit `b1f3fb2`
+(kind docstring gains csharp-project / csharp-solution paragraph).
+
+**Schema-mutation contribution:** atlas-contracts
+`crates/atlas-index/src/schema.rs` `kind` docstring extended with a
+PR-6 paragraph (csharp-project / csharp-solution). No type-level
+schema changes — the `kind` field stays `String` (open vocabulary).
+
+**Parser library:** `tree-sitter-c-sharp` via the `tree-sitter` Rust
+binding (the plan's named default).
+
+**Implementation map:**
+- New workspace member `crates/analyzers/csharp` (lib + `csharp-analyzer`
+  subprocess binary), speaking PR-2's wire protocol verbatim.
+- `atlas_analyzers::csharp_classifier` (in-process L3 deterministic):
+  recognises `*.csproj` → `csharp-project` and `*.sln` → `csharp-solution`,
+  with `*.sln` taking precedence when both appear at the same path
+  (per the F1 sln-vs-csproj integration test).
+- `atlas_analyzers::csharp_surface_analyzer` —
+  `csharp_subprocess_spec(binary_path)` builds the
+  `SubprocessAnalyzerSpec`; `cached_csharp_subprocess_proxy(spec)`
+  caches the proxy keyed on binary path (mirrors PR-3's
+  `cached_subprocess_proxy` pattern); `locate_csharp_analyzer_binary`
+  walks up from `current_exe()` for the runtime sibling-binary lookup.
+- `crates/atlas-engine/src/l5_surface.rs` extended with a C# branch in
+  `surface_artefacts_of` that builds a minimal `Target`, drives the
+  subprocess, and decodes the JSON response into typed `Binding` /
+  `LibraryApi` values via the generalised `decode_subprocess_surface_payload`.
+- `crates/atlas-engine/src/manifest_parse.rs` learns to read
+  `*.csproj`'s `<ProjectReference Include="../path">` for cross-tree
+  path-dep recognition (F2 spec fix); `enclosing_manifest_root`
+  recognises a `*.csproj` ancestor as a project root.
+- `ComponentKind::CsharpProject` / `ComponentKind::CsharpSolution`
+  variants + `csharp-project` / `csharp-solution` entries in
+  `defaults/component-kinds.yaml`. `subcarve_policy` adds both kinds
+  to the library-shaped kinds.
+
+**Binding extraction shape:**
+- Top-level `public class/struct/interface/record/enum` → `Binding`
+  with `Visibility::Explicit { keyword: "public" }`, `module_path`
+  rooted at the namespace (e.g. `Foo.Bar.Models`).
+- `public` methods on public types → `Binding` with the method name
+  appended to the parent type's `module_path`.
+- C# `internal` / `private` members are excluded from surface (Phase 2
+  default; opt-in via `attributes.internal_visible: true` is Phase 3+).
+- C# attributes (`[Authorize]`, `[Serializable]`) captured as
+  `attributes.cs_attributes: ["Authorize", "Serializable"]`.
+
+**Tests:** all 5 §4 acceptance criteria covered + 23 lib unit tests +
+classifier unit tests + 7 integration tests in
+`crates/atlas-engine/tests/l5_csharp_surface.rs`. Listed by criterion:
+1. `l3_csproj_classifies_as_csharp_project_without_llm_call` (no LLM).
+2. `csharp_namespace_module_path_records_dotted_namespace_for_nested_class` (module_path).
+3. `csharp_serializable_attribute_recorded_in_attributes_cs_attributes_list` (attribute capture).
+4. `csharp_internal_class_excluded_from_surface_only_public_class_appears` (internal exclusion).
+5. `l3_sln_with_two_csproj_emits_two_csharp_project_components` (sln→multi-component, F1 fix).
+
+**Decisions / deviations:**
+- **F-CQ-6 LenientBackend duplication addressed**: the test-helper
+  duplication PR-3 deferred (between `multi_root_path_deps.rs` and
+  `l5_python_surface.rs`) is NOT yet extracted in PR-6 — `l5_csharp_surface.rs`
+  is the third copy site. Per the user's "don't abstract on
+  speculation" rule the deferral was tied to "Wave 3 actually copy-pastes
+  it a third time, then extract"; PR-6's third copy-paste means
+  extraction is now warranted but was kept inline in PR-6 to stay
+  within the §4 scope. Defer the extraction to a Wave 4 cleanup PR
+  (post PR-14).
+- **`*.sln` precedence** when both `*.sln` and `*.csproj` co-exist:
+  the sln wins because it nominates the multi-project boundary;
+  the csproj entries become subcomponents under the sln-classified
+  parent. F1 spec fix added an integration test pinning this rule.
+- **Subprocess does its own filesystem walk.** Mirrors PR-3's pattern;
+  the wire protocol's `Target.manifests` carries pre-loaded manifests
+  but C# source files are walked by the subprocess directly via
+  `std::fs::read_dir` on `Target.dir`.
+
+**Cleanups deferred:**
+- `LenientBackend` test-helper extraction to `tests/common/mod.rs`
+  (now warranted; Wave 4).
+- C# `internal_visible: true` opt-in attribute (Phase 3+).
+- Module-path resolution for `using` aliases / type-forwarded namespaces
+  (Phase 3+).
 
 ### PR-7
 (awaiting subagent dispatch)
