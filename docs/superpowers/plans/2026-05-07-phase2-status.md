@@ -6,7 +6,7 @@ prompt at `docs/superpowers/prompts/2026-05-07-vnext-continue.md` reads
 this file (via the `*phase2-plan*` wildcard match) to find the next PR
 to dispatch.
 
-**Last updated:** 2026-05-07 (PR-2 + PR-4 + PR-5 + PR-13 landed; Wave 1 in progress).
+**Last updated:** 2026-05-07 (Wave 1 complete: PR-1 + PR-2 + PR-4 + PR-5 + PR-13 landed; Wave 2 next).
 
 ## PR status
 
@@ -15,7 +15,7 @@ when the PR is reviewed and committed. Append a one-line note (date +
 commit sha + anything load-bearing the next session needs to know).
 
 - [x] PR-0  — Plan + status file (docs only)
-- [ ] PR-1  — TypeScript / JavaScript surface analyser (in-process)
+- [x] PR-1  — TypeScript / JavaScript surface analyser (in-process)
 - [x] PR-2  — Subprocess analyser transport (stdio JSON)
 - [ ] PR-3  — Python surface analyser (first subprocess analyser)
 - [x] PR-4  — Per-analyser `analyser_id` / `analyser_version` plumbing through L3 dispatch
@@ -102,7 +102,72 @@ Load-bearing context for Wave 1 reviewers:
   and can be parallel-dispatched with any of Wave 1.
 
 ### PR-1
-(awaiting subagent dispatch)
+2026-05-07 — Landed as Atlas commits `76bf531` (main change) +
+`abbb30b` (spec-review fix wiring extract_ts_js_surface into the engine
+L5 path + extending the integration test) + `d5f69d1` (code-quality
+fix adding `main+tsconfig` integration coverage); atlas-contracts
+commit `a6f98e2` on the contracts main (kind enum docstring extension).
+
+**Schema-mutation contribution:** atlas-contracts `crates/atlas-index/src/schema.rs`
+docstring updated to mention the new per-language kinds. The `kind`
+field is `String` (open vocabulary by design), so the typed enum lives
+in `atlas-engine/src/types.rs` — `ComponentKind::TypescriptPackage` and
+`ComponentKind::JavascriptPackage` variants added there, plus
+`defaults/component-kinds.yaml` vocabulary entries.
+
+**Implementation:** `swc_ecma_parser` + `swc_ecma_ast` for TS/JS
+parsing (pinned at swc_common 21 / swc_ecma_ast 23 / swc_ecma_parser
+39). Two new files in `crates/atlas-analyzers/src/`:
+`ts_js_classifier.rs` (L3 deterministic classifier — package.json +
+tsconfig.json → `typescript-package`; bare package.json with no
+`bin`/`main`/`exports` → `javascript-package`; otherwise declines and
+the legacy `node-cli`/`node-library` rules win to preserve Phase 1
+vocabulary) and `ts_js_surface_analyzer.rs` (`TsJsSurfaceAnalyzer`,
+`TsJsSurfaceOutput`, `extract_ts_js_surface`).
+
+**Schema workaround:** the structured `Binding.attributes` field
+that PR-3 will introduce does not exist yet. PR-1 encodes module-system
+metadata (commonjs vs esm) and TS-type-only flag as a `language`-field
+suffix: `typescript-type`, `javascript-cjs`, `javascript-esm`. PR-3
+will migrate to the structured `attributes` slot when it lands the
+schema. The suffix scheme is documented at the top of
+`ts_js_surface_analyzer.rs`.
+
+**Engine wiring (`abbb30b`):** spec review caught that
+`l5_surface.rs::surface_artefacts_of` hard-gated on Rust, so TS/JS
+components went through L5 with empty surfaces. Fix adds a TS/JS
+branch BEFORE the Rust gate. The branch probes 8 well-known paths
+(`src/{index,main}.{ts,tsx,js,jsx}`) plus `package.json`, calls
+`extract_ts_js_surface`, and projects into `SurfaceArtefacts`. This
+is a Phase-2 minimum that supports the integration fixture; deeper
+nesting + `package.json#main`/`module`/`exports` resolution is
+Phase 3 (full tree walk).
+
+**`analyse()` returns `Declines`:** mirrors the `RustSurfaceAnalyzer`
+pattern. The engine drives surface extraction directly via
+`surface_artefacts_of`, not via the dispatcher. The trait method is
+documented to explain this; a future driver may populate `Target`
+with source bytes and route through here instead.
+
+**Tests:** unit-level `ts_extracts_named_exports`,
+`ts_extracts_type_only_export`, `js_extracts_commonjs_exports`,
+plus `ts_extracts_default_export` and others; classifier tests cover
+the TS / JS / legacy-fall-through rule table. Two integration tests
+in `crates/atlas-engine/tests/l2_l3_queries.rs`:
+`l3_package_json_with_tsconfig_classifies_as_typescript_package_without_llm_call`
+(L3 only); `l5_typescript_package_surface_artefacts_include_exported_hello_symbol`
+(drives L5 end-to-end and asserts the `hello` symbol is in the surface).
+The code-quality fix added
+`l3_main_plus_tsconfig_classifies_as_typescript_package_without_llm_call`
+to pin the precedence rule at the dispatcher level.
+
+**Cherry-pick conflict resolution at merge:** PR-1 was committed before
+PR-2 / PR-4 had landed on main, so the cherry-pick had to resolve
+adds in `lib.rs`, `registry.rs`, and `Cargo.toml` (additive merges of
+PR-2's subprocess module + PR-1's TS/JS module imports), and update
+`ts_js_to_classification` in `l3_classify.rs` to take and propagate
+`analyser_id` / `analyser_version` per PR-4's `Classification` struct
+shape.
 
 ### PR-2
 2026-05-07 — Landed as Atlas commits `9413ffb` (main change) +
