@@ -5,7 +5,7 @@ This file tracks per-PR completion state across sessions. The session
 prompt at `docs/superpowers/plans/2026-05-06-phase1-session-prompt.md`
 reads this file to find the next PR to dispatch.
 
-**Last updated:** 2026-05-07 (PR-5 + PR-6 landed).
+**Last updated:** 2026-05-07 (PR-5 + PR-6 + PR-10 landed).
 
 ## PR status
 
@@ -23,7 +23,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [ ] PR-7  — `surfaces.yaml` emission (Rust binding shape)
 - [ ] PR-8  — Contract participants in `related-components.yaml`
 - [ ] PR-9  — Composition edges from Dockerfiles
-- [ ] PR-10 — Wire persistent cache into L3 / L5 / L6
+- [x] PR-10 — Wire persistent cache into L3 / L5 / L6
 - [ ] PR-11 — L6 cache key includes participant surface shas
 - [ ] PR-12 — Acceptance: atlas-contracts visible in Ravel-Lite
 
@@ -547,7 +547,152 @@ Carry-over for downstream PRs:
 (none yet)
 
 ### PR-10
-(none yet)
+2026-05-07 — Landed on Atlas main as `8a1da7c`. The subagent's
+final report was lost to a server-side 500; this note is
+reconstructed from inspecting the diff, the new tests, and the
+status of the gates. All three acceptance-criteria tests pass; the
+status note below was authored by the orchestrator after verifying
+the implementation rather than copy-pasted from the subagent's
+report.
+
+**New public API (atlas-engine):**
+- `LlmResponseCache::new_with_persistent(PersistentCache) -> Self`
+  — production constructor. The plain `LlmResponseCache::new()`
+  remains for tests that want in-memory-only behaviour.
+- `LlmResponseCache::call_cached_with_fp(stage: Stage,
+  fingerprint: &Sha256Hex, backend: &dyn LlmBackend,
+  request: &LlmRequest) -> Result<Arc<Value>, LlmError>` — the new
+  production call site. Lookup order: in-memory hit → persistent
+  hit (deserialise blob, seed in-memory) → backend call (insert
+  both layers).
+- `L5_DRIVER_VERSION` and `L6_DRIVER_VERSION` constants — exposed
+  alongside PR-6's `L3_DRIVER_VERSION` so future PRs can plumb the
+  driver version into per-component fingerprints.
+
+**Pipeline wiring (`pipeline.rs`):**
+- `PersistentCache::open(<output>/.atlas/cache)` runs at startup.
+  On error, falls back to a default `LlmResponseCache` with a
+  warning on stderr (run continues). Matches PR-4 + PR-6 non-fatal
+  policy.
+- The persistent cache is installed onto `AtlasDatabase` via a
+  setter (`set_llm_cache`) immediately after `new_with_registry`.
+- The `cache_io::load_into` call at startup, the `set_persist_hook`
+  callback, and the `cache_io::save_from` final flush are all
+  removed. The persistent cache's `cache.put` is synchronous on
+  every successful backend response, so there is no end-of-pipeline
+  flush to perform.
+
+**LLM call sites (L3 / L5 / L6):**
+- L3 (`l3_classify.rs::is_component`): the `_l3_fingerprint`
+  placeholder binding from PR-5 is now the real fingerprint
+  consumed by `call_cached_with_fp(Stage::L3, ...)`. Contributors
+  per design §8.1: `analyzer_registry_sha`, `llm_fingerprint`
+  (template+ontology+model+backend), `prompt_sha` (sha256 of the
+  JSON-canonicalised classify inputs), `file_content_sha` per
+  consumed manifest. The deterministic registry pass short-
+  circuits BEFORE the cache lookup, so Cargo / Dockerfile classifications
+  never round-trip to disk.
+- L5 (`l5_surface.rs::surface_of`): a `FingerprintBuilder::new(L5,
+  "l5-driver", L5_DRIVER_VERSION)` is built per call. Contributors:
+  `analyzer_registry_sha`, `llm_fingerprint`, `prompt_sha`,
+  `file_content_sha` per file the surface analyser consumed
+  (the `consumes_files` set).
+- L6 (`l6_edges.rs::candidate_edges_for`): same shape. Contributors:
+  `analyzer_registry_sha`, `llm_fingerprint`, `prompt_sha`,
+  `file_content_sha` for the prompt's input bytes.
+  **Participant surface shas are NOT contributed in PR-10.** PR-11
+  is the owner. Two `TODO(PR-11)` comments mark the exact insertion
+  point in `l6_edges.rs` (a loop that will call
+  `FingerprintBuilder::add_participant_surface_sha` over the
+  candidate edge participants, keyed by surfaces.yaml fingerprint).
+
+**Hand-off for PR-11 reviewers:**
+- The L6 fingerprint shape today produces stable cache hits across
+  re-runs of the same workspace state, but does NOT invalidate when
+  a *different* component's surface changes. That's the gap PR-11
+  closes. The L6 driver-version (`L6_DRIVER_VERSION`) is the right
+  bump point if PR-11 wants to mass-invalidate the entire L6 cache
+  on first install — a single bump tears every existing entry.
+- Persisting the L6 fingerprint contributors is unaffected: the
+  contributors are values fed into the builder, not stored
+  separately. PR-11 just adds another `add_*` call inside the same
+  builder block.
+
+**v1 paths deleted:**
+- `crates/atlas-cli/src/cache_io.rs` (281 lines) — the JSON LLM
+  cache file. Per plan §3 v1-mechanism table, deleted under
+  greenfield treatment. Plan §7 lists this explicitly under
+  "out of scope ... v1 readers, the `atlas migrate-v1` command,
+  and the v1 `llm-cache.json` format are all deleted, not
+  preserved."
+- `mod cache_io;` line in `crates/atlas-cli/src/lib.rs`.
+- Every `cache_io::load_into` and `cache_io::save_from` call site
+  in `pipeline.rs`.
+- `LlmResponseCache::set_persist_hook` and the per-call hook
+  invocation: kept as a method (some tests still reference it),
+  but the production code path no longer installs a hook.
+
+**Tests added (`crates/atlas-cli/tests/persistent_cache_lifecycle.rs`):**
+- `fresh_process_re_run_hits_persistent_cache_for_every_entry`
+  — runs `atlas index` once via a `CountingBackend`, drops the
+  database + LlmResponseCache, constructs a *new* cache pointing
+  at the same on-disk cache root, runs `atlas index` again,
+  asserts backend `call_count() == 0`.
+- `single_file_content_change_invalidates_only_affected_entries`
+  — a two-component fixture where editing component-A's source file
+  triggers exactly N misses (one per LLM stage that cited the
+  edited file's content sha) and zero misses against component-B.
+- `deleting_cache_directory_forces_full_rerun` — `rm -rf` the
+  cache root between runs; second run's backend `call_count` equals
+  the cold-run baseline.
+
+**Deviations from the plan:**
+- **Synchronous writes inside `cache.put`** instead of the async
+  background-thread shape sketched in plan §6's risk row. The
+  atomic-tempfile-then-rename is cheap and the pipeline isn't
+  latency-bound at the LLM-call grain; a future PR can introduce
+  a write thread if profiling demands it. No flush-at-pipeline-end
+  is needed because there's nothing buffered.
+- **`PersistentCache::open` failure is non-fatal** — fall back to
+  in-memory-only with a stderr warning. Plan §4 PR-10 said "open
+  the persistent cache at startup; pass it to `AtlasDatabase::new`"
+  without specifying error policy; matches the non-fatal write
+  policy from PR-4 (config.yaml) and PR-6 (per-component yaml).
+
+**Debt deferred:**
+- L6 participant surface shas → PR-11.
+- Cache GC: `PersistentCache::gc(&BTreeSet)` is callable but no
+  caller invokes it on `atlas index`. A future PR (or an explicit
+  `--gc` flag) walks every entry observed in the run and invokes
+  `gc` against the complement.
+- Cache compression (design §11.2.7) — Phase 1 ships uncompressed.
+- Async writes — see deviations above.
+
+**Files modified (Atlas):**
+- `crates/atlas-cli/src/lib.rs` — `mod cache_io` line removed.
+- `crates/atlas-cli/src/pipeline.rs` — open PersistentCache, install
+  on db, drop cache_io call sites.
+- `crates/atlas-cli/tests/persistent_cache_lifecycle.rs` (new) —
+  three acceptance tests.
+- `crates/atlas-cli/tests/agent_observer_e2e.rs`,
+  `crates/atlas-cli/tests/pipeline_integration.rs` — fixtures
+  updated for the new `LlmResponseCache::new_with_persistent` shape.
+- `crates/atlas-engine/src/db.rs` — setter for the LLM cache.
+- `crates/atlas-engine/src/ingest.rs` — minor adjacent fix.
+- `crates/atlas-engine/src/l3_classify.rs` — call_cached_with_fp
+  swap.
+- `crates/atlas-engine/src/l5_surface.rs` — FingerprintBuilder +
+  call_cached_with_fp.
+- `crates/atlas-engine/src/l6_edges.rs` — same shape, with PR-11
+  TODO markers.
+- `crates/atlas-engine/src/lib.rs` — re-export
+  `L5_DRIVER_VERSION` and `L6_DRIVER_VERSION`.
+- `crates/atlas-engine/src/llm_cache.rs` — `new_with_persistent`,
+  `call_cached_with_fp`, persistent layer integration.
+- `crates/atlas-engine/tests/l0_l1_queries.rs` — fixture updated.
+
+**Files deleted (Atlas):**
+- `crates/atlas-cli/src/cache_io.rs` (281 lines).
 
 ### PR-11
 (none yet)
