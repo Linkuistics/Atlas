@@ -20,9 +20,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use atlas_analyzers::{
-    cached_csharp_subprocess_proxy, cached_dart_subprocess_proxy, cached_subprocess_proxy,
-    csharp_subprocess_spec, dart_subprocess_spec, extract_rust_surface, extract_ts_js_surface,
-    locate_csharp_analyzer_binary, locate_dart_analyzer_binary, locate_python_analyzer_binary,
+    cached_csharp_subprocess_proxy, cached_dart_subprocess_proxy, cached_elixir_subprocess_proxy,
+    cached_subprocess_proxy, csharp_subprocess_spec, dart_subprocess_spec, elixir_subprocess_spec,
+    extract_rust_surface, extract_ts_js_surface, locate_csharp_analyzer_binary,
+    locate_dart_analyzer_binary, locate_elixir_analyzer_binary, locate_python_analyzer_binary,
     python_subprocess_spec, Analyzer, AnalyzerResult, RustSourceInputs, SubprocessOutput,
     TsJsSourceInputs,
 };
@@ -136,28 +137,27 @@ pub fn surface_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceRecord> {
     );
     let registry_sha = db.analyzer_registry().registry_sha();
     // Phase 2 PR-3: Python components contribute the python-analyzer
-    // binary's content sha to the L5 fingerprint via tag 0x06.
-    // Phase 2 PR-7: Dart components contribute the dart-analyzer binary sha.
-    // Both contributions are conditional so unrelated components are not
-    // coupled to the other language analyser's binary churn.
+    // binary's content sha to the L5 fingerprint via tag 0x06. PR-6 / PR-7 / PR-8
+    // generalise the same posture for C# / Dart / Elixir; each contribution
+    // is conditional on the component's language so unrelated components are
+    // not coupled to other language analysers' binary churn.
     let python_binary_sha = if entry_is_python(entry) {
         locate_python_analyzer_binary().and_then(|p| atlas_analyzers::hash_binary(&p).ok())
     } else {
         None
     };
-    // Phase 2 PR-6: C# components contribute the csharp-analyzer binary
-    // sha to the L5 fingerprint via tag 0x06, mirroring the Python
-    // analyser pattern.
     let csharp_binary_sha = if entry_is_csharp(entry) {
         locate_csharp_analyzer_binary().and_then(|p| atlas_analyzers::hash_binary(&p).ok())
     } else {
         None
     };
-    // Phase 2 PR-7: Dart/Flutter components contribute the dart-analyzer
-    // binary sha to the L5 fingerprint via tag 0x06, mirroring the same
-    // pattern.
     let dart_binary_sha = if entry_is_dart(entry) {
         locate_dart_analyzer_binary().and_then(|p| atlas_analyzers::hash_binary(&p).ok())
+    } else {
+        None
+    };
+    let elixir_binary_sha = if entry_is_elixir(entry) {
+        locate_elixir_analyzer_binary().and_then(|p| atlas_analyzers::hash_binary(&p).ok())
     } else {
         None
     };
@@ -176,6 +176,9 @@ pub fn surface_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceRecord> {
             fb.add_analyzer_binary_sha(sha);
         }
         if let Some(sha) = &dart_binary_sha {
+            fb.add_analyzer_binary_sha(sha);
+        }
+        if let Some(sha) = &elixir_binary_sha {
             fb.add_analyzer_binary_sha(sha);
         }
         fb.finalise()
@@ -318,6 +321,25 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
     //     same posture as the Python branch.
     if entry_is_dart(entry) {
         if let Some(artefacts) = dart_surface_artefacts(db, entry, &roots, &record) {
+            return artefacts;
+        }
+        return Arc::new(SurfaceArtefacts {
+            record,
+            ..Default::default()
+        });
+    }
+
+    // 3a-elixir. Elixir branch — Phase 2 PR-8's subprocess analyser.
+    //     A component is handled here when it carries `elixir` in its
+    //     language set or its kind is `elixir-project`. The L5 driver
+    //     constructs a [`SubprocessAnalyzerProxy`] on demand against the
+    //     `elixir-analyzer` binary located via
+    //     [`locate_elixir_analyzer_binary`] and invokes the proxy
+    //     directly. If the binary cannot be located (running outside a
+    //     cargo target tree), the artefact set is empty for the
+    //     component.
+    if entry_is_elixir(entry) {
+        if let Some(artefacts) = elixir_surface_artefacts(db, entry, &roots, &record) {
             return artefacts;
         }
         return Arc::new(SurfaceArtefacts {
@@ -1275,6 +1297,338 @@ fn decode_dart_surface_payload(
     }
 
     (bindings, library_apis)
+}
+
+/// True when the component looks like an Elixir component to the L5
+/// branch logic.
+fn entry_is_elixir(entry: &ComponentEntry) -> bool {
+    entry.languages.contains("elixir") || entry.kind == "elixir-project"
+}
+
+/// Drive an Elixir-component's surface extraction through PR-2's
+/// subprocess transport (Phase 2 PR-8).
+///
+/// Mirrors `python_surface_artefacts` but targets the `elixir-analyzer`
+/// binary and the `elixir` language domain. Returns `None` when the
+/// binary cannot be located.
+fn elixir_surface_artefacts(
+    db: &AtlasDatabase,
+    entry: &ComponentEntry,
+    roots: &[PathBuf],
+    record: &SurfaceRecord,
+) -> Option<Arc<SurfaceArtefacts>> {
+    let binary = locate_elixir_analyzer_binary()?;
+
+    let absolute_dir = resolve_elixir_component_dir(entry, roots)?;
+
+    let mut manifests: Vec<atlas_analyzers::TargetFile> = Vec::new();
+    let mix_exs_path = absolute_dir.join("mix.exs");
+    if let Some(bytes) = file_content(db, &mix_exs_path) {
+        let bytes_vec = (*bytes).clone();
+        let content_sha = sha256_hex_bytes(&bytes_vec);
+        manifests.push(atlas_analyzers::TargetFile {
+            name: "mix.exs".into(),
+            relpath: PathBuf::from("mix.exs"),
+            bytes: bytes_vec,
+            content_sha,
+        });
+    }
+    let mut languages = std::collections::BTreeSet::new();
+    languages.insert("elixir".to_string());
+    let target = atlas_analyzers::Target {
+        dir: absolute_dir,
+        languages,
+        manifests,
+        top_level_files: Vec::new(),
+    };
+
+    let spec = elixir_subprocess_spec(binary);
+    let proxy = cached_elixir_subprocess_proxy(spec).ok()?;
+    let ctx = atlas_analyzers::AnalysisContext::deterministic_only();
+    let result = proxy.analyse(&ctx, &target);
+
+    let payload = match result {
+        AnalyzerResult::Confident(output) => output
+            .as_any()
+            .downcast_ref::<SubprocessOutput>()?
+            .payload
+            .clone(),
+        _ => {
+            return Some(Arc::new(SurfaceArtefacts {
+                record: record.clone(),
+                ..Default::default()
+            }));
+        }
+    };
+
+    let (bindings, library_apis, contracts) =
+        decode_elixir_surface_payload(&payload, entry.id.as_str());
+    Some(Arc::new(SurfaceArtefacts {
+        record: record.clone(),
+        contracts,
+        bindings,
+        library_apis,
+    }))
+}
+
+/// Resolve an Elixir component's first path segment against the
+/// workspace roots. Mirrors `resolve_python_component_dir`.
+fn resolve_elixir_component_dir(entry: &ComponentEntry, roots: &[PathBuf]) -> Option<PathBuf> {
+    let segment = entry.path_segments.first()?;
+    if segment.path.is_absolute() {
+        return Some(segment.path.clone());
+    }
+    if let Some(owning_root) = best_root_for(roots, &segment.path) {
+        return Some(owning_root.join(&segment.path));
+    }
+    for root in roots {
+        let absolute = root.join(&segment.path);
+        if absolute.is_dir() {
+            return Some(absolute);
+        }
+    }
+    Some(roots.first()?.join(&segment.path))
+}
+
+/// Decode the JSON payload returned by the elixir-analyzer subprocess
+/// into typed `Binding` / `LibraryApi` / `Contract` values.
+///
+/// The wire shape is defined in the elixir-analyzer binary
+/// (`AnalysePayload`, `WireBinding`, `WireLibraryApi`, `WireContract`).
+fn decode_elixir_surface_payload(
+    payload: &Value,
+    component_id: &str,
+) -> (Vec<Binding>, Vec<LibraryApi>, Vec<Contract>) {
+    use atlas_index::{ContractKind, PubItem, PubItemKind, Visibility};
+    use std::collections::BTreeMap as StdBTreeMap;
+
+    let Some(obj) = payload.as_object() else {
+        return (Vec::new(), Vec::new(), Vec::new());
+    };
+
+    // Decode bindings (same shape as the Python decoder).
+    let mut bindings: Vec<Binding> = Vec::new();
+    if let Some(arr) = obj.get("bindings").and_then(Value::as_array) {
+        for v in arr {
+            let Some(b) = v.as_object() else { continue };
+            let language = b
+                .get("language")
+                .and_then(Value::as_str)
+                .unwrap_or("elixir")
+                .to_string();
+            let symbol = b
+                .get("symbol")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let file = b
+                .get("file")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .unwrap_or_default();
+            let span = b
+                .get("span")
+                .and_then(Value::as_array)
+                .and_then(|a| {
+                    let s = a.first().and_then(Value::as_u64)? as usize;
+                    let e = a.get(1).and_then(Value::as_u64)? as usize;
+                    Some((s, e))
+                })
+                .unwrap_or((0, 0));
+            let content_sha = b
+                .get("content_sha")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let visibility = b
+                .get("visibility")
+                .map(|v| {
+                    serde_json::from_value::<Visibility>(v.clone())
+                        .unwrap_or(Visibility::Conventional)
+                })
+                .unwrap_or(Visibility::Conventional);
+            let module_path = b
+                .get("module_path")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let attributes: StdBTreeMap<String, serde_yaml::Value> = b
+                .get("attributes")
+                .and_then(Value::as_object)
+                .map(|m| {
+                    m.iter()
+                        .filter_map(|(k, v)| {
+                            let yaml: serde_yaml::Value = serde_json::from_value(v.clone()).ok()?;
+                            Some((k.clone(), yaml))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            bindings.push(Binding {
+                language,
+                symbol,
+                file,
+                span,
+                content_sha,
+                visibility,
+                module_path,
+                attributes,
+            });
+        }
+    }
+
+    // Decode library APIs.
+    let mut library_apis: Vec<LibraryApi> = Vec::new();
+    if let Some(arr) = obj.get("library_apis").and_then(Value::as_array) {
+        for v in arr {
+            let Some(api) = v.as_object() else { continue };
+            let id = api
+                .get("id")
+                .and_then(Value::as_str)
+                .map(String::from)
+                .unwrap_or_else(|| format!("{component_id}/public-api"));
+            let language = api
+                .get("language")
+                .and_then(Value::as_str)
+                .unwrap_or("elixir")
+                .to_string();
+            let fingerprint = api
+                .get("fingerprint")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let pub_items: Vec<PubItem> = api
+                .get("pub_items")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|p| {
+                            let p = p.as_object()?;
+                            let name = p.get("name").and_then(Value::as_str)?.to_string();
+                            let file = p.get("file").and_then(Value::as_str).map(PathBuf::from)?;
+                            let kind_str = p.get("kind").and_then(Value::as_str)?;
+                            let kind = match kind_str {
+                                "struct" => PubItemKind::Struct,
+                                "enum" => PubItemKind::Enum,
+                                "fn" => PubItemKind::Fn,
+                                "trait" => PubItemKind::Trait,
+                                "mod" => PubItemKind::Mod,
+                                "type-alias" => PubItemKind::TypeAlias,
+                                "const" => PubItemKind::Const,
+                                "static" => PubItemKind::Static,
+                                "union" => PubItemKind::Union,
+                                "macro" => PubItemKind::Macro,
+                                _ => return None,
+                            };
+                            Some(PubItem { name, file, kind })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            library_apis.push(LibraryApi {
+                id,
+                kind: ContractKind::LibraryApi,
+                language,
+                fingerprint,
+                pub_items,
+            });
+        }
+    }
+
+    // Decode behaviour contracts.
+    let mut contracts: Vec<Contract> = Vec::new();
+    if let Some(arr) = obj.get("contracts").and_then(Value::as_array) {
+        for v in arr {
+            let Some(c) = v.as_object() else { continue };
+            let id = c
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let kind_str = c.get("kind").and_then(Value::as_str).unwrap_or("");
+            let kind = if kind_str == "behaviour" {
+                ContractKind::Behaviour
+            } else {
+                ContractKind::LibraryApi
+            };
+            let description = c
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let fingerprint = c
+                .get("fingerprint")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            // Decode optional definition_binding — required by Contract struct.
+            let definition_binding = c
+                .get("definition_binding")
+                .and_then(Value::as_object)
+                .and_then(|b| {
+                    let symbol = b.get("symbol").and_then(Value::as_str)?.to_string();
+                    let file = b
+                        .get("file")
+                        .and_then(Value::as_str)
+                        .map(PathBuf::from)
+                        .unwrap_or_default();
+                    let span = b
+                        .get("span")
+                        .and_then(Value::as_array)
+                        .and_then(|a| {
+                            let s = a.first().and_then(Value::as_u64)? as usize;
+                            let e = a.get(1).and_then(Value::as_u64)? as usize;
+                            Some((s, e))
+                        })
+                        .unwrap_or((0, 0));
+                    let content_sha = b
+                        .get("content_sha")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let module_path = b
+                        .get("module_path")
+                        .and_then(Value::as_array)
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Some(Binding {
+                        language: "elixir".into(),
+                        symbol,
+                        file,
+                        span,
+                        content_sha,
+                        visibility: Visibility::Conventional,
+                        module_path,
+                        attributes: StdBTreeMap::new(),
+                    })
+                });
+
+            if let Some(def_binding) = definition_binding {
+                contracts.push(Contract {
+                    id,
+                    kind,
+                    fingerprint,
+                    definition_binding: def_binding,
+                    description,
+                });
+            }
+        }
+    }
+
+    // Note: `implemented_contracts` (populated by `@behaviour` in the
+    // elixir analyzer) are intentionally not decoded here. `SurfaceArtefacts`
+    // does not yet carry an `implemented_contracts` field (Phase 2 scope
+    // boundary). A subsequent PR will add that field and the decode logic.
+
+    (bindings, library_apis, contracts)
 }
 
 /// JSON input document for the Stage 1 prompt. The key set is stable

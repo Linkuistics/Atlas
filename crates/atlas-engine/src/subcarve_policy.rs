@@ -114,6 +114,7 @@ pub fn decide_kind_only(kind: ComponentKind) -> Option<PolicyDecision> {
         | ComponentKind::NodeLibrary
         | ComponentKind::PythonLibrary
         | ComponentKind::PythonPackage
+        | ComponentKind::ElixirProject
         | ComponentKind::DartLibrary
         | ComponentKind::DartPackage
         | ComponentKind::DotnetLibrary

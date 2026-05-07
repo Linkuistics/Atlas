@@ -118,6 +118,16 @@ kinds:
       shape; the `python-package` kind is shape-agnostic and is the
       default verdict for Python sources Phase 2 PR-3 onward.
 
+  - name: elixir-project
+    description: |
+      An Elixir/Mix project — `mix.exs` present. Recognised
+      deterministically at L3 by the `elixir-classifier`. Covers the
+      full spectrum of Mix projects: library, application, umbrella
+      app, Phoenix app. The `elixir-project` kind is intentionally
+      shape-agnostic at Phase 2; finer sub-kinds (e.g. `phoenix-app`)
+      are Phase 3+. Phase 2 PR-8 introduces this kind, keyed on
+      `mix.exs` presence.
+
   - name: dart-library
     description: |
       A Dart package exposing a library interface. Recognised by a

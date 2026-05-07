@@ -8,6 +8,7 @@ members = [
   "crates/analyzers/python",
   "crates/analyzers/csharp",
   "crates/analyzers/dart",
+  "crates/analyzers/elixir",
   "evaluation/harness",
 ]
 

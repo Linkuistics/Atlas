@@ -32,6 +32,7 @@ use crate::compose_classifier::ComposeClassifier;
 use crate::csharp_classifier::CsharpClassifier;
 use crate::dart_classifier::DartClassifier;
 use crate::dockerfile_classifier::DockerfileClassifier;
+use crate::elixir_classifier::ElixirClassifier;
 use crate::llm_classify::LlmClassifyAnalyzer;
 use crate::python_classifier::PythonClassifier;
 use crate::rust_surface_analyzer::RustSurfaceAnalyzer;
@@ -98,7 +99,10 @@ impl AnalyzerRegistry {
     /// (L3 deterministic, in-process) for Dart / Flutter components;
     /// the matching surface analyser at L5 is the out-of-process
     /// `dart-surface-analyzer` (registered separately when its binary
-    /// is locatable).
+    /// is locatable). Phase 2 PR-8 adds `elixir-classifier` (L3
+    /// deterministic, in-process) for Elixir components; the matching
+    /// surface analyser at L5 is the out-of-process
+    /// `elixir-surface-analyzer`.
     pub fn builtin() -> Self {
         let cargo = Arc::new(CargoClassifier::new()) as Arc<dyn Analyzer>;
         let docker = Arc::new(DockerfileClassifier::new()) as Arc<dyn Analyzer>;
@@ -107,6 +111,7 @@ impl AnalyzerRegistry {
         let python = Arc::new(PythonClassifier::new()) as Arc<dyn Analyzer>;
         let csharp = Arc::new(CsharpClassifier::new()) as Arc<dyn Analyzer>;
         let dart = Arc::new(DartClassifier::new()) as Arc<dyn Analyzer>;
+        let elixir = Arc::new(ElixirClassifier::new()) as Arc<dyn Analyzer>;
         let llm = Arc::new(LlmClassifyAnalyzer::new()) as Arc<dyn Analyzer>;
         let rust_surface = Arc::new(RustSurfaceAnalyzer::new()) as Arc<dyn Analyzer>;
         let ts_js_surface = Arc::new(TsJsSurfaceAnalyzer::new()) as Arc<dyn Analyzer>;
@@ -119,6 +124,7 @@ impl AnalyzerRegistry {
             python.clone(),
             csharp.clone(),
             dart.clone(),
+            elixir.clone(),
             llm.clone(),
             rust_surface.clone(),
             ts_js_surface.clone(),
@@ -441,9 +447,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_lists_ten_analysers() {
+    fn builtin_lists_eleven_analysers() {
         let r = AnalyzerRegistry::builtin();
-        assert_eq!(r.len(), 10);
+        assert_eq!(r.len(), 11);
         let ids: Vec<&str> = r.iter_dispatch_order().map(|a| a.id()).collect();
         assert!(ids.contains(&crate::cargo_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::compose_classifier::ANALYZER_ID));
@@ -455,6 +461,7 @@ mod tests {
         assert!(ids.contains(&crate::llm_classify::ANALYZER_ID));
         assert!(ids.contains(&crate::rust_surface_analyzer::ANALYZER_ID));
         assert!(ids.contains(&crate::ts_js_surface_analyzer::ANALYZER_ID));
+        assert!(ids.contains(&crate::elixir_classifier::ANALYZER_ID));
         // L3 deterministic analysers come first, then L3 LLM, then L5
         // analysers (sorted by `(stage, cost_class)`). LLM-classify is
         // the last L3 analyser; the L5 analysers land after every L3
@@ -504,9 +511,9 @@ mod tests {
         // The built-in analyser instances are unchanged in count
         // (unknown spec is recorded but does not produce a runnable
         // instance).
-        assert_eq!(r.len(), 10);
+        assert_eq!(r.len(), 11);
         // The declared list grew by one.
-        assert_eq!(r.declared().analyzers.len(), 11);
+        assert_eq!(r.declared().analyzers.len(), 12);
     }
 
     #[test]
@@ -527,7 +534,7 @@ mod tests {
             version: "9.9.9".into(),
         });
         r.merge_yaml(&yaml);
-        assert_eq!(r.declared().analyzers.len(), 10);
+        assert_eq!(r.declared().analyzers.len(), 11);
         let cargo = r
             .declared()
             .analyzers

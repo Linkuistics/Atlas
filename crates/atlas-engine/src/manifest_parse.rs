@@ -4,6 +4,9 @@
 //! is cheaper and more reliable than hand-rolled scanning, and a
 //! malformed document degrades to the default "all false" shape so
 //! the classifier falls back to the LLM.
+//!
+//! Phase 2 PR-8 adds [`extract_mix_exs_path_deps`] for Elixir `mix.exs`
+//! path-dep extraction (pragmatic regex; `mix.exs` is Elixir source).
 
 use std::path::PathBuf;
 
@@ -235,6 +238,42 @@ pub fn parse_package_json(contents: &str) -> PackageJsonShape {
         has_exports: object.get("exports").is_some(),
         has_bin: object.get("bin").is_some(),
     }
+}
+
+/// Extract path-dep targets from a `mix.exs` file. Recognises the
+/// canonical form:
+///
+/// ```text
+/// defp deps do
+///   [
+///     {:foo, path: "../foo"},
+///     {:bar, "~> 1.0"},
+///   ]
+/// end
+/// ```
+///
+/// `mix.exs` is Elixir source code, so a proper parse would require
+/// an Elixir parser. Phase 2 PR-8 uses a pragmatic regex (per §4
+/// PR-8: "pragmatic regex; mix.exs is Elixir code") that covers the
+/// overwhelming majority of real-world `deps/0` bodies. A regex
+/// cannot handle all edge cases (nested brackets, dynamic path
+/// construction) but is sufficient for the fixed-point root
+/// expansion in [`crate::root_expansion`].
+///
+/// On a malformed manifest (or one with no path-deps) returns an
+/// empty Vec — the same degrade-to-default policy used by
+/// [`extract_path_deps`].
+///
+/// Phase 2 PR-8 introduces this for the cross-tree fixed-point walk
+/// (mirroring the Cargo and pyproject.toml path-dep patterns).
+pub fn extract_mix_exs_path_deps(contents: &str) -> Vec<PathBuf> {
+    let re = match regex::Regex::new(r#"path:\s*"([^"]+)""#) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    re.captures_iter(contents)
+        .map(|cap| PathBuf::from(&cap[1]))
+        .collect()
 }
 
 #[cfg(test)]

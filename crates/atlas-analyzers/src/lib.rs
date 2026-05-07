@@ -42,6 +42,8 @@ pub mod dart_classifier;
 pub mod dart_surface_analyzer;
 pub mod dispatcher;
 pub mod dockerfile_classifier;
+pub mod elixir_classifier;
+pub mod elixir_surface_analyzer;
 pub mod llm_classify;
 pub mod python_classifier;
 pub mod python_surface_analyzer;
@@ -72,6 +74,11 @@ pub use dart_surface_analyzer::{
 };
 pub use dispatcher::{DispatchOutcome, NONE_ANALYZER_ID, NONE_ANALYZER_VERSION};
 pub use dockerfile_classifier::DockerfileClassifier;
+pub use elixir_classifier::{ElixirClassificationOutput, ElixirClassifier};
+pub use elixir_surface_analyzer::{
+    cached_elixir_subprocess_proxy, elixir_subprocess_spec, locate_elixir_analyzer_binary,
+    ELIXIR_ANALYZER_DEFAULT_TIMEOUT_SECS, ELIXIR_ANALYZER_ID, ELIXIR_ANALYZER_VERSION,
+};
 pub use llm_classify::{LlmClassifyAnalyzer, LlmHook, LlmHookError};
 pub use python_classifier::{PythonClassificationOutput, PythonClassifier};
 pub use python_surface_analyzer::{
@@ -376,6 +383,7 @@ impl_stage_output!(
     csharp_classifier::CsharpClassificationOutput,
     dart_classifier::DartClassificationOutput,
     dockerfile_classifier::DockerfileClassificationOutput,
+    elixir_classifier::ElixirClassificationOutput,
     llm_classify::LlmClassifyOutput,
     python_classifier::PythonClassificationOutput,
     ts_js_classifier::TsJsClassificationOutput,

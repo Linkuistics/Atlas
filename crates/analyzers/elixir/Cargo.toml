@@ -1,0 +1,45 @@
+[package]
+name = "atlas-elixir-analyzer"
+version.workspace = true
+description = "Atlas vNext Phase 2 PR-8 — out-of-process Elixir surface analyser. Emits library bindings (def/defp visibility), behaviour contracts from defprotocol/@callback, and @spec/@doc attributes."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "atlas_elixir_analyzer"
+path = "src/lib.rs"
+
+# The subprocess entry point. Cargo emits CARGO_BIN_EXE_elixir-analyzer
+# at test time; the in-process wrapper in atlas-analyzers picks it up
+# via env! the same way the PR-2 echo fixture is wired.
+[[bin]]
+name = "elixir-analyzer"
+path = "src/main.rs"
+test = false
+doc = false
+
+[dependencies]
+anyhow = { workspace = true }
+atlas-analyzers = { path = "../../atlas-analyzers" }
+atlas-index = { workspace = true }
+base64 = { workspace = true }
+# tree-sitter + tree-sitter-elixir: structural Elixir parse. Macros
+# are out of scope (Phase 3 may invoke the Elixir compiler). Version
+# 0.3.5 is the latest published release of tree-sitter-elixir at the
+# time of PR-8. tree-sitter is workspace-pinned (PR-6 introduced the
+# 0.25 line; tree-sitter-elixir-0.3.5 only takes a dev-dep on
+# tree-sitter so the 0.25 runtime is fine).
+tree-sitter = { workspace = true }
+tree-sitter-elixir = "0.3.5"
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
