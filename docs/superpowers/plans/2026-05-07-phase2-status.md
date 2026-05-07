@@ -6,7 +6,7 @@ prompt at `docs/superpowers/prompts/2026-05-07-vnext-continue.md` reads
 this file (via the `*phase2-plan*` wildcard match) to find the next PR
 to dispatch.
 
-**Last updated:** 2026-05-07 (Wave 3 in flight: PR-6 landed; PR-7/8/9/10/12 worktrees pending merge).
+**Last updated:** 2026-05-08 (Wave 3 in flight: PR-6/7 landed; PR-8/9/10/12 worktrees pending merge).
 
 ## PR status
 
@@ -21,7 +21,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-4  — Per-analyser `analyser_id` / `analyser_version` plumbing through L3 dispatch
 - [x] PR-5  — Rust binding extractor: regex → `syn`
 - [x] PR-6  — C# surface analyser (subprocess)
-- [ ] PR-7  — Dart / Flutter surface analyser (subprocess)
+- [x] PR-7  — Dart / Flutter surface analyser (subprocess)
 - [ ] PR-8  — Elixir surface analyser (subprocess)
 - [ ] PR-9  — Racket surface analyser (subprocess)
 - [ ] PR-10 — LispKit surface analyser (subprocess)
@@ -651,7 +651,117 @@ classifier unit tests + 7 integration tests in
   (Phase 3+).
 
 ### PR-7
-(awaiting subagent dispatch)
+2026-05-08 — Landed as Atlas commit `a153753` (squashed integration of
+`phase2-pr7-impl`: scaffold → wiring → tests → spec fixes F1/F2 →
+quality fixes C-1/C-2); atlas-contracts commit `fe2f4dd` (kind
+docstring gains dart-package / flutter-package paragraph). Per-stage
+commits preserved on the branch ref `phase2-pr7-impl`.
+
+**Schema-mutation contribution:** atlas-contracts
+`crates/atlas-index/src/schema.rs` `kind` docstring extended with a
+PR-7 paragraph (`dart-package` and `flutter-package`, discriminated by
+the `flutter:` top-level block in `pubspec.yaml`). No type-level
+schema changes — `kind` stays `String`; the typed enum lives in
+`atlas-engine`'s `ComponentKind`.
+
+**Parser library:** the dart-analyzer crate uses a hand-rolled
+tokeniser + minimal Dart-source scanner (the §4 PR-7 plan named
+`tree-sitter-dart` as the default; the subagent swapped to a focused
+in-house tokeniser to keep the workspace dep tree slim — Dart's
+top-level public-symbol shape is regular enough that a full grammar
+parser is overkill for the surface extraction this PR needs).
+
+**Implementation map:**
+- New workspace member `crates/analyzers/dart` (lib + `dart-analyzer`
+  subprocess binary), speaking PR-2's wire protocol verbatim.
+- `atlas_analyzers::dart_classifier` (in-process L3 deterministic):
+  recognises `pubspec.yaml` and discriminates on the `flutter:`
+  top-level key — present → `flutter-package`, absent → `dart-package`.
+- `atlas_analyzers::dart_surface_analyzer` —
+  `dart_subprocess_spec(binary_path)` builds the
+  `SubprocessAnalyzerSpec`; `cached_dart_subprocess_proxy(spec)`
+  caches the proxy keyed on binary path (mirrors PR-3's
+  `cached_subprocess_proxy` pattern); `locate_dart_analyzer_binary`
+  walks up from `current_exe()` for the runtime sibling-binary
+  lookup.
+- `crates/atlas-engine/src/l5_surface.rs` extended with a Dart branch
+  in `surface_artefacts_of` that builds a minimal `Target`
+  pre-loading `pubspec.yaml`, drives the subprocess, and decodes the
+  JSON response into typed `Binding` / `LibraryApi` values via
+  `decode_dart_surface_payload` (mirrors `decode_csharp_surface_payload`
+  with `"dart"` as the default language tag).
+- `crates/atlas-engine/src/manifest_parse.rs` gains
+  `extract_pubspec_path_deps`: walks both `dependencies:` and
+  `dev_dependencies:` for the `path:` short-form, skipping
+  version-string / SDK / git forms.
+- `crates/atlas-engine/src/root_expansion.rs` walks `pubspec.yaml`
+  alongside `Cargo.toml` / `pyproject.toml` / `*.csproj`;
+  `enclosing_manifest_root` recognises a `pubspec.yaml` ancestor as
+  a project root.
+- `ComponentKind::DartPackage` / `ComponentKind::FlutterPackage`
+  variants (alongside the pre-existing `DartLibrary` / `DartApp` /
+  `FlutterApp`) + `dart-package` / `flutter-package` entries in
+  `defaults/component-kinds.yaml`.
+
+**Binding extraction shape:**
+- Top-level `class`/`mixin`/`enum`/`extension` declarations →
+  `Binding` with `Visibility::Conventional` and an
+  `attributes.private: true` flag if the symbol starts with `_`
+  (Dart's leading-underscore privacy convention; uses PR-3's
+  `ATTR_PRIVATE` const).
+- Top-level `function`/`getter`/`setter` → same shape.
+- Dart `@annotations` → `attributes.dart_annotations: ["override",
+  "deprecated", ...]` ordered by source occurrence.
+- Quality fix C-2 rejects top-level variable initialisers that look
+  like function declarations (covers the `final x = () { ... }`
+  edge case where the identifier on the LHS would otherwise be
+  emitted twice).
+- Quality fix C-1 captures the declaration-line span for binding
+  `content_sha` (matches the C# / Python pattern).
+
+**Tests:** all §4 PR-7 acceptance criteria + unit tests in the
+analyser crate + classifier unit tests + integration tests under
+`crates/atlas-engine/tests/l2_l3_queries.rs`. Listed by criterion:
+1. `l3_pubspec_yaml_with_flutter_block_classifies_as_flutter_package_without_llm_call`
+   (no LLM dispatch).
+2. `l3_pubspec_yaml_without_flutter_block_classifies_as_dart_package_without_llm_call`
+   (the discriminator).
+3. `dart_underscore_prefix_function_records_conventional_private_attribute`
+   (Phase 2 PR-3 conventional-private pattern reused).
+4. `dart_override_annotation_recorded_in_attributes_dart_annotations_list`
+   (annotation capture).
+5. `pubspec_path_dep_expands_to_peer_root` and
+   `pubspec_multiple_path_deps_expand_to_multiple_peer_roots`
+   (cross-tree path-dep, F2 spec fix).
+
+**Decisions / deviations:**
+- **Parser library swap.** Plan named `tree-sitter-dart`; subagent
+  used a hand-rolled tokeniser. Within the per-PR §4 latitude
+  (mature pure-Rust alternatives are explicitly authorised). Trade-off:
+  no full-grammar coverage of edge syntax (e.g. records, function
+  types) but the surface symbols this PR cares about — top-level
+  declarations — are scanned reliably. Phase 3 may revisit if the
+  surface shape grows.
+- **Subprocess does its own filesystem walk.** Mirrors PR-3 / PR-6
+  pattern; `Target.manifests` carries `pubspec.yaml` only. Source
+  file walk via `std::fs::read_dir` on `Target.dir`.
+- **`flutter:` block discrimination is presence-based.** The
+  classifier emits `flutter-package` whenever `flutter:` is a
+  top-level mapping key in `pubspec.yaml`, regardless of contents.
+  Distinguishing Flutter applications (`flutter-app`) from packages
+  is left to the legacy heuristic / LLM path; the subagent
+  considered overloading on `flutter.uses-material-design` etc. and
+  declined as out of scope.
+
+**Cleanups deferred:**
+- Full `tree-sitter-dart` migration (Phase 3+) when surface shape
+  needs records / function-type coverage.
+- The `module_path` slot on Dart bindings is empty for now; resolving
+  Dart's library + part declarations into a dotted module path is
+  Phase 3+.
+- `LenientBackend` test-helper extraction to `tests/common/mod.rs`
+  (still warranted; cumulative deferral from PR-3 / PR-6 / PR-7;
+  Wave 4 cleanup PR).
 
 ### PR-8
 (awaiting subagent dispatch)
