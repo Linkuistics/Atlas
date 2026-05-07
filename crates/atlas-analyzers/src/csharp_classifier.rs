@@ -216,10 +216,8 @@ mod tests {
 
     #[test]
     fn fingerprint_inputs_one_per_csharp_manifest() {
-        let target = target_with_manifests(&[
-            ("MyApp.csproj", "<Project />\n"),
-            ("package.json", "{}"),
-        ]);
+        let target =
+            target_with_manifests(&[("MyApp.csproj", "<Project />\n"), ("package.json", "{}")]);
         let inputs = CsharpClassifier::new().fingerprint_inputs(&target);
         assert_eq!(inputs.len(), 1);
         assert!(matches!(inputs[0], FingerprintInput::FileContentSha(_)));

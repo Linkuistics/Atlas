@@ -787,7 +787,10 @@ fn csharp_surface_artefacts(
                     let content_sha = sha256_hex_bytes(&bytes_vec);
                     manifests.push(atlas_analyzers::TargetFile {
                         name,
-                        relpath: path.strip_prefix(&absolute_dir).unwrap_or(&path).to_path_buf(),
+                        relpath: path
+                            .strip_prefix(&absolute_dir)
+                            .unwrap_or(&path)
+                            .to_path_buf(),
                         bytes: bytes_vec,
                         content_sha,
                     });

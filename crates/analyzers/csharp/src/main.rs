@@ -234,7 +234,11 @@ fn wire_library_api(api: &atlas_index::LibraryApi) -> WireLibraryApi {
 /// Extract the first `*.csproj` manifest's bytes from the target's
 /// pre-loaded manifest list. Returns `(None, None)` if no csproj is shipped.
 fn csproj_bytes_from_target(target: &WireTarget) -> (Option<Vec<u8>>, Option<String>) {
-    if let Some(m) = target.manifests.iter().find(|m| m.name.ends_with(".csproj")) {
+    if let Some(m) = target
+        .manifests
+        .iter()
+        .find(|m| m.name.ends_with(".csproj"))
+    {
         let bytes = BASE64.decode(&m.bytes_b64).ok();
         let name = Some(m.name.clone());
         return (bytes, name);

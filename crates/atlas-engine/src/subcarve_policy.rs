@@ -102,9 +102,7 @@ pub fn decide_kind_only(kind: ComponentKind) -> Option<PolicyDecision> {
         // into solution dirs because their `*.csproj` children emit
         // separate component boundaries, not because the solution
         // itself has call-graph structure.
-        ComponentKind::CsharpProject | ComponentKind::CsharpSolution => {
-            Some(PolicyDecision::Stop)
-        }
+        ComponentKind::CsharpProject | ComponentKind::CsharpSolution => Some(PolicyDecision::Stop),
 
         // Libraries: depth cap depends on modularity_hint, so the
         // verdict needs structural signals. The TS/JS package kinds

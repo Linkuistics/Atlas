@@ -50,11 +50,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use atlas_index::{
-    Binding, ContractKind, LibraryApi, PubItem, PubItemKind, Visibility,
-};
-use sha2::{Digest, Sha256};
+use atlas_index::{Binding, ContractKind, LibraryApi, PubItem, PubItemKind, Visibility};
 use serde_yaml::Value as YamlValue;
+use sha2::{Digest, Sha256};
 use tree_sitter::{Node, Parser};
 
 /// Attribute key for C#-specific attribute list.
@@ -142,14 +140,7 @@ pub fn extract_csharp_surface(
         let Some(tree) = parser.parse(text, None) else {
             continue;
         };
-        emit_from_source_file(
-            rel_path,
-            bytes,
-            text,
-            &tree,
-            &mut bindings,
-            &mut pub_items,
-        );
+        emit_from_source_file(rel_path, bytes, text, &tree, &mut bindings, &mut pub_items);
     }
 
     let library_apis: Vec<LibraryApi> = if pub_items.is_empty() {
@@ -238,15 +229,7 @@ fn walk_top_level_nodes(
             let new_path = extend_namespace_path(namespace_path, &ns);
             // Walk the body (a `declaration_list`).
             if let Some(body) = find_child_by_kind(node, "declaration_list") {
-                walk_top_level_nodes(
-                    rel_path,
-                    bytes,
-                    text,
-                    body,
-                    &new_path,
-                    bindings,
-                    pub_items,
-                );
+                walk_top_level_nodes(rel_path, bytes, text, body, &new_path, bindings, pub_items);
             }
         }
         "file_scoped_namespace_declaration" => {
@@ -260,15 +243,7 @@ fn walk_top_level_nodes(
             for child in node.children(&mut cursor) {
                 let ck = child.kind();
                 if is_type_declaration(ck) {
-                    emit_type_node(
-                        rel_path,
-                        bytes,
-                        text,
-                        child,
-                        &new_path,
-                        bindings,
-                        pub_items,
-                    );
+                    emit_type_node(rel_path, bytes, text, child, &new_path, bindings, pub_items);
                 }
             }
         }
@@ -520,10 +495,7 @@ fn collect_cs_attributes(node: Node<'_>, text: &str) -> BTreeMap<String, YamlVal
     }
     let mut map = BTreeMap::new();
     if !attrs.is_empty() {
-        let seq: Vec<YamlValue> = attrs
-            .into_iter()
-            .map(YamlValue::String)
-            .collect();
+        let seq: Vec<YamlValue> = attrs.into_iter().map(YamlValue::String).collect();
         map.insert(ATTR_CS_ATTRIBUTES.into(), YamlValue::Sequence(seq));
     }
     map
@@ -891,7 +863,10 @@ namespace Acme {
             .iter()
             .filter_map(|v| v.as_str().map(str::to_string))
             .collect();
-        assert!(names.contains(&"Serializable".to_string()), "got: {names:?}");
+        assert!(
+            names.contains(&"Serializable".to_string()),
+            "got: {names:?}"
+        );
     }
 
     #[test]
@@ -986,7 +961,10 @@ namespace Acme {
 </Project>
 "#;
         let (project_refs, _package_refs) = extract_csproj_references(csproj);
-        assert_eq!(project_refs, vec![PathBuf::from("../Sibling/Sibling.csproj")]);
+        assert_eq!(
+            project_refs,
+            vec![PathBuf::from("../Sibling/Sibling.csproj")]
+        );
     }
 
     #[test]

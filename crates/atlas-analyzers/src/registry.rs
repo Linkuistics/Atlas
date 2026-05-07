@@ -552,10 +552,7 @@ mod tests {
         // analyser instances' own `id()` returns. A drift here would
         // silently break `merge_yaml`'s in-place update behaviour.
         assert_eq!(CargoClassifier.id(), crate::cargo_classifier::ANALYZER_ID);
-        assert_eq!(
-            CsharpClassifier.id(),
-            crate::csharp_classifier::ANALYZER_ID
-        );
+        assert_eq!(CsharpClassifier.id(), crate::csharp_classifier::ANALYZER_ID);
         assert_eq!(
             DockerfileClassifier.id(),
             crate::dockerfile_classifier::ANALYZER_ID
