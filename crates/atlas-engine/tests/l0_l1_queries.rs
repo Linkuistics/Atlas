@@ -279,15 +279,16 @@ fn seed_filesystem_respects_gitignore_when_enabled() {
 fn seed_filesystem_excluding_skips_output_dir_under_root() {
     // Re-running atlas index over a tree whose .gitignore does not list
     // `.atlas/` would otherwise feed the prior run's components.yaml
-    // and llm-cache.json back into L0 as analysis input. The
+    // and persistent cache blobs back into L0 as analysis input. The
     // `seed_filesystem_excluding` entry point prunes a designated
     // output directory regardless of gitignore status.
     let td = tempfile::tempdir().unwrap();
     let root = td.path().to_path_buf();
     let output_dir = root.join(".atlas");
-    std::fs::create_dir(&output_dir).unwrap();
+    let cache_dir = output_dir.join("cache").join("l5");
+    std::fs::create_dir_all(&cache_dir).unwrap();
     std::fs::write(output_dir.join("components.yaml"), "schema_version: 1\n").unwrap();
-    std::fs::write(output_dir.join("llm-cache.json"), "{}").unwrap();
+    std::fs::write(cache_dir.join("deadbeef.blob"), b"{}").unwrap();
     std::fs::write(root.join("src.rs"), "fn main() {}").unwrap();
     std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
 
@@ -309,9 +310,8 @@ fn seed_filesystem_excluding_skips_output_dir_under_root() {
         "prior components.yaml must not be re-ingested as L0 input"
     );
     assert!(
-        db.file_by_path(&output_dir.join("llm-cache.json"))
-            .is_none(),
-        "prior llm-cache.json must not be re-ingested as L0 input"
+        db.file_by_path(&cache_dir.join("deadbeef.blob")).is_none(),
+        "prior persistent cache blobs must not be re-ingested as L0 input"
     );
 }
 

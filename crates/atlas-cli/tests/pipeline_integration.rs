@@ -437,7 +437,7 @@ fn no_overrides_skips_loading_pins_so_suppress_does_not_apply() {
     // Wipe outputs so the second run starts fresh; the LLM cache also
     // has to clear so we observe behaviour, not a cached re-projection.
     std::fs::remove_file(config.output_dir.join("components.yaml")).unwrap();
-    std::fs::remove_file(config.output_dir.join("llm-cache.json")).ok();
+    std::fs::remove_dir_all(config.output_dir.join("cache")).ok();
 
     let mut config_no_overrides = config.clone();
     config_no_overrides.no_overrides = true;
@@ -486,11 +486,11 @@ fn no_overrides_does_not_modify_overrides_file() {
 }
 
 // ---------------------------------------------------------------
-// LLM cache persistence
+// LLM cache persistence (PR-10: filesystem-native cache)
 // ---------------------------------------------------------------
 
 #[test]
-fn llm_cache_json_is_written_and_read_across_invocations() {
+fn persistent_cache_directory_is_populated_and_satisfies_re_runs() {
     let tmp = materialise_tiny_fixture();
     let config = base_config(tmp.path());
 
@@ -502,12 +502,20 @@ fn llm_cache_json_is_written_and_read_across_invocations() {
         make_stderr_reporter(ProgressMode::Never, None),
     )
     .unwrap();
-    let cache_path = config.output_dir.join("llm-cache.json");
-    assert!(cache_path.exists(), "cache file must be written on success");
-    let cache_bytes = std::fs::read_to_string(&cache_path).unwrap();
-    assert!(cache_bytes.contains("schema_version"));
 
-    // On the next run the backend sees zero requests.
+    // PR-10's on-disk layout is `<output>/.atlas/cache/<stage>/<sha>.blob`.
+    // After the first run the cache directory should exist; in the
+    // tiny fixture there's at least one Stage1Surface call from L5
+    // (deterministic Cargo classification skips L3 LLM calls).
+    let cache_root = config.output_dir.join("cache");
+    assert!(
+        cache_root.exists(),
+        "persistent cache root {} must exist after a successful run",
+        cache_root.display()
+    );
+
+    // On the next run a fresh backend sees zero requests because the
+    // persistent layer satisfies every L5/L6 lookup.
     let backend2 = LenientBackend::new();
     run_index(
         &config,
@@ -516,7 +524,19 @@ fn llm_cache_json_is_written_and_read_across_invocations() {
         make_stderr_reporter(ProgressMode::Never, None),
     )
     .unwrap();
-    assert_eq!(backend2.call_count(), 0);
+    assert_eq!(
+        backend2.call_count(),
+        0,
+        "fresh-process re-run must hit the persistent cache; actual calls: {:?}",
+        backend2.calls()
+    );
+
+    // The legacy `llm-cache.json` file is gone under PR-10's
+    // greenfield deletion; the run must not write it.
+    assert!(
+        !config.output_dir.join("llm-cache.json").exists(),
+        "v1 llm-cache.json must not be re-introduced under PR-10"
+    );
 }
 
 // ---------------------------------------------------------------

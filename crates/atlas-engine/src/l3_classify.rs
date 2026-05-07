@@ -128,19 +128,37 @@ pub fn is_component(
     //    (cost class `Deterministic*`). Cargo + Dockerfile live here.
     let target = build_analyzer_target(&candidate_dir, &snippets, db);
     let registry = db.analyzer_registry();
-    let registry_sha = registry.registry_sha();
-    let _ = registry_sha; // PR-5: declared, contributes to FingerprintBuilder via PR-10's L3 cache wiring.
 
-    // PR-5 note: the `FingerprintBuilder` add_analyzer_registry_sha
-    // method is now callable, but the L3 cache short-circuit itself
-    // is wired by PR-10. The fingerprint computed below is computed
-    // for completeness (unit-tested at the FingerprintBuilder level)
-    // but not yet consulted to skip the call.
-    let _l3_fingerprint = {
+    // L3 stage fingerprint (PR-10) for the LLM-classify branch. Per
+    // design §8.1 the L3 cache key contributes:
+    //
+    // - `analyzer_registry_sha` — registry-shape change invalidates;
+    // - `llm_fingerprint` — model / backend / template / ontology;
+    // - `prompt_sha` — the *rendered* classify prompt sha, computed
+    //   over the JSON-canonicalised inputs the hook will pass to the
+    //   backend. This is what discriminates between candidate
+    //   directories that share manifest content but differ in
+    //   rationale (doc headings, shebangs, git-root flag);
+    // - `file_content_sha` — every manifest the analyser consumed,
+    //   so a manifest content change invalidates only the entries
+    //   that read that manifest.
+    //
+    // The deterministic registry pass below does not consult this
+    // fingerprint; it short-circuits on Cargo / Dockerfile rules.
+    // The persistent cache only helps the LLM-classify branch.
+    let llm_inputs_for_fingerprint =
+        build_llm_inputs(&owning_root, &candidate_dir, &bundle, &snippets);
+    let rendered_prompt_sha = sha256_hex_bytes(
+        serde_json::to_string(&llm_inputs_for_fingerprint)
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    let l3_fingerprint = {
         let llm_fp = workspace.llm_fingerprint(dyn_db);
         let mut fb = crate::FingerprintBuilder::new(Stage::L3, "l3-driver", "1.0.0");
         fb.add_analyzer_registry_sha(&registry.registry_sha());
         fb.add_llm_fingerprint(llm_fp.as_ref());
+        fb.add_prompt_sha(&rendered_prompt_sha);
         for tf in &target.manifests {
             fb.add_file_content_sha(&tf.content_sha);
         }
@@ -175,8 +193,9 @@ pub fn is_component(
     }
 
     // 4. LLM-classify analyser via the registry. The hook routes
-    //    through `db.call_llm_cached(...)` so per-candidate LLM
-    //    verdicts are memoised. The `Arc<dyn LlmHook>` here holds a
+    //    through `db.call_llm_cached_with_fp(...)` so per-candidate
+    //    LLM verdicts are memoised through both the in-memory and
+    //    persistent layers. The `Arc<dyn LlmHook>` here holds a
     //    `!Sync` `AtlasDatabase` (Salsa's `ZalsaLocal` is `!Sync`),
     //    which clippy correctly flags. The `LlmHook` trait drops
     //    `Sync` from its bounds (see its docstring) and the hook is
@@ -190,6 +209,7 @@ pub fn is_component(
         candidate_dir: candidate_dir.clone(),
         bundle: bundle.clone(),
         snippets: snippets.clone(),
+        stage_fingerprint: l3_fingerprint.clone(),
     });
     let llm_ctx = AnalysisContext::with_llm(hook);
     let llm_outcome = registry.dispatch_with_filter(&llm_ctx, &target, Stage::L3, |c| {
@@ -389,6 +409,11 @@ struct EngineLlmHook {
     candidate_dir: PathBuf,
     bundle: RationaleBundle,
     snippets: BTreeMap<PathBuf, String>,
+    /// L3 stage fingerprint (PR-10) — contributors are assembled in
+    /// [`is_component`] and are independent of whether the call goes
+    /// to the LLM. Threaded through the hook so the persistent cache
+    /// short-circuit fires on the LLM-cost-class pass.
+    stage_fingerprint: crate::cache::Sha256Hex,
 }
 
 impl LlmHook for EngineLlmHook {
@@ -410,7 +435,10 @@ impl LlmHook for EngineLlmHook {
             inputs,
             schema: ResponseSchema::accept_any(),
         };
-        match self.db.call_llm_cached(&request) {
+        match self
+            .db
+            .call_llm_cached_with_fp(Stage::L3, &self.stage_fingerprint, &request)
+        {
             Ok(value) => Ok(value),
             Err(err) => Err(LlmHookError::Call(err.to_string())),
         }

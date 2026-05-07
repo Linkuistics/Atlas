@@ -18,10 +18,11 @@
 
 use std::sync::Arc;
 
-use atlas_index::{ComponentEntry, OverridesFile, PinValue};
+use atlas_index::{ComponentEntry, OverridesFile, PinValue, Stage};
 use atlas_llm::{LlmRequest, PromptId, ResponseSchema};
 use component_ontology::ComponentId;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::db::AtlasDatabase;
 use crate::l4_tree::all_components;
@@ -33,6 +34,13 @@ use crate::surface_types::SurfaceRecord;
 /// disk.
 pub const EMBEDDED_STAGE1_SURFACE_PROMPT: &str =
     include_str!("../../../defaults/prompts/stage1-surface.md");
+
+/// Driver version baked into the L5 stage fingerprint (PR-10). Bumping
+/// this invalidates every L5 persistent-cache entry — the only reason
+/// to bump it is a structural change in `surface_of`'s call shape (new
+/// inputs key, new contract on the response shape). Cosmetic edits do
+/// not justify a bump.
+pub const L5_DRIVER_VERSION: &str = "1.0.0";
 
 /// Keys produced by [`build_inputs`]. Single source of truth for the
 /// bidirectional template/builder coverage check in
@@ -84,13 +92,51 @@ pub fn surface_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceRecord> {
         .map(|c| c.id.as_str().to_string())
         .collect();
 
+    let inputs = build_inputs(entry, &peer_ids);
     let request = LlmRequest {
         prompt_template: PromptId::Stage1Surface,
-        inputs: build_inputs(entry, &peer_ids),
+        inputs: inputs.clone(),
         schema: ResponseSchema::accept_any(),
     };
 
-    let value = match db.call_llm_cached(&request) {
+    // PR-10: L5 stage fingerprint per design §8.1. Contributors:
+    //
+    // - `analyzer_registry_sha` — registry-shape change invalidates
+    //   (consistent with L3);
+    // - `llm_fingerprint` — model / backend / template / ontology;
+    // - `prompt_sha` — sha of the rendered (canonical-JSON) inputs
+    //   the backend will receive, so peer-id churn or path-segment
+    //   churn invalidates;
+    // - `file_content_sha` — every path segment's content sha, so a
+    //   file-content change inside the component invalidates only
+    //   the entries that named that component's content.
+    //
+    // The component ID itself is not contributed separately because
+    // (a) the `prompt_sha` already includes it (it appears in the
+    // canonical-JSON inputs) and (b) two components with the same
+    // id, peers, and content cannot exist within a single workspace
+    // — id uniqueness is an L4 invariant.
+    let llm_fp = workspace
+        .llm_fingerprint(db as &dyn salsa::Database)
+        .clone();
+    let rendered_prompt_sha = sha256_hex_bytes(
+        serde_json::to_string(&inputs)
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    let registry_sha = db.analyzer_registry().registry_sha();
+    let l5_fingerprint = {
+        let mut fb = crate::FingerprintBuilder::new(Stage::L5, "l5-driver", L5_DRIVER_VERSION);
+        fb.add_analyzer_registry_sha(&registry_sha);
+        fb.add_llm_fingerprint(llm_fp.as_ref());
+        fb.add_prompt_sha(&rendered_prompt_sha);
+        for seg in &entry.path_segments {
+            fb.add_file_content_sha(&seg.content_sha);
+        }
+        fb.finalise()
+    };
+
+    let value = match db.call_llm_cached_with_fp(Stage::L5, &l5_fingerprint, &request) {
         Ok(v) => v,
         Err(err) => {
             // Conservative failure mode: empty surface annotated with
@@ -186,6 +232,19 @@ pub(crate) fn build_inputs_with_stubs_for_tests() -> Value {
         deleted: false,
     };
     build_inputs(&component, &[])
+}
+
+/// SHA-256 of `bytes` rendered as 64-character lowercase hex. Used by
+/// the L5 fingerprint construction to derive a `prompt_sha` from the
+/// canonical-JSON inputs the backend will receive.
+fn sha256_hex_bytes(bytes: &[u8]) -> String {
+    let digest: [u8; 32] = Sha256::digest(bytes).into();
+    let mut out = String::with_capacity(64);
+    use std::fmt::Write;
+    for b in digest {
+        write!(&mut out, "{b:02x}").expect("writing to String never fails");
+    }
+    out
 }
 
 fn render_catalog_for_prompt(peer_ids: &[String]) -> String {

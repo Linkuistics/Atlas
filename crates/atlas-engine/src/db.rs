@@ -37,11 +37,13 @@ use std::sync::{Arc, Mutex};
 
 use atlas_analyzers::AnalyzerRegistry;
 use atlas_index::{
-    ComponentsFile, ExternalsFile, OverridesFile, RelatedComponentsFile, SubsystemsOverridesFile,
+    ComponentsFile, ExternalsFile, OverridesFile, RelatedComponentsFile, Stage,
+    SubsystemsOverridesFile,
 };
 use atlas_llm::{LlmBackend, LlmFingerprint};
 use salsa::Setter;
 
+use crate::cache::Sha256Hex;
 use crate::llm_cache::LlmResponseCache;
 
 /// One file known to the engine. Salsa input: content changes via
@@ -266,10 +268,12 @@ impl AtlasDatabase {
         &self.analyzer_registry
     }
 
-    /// Memoised backend call. Every LLM-adjacent query (L3's
-    /// `classify_via_llm`, L5 `surface_of`, L6 `candidate_edges_for`)
-    /// should go through this wrapper so the cache-hit contract in the
-    /// task 9 exit criteria holds.
+    /// Memoised backend call (in-memory layer only). Preserved as a
+    /// back-compat entry point for the L3 `EngineLlmHook` and other
+    /// call sites that have not yet been threaded with their stage
+    /// fingerprint. Production L-stages should use
+    /// [`AtlasDatabase::call_llm_cached_with_fp`] so the persistent
+    /// content-addressed layer is consulted on miss.
     pub fn call_llm_cached(
         &self,
         request: &atlas_llm::LlmRequest,
@@ -277,8 +281,36 @@ impl AtlasDatabase {
         self.llm_cache.call_cached(self.backend.as_ref(), request)
     }
 
+    /// Two-tier memoised backend call (PR-10). Threads the stage and
+    /// fingerprint required to consult the persistent
+    /// content-addressed cache; an in-memory hit short-circuits the
+    /// persistent read, an in-memory miss falls through to the
+    /// persistent layer, and a persistent miss falls through to the
+    /// backend (with the response written back through both layers).
+    pub fn call_llm_cached_with_fp(
+        &self,
+        stage: Stage,
+        fingerprint: &Sha256Hex,
+        request: &atlas_llm::LlmRequest,
+    ) -> Result<Arc<serde_json::Value>, atlas_llm::LlmError> {
+        self.llm_cache
+            .call_cached_with_fp(stage, fingerprint, self.backend.as_ref(), request)
+    }
+
     pub fn llm_cache(&self) -> &LlmResponseCache {
         &self.llm_cache
+    }
+
+    /// Replace the per-database LLM response cache. The pipeline uses
+    /// this to install a [`LlmResponseCache::new_with_persistent`]
+    /// after opening the on-disk content-addressed store; tests that
+    /// want to share cache state across database constructions can
+    /// use it too. Must be called before any LLM-bearing query fires
+    /// for the new cache to have effect — once an L-stage has cached
+    /// a response on the prior cache, that entry is unreachable from
+    /// the replacement.
+    pub fn set_llm_cache(&mut self, cache: LlmResponseCache) {
+        self.llm_cache = cache;
     }
 
     pub fn workspace(&self) -> Workspace {

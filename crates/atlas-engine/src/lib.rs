@@ -65,8 +65,10 @@ pub use l4_tree::{
     all_components, component_children, component_parent, component_path_segments, try_assemble,
     try_assemble_with_warnings, TreeAssemblyError,
 };
-pub use l5_surface::{surface_of, EMBEDDED_STAGE1_SURFACE_PROMPT};
-pub use l6_edges::{all_proposed_edges, candidate_edges_for, EMBEDDED_STAGE2_EDGES_PROMPT};
+pub use l5_surface::{surface_of, EMBEDDED_STAGE1_SURFACE_PROMPT, L5_DRIVER_VERSION};
+pub use l6_edges::{
+    all_proposed_edges, candidate_edges_for, EMBEDDED_STAGE2_EDGES_PROMPT, L6_DRIVER_VERSION,
+};
 pub use l7_structural::{
     cliques, edge_graph, modularity_hint, sccs, seam_density, Clique, EdgeGraph, ModularityHint,
     Scc,

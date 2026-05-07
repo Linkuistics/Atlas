@@ -13,12 +13,32 @@
 //! Two lookups with equal keys MUST produce equal responses for the
 //! memoisation contract to hold — backends guarantee this per the
 //! `LlmBackend` invariants.
+//!
+//! ## Two-tier write-through (PR-10)
+//!
+//! The cache is a write-through wrapper over the persistent
+//! content-addressed cache (`crate::cache::PersistentCache`). The
+//! in-memory layer dedupes within a process; the persistent layer
+//! gives "zero LLM calls on a fresh-process re-run". Lookup is
+//! L1 (in-memory) → L2 (persistent) → backend; success at every step
+//! seeds the layers above so the next call short-circuits earlier.
+//!
+//! The two layers use different keys by design — the in-memory key is
+//! request-shape-derived and the persistent key is stage-fingerprint-
+//! derived (see `crate::cache::FingerprintBuilder` for the contributors
+//! per stage). They are not interchangeable. Production callers go
+//! through [`LlmResponseCache::call_cached_with_fp`], which knows both
+//! keys; the legacy [`LlmResponseCache::call_cached`] keeps the v1
+//! signature for tests that don't care about the persistent layer.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use atlas_index::Stage;
 use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId};
 use serde_json::Value;
+
+use crate::cache::{PersistentCache, Sha256Hex};
 
 /// Canonical cache key. Fingerprint goes in first so responses stay
 /// valid across `set_llm_fingerprint` churn even when the prompt inputs
@@ -60,9 +80,20 @@ impl std::hash::Hash for LlmCacheKey {
 /// response `Value` in `Arc` so the `.call_cached()` wrapper can hand
 /// out cheap clones. The miss-count field feeds the cache-behaviour
 /// tests.
+///
+/// May optionally wrap a [`PersistentCache`] (PR-10): when present,
+/// [`LlmResponseCache::call_cached_with_fp`] consults it on in-memory
+/// miss before invoking the backend, and writes any backend response
+/// back through it. Both layers are seeded on a hit so the next call
+/// short-circuits earlier.
 #[derive(Default, Clone)]
 pub struct LlmResponseCache {
     inner: Arc<Mutex<Inner>>,
+    /// Optional persistent backing store. `None` for tests that only
+    /// exercise the in-memory layer; the production pipeline opens a
+    /// `PersistentCache` rooted at `<output>/.atlas/cache/` and
+    /// installs it via [`LlmResponseCache::new_with_persistent`].
+    persistent: Option<PersistentCache>,
 }
 
 type PersistHook = Arc<dyn Fn(&LlmResponseCache) + Send + Sync>;
@@ -73,11 +104,45 @@ struct Inner {
     call_count: u64,
     error_count: u64,
     persist_hook: Option<PersistHook>,
+    /// Number of persistent-cache hits served without invoking the
+    /// backend. Distinct from the in-memory hit path (which simply
+    /// does not increment any counter). Tests use this to assert the
+    /// "fresh process re-run hits the persistent cache" contract.
+    persistent_hits: u64,
 }
 
 impl LlmResponseCache {
     pub fn new() -> Self {
         LlmResponseCache::default()
+    }
+
+    /// Construct a cache backed by `persistent`. Every successful
+    /// backend call writes through to both layers; every in-memory miss
+    /// consults the persistent layer before falling through to the
+    /// backend.
+    pub fn new_with_persistent(persistent: PersistentCache) -> Self {
+        LlmResponseCache {
+            inner: Arc::default(),
+            persistent: Some(persistent),
+        }
+    }
+
+    /// Persistent layer accessor (read-only). Returns `None` when the
+    /// cache was constructed without a persistent backing store, e.g.
+    /// in tests that only exercise the in-memory dedup.
+    pub fn persistent(&self) -> Option<&PersistentCache> {
+        self.persistent.as_ref()
+    }
+
+    /// Number of persistent-cache hits served without invoking the
+    /// backend, since cache construction or the most recent
+    /// [`LlmResponseCache::clear`] call. Tests use this to assert the
+    /// "fresh-process re-run hits the persistent cache" contract.
+    pub fn persistent_hit_count(&self) -> u64 {
+        self.inner
+            .lock()
+            .expect("llm cache poisoned")
+            .persistent_hits
     }
 
     /// Backend-call count recorded since cache construction or the
@@ -97,9 +162,16 @@ impl LlmResponseCache {
         self.inner.lock().expect("llm cache poisoned").error_count
     }
 
-    /// Lookup-or-populate. Returns the cached response if present;
-    /// otherwise calls `backend.call(request)`, stores the result, and
-    /// returns it.
+    /// Lookup-or-populate (in-memory only). Returns the cached
+    /// response if present; otherwise calls `backend.call(request)`,
+    /// stores the result, and returns it.
+    ///
+    /// Does **not** consult the persistent layer. Production call sites
+    /// (L3/L5/L6) go through [`LlmResponseCache::call_cached_with_fp`],
+    /// which threads the stage / fingerprint required to consult the
+    /// content-addressed store. This signature is preserved as a
+    /// back-compat entry point for tests that only care about
+    /// per-process dedup.
     pub fn call_cached(
         &self,
         backend: &dyn LlmBackend,
@@ -107,21 +179,94 @@ impl LlmResponseCache {
     ) -> Result<Arc<Value>, LlmError> {
         let fingerprint = backend.fingerprint();
         let key = LlmCacheKey::from_request(&fingerprint, request);
-        if let Some(value) = self
-            .inner
-            .lock()
-            .expect("llm cache poisoned")
-            .entries
-            .get(&key)
-            .cloned()
-        {
+        if let Some(value) = self.in_memory_get(&key) {
+            return Ok(value);
+        }
+        self.call_through_backend_and_seed(backend, request, &key, None)
+    }
+
+    /// Two-tier lookup-or-populate. Order:
+    ///
+    /// 1. In-memory hit: short-circuits without consulting the
+    ///    persistent layer.
+    /// 2. Persistent hit (when a [`PersistentCache`] is attached):
+    ///    decodes the blob, seeds the in-memory cache, increments
+    ///    [`LlmResponseCache::persistent_hit_count`], returns.
+    /// 3. Backend call: result is encoded and written to the
+    ///    persistent layer (best-effort; persistence failures are
+    ///    warned but do not fail the call), then stored in-memory.
+    ///
+    /// `stage` and `fingerprint` come from the L-stage caller and
+    /// describe the persistent-cache key shape required by design
+    /// §5.5 / §8.1. The in-memory key is request-shape-derived
+    /// independently — see [`LlmCacheKey::from_request`] — so the two
+    /// layers stay in sync only because the caller passes the same
+    /// request to both lookups.
+    pub fn call_cached_with_fp(
+        &self,
+        stage: Stage,
+        fingerprint: &Sha256Hex,
+        backend: &dyn LlmBackend,
+        request: &LlmRequest,
+    ) -> Result<Arc<Value>, LlmError> {
+        let backend_fp = backend.fingerprint();
+        let key = LlmCacheKey::from_request(&backend_fp, request);
+
+        // Tier 1: in-memory.
+        if let Some(value) = self.in_memory_get(&key) {
             return Ok(value);
         }
 
-        // Miss: invoke backend without holding the lock; store on the
-        // way out. A concurrent call for the same key may double-fetch,
-        // but the responses are equal by the backend invariant so the
-        // worst case is one redundant call, not a correctness problem.
+        // Tier 2: persistent. A read failure (e.g. corrupt blob, EIO)
+        // degrades to a backend miss with a warning; the run still
+        // completes and the next write replaces the bad blob.
+        if let Some(persistent) = self.persistent.as_ref() {
+            match persistent.get(stage, fingerprint) {
+                Ok(Some(blob)) => match decode_blob(&blob) {
+                    Ok(value) => {
+                        let value = Arc::new(value);
+                        let mut inner = self.inner.lock().expect("llm cache poisoned");
+                        inner.entries.insert(key, value.clone());
+                        inner.persistent_hits += 1;
+                        return Ok(value);
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "warning: persistent cache blob for ({stage:?}, {fingerprint}) \
+                             failed to decode ({err}); falling through to backend call"
+                        );
+                    }
+                },
+                Ok(None) => {}
+                Err(err) => {
+                    eprintln!(
+                        "warning: persistent cache read for ({stage:?}, {fingerprint}) failed \
+                         ({err}); falling through to backend call"
+                    );
+                }
+            }
+        }
+
+        // Tier 3: backend.
+        self.call_through_backend_and_seed(backend, request, &key, Some((stage, fingerprint)))
+    }
+
+    /// Low-level helper used by both [`LlmResponseCache::call_cached`]
+    /// and [`LlmResponseCache::call_cached_with_fp`]. Calls the
+    /// backend, seeds the in-memory cache, and (when a persistent key
+    /// is supplied) encodes the response into the persistent layer.
+    fn call_through_backend_and_seed(
+        &self,
+        backend: &dyn LlmBackend,
+        request: &LlmRequest,
+        key: &LlmCacheKey,
+        persistent_key: Option<(Stage, &Sha256Hex)>,
+    ) -> Result<Arc<Value>, LlmError> {
+        // Invoke the backend without holding the cache lock; a
+        // concurrent call for the same key may double-fetch, but
+        // backend responses are equal by the `LlmBackend` invariants
+        // so the worst case is one redundant call, not a correctness
+        // problem.
         let value = match backend.call(request) {
             Ok(v) => v,
             Err(e) => {
@@ -130,16 +275,52 @@ impl LlmResponseCache {
             }
         };
         let value = Arc::new(value);
+
+        // Persistent write happens before in-memory seeding so a
+        // crash between the two leaves the persistent layer hot
+        // (no spurious miss next run). A failed persistent write is
+        // non-fatal: the run still gets the in-memory cache, and
+        // the next save attempt will retry implicitly.
+        if let Some((stage, fingerprint)) = persistent_key {
+            if let Some(persistent) = self.persistent.as_ref() {
+                match encode_blob(value.as_ref()) {
+                    Ok(blob) => {
+                        if let Err(err) = persistent.put(stage, fingerprint, &blob) {
+                            eprintln!(
+                                "warning: persistent cache write for ({stage:?}, {fingerprint}) \
+                                 failed ({err:#}); the in-memory layer still has the entry"
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "warning: persistent cache encode for ({stage:?}, {fingerprint}) \
+                             failed ({err}); the in-memory layer still has the entry"
+                        );
+                    }
+                }
+            }
+        }
+
         let hook = {
             let mut inner = self.inner.lock().expect("llm cache poisoned");
             inner.call_count += 1;
-            inner.entries.insert(key, value.clone());
+            inner.entries.insert(key.clone(), value.clone());
             inner.persist_hook.clone()
         };
         if let Some(hook) = hook {
             hook(self);
         }
         Ok(value)
+    }
+
+    fn in_memory_get(&self, key: &LlmCacheKey) -> Option<Arc<Value>> {
+        self.inner
+            .lock()
+            .expect("llm cache poisoned")
+            .entries
+            .get(key)
+            .cloned()
     }
 
     /// Register a callback invoked after every successful cache insert.
@@ -157,6 +338,7 @@ impl LlmResponseCache {
         inner.entries.clear();
         inner.call_count = 0;
         inner.error_count = 0;
+        inner.persistent_hits = 0;
     }
 
     /// Snapshot of every `(key, response)` pair currently cached.
@@ -180,6 +362,22 @@ impl LlmResponseCache {
         let mut inner = self.inner.lock().expect("llm cache poisoned");
         inner.entries.insert(key, value);
     }
+}
+
+/// Encode an LLM response into the byte form stored in the persistent
+/// cache. Phase 1 ships uncompressed JSON; the cache key explicitly
+/// does not include the compression algorithm (per design §11.2.7) so
+/// a future PR can swap the codec without invalidating prior entries
+/// — but we still hide the format behind a single helper so any such
+/// swap is one edit, not many.
+fn encode_blob(value: &Value) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec(value)
+}
+
+/// Inverse of [`encode_blob`]. Returns the raw `Value`; callers wrap
+/// it in `Arc` themselves.
+fn decode_blob(bytes: &[u8]) -> Result<Value, serde_json::Error> {
+    serde_json::from_slice(bytes)
 }
 
 #[cfg(test)]
@@ -354,5 +552,156 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cache.call_count(), 1);
+    }
+
+    // ----- PR-10: persistent-layer behaviour -----------------------
+
+    fn temp_persistent() -> (PersistentCache, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = PersistentCache::open(dir.path()).expect("open");
+        (cache, dir)
+    }
+
+    #[test]
+    fn persistent_layer_serves_a_hit_without_backend_call() {
+        // First, populate the persistent layer via one cache holding
+        // a backend; then drop the in-memory state by constructing a
+        // fresh `LlmResponseCache` over the *same* on-disk directory
+        // and prove the second call does not invoke the backend.
+        let (persistent, _dir) = temp_persistent();
+        let backend = TestBackend::with_fingerprint(fp("m"));
+        backend.respond(
+            PromptId::Stage1Surface,
+            json!({ "id": "A" }),
+            json!({ "purpose": "p" }),
+        );
+        let fingerprint = "deadbeef".to_string();
+
+        // Cold: backend is invoked, persistent layer is populated.
+        let cold = LlmResponseCache::new_with_persistent(persistent.clone());
+        let v1 = cold
+            .call_cached_with_fp(
+                Stage::L3,
+                &fingerprint,
+                &backend,
+                &req(PromptId::Stage1Surface, json!({ "id": "A" })),
+            )
+            .expect("cold call");
+        assert_eq!(cold.call_count(), 1);
+        assert_eq!(cold.persistent_hit_count(), 0);
+
+        // Warm: a fresh in-memory layer over the same persistent
+        // store sees the hit and never touches the backend.
+        let warm = LlmResponseCache::new_with_persistent(persistent);
+        let v2 = warm
+            .call_cached_with_fp(
+                Stage::L3,
+                &fingerprint,
+                &backend,
+                &req(PromptId::Stage1Surface, json!({ "id": "A" })),
+            )
+            .expect("warm call");
+        assert_eq!(warm.call_count(), 0, "persistent hit must not call backend");
+        assert_eq!(warm.persistent_hit_count(), 1);
+        assert_eq!(*v1, *v2);
+    }
+
+    #[test]
+    fn distinct_fingerprints_miss_persistent_layer_independently() {
+        let (persistent, _dir) = temp_persistent();
+        let backend = TestBackend::with_fingerprint(fp("m"));
+        backend.respond(
+            PromptId::Stage1Surface,
+            json!({ "id": "A" }),
+            json!({ "purpose": "A" }),
+        );
+        backend.respond(
+            PromptId::Stage1Surface,
+            json!({ "id": "B" }),
+            json!({ "purpose": "B" }),
+        );
+        let cache = LlmResponseCache::new_with_persistent(persistent);
+
+        cache
+            .call_cached_with_fp(
+                Stage::L3,
+                &"fp-a".to_string(),
+                &backend,
+                &req(PromptId::Stage1Surface, json!({ "id": "A" })),
+            )
+            .unwrap();
+        cache
+            .call_cached_with_fp(
+                Stage::L3,
+                &"fp-b".to_string(),
+                &backend,
+                &req(PromptId::Stage1Surface, json!({ "id": "B" })),
+            )
+            .unwrap();
+        assert_eq!(cache.call_count(), 2);
+    }
+
+    #[test]
+    fn in_memory_hit_short_circuits_persistent_lookup() {
+        // After the first call seeds the in-memory layer, the second
+        // call must not even consult the persistent store.
+        // Indirect proof: persistent_hit_count stays at 0 across
+        // repeated calls in the same cache instance.
+        let (persistent, _dir) = temp_persistent();
+        let backend = TestBackend::with_fingerprint(fp("m"));
+        backend.respond(
+            PromptId::Stage1Surface,
+            json!({ "id": "A" }),
+            json!({ "purpose": "p" }),
+        );
+        let cache = LlmResponseCache::new_with_persistent(persistent);
+        let request = req(PromptId::Stage1Surface, json!({ "id": "A" }));
+
+        cache
+            .call_cached_with_fp(Stage::L3, &"abc".to_string(), &backend, &request)
+            .unwrap();
+        assert_eq!(cache.call_count(), 1);
+        assert_eq!(cache.persistent_hit_count(), 0);
+
+        cache
+            .call_cached_with_fp(Stage::L3, &"abc".to_string(), &backend, &request)
+            .unwrap();
+        assert_eq!(cache.call_count(), 1, "second call must hit in-memory");
+        assert_eq!(
+            cache.persistent_hit_count(),
+            0,
+            "in-memory hit must short-circuit persistent layer"
+        );
+    }
+
+    #[test]
+    fn call_cached_without_persistent_does_not_touch_disk() {
+        // The legacy entry point is preserved for tests; constructing
+        // a cache without `new_with_persistent` must not require a
+        // disk path.
+        let backend = TestBackend::with_fingerprint(fp("m"));
+        backend.respond(
+            PromptId::Stage1Surface,
+            json!({ "id": "A" }),
+            json!({ "purpose": "p" }),
+        );
+        let cache = LlmResponseCache::new();
+        assert!(cache.persistent().is_none());
+        cache
+            .call_cached(
+                &backend,
+                &req(PromptId::Stage1Surface, json!({ "id": "A" })),
+            )
+            .unwrap();
+        assert_eq!(cache.call_count(), 1);
+        assert_eq!(cache.persistent_hit_count(), 0);
+    }
+
+    #[test]
+    fn encode_decode_round_trip_preserves_value() {
+        let v = json!({ "purpose": "round-trip", "n": 42 });
+        let blob = encode_blob(&v).unwrap();
+        let back = decode_blob(&blob).unwrap();
+        assert_eq!(v, back);
     }
 }

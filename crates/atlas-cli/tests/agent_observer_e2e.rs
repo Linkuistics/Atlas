@@ -59,8 +59,16 @@ edition = "2021"
         "components.yaml",
         "external-components.yaml",
         "related-components.yaml",
-        "llm-cache.json",
     ] {
         assert!(atlas_dir.join(f).exists(), "{f} should exist after index");
     }
+    // PR-10: the persistent content-addressed cache replaces the v1
+    // `llm-cache.json` flat file. The cache root materialises lazily
+    // on the first `put`, so its presence here also asserts at least
+    // one LLM call landed during the run.
+    assert!(
+        atlas_dir.join("cache").exists(),
+        "persistent cache root {} should exist after index",
+        atlas_dir.join("cache").display()
+    );
 }

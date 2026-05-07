@@ -68,8 +68,9 @@ pub fn seed_filesystem_one(
 /// `excluded_dirs` from the walks. The CLI uses this to keep its own
 /// output directory (default `.atlas/`, override via `--output-dir`)
 /// from being ingested as analysis input on a re-run, which would
-/// otherwise feed prior `components.yaml` and `llm-cache.json` back
-/// into L0 even when the target's `.gitignore` does not list it.
+/// otherwise feed prior `components.yaml` and the persistent cache's
+/// `<stage>/<sha>.blob` files back into L0 even when the target's
+/// `.gitignore` does not list it.
 ///
 /// `excluded_dirs.len()` should typically equal `roots.len()` (one
 /// excluded dir per root), but the function does not enforce that —

@@ -34,7 +34,8 @@ use atlas_analyzers::AnalyzerRegistry;
 use atlas_engine::{
     components_yaml_snapshot_with_prompt_shas, expand_roots, external_components_yaml_snapshot,
     per_component_yaml_snapshot, related_components_yaml_snapshot, run_fixedpoint,
-    seed_filesystem_excluding, AtlasDatabase, FixedpointConfig, Phase, ProgressEvent, ProgressSink,
+    seed_filesystem_excluding, AtlasDatabase, FixedpointConfig, LlmResponseCache, PersistentCache,
+    Phase, ProgressEvent, ProgressSink,
 };
 use atlas_index::{
     load_or_default_components, load_or_default_externals, load_or_default_overrides,
@@ -46,7 +47,6 @@ use atlas_index::{
 use atlas_llm::{LlmBackend, LlmFingerprint, TokenCounter};
 
 use crate::backend::BudgetSentinel;
-use crate::cache_io;
 use crate::timestamp::format_utc_rfc3339;
 
 /// Default name for the directory that holds the four Atlas YAMLs.
@@ -338,16 +338,28 @@ pub fn run_index(
         fingerprint.clone(),
         registry,
     );
-    let cache_path = config.output_dir.join("llm-cache.json");
-    cache_io::load_into(&cache_path, db.llm_cache());
-    {
-        let cache_path = cache_path.clone();
-        let save_lock = std::sync::Arc::new(std::sync::Mutex::new(()));
-        db.llm_cache().set_persist_hook(move |cache| {
-            let _guard = save_lock.lock().expect("cache persist lock poisoned");
-            let _ = cache_io::save_from(&cache_path, cache);
-        });
-    }
+
+    // PR-10: open the persistent content-addressed cache rooted at
+    // `<output>/.atlas/cache/`. The on-disk layout is
+    // `<output>/.atlas/cache/<stage>/<sha>.blob` (filesystem-native,
+    // design §5.5 / §8.3). Open failures are non-fatal — we degrade
+    // to an in-memory-only cache and warn, matching the policy used
+    // by PR-4's config.yaml writer and PR-6's per-component writer.
+    // Cache wiring is a perf feature; failing the run because the
+    // cache dir is unwritable would be hostile.
+    let persistent_cache_root = config.output_dir.join("cache");
+    let llm_cache = match PersistentCache::open(&persistent_cache_root) {
+        Ok(cache) => LlmResponseCache::new_with_persistent(cache),
+        Err(err) => {
+            eprintln!(
+                "warning: failed to open persistent cache at {}: {err:#}; falling back to \
+                 in-memory cache only (run completes; no cross-process cache hit)",
+                persistent_cache_root.display()
+            );
+            LlmResponseCache::new()
+        }
+    };
+    db.set_llm_cache(llm_cache);
     // The output_dir lives under the primary root only; peer roots
     // get an empty exclusion (no per-root output dir is written
     // beneath them in Phase 1). The slice positions matter — each
@@ -553,11 +565,13 @@ pub fn run_index(
         // continues) rather than a hard error.
         write_per_component_files(&db, &components_file, &roots);
 
-        // Persist the LLM response cache. A failed save is not fatal —
-        // the outputs are already committed; we just lose the cache hit
-        // on the next run, which is a perf regression, not a
-        // correctness issue.
-        let _ = cache_io::save_from(&cache_path, db.llm_cache());
+        // PR-10: the persistent cache is written-through inside
+        // `LlmResponseCache::call_cached_with_fp` as each L-stage
+        // call lands, so no end-of-pipeline flush is required. GC of
+        // unreachable entries is deferred — Phase 1 ships an
+        // unbounded cache; a future PR (or `atlas index --gc` flag)
+        // can call `PersistentCache::gc(&mark_set)` against the
+        // current run's contributing fingerprints.
     }
 
     // Finished fires AFTER the writes (or after the dry-run no-op) so a

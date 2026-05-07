@@ -22,16 +22,23 @@
 
 use std::sync::Arc;
 
-use atlas_index::ComponentEntry;
+use atlas_index::{ComponentEntry, Stage};
 use atlas_llm::{LlmRequest, PromptId, ResponseSchema};
 use component_ontology::{Edge, EdgeKind, EvidenceGrade, LifecycleScope};
 use serde::Serialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::db::AtlasDatabase;
 use crate::l4_tree::all_components;
 use crate::l5_surface::surface_of;
 use crate::surface_types::SurfaceRecord;
+
+/// Driver version baked into the L6 stage fingerprint (PR-10). Bump
+/// only on a structural change in `all_proposed_edges`'s call shape;
+/// cosmetic edits do not justify a bump (per the same rule as
+/// `l5_surface::L5_DRIVER_VERSION`).
+pub const L6_DRIVER_VERSION: &str = "1.0.0";
 
 /// The shipped Atlas Stage 2 prompt, embedded at compile time.
 pub const EMBEDDED_STAGE2_EDGES_PROMPT: &str =
@@ -79,13 +86,60 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
         })
         .collect();
 
+    let inputs = build_inputs(&surfaces);
     let request = LlmRequest {
         prompt_template: PromptId::Stage2Edges,
-        inputs: build_inputs(&surfaces),
+        inputs: inputs.clone(),
         schema: ResponseSchema::accept_any(),
     };
 
-    let value = match db.call_llm_cached(&request) {
+    // PR-10: L6 stage fingerprint per design §8.1. Contributors:
+    //
+    // - `analyzer_registry_sha` — registry-shape change invalidates;
+    // - `llm_fingerprint` — model / backend / template / ontology;
+    // - `prompt_sha` — sha of the canonical-JSON inputs (the
+    //   serialised surface records the backend will see);
+    // - `file_content_sha` for every component path segment whose
+    //   surface contributed to the batch — propagates a per-file
+    //   change up to the batch.
+    //
+    // **PR-11 hand-off:** the design also requires a
+    // `participant_surface_sha` contribution per participant
+    // component. PR-11 wires that in once `surfaces.yaml` carries a
+    // top-level fingerprint (PR-7's job to land, PR-11's job to
+    // make load-bearing). PR-10 deliberately omits it; the
+    // `prompt_sha` above does cite the inline-rendered surface
+    // bytes, so a participant surface change is still observed —
+    // but cross-tree invalidation propagates through the rendered
+    // bytes path, not the participant-sha path. PR-11 fixes that.
+    let workspace = db.workspace();
+    let llm_fp = workspace
+        .llm_fingerprint(db as &dyn salsa::Database)
+        .clone();
+    let rendered_prompt_sha = sha256_hex_bytes(
+        serde_json::to_string(&inputs)
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    let registry_sha = db.analyzer_registry().registry_sha();
+    let l6_fingerprint = {
+        let mut fb = crate::FingerprintBuilder::new(Stage::L6, "l6-driver", L6_DRIVER_VERSION);
+        fb.add_analyzer_registry_sha(&registry_sha);
+        fb.add_llm_fingerprint(llm_fp.as_ref());
+        fb.add_prompt_sha(&rendered_prompt_sha);
+        for c in &live {
+            for seg in &c.path_segments {
+                fb.add_file_content_sha(&seg.content_sha);
+            }
+        }
+        // TODO(PR-11): contribute `participant_surface_sha` per
+        // participant component once `SurfacesFile.fingerprint` is
+        // load-bearing. The contribution shape is already supported
+        // by `FingerprintBuilder::add_participant_surface_sha`.
+        fb.finalise()
+    };
+
+    let value = match db.call_llm_cached_with_fp(Stage::L6, &l6_fingerprint, &request) {
         Ok(v) => v,
         Err(_) => return Arc::new(Vec::new()),
     };
@@ -140,6 +194,19 @@ pub(crate) fn build_inputs_with_stubs_for_tests() -> Value {
 #[derive(Debug, Serialize)]
 struct SurfacesWrapper<'a> {
     surfaces: &'a [SurfaceWithId],
+}
+
+/// SHA-256 of `bytes` rendered as 64-character lowercase hex. Used by
+/// the L6 fingerprint construction to derive a `prompt_sha` from the
+/// canonical-JSON inputs (the serialised surface records).
+fn sha256_hex_bytes(bytes: &[u8]) -> String {
+    let digest: [u8; 32] = Sha256::digest(bytes).into();
+    let mut out = String::with_capacity(64);
+    use std::fmt::Write;
+    for b in digest {
+        write!(&mut out, "{b:02x}").expect("writing to String never fails");
+    }
+    out
 }
 
 /// Parse the Stage 2 response into a raw edge list. Accepts two

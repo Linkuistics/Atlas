@@ -8,7 +8,6 @@
 //! prompts-on-disk requirement.
 
 pub mod backend;
-pub mod cache_io;
 pub mod pipeline;
 pub mod progress;
 pub mod prompts;
