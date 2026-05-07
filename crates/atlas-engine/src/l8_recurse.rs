@@ -58,6 +58,11 @@ use crate::types::{Classification, ComponentKind};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SubcarveDecision {
     pub should_subcarve: bool,
+    /// Candidate roots for the next L2 pass. **Always absolute paths.**
+    /// L2's source-4 loop calls `absolute_under_root`, which short-circuits
+    /// when the path is already absolute; storing relative paths here would
+    /// phantom-resolve them against every workspace root, silently routing
+    /// to the wrong location in multi-root workspaces.
     pub sub_dirs: Vec<PathBuf>,
     pub rationale: String,
 }
@@ -84,6 +89,11 @@ pub fn should_subcarve(db: &AtlasDatabase, id: String) -> bool {
 /// Directories to open up as new L2 candidate roots inside the
 /// component whose id is `id`. Empty when the policy (or the LLM)
 /// decides not to recurse.
+///
+/// **All returned paths are absolute.** L2's source-4 consumption relies
+/// on `absolute_under_root` short-circuiting for absolute paths; passing
+/// relative paths would phantom-resolve them against every workspace root
+/// and break multi-root discovery.
 pub fn subcarve_plan(db: &AtlasDatabase, id: String) -> Arc<Vec<PathBuf>> {
     Arc::new(compute_decision(db, &id).sub_dirs)
 }
