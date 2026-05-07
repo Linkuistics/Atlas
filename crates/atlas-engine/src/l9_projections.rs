@@ -21,17 +21,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use atlas_index::BindingRole;
 use atlas_index::{
-    CacheFingerprints, ComponentsFile, ExternalEntry, ExternalsFile, PerComponentFile,
-    RelatedComponentsFile, COMPONENTS_SCHEMA_VERSION, EXTERNALS_SCHEMA_VERSION,
-    PER_COMPONENT_SCHEMA_VERSION,
+    CacheFingerprints, ComponentsFile, ExternalEntry, ExternalsFile, ImplementedContract,
+    PerComponentFile, RelatedComponentsFile, SurfacesFile, COMPONENTS_SCHEMA_VERSION,
+    EXTERNALS_SCHEMA_VERSION, PER_COMPONENT_SCHEMA_VERSION, SURFACES_SCHEMA_VERSION,
 };
 use component_ontology::{ComponentId, EvidenceGrade, SCHEMA_VERSION as RELATED_SCHEMA_VERSION};
 use sha2::{Digest, Sha256};
 
+use crate::contract_canonicalisation::compute_surfaces_fingerprint;
 use crate::db::{AtlasDatabase, Workspace};
 use crate::l1_queries::manifests_in;
 use crate::l4_tree::all_components;
+use crate::l5_surface::surface_artefacts_of;
 use crate::l6_edges::all_proposed_edges;
 use crate::roots::best_root_for;
 
@@ -93,25 +96,29 @@ pub fn components_yaml_snapshot_with_prompt_shas(
 /// identity, fingerprint, and pointers to the co-located
 /// `surfaces.yaml` / `overrides.yaml` files.
 ///
-/// **PR-6 placeholders.** Three envelope fields are placeholders this
-/// PR; PR-7 swaps them for the real values once the analyser
-/// dispatch carries identity through to L9.
+/// **Envelope fields (PR-7 wiring):**
 ///
-/// - `analyser_id` is `"l3-driver"` and `analyser_version` is
-///   [`L3_DRIVER_VERSION`]. PR-7 plumbs the per-component analyser
-///   identity (e.g. `cargo-toml-classifier`) through L3's
-///   [`crate::types::Classification`] result.
-/// - `fingerprint` is the sha256 hex of the canonical YAML form of
-///   the component's [`atlas_index::ComponentEntry`]. PR-7 lands
-///   per-component `surfaces.yaml` writers and replaces this with
-///   the surfaces fingerprint per design §6.2; the entry-sha
-///   computed here is a deterministic stand-in that already changes
-///   when the component's classification or path changes.
+/// - `fingerprint` is the surfaces fingerprint computed by
+///   [`surfaces_yaml_snapshot`] (which uses the schema-derived
+///   canonicaliser per spec §2.2 over the component's `SurfacesFile`).
+///   Per the design §6.2 invariant, this is the value other
+///   components' L6 cache keys cite. PR-11 wires the participant-
+///   surface contribution in L6.
+/// - `analyser_id` / `analyser_version`: PR-6 used the static
+///   `"l3-driver"` / [`L3_DRIVER_VERSION`] placeholders. PR-7's
+///   plan note allows keeping these placeholders if per-analyser
+///   identity cannot be plumbed without disproportionate refactoring
+///   of `l3_classify.rs`. We keep the placeholders here because the
+///   L3 dispatcher returns a single `Classification` not labelled
+///   with the originating analyser; threading that through the L3
+///   adapter would require either tagging the dispatch outcome
+///   (changes to the analyser crate's API) or a per-analyser shim
+///   in the engine. Both approaches are larger than the PR's scope;
+///   the placeholder is preserved with a `DONE_WITH_CONCERNS`
+///   notation in the PR-7 final report.
 /// - `surfaces_path` and `overrides_path` are the relative
 ///   filenames `surfaces.yaml` / `overrides.yaml` — pointers within
-///   the component's own `.atlas/` directory. The latter is
-///   `Some(...)` unconditionally; readers must check the file's
-///   existence on disk.
+///   the component's own `.atlas/` directory.
 ///
 /// Errors when `component_id` does not resolve to any component in
 /// the live tree.
@@ -132,9 +139,11 @@ pub fn per_component_yaml_snapshot(
         })?
         .clone();
 
-    let entry_yaml = serde_yaml::to_string(&entry)
-        .map_err(|e| anyhow::anyhow!("failed to canonicalise component entry as YAML: {e}"))?;
-    let fingerprint = sha256_hex(entry_yaml.as_bytes());
+    // PR-7: replace the entry-yaml-sha placeholder with the real
+    // surfaces fingerprint (design §6.2). Other components' L6 cache
+    // keys cite this value; PR-11 makes that wiring load-bearing.
+    let surfaces = surfaces_yaml_snapshot(db, component_id)?;
+    let fingerprint = surfaces.fingerprint.clone();
 
     Ok(Arc::new(PerComponentFile {
         schema_version: PER_COMPONENT_SCHEMA_VERSION,
@@ -145,6 +154,86 @@ pub fn per_component_yaml_snapshot(
         analyser_version: L3_DRIVER_VERSION.to_string(),
         fingerprint,
     }))
+}
+
+/// Build the per-component `<component-path>/.atlas/surfaces.yaml`
+/// projection. The output is an [`atlas_index::SurfacesFile`] (PR-1)
+/// populated from the deterministic Rust-surface analyser
+/// (`atlas-analyzers::extract_rust_surface`, PR-7) over the
+/// component's `src/lib.rs` and `src/main.rs`.
+///
+/// Schema:
+///
+/// - `schema_version: 1` (Phase 1; Phase 2 bumps with the AST
+///   canonicaliser).
+/// - `component_id`: the component's id.
+/// - `fingerprint`: the schema-derived sha of the canonical
+///   serialisation of the file with `fingerprint` zeroed
+///   ([`compute_surfaces_fingerprint`]; spec §2.2 algorithm).
+/// - `contracts_defined`: code-derived `data-format` contracts the
+///   analyser found.
+/// - `contracts_implemented`: one entry per `contracts_defined` —
+///   the defining component is also the implementing component for
+///   its own contracts (`role: defining-binding`).
+/// - `contracts_consumed`: empty in PR-7. PR-8 derives consume edges
+///   from the LLM Stage 2 prompt; PR-9 derives them from cross-
+///   component code references. Phase 1 ships this field as an
+///   always-empty placeholder so the YAML shape is complete.
+/// - `library_apis`: at most one Rust library API.
+///
+/// Errors when the component id does not resolve.
+pub fn surfaces_yaml_snapshot(
+    db: &AtlasDatabase,
+    component_id: &ComponentId,
+) -> anyhow::Result<Arc<SurfacesFile>> {
+    let components = all_components(db);
+    if !components
+        .iter()
+        .any(|c| &c.id == component_id && !c.deleted)
+    {
+        return Err(anyhow::anyhow!(
+            "component id `{}` not found in the live component tree",
+            component_id.as_str()
+        ));
+    }
+
+    let artefacts = surface_artefacts_of(db, component_id.clone());
+    let contracts_defined = artefacts.contracts.clone();
+    // For each defined contract the same component is also its
+    // defining-binding implementer (design §6.3 worked example).
+    let contracts_implemented: Vec<ImplementedContract> = contracts_defined
+        .iter()
+        .map(|c| ImplementedContract {
+            contract_id: c.id.clone(),
+            role: BindingRole::DefiningBinding,
+            binding: c.definition_binding.clone(),
+        })
+        .collect();
+    let library_apis = artefacts.library_apis.clone();
+
+    let mut file = SurfacesFile {
+        schema_version: SURFACES_SCHEMA_VERSION,
+        component_id: component_id.clone(),
+        fingerprint: String::new(),
+        contracts_defined,
+        contracts_implemented,
+        contracts_consumed: Vec::new(),
+        library_apis,
+    };
+    // Validate every library_api before serialising (PR-1 status
+    // note). If validation fails (it shouldn't — the analyser
+    // constructs them with `kind: LibraryApi`), surface the error to
+    // the caller rather than emitting a corrupt file.
+    for api in &file.library_apis {
+        api.validate().map_err(|e| {
+            anyhow::anyhow!(
+                "library_api `{}` failed validation before surfaces.yaml emission: {e}",
+                api.id
+            )
+        })?;
+    }
+    file.fingerprint = compute_surfaces_fingerprint(&file);
+    Ok(Arc::new(file))
 }
 
 /// Stable analyser version string recorded in per-component records

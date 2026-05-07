@@ -39,6 +39,7 @@ pub mod dispatcher;
 pub mod dockerfile_classifier;
 pub mod llm_classify;
 pub mod registry;
+pub mod rust_surface_analyzer;
 
 use std::any::Any;
 use std::collections::BTreeSet;
@@ -52,6 +53,31 @@ pub use dispatcher::DispatchOutcome;
 pub use dockerfile_classifier::DockerfileClassifier;
 pub use llm_classify::{LlmClassifyAnalyzer, LlmHook, LlmHookError};
 pub use registry::{AnalyzerRegistry, REGISTRY_HASH_NAMESPACE};
+pub use rust_surface_analyzer::{
+    extract_rust_surface, RustSourceInputs, RustSurfaceAnalyzer, RustSurfaceOutput,
+};
+
+/// SHA-256 hex of a half-open byte range `bytes[span.0..span.1]`.
+/// Mirrors the engine-side `code_derived_content_sha` so the
+/// analyser crate can compute binding shas without taking on a
+/// dependency on `atlas-engine` (the dep arrow goes the other way).
+/// Out-of-bounds spans hash the empty byte slice rather than panic.
+pub fn sha256_hex_of_range(bytes: &[u8], span: (usize, usize)) -> String {
+    use sha2::{Digest, Sha256};
+    let (start, end) = span;
+    let slice: &[u8] = if start <= end && end <= bytes.len() {
+        &bytes[start..end]
+    } else {
+        b""
+    };
+    let digest: [u8; 32] = Sha256::digest(slice).into();
+    let mut hex = String::with_capacity(64);
+    use std::fmt::Write;
+    for b in digest {
+        write!(&mut hex, "{b:02x}").expect("writing to String never fails");
+    }
+    hex
+}
 
 /// What an analyser sees. Built by the engine before calling
 /// [`AnalyzerRegistry::dispatch`].

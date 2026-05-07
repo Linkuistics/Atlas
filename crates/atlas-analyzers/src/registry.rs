@@ -29,6 +29,7 @@ use sha2::{Digest, Sha256};
 use crate::cargo_classifier::CargoClassifier;
 use crate::dockerfile_classifier::DockerfileClassifier;
 use crate::llm_classify::LlmClassifyAnalyzer;
+use crate::rust_surface_analyzer::RustSurfaceAnalyzer;
 use crate::Analyzer;
 
 /// Namespace string mixed into the `analyzer_registry_sha` so a future
@@ -59,15 +60,24 @@ impl std::fmt::Debug for AnalyzerRegistry {
 }
 
 impl AnalyzerRegistry {
-    /// Three reference analysers shipped in this crate. Every
-    /// workspace starts here; `analyzers.yaml` (when present) merges
-    /// on top.
+    /// Reference analysers shipped in this crate. Every workspace
+    /// starts here; `analyzers.yaml` (when present) merges on top.
+    ///
+    /// Phase 1 ships four analysers: `cargo-toml-classifier`,
+    /// `dockerfile-l3` (both L3 deterministic), `llm-classify-fallback`
+    /// (L3 LLM), and `rust-surface-analyzer` (L5 deterministic; PR-7).
     pub fn builtin() -> Self {
         let cargo = Arc::new(CargoClassifier::new()) as Arc<dyn Analyzer>;
         let docker = Arc::new(DockerfileClassifier::new()) as Arc<dyn Analyzer>;
         let llm = Arc::new(LlmClassifyAnalyzer::new()) as Arc<dyn Analyzer>;
+        let rust_surface = Arc::new(RustSurfaceAnalyzer::new()) as Arc<dyn Analyzer>;
 
-        let analyzers = vec![cargo.clone(), docker.clone(), llm.clone()];
+        let analyzers = vec![
+            cargo.clone(),
+            docker.clone(),
+            llm.clone(),
+            rust_surface.clone(),
+        ];
         let declared = AnalyzersFile {
             schema_version: ANALYZERS_SCHEMA_VERSION,
             analyzers: analyzers.iter().map(spec_for_analyzer).collect(),
@@ -258,6 +268,15 @@ fn spec_for_analyzer(analyzer: &Arc<dyn Analyzer>) -> AnalyzerSpec {
             always: true,
             ..Default::default()
         }
+    } else if id == crate::rust_surface_analyzer::ANALYZER_ID {
+        // Rust-surface analysis applies wherever a Cargo.toml is
+        // present (the L5 driver invokes the deterministic
+        // extraction directly; the registry contribution is
+        // primarily for the analyser_registry_sha lineage).
+        atlas_index::ApplicabilityPredicate {
+            file_globs: vec!["**/Cargo.toml".into()],
+            ..Default::default()
+        }
     } else {
         atlas_index::ApplicabilityPredicate::default()
     };
@@ -279,15 +298,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_lists_three_analysers() {
+    fn builtin_lists_four_analysers() {
         let r = AnalyzerRegistry::builtin();
-        assert_eq!(r.len(), 3);
+        assert_eq!(r.len(), 4);
         let ids: Vec<&str> = r.iter_dispatch_order().map(|a| a.id()).collect();
-        // Cargo and Dockerfile both have `DeterministicCheap`; LLM
-        // sits last.
-        assert_eq!(*ids.last().unwrap(), crate::llm_classify::ANALYZER_ID);
         assert!(ids.contains(&crate::cargo_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::dockerfile_classifier::ANALYZER_ID));
+        assert!(ids.contains(&crate::llm_classify::ANALYZER_ID));
+        assert!(ids.contains(&crate::rust_surface_analyzer::ANALYZER_ID));
+        // L3 deterministic analysers come first, then L3 LLM, then L5
+        // analysers (sorted by `(stage, cost_class)`). LLM-classify is
+        // the last L3 analyser; rust-surface-analyzer is L5 and lands
+        // after every L3 entry.
+        assert_eq!(
+            *ids.last().unwrap(),
+            crate::rust_surface_analyzer::ANALYZER_ID
+        );
     }
 
     #[test]
@@ -330,9 +356,9 @@ mod tests {
         // The built-in analyser instances are unchanged in count
         // (unknown spec is recorded but does not produce a runnable
         // instance).
-        assert_eq!(r.len(), 3);
+        assert_eq!(r.len(), 4);
         // The declared list grew by one.
-        assert_eq!(r.declared().analyzers.len(), 4);
+        assert_eq!(r.declared().analyzers.len(), 5);
     }
 
     #[test]
@@ -353,7 +379,7 @@ mod tests {
             version: "9.9.9".into(),
         });
         r.merge_yaml(&yaml);
-        assert_eq!(r.declared().analyzers.len(), 3);
+        assert_eq!(r.declared().analyzers.len(), 4);
         let cargo = r
             .declared()
             .analyzers
@@ -397,5 +423,9 @@ mod tests {
             crate::dockerfile_classifier::ANALYZER_ID
         );
         assert_eq!(LlmClassifyAnalyzer.id(), crate::llm_classify::ANALYZER_ID);
+        assert_eq!(
+            RustSurfaceAnalyzer.id(),
+            crate::rust_surface_analyzer::ANALYZER_ID
+        );
     }
 }

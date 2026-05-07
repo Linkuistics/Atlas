@@ -16,16 +16,20 @@
 //! manual escape hatch (design §4.1 L5) for components whose surface
 //! the LLM cannot produce well on its own.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use atlas_index::{ComponentEntry, OverridesFile, PinValue, Stage};
+use atlas_analyzers::{extract_rust_surface, RustSourceInputs};
+use atlas_index::{Binding, ComponentEntry, Contract, LibraryApi, OverridesFile, PinValue, Stage};
 use atlas_llm::{LlmRequest, PromptId, ResponseSchema};
 use component_ontology::ComponentId;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::db::AtlasDatabase;
+use crate::l1_queries::file_content;
 use crate::l4_tree::all_components;
+use crate::roots::best_root_for;
 use crate::surface_types::SurfaceRecord;
 
 /// The shipped Atlas Stage 1 prompt, embedded at compile time. Exposed
@@ -157,6 +161,123 @@ pub fn surface_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceRecord> {
             ..SurfaceRecord::default()
         }),
     }
+}
+
+/// Combined surface artefacts for one component: the LLM-derived
+/// [`SurfaceRecord`] (the inner record, unchanged from PR-5) plus the
+/// PR-7 contract / binding / library-api projections produced by the
+/// deterministic Rust-surface analyser.
+///
+/// Plan §4 PR-7 wording — "extend `SurfaceRecord` (kept as the inner
+/// record) with new top-level fields" — is honoured by carrying the
+/// inner `SurfaceRecord` verbatim and adding three peer fields:
+/// `contracts`, `bindings`, `library_apis`. The L9
+/// `surfaces_yaml_snapshot` projects from this struct onto
+/// [`atlas_index::SurfacesFile`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SurfaceArtefacts {
+    /// LLM-derived purpose / consumes / produces / etc. record.
+    /// PR-5's existing shape — see [`SurfaceRecord`].
+    pub record: SurfaceRecord,
+    /// Code-derived contracts the component defines (currently
+    /// `data-format` contracts from `pub struct ... #[derive(Serialize,
+    /// Deserialize)]`). One [`Contract`] per defining binding.
+    pub contracts: Vec<Contract>,
+    /// Bindings extracted by the deterministic Rust-surface analyser.
+    /// Mirrors the bindings appearing in `contracts[i].definition_binding`.
+    pub bindings: Vec<Binding>,
+    /// In-process library APIs. Phase 1 emits Rust only — at most one
+    /// entry, populated when the component exposes any `pub` items.
+    pub library_apis: Vec<LibraryApi>,
+}
+
+/// Produce the full surface artefact bundle for one component. Calls
+/// the LLM via [`surface_of`] for the `SurfaceRecord` inner, then runs
+/// the deterministic Rust-surface analyser
+/// ([`atlas_analyzers::extract_rust_surface`]) over the component's
+/// `src/lib.rs` and `src/main.rs` (when present) to produce contracts,
+/// bindings, and library-api items.
+///
+/// Phase 1 limitations (plan §6 risks):
+///
+/// - Nested `pub mod foo { pub struct Bar; }` is missed (top-level
+///   scan only).
+/// - Only Rust components produce contracts / library-apis; non-Rust
+///   components return an empty artefact set in those fields.
+/// - Component path resolution uses
+///   [`crate::roots::best_root_for`]; multi-segment components emit
+///   from the first segment that contains a recognised source file.
+pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceArtefacts> {
+    // 1. Inner record via the existing LLM-driven path.
+    let record = (*surface_of(db, id.clone())).clone();
+
+    // 2. Resolve the component's on-disk source files to feed into
+    //    the deterministic Rust-surface analyser. Component path
+    //    segments are relative to one of the workspace roots; pick
+    //    the longest-prefix match.
+    let workspace = db.workspace();
+    let roots = workspace.roots(db as &dyn salsa::Database).clone();
+    let components = all_components(db);
+    let Some(entry) = components.iter().find(|c| c.id == id && !c.deleted) else {
+        return Arc::new(SurfaceArtefacts {
+            record,
+            ..Default::default()
+        });
+    };
+
+    // 3. Skip non-Rust components: only the deterministic scanner
+    //    produces output, and it only knows Rust. A polyglot
+    //    component that *includes* Rust still gets the Rust subset.
+    if !entry.languages.contains("rust") && entry.kind != "rust-library" && entry.kind != "rust-cli"
+    {
+        return Arc::new(SurfaceArtefacts {
+            record,
+            ..Default::default()
+        });
+    }
+
+    // 4. Read the well-known Rust source files. Phase 1 looks at
+    //    `src/lib.rs` and `src/main.rs` only; nested modules are
+    //    Phase 2 (rust-analyzer wire-up).
+    let mut sources: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    for segment in &entry.path_segments {
+        let owning_root = best_root_for(&roots, &segment.path)
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| {
+                // Segment paths are relative to one of the roots;
+                // when none matches (e.g. an absolute segment path
+                // synthesised by an override), prefer the primary
+                // root as the resolution base.
+                roots.first().cloned().unwrap_or_else(|| PathBuf::from("."))
+            });
+        let absolute_dir = if segment.path.is_absolute() {
+            segment.path.clone()
+        } else {
+            owning_root.join(&segment.path)
+        };
+        for filename in ["src/lib.rs", "src/main.rs"] {
+            let candidate = absolute_dir.join(filename);
+            if let Some(bytes) = file_content(db, &candidate) {
+                let rel = PathBuf::from(filename);
+                // De-duplicate against earlier segments contributing
+                // the same relative path (rare, but possible for
+                // overlapping segment definitions).
+                if !sources.iter().any(|(p, _)| p == &rel) {
+                    sources.push((rel, (*bytes).clone()));
+                }
+            }
+        }
+    }
+
+    let inputs = RustSourceInputs { sources };
+    let surface_output = extract_rust_surface(id.as_str(), &inputs);
+
+    Arc::new(SurfaceArtefacts {
+        record,
+        contracts: surface_output.contracts,
+        bindings: surface_output.bindings,
+        library_apis: surface_output.library_apis,
+    })
 }
 
 /// JSON input document for the Stage 1 prompt. The key set is stable

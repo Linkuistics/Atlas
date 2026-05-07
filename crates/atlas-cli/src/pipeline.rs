@@ -34,8 +34,8 @@ use atlas_analyzers::AnalyzerRegistry;
 use atlas_engine::{
     components_yaml_snapshot_with_prompt_shas, expand_roots, external_components_yaml_snapshot,
     per_component_yaml_snapshot, related_components_yaml_snapshot, run_fixedpoint,
-    seed_filesystem_excluding, AtlasDatabase, FixedpointConfig, LlmResponseCache, PersistentCache,
-    Phase, ProgressEvent, ProgressSink,
+    seed_filesystem_excluding, surfaces_yaml_snapshot, AtlasDatabase, FixedpointConfig,
+    LlmResponseCache, PersistentCache, Phase, ProgressEvent, ProgressSink,
 };
 use atlas_index::{
     load_or_default_components, load_or_default_externals, load_or_default_overrides,
@@ -676,8 +676,9 @@ fn persist_discovered_roots(output_dir: &Path, roots: &[PathBuf]) -> Result<()> 
 }
 
 /// Walk every (non-deleted) component in `components_file` and emit
-/// a per-component `<component-path>/.atlas/component.yaml` (PR-6).
-/// The component's on-disk path is resolved by joining its
+/// per-component `<component-path>/.atlas/component.yaml` (PR-6) and
+/// `<component-path>/.atlas/surfaces.yaml` (PR-7) files. The
+/// component's on-disk path is resolved by joining its
 /// first-`path_segments[0].path` against the matching root (longest
 /// path-prefix among `roots`, via `best_root_for`). One `mkdir -p`
 /// per component path; atomic write via tempfile-then-rename.
@@ -739,7 +740,15 @@ fn write_per_component_files(
             }
         };
 
-        let snapshot = match per_component_yaml_snapshot(db, &entry.id) {
+        let target_dir = candidate_abs.join(".atlas");
+
+        // -- component.yaml (PR-6) -----------------------------------
+        // Note: per_component_yaml_snapshot now consults
+        // surfaces_yaml_snapshot for its fingerprint (PR-7), so
+        // calling it transitively produces the surface artefacts
+        // already. That call is cheap to repeat below thanks to
+        // Salsa's memoisation of the underlying surface_of inputs.
+        let component_snapshot = match per_component_yaml_snapshot(db, &entry.id) {
             Ok(arc) => arc,
             Err(err) => {
                 eprintln!(
@@ -750,12 +759,44 @@ fn write_per_component_files(
             }
         };
 
-        let target_dir = candidate_abs.join(".atlas");
-        let target_file = target_dir.join("component.yaml");
-        if let Err(err) = write_per_component_atomic(&target_dir, &target_file, &snapshot) {
+        let component_file_path = target_dir.join("component.yaml");
+        if let Err(err) =
+            write_per_component_atomic(&target_dir, &component_file_path, &component_snapshot)
+        {
             eprintln!(
                 "warning: failed to write {}: {err:#}; the top-level components.yaml is unaffected",
-                target_file.display()
+                component_file_path.display()
+            );
+        }
+
+        // -- surfaces.yaml (PR-7) ------------------------------------
+        // Surfaces are projections too: a failed write is a non-fatal
+        // warning. The top-level components.yaml does not (yet) carry
+        // surface fingerprints, so a missing surfaces.yaml degrades
+        // L6 cache invalidation across components but does not break
+        // the canonical output.
+        let surfaces_snapshot = match surfaces_yaml_snapshot(db, &entry.id) {
+            Ok(arc) => arc,
+            Err(err) => {
+                eprintln!(
+                    "warning: failed to project surfaces for `{}`: {err:#}; skipping per-component surfaces.yaml write",
+                    entry.id.as_str()
+                );
+                continue;
+            }
+        };
+
+        let surfaces_file_path = target_dir.join("surfaces.yaml");
+        if let Err(err) = write_yaml_atomic(&target_dir, &surfaces_file_path, &*surfaces_snapshot) {
+            // Note: `&*surfaces_snapshot` (deref of the Arc) is
+            // required here because `write_yaml_atomic` is generic on
+            // `T: Serialize`; auto-deref does not select the inner
+            // `SurfacesFile` impl through `Arc<T>` for generic
+            // monomorphisation. The component-side equivalent above
+            // works without it because that helper is non-generic.
+            eprintln!(
+                "warning: failed to write {}: {err:#}; the top-level components.yaml is unaffected",
+                surfaces_file_path.display()
             );
         }
     }
@@ -766,9 +807,22 @@ fn write_per_component_atomic(
     target_file: &Path,
     file: &atlas_index::PerComponentFile,
 ) -> Result<()> {
+    write_yaml_atomic(target_dir, target_file, file)
+}
+
+/// Generic atomic-write helper for any serde-serialisable value.
+/// Used by both the component.yaml (PR-6) and surfaces.yaml (PR-7)
+/// writers so the temp-file naming, mkdir-p, rename pattern is
+/// consistent.
+fn write_yaml_atomic<T: serde::Serialize>(
+    target_dir: &Path,
+    target_file: &Path,
+    file: &T,
+) -> Result<()> {
     std::fs::create_dir_all(target_dir)
         .with_context(|| format!("failed to create {}", target_dir.display()))?;
-    let yaml = serde_yaml::to_string(file).context("failed to serialise component.yaml")?;
+    let yaml = serde_yaml::to_string(file)
+        .with_context(|| format!("failed to serialise {}", target_file.display()))?;
     let file_name = target_file
         .file_name()
         .with_context(|| format!("{} has no file name", target_file.display()))?
