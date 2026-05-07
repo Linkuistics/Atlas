@@ -6,7 +6,7 @@ prompt at `docs/superpowers/prompts/2026-05-07-vnext-continue.md` reads
 this file (via the `*phase2-plan*` wildcard match) to find the next PR
 to dispatch.
 
-**Last updated:** 2026-05-07 (Wave 1 complete: PR-1 + PR-2 + PR-4 + PR-5 + PR-13 landed; Wave 2 next).
+**Last updated:** 2026-05-07 (Wave 1 + Wave 2 complete: PR-3 closes the abstraction-confirmation milestone; Wave 3 may proceed in parallel).
 
 ## PR status
 
@@ -17,7 +17,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-0  — Plan + status file (docs only)
 - [x] PR-1  — TypeScript / JavaScript surface analyser (in-process)
 - [x] PR-2  — Subprocess analyser transport (stdio JSON)
-- [ ] PR-3  — Python surface analyser (first subprocess analyser)
+- [x] PR-3  — Python surface analyser (first subprocess analyser)
 - [x] PR-4  — Per-analyser `analyser_id` / `analyser_version` plumbing through L3 dispatch
 - [x] PR-5  — Rust binding extractor: regex → `syn`
 - [ ] PR-6  — C# surface analyser (subprocess)
@@ -250,7 +250,155 @@ malformed JSON, etc. Total 12 integration tests in
 `feedback_fix_all_lints` rule.
 
 ### PR-3
-(awaiting subagent dispatch)
+2026-05-07 — Landed as Atlas commits `c8afe2a` (migrate existing
+analysers to structured Visibility/attributes) + `6238214`
+(python-analyzer crate, classifier, L5 subprocess wiring) + `d05082d`
+(integration tests + L5 fingerprint binary_sha contribution);
+atlas-contracts commits `0c2621b` (Visibility enum + module_path +
+attributes on Binding) + `6d88650` (re-export Visibility from crate
+root).
+
+**Schema-mutation contribution:** atlas-contracts
+`crates/atlas-index/src/surfaces.rs`:
+- New `Visibility` enum with `Explicit { keyword: String }` /
+  `Conventional` variants. Tagged-discriminator wire form
+  (`kind: explicit | conventional`).
+- `Binding` gains `visibility: Visibility` (required), `module_path:
+  Vec<String>` (skip-empty), `attributes: BTreeMap<String,
+  serde_yaml::Value>` (skip-empty).
+- `schema.rs` docstring extended to mention `python-package` in the
+  open `kind` vocabulary.
+
+`schema_version` stays integer `1` (greenfield shape mutation per
+plan §2.1).
+
+**Parser library:** `rustpython-parser` 0.4.0 (the plan's named
+default). Used via `Suite::parse(text, &path)` from the `Parse`
+trait; `text-size`-based `range()` provides byte-accurate spans for
+`Binding.span` without character-vs-byte conversion.
+
+**Implementation map:**
+- New workspace member `crates/analyzers/python` (NOT
+  `crates/atlas-analyzers/`, per the plan's path).
+- `atlas_python_analyzer::extract_python_surface` (the pure-function
+  analyser). Decoders for `[tool.poetry.dependencies]`,
+  `[tool.poetry.dev-dependencies]`, `[tool.poetry.group.<n>.dependencies]`,
+  `[tool.uv.sources]` for path-deps; PEP-621 `[project].name` and
+  Poetry `[tool.poetry].name` for project-id resolution.
+- `python-analyzer` binary (`crates/analyzers/python/src/main.rs`):
+  speaks PR-2's wire protocol verbatim. Walks `Target.dir` directly
+  for `*.py` / `*.pyi` files (skipping hidden, virtualenv,
+  `__pycache__`); no LLM access (Phase 2 deterministic-only).
+- `atlas_analyzers::python_classifier` (in-process L3 deterministic
+  analyser). Recognises pyproject.toml / setup.py / requirements.txt
+  → `kind: python-package`.
+- `atlas_analyzers::python_surface_analyzer` —
+  `python_subprocess_spec(binary_path)` builds the
+  `SubprocessAnalyzerSpec`; `locate_python_analyzer_binary()` walks up
+  from `current_exe()` for the runtime sibling-binary lookup.
+- `crates/atlas-engine/src/l5_surface.rs` extended with a Python
+  branch in `surface_artefacts_of` that builds a minimal `Target`,
+  constructs a `SubprocessAnalyzerProxy` on demand, drives the
+  subprocess transport, and decodes the JSON response payload back
+  into typed `Binding` / `LibraryApi` values.
+- `surface_of`'s L5 fingerprint contributes the python-analyzer
+  binary's content sha (tag 0x06) when the component is Python; a
+  rebuilt binary therefore invalidates the LLM-cached SurfaceRecord.
+- `crates/atlas-engine/src/manifest_parse.rs` gains
+  `extract_pyproject_path_deps()`; `root_expansion::expand_roots`
+  now walks both `Cargo.toml` and `pyproject.toml` manifests for
+  path-deps. `enclosing_manifest_root` recognises a
+  `pyproject.toml` ancestor as a project root.
+- `ComponentKind::PythonPackage` variant + `python-package` entry
+  in `defaults/component-kinds.yaml`. `subcarve_policy` adds
+  `PythonPackage` to the library-shaped kinds.
+
+**PR-1 schema-suffix workaround retired:** `ts_js_surface_analyzer`
+migrated from the `language: "typescript-type"` / `"javascript-cjs"` /
+`"javascript-esm"` suffix scheme to structured slots:
+- `language` is plain `"typescript"` / `"javascript"`.
+- ESM exports → `Visibility::Explicit { keyword: "export" }`,
+  `attributes.module_system: "esm"`, `attributes.type_only: true` for
+  type-only exports.
+- CJS object-shorthand (`module.exports = { foo }`) →
+  `Visibility::Conventional` (no per-binding keyword in the
+  shorthand shape), `attributes.module_system: "commonjs"`.
+- CJS property-style (`exports.foo = …`) →
+  `Visibility::Explicit { keyword: "exports" }`,
+  `attributes.module_system: "commonjs"`.
+PR-1's tests updated to assert against the new structured slots.
+
+**Rust analyser migration:** `rust_surface_analyzer` populates
+`Visibility::Explicit { keyword: "pub" }`, empty `module_path`,
+empty `attributes` for every binding. Version constant unchanged
+(PR-5 already bumped to 2.0.0).
+
+**Tests:** all 5 §4 acceptance criteria + 22 lib unit tests + 7
+classifier unit tests + 5 integration tests + 3 cross-tree path-dep
+tests. Listed by criterion:
+1. `l3_pyproject_toml_classifies_as_python_package_without_llm_call`
+   (in `tests/l2_l3_queries.rs`) — classify w/o LLM.
+2. `python_underscore_prefix_function_records_conventional_private_attribute`
+   (in `tests/l5_python_surface.rs`) — conventional visibility +
+   `attributes.private: true`.
+3. `python_dataclass_decorator_recorded_in_attributes_decorator_chain`
+   (in `tests/l5_python_surface.rs`) — `@dataclass` decorator
+   capture.
+4. `python_binary_sha_change_invalidates_l5_cache`
+   (in `tests/l5_python_surface.rs`) — binary content change
+   reshapes L5 fingerprint.
+5. `pyproject_path_dep_expands_to_peer_root` (and the two sibling
+   variants for `dev-dependencies` and `[tool.uv.sources]`)
+   (in `tests/multi_root_path_deps.rs`) — cross-tree path-dep flows
+   into the consumer's L6 cache key via the fixed-point walker.
+
+**Decisions / deviations:**
+
+- **Wire types not factored into a shared crate.** The plan
+  mentioned this as an option; PR-3 keeps them in `atlas-analyzers`
+  and the python-analyzer binary takes a path-dep on
+  `atlas-analyzers` for them. Rationale: low-cost dep arrow, no
+  cycle (atlas-analyzers does not depend on atlas-python-analyzer),
+  and Phase 3's "every analyser is a subprocess" sweep would re-shape
+  this anyway.
+- **L5 per-language probe NOT extracted into a helper trait.** The
+  plan's wording authorised this if the LOC count justified it; with
+  TS/JS + Rust + Python branches the inline form is ~250 LOC and
+  the language-shape diffs are large enough that an extracted trait
+  would have to carry a wide interface. Kept inline; revisit in
+  Phase 3 when the C# / Dart / Elixir / Racket / LispKit branches
+  land.
+- **Python subprocess does its own filesystem walk.** The wire
+  protocol's `Target.manifests` only carries pre-loaded manifests;
+  Python source files are not pre-loaded. The subprocess walks
+  `Target.dir` directly via `std::fs::read_dir`. Mirrors the TS/JS
+  in-process pattern; a future driver may stream source bytes
+  through the wire envelope to keep the analyser sandboxable.
+- **`PythonPackage` is a new ComponentKind variant** alongside the
+  pre-existing `PythonLibrary` / `PythonApp`. The legacy heuristic
+  rule still emits `PythonLibrary` when this analyser declines (e.g.
+  on a manifest the registry hasn't been populated against);
+  Phase 3 may unify the vocabulary.
+- **`extract_pyproject_path_deps` recognises Poetry + uv only.** PEP
+  621's `[project.dependencies]` is a string-array form that does
+  not standardise local-path deps, so the engine's path-dep walker
+  does not consult it. Recognised conventions: Poetry's
+  `dependencies` / `dev-dependencies` / groups, plus uv's
+  `[tool.uv.sources]`.
+
+**Cleanups deferred:**
+- The python-analyzer binary's runtime fs walk uses `std::fs::read_dir`
+  with manual pruning (skipping `__pycache__`, `.venv`, etc.). Phase
+  3 may swap in `ignore` for full gitignore-aware walks if dull/'s
+  Python components live alongside `.gitignore` files that exclude
+  source dirs.
+- The `module_path` slot on the TS/JS analyser is empty for now;
+  resolving `package.json#name` + relative import paths into a
+  dotted module path is left for a future PR.
+- `PythonPackage` does not yet flow into `pipeline.rs`'s
+  language-tag inference; a polyglot Python+Rust component still
+  appears as Rust-only at L1. Not a regression — pre-PR-3 the same
+  was true.
 
 ### PR-4
 2026-05-07 — Landed as Atlas commits `a1b8f20` (main change) +
