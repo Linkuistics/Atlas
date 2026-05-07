@@ -21,8 +21,14 @@
 //!    sibling repos.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use atlas_engine::{expand_roots, expand_roots_with_warnings};
+use atlas_engine::{
+    all_components, compute_l6_batch_fingerprint, expand_roots, expand_roots_with_warnings,
+    seed_filesystem, AtlasDatabase,
+};
+use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId};
+use serde_json::json;
 use tempfile::TempDir;
 
 fn write_pyproject_package(dir: &Path, name: &str, path_deps: &[(&str, &str)]) {
@@ -439,4 +445,168 @@ fn pyproject_uv_sources_path_dep_expands_to_peer_root() {
     let primary_canonical = primary.canonicalize().unwrap();
     let lib_b_canonical = external.join("lib_b").canonicalize().unwrap();
     assert_eq!(roots, vec![primary_canonical, lib_b_canonical]);
+}
+
+// ---------------------------------------------------------------------
+// §4 PR-3 acceptance criterion 5 (F4): a Python component path-dep'd
+// via `pyproject.toml` from another root contributes its surface to
+// the consumer's L6 cache key. The bare-`expand_roots` test above
+// proves the *prerequisite* (path-dep is discovered as a peer root);
+// the test below proves the *contribution* — mutating the lib's
+// public surface changes the consumer's L6 fingerprint.
+// ---------------------------------------------------------------------
+
+/// Lenient stub backend: returns minimal valid responses for every
+/// prompt so the L3 + L5 path completes during fingerprint capture.
+/// Mirrors the LenientBackend pattern used in PR-3's other tests.
+struct LenientBackend {
+    fingerprint: LlmFingerprint,
+}
+
+fn lenient_fp() -> LlmFingerprint {
+    LlmFingerprint {
+        template_sha: [0u8; 32],
+        ontology_sha: [0u8; 32],
+        model_id: "test-backend".into(),
+        backend_version: "0".into(),
+    }
+}
+
+impl LlmBackend for LenientBackend {
+    fn call(&self, req: &LlmRequest) -> Result<serde_json::Value, LlmError> {
+        Ok(match req.prompt_template {
+            PromptId::Classify => json!({
+                "kind": "python-package",
+                "language": "python",
+                "evidence_grade": "strong",
+                "evidence_fields": [],
+                "rationale": "stub",
+                "is_boundary": true,
+            }),
+            PromptId::Stage1Surface => json!({ "purpose": "stub", "notes": "" }),
+            PromptId::Stage2Edges => json!([]),
+            PromptId::Subcarve => json!({
+                "should_subcarve": false,
+                "sub_dirs": [],
+                "rationale": "policy declined",
+            }),
+        })
+    }
+
+    fn fingerprint(&self) -> LlmFingerprint {
+        self.fingerprint.clone()
+    }
+}
+
+/// Compute the consumer's L6 fingerprint over the live component set
+/// against the configured roots. Wraps `compute_l6_batch_fingerprint`
+/// with the engine's surrounding setup (lenient backend, seeded
+/// filesystem). Returns the 64-char hex fingerprint that the
+/// production `all_proposed_edges` would feed to the L6 cache layer.
+fn consumer_l6_fingerprint(roots: &[PathBuf]) -> String {
+    let backend: Arc<dyn LlmBackend> = Arc::new(LenientBackend {
+        fingerprint: lenient_fp(),
+    });
+    let mut db = AtlasDatabase::new(backend, roots.to_vec(), lenient_fp());
+    seed_filesystem(&mut db, roots, false).expect("seed_filesystem must succeed");
+
+    // Materialise the live component set in `all_proposed_edges` shape.
+    let components = all_components(&db);
+    let live: Vec<&atlas_index::ComponentEntry> =
+        components.iter().filter(|c| !c.deleted).collect();
+
+    // Mirror `all_proposed_edges`'s fingerprint construction: the
+    // surfaces-derived participant_surface_sha contributions are what
+    // the test cares about. Use stable stub values for the
+    // prompt/registry/llm_fp slots so any fingerprint *change*
+    // observed across runs comes from the surface contribution alone.
+    let prompt_sha = "stub-prompt-sha".to_string();
+    let registry_sha = "stub-registry-sha".to_string();
+    let llm_fp = lenient_fp();
+    compute_l6_batch_fingerprint(&db, &live, &prompt_sha, &registry_sha, &llm_fp)
+}
+
+#[test]
+fn pyproject_path_dep_lib_surface_contributes_to_consumer_l6_fingerprint() {
+    // §4 PR-3 acceptance criterion 5 (full): a Python component
+    // path-dep'd via `pyproject.toml`'s `[tool.poetry.dependencies]`
+    // from another root contributes its surface to the consumer's L6
+    // cache key.
+    //
+    // Shape: primary root `primary/consumer/` is a python package
+    // whose `pyproject.toml` declares a path-dep on `external/lib_a/`
+    // (a sibling root). `lib_a/` exposes a public binding `foo`. We:
+    //
+    // 1. Capture the consumer's L6 fingerprint with `lib_a` as-is.
+    // 2. Mutate `lib_a`'s source to add a *new* public function
+    //    `bar` (changing its surface).
+    // 3. Capture the consumer's L6 fingerprint again.
+    // 4. Assert the two fingerprints differ.
+    //
+    // A regression where `lib_a`'s surface failed to flow into the
+    // consumer's L6 cache key (e.g. peer-root surfaces are not
+    // included in `live`, or `surfaces_yaml_snapshot` short-circuits
+    // for cross-root components) would produce equal fingerprints
+    // and fail this test.
+    if atlas_analyzers::locate_python_analyzer_binary().is_none() {
+        eprintln!("skipping: python-analyzer binary not located in target/");
+        return;
+    }
+
+    let parent = TempDir::new().unwrap();
+    let primary = parent.path().join("primary");
+    let external = parent.path().join("external");
+
+    // Consumer with a path-dep on lib_a.
+    write(
+        &primary.join("consumer/pyproject.toml"),
+        "[tool.poetry]\nname = \"consumer\"\nversion = \"0.1.0\"\n\n\
+         [tool.poetry.dependencies]\n\
+         python = \"^3.11\"\n\
+         lib_a = { path = \"../../external/lib_a\" }\n",
+    );
+    write(&primary.join("consumer/consumer/__init__.py"), "");
+    write(
+        &primary.join("consumer/consumer/main.py"),
+        "def consumer_entry():\n    return 1\n",
+    );
+
+    // lib_a — pyproject + a single public binding `foo`.
+    write(
+        &external.join("lib_a/pyproject.toml"),
+        "[tool.poetry]\nname = \"lib_a\"\nversion = \"0.1.0\"\n",
+    );
+    let lib_pkg_init = external.join("lib_a/lib_a/__init__.py");
+    write(&lib_pkg_init, "");
+    let lib_source = external.join("lib_a/lib_a/mod.py");
+    write(&lib_source, "def foo():\n    return 1\n");
+
+    // Step 1: discover both roots via the path-dep walker, then
+    // capture the consumer's L6 fingerprint with `lib_a` as-is.
+    let roots = expand_roots(&primary).expect("expand_roots succeeds");
+    assert_eq!(
+        roots.len(),
+        2,
+        "fixture must expand to consumer + lib_a roots; got {roots:?}"
+    );
+    let fp_before = consumer_l6_fingerprint(&roots);
+
+    // Step 2: mutate lib_a's source to add a new public binding.
+    write(
+        &lib_source,
+        "def foo():\n    return 1\n\n\
+         def bar():\n    return 2\n",
+    );
+
+    // Step 3: re-capture the consumer's L6 fingerprint.
+    let fp_after = consumer_l6_fingerprint(&roots);
+
+    // Step 4: the consumer's L6 cache key must reflect the lib's
+    // surface change.
+    assert_ne!(
+        fp_before, fp_after,
+        "lib_a's surface mutation must invalidate the consumer's L6 \
+         fingerprint (the lib's bindings flow into the consumer's L6 \
+         cache key via participant_surface_sha)"
+    );
 }

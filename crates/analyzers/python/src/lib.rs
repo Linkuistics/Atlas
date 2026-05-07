@@ -23,16 +23,19 @@
 //! via the structured `attributes.private: true` slot. Decorators
 //! attached to a binding ride `attributes.decorator_chain: [name, …]`.
 //!
-//! `module_path` is derived from the source file's relative path with
-//! the trailing `.py` and any `__init__` segment stripped:
+//! `module_path` is derived strictly from the source file's relative
+//! path — file-path components, *excluding the symbol*. The trailing
+//! `.py` extension and any `__init__` segment are stripped:
 //!
 //! - `pkg/mod.py` → `["pkg", "mod"]`
 //! - `pkg/__init__.py` → `["pkg"]`
 //! - `pkg/sub/mod.py` → `["pkg", "sub", "mod"]`
 //!
 //! The symbol's `Binding.symbol` is the bare identifier; the full
-//! dotted name (e.g. `pkg.mod.foo`) is reconstructed by joining
-//! `module_path + [symbol]`.
+//! dotted name (e.g. `pkg.mod.foo`) is reconstructed by callers as
+//! `module_path.join(".") + "." + symbol`. This matches §4 PR-3 of
+//! the Phase 2 plan and aligns with the `module_path` convention
+//! C#/Elixir/Dart will adopt.
 //!
 //! ## Span convention
 //!
@@ -290,8 +293,11 @@ fn push_binding(
         attributes.insert("decorator_chain".into(), YamlValue::Sequence(chain));
     }
 
-    let mut full_path: Vec<String> = module_path.to_vec();
-    full_path.push(name.to_string());
+    // §4 PR-3 schema: `module_path` is the *file-path components*
+    // only (no symbol suffix). The dotted form `pkg.mod.foo` is
+    // reconstructed downstream as `module_path.join(".") + "." +
+    // symbol`. C#/Elixir/Dart will adopt the same convention.
+    let module_path_segments: Vec<String> = module_path.to_vec();
 
     let content_sha = sha256_hex_of_range(bytes, span);
     bindings.push(Binding {
@@ -306,7 +312,7 @@ fn push_binding(
         // `attributes.private: true` flag set above is the carrier of
         // the private signal.
         visibility: Visibility::Conventional,
-        module_path: full_path,
+        module_path: module_path_segments,
         attributes,
     });
     pub_items.push(PubItem {
@@ -525,9 +531,11 @@ mod tests {
         assert_eq!(out.bindings.len(), 1);
         assert_eq!(out.bindings[0].symbol, "foo");
         assert_eq!(out.bindings[0].language, "python");
+        // §4 PR-3: `module_path` is file-path components, *excluding*
+        // the symbol. The dotted `pkg.mod.foo` is rebuilt by joining.
         assert_eq!(
             out.bindings[0].module_path,
-            vec!["pkg".to_string(), "mod".to_string(), "foo".to_string()]
+            vec!["pkg".to_string(), "mod".to_string()]
         );
         assert!(matches!(
             out.bindings[0].visibility,
@@ -606,25 +614,22 @@ mod tests {
     fn module_path_drops_init_segment() {
         let body = "def hello():\n    pass\n";
         let out = extract_python_surface("demo/comp", &input("pkg/__init__.py", body));
-        assert_eq!(
-            out.bindings[0].module_path,
-            vec!["pkg".to_string(), "hello".to_string()]
-        );
+        // `pkg/__init__.py` → file-path components are `["pkg"]`. The
+        // symbol `hello` is *not* appended (§4 PR-3 schema).
+        assert_eq!(out.bindings[0].module_path, vec!["pkg".to_string()]);
+        assert_eq!(out.bindings[0].symbol, "hello");
     }
 
     #[test]
     fn module_path_handles_nested_subpackage() {
         let body = "def deep():\n    pass\n";
         let out = extract_python_surface("demo/comp", &input("pkg/sub/mod.py", body));
+        // §4 PR-3: file-path components only, no symbol suffix.
         assert_eq!(
             out.bindings[0].module_path,
-            vec![
-                "pkg".to_string(),
-                "sub".to_string(),
-                "mod".to_string(),
-                "deep".to_string()
-            ]
+            vec!["pkg".to_string(), "sub".to_string(), "mod".to_string()]
         );
+        assert_eq!(out.bindings[0].symbol, "deep");
     }
 
     #[test]
