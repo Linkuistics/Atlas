@@ -10,7 +10,9 @@
 //! ## Outputs
 //!
 //! For every `pub struct` (anywhere in the AST, including inside
-//! `pub mod` blocks) carrying a `#[derive(... Serialize ... Deserialize ...)]`
+//! `pub mod` blocks — but NOT inside non-pub mod blocks, whose
+//! contents are not externally reachable) carrying a
+//! `#[derive(... Serialize ... Deserialize ...)]`
 //! attribute, the analyser emits a `data-format` contract whose
 //! `definition_binding` covers the struct's `pub`-to-closing-brace
 //! byte range. The struct also appears as a `pub_item` of kind
@@ -230,16 +232,19 @@ pub fn extract_rust_surface(component_id: &str, inputs: &RustSourceInputs) -> Ru
     }
 }
 
-/// Walk every item in `items`, recursing into inline `mod` bodies.
+/// Walk every item in `items`, recursing into inline `pub` mod bodies.
 /// Records each `pub` item (and emits a contract when the item is a
-/// `pub struct` carrying a serde derive). The traversal visits both
-/// `pub` and non-`pub` modules: a non-`pub` mod can still contain
-/// `pub` items, but those items are not externally visible — the
-/// public-API fingerprint relies only on `pub` items at any nesting
-/// depth, and we record them all so callers downstream can decide
-/// what's externally reachable. (Spec §2.1 says nothing about
-/// reachability filtering; the existing tests treat any encountered
-/// `pub` item as a library-api member.)
+/// `pub struct` carrying a serde derive). Recursion is gated on the
+/// mod's own visibility: items inside a non-`pub` mod are not
+/// externally reachable and must not appear in the public API surface.
+/// This matches Phase 1's depth-0-only regex behaviour, which never
+/// entered any nested mod body — the same invariant expressed via a
+/// visibility check rather than a depth counter.
+///
+/// `pub`, `pub(crate)`, `pub(super)`, and `pub(in path)` (all
+/// captured by `syn::Visibility::Public` and
+/// `syn::Visibility::Restricted`) all permit recursion; bare private
+/// (i.e. `syn::Visibility::Inherited`) does not.
 fn walk_items(
     component_id: &str,
     rel_path: &Path,
@@ -260,20 +265,28 @@ fn walk_items(
             pub_items,
         );
 
-        // Recurse into inline modules so nested `pub` items are
-        // visited. PR-5 closes the Phase 1 limitation by descending
-        // here regardless of the surrounding mod's own visibility.
+        // Recurse into inline mod bodies ONLY when the mod itself is
+        // pub (or a restricted-pub variant). Items inside a non-pub
+        // mod are not externally reachable and must not surface in the
+        // public API. Phase 1's regex walker only operated at depth 0
+        // and never entered any mod body; we match that "non-pub mod
+        // contents are private" invariant here via a visibility gate.
         if let syn::Item::Mod(mod_item) = item {
-            if let Some((_, inner_items)) = &mod_item.content {
-                walk_items(
-                    component_id,
-                    rel_path,
-                    bytes,
-                    inner_items,
-                    contracts,
-                    bindings,
-                    pub_items,
-                );
+            if matches!(
+                mod_item.vis,
+                syn::Visibility::Public(_) | syn::Visibility::Restricted(_)
+            ) {
+                if let Some((_, inner_items)) = &mod_item.content {
+                    walk_items(
+                        component_id,
+                        rel_path,
+                        bytes,
+                        inner_items,
+                        contracts,
+                        bindings,
+                        pub_items,
+                    );
+                }
             }
         }
     }
@@ -805,6 +818,31 @@ mod tests {
         assert_eq!(
             o1.contracts[0].definition_binding.content_sha,
             o2.contracts[0].definition_binding.content_sha
+        );
+    }
+
+    #[test]
+    fn non_pub_mod_does_not_surface_inner_pub_items() {
+        // Regression: the Phase 2 syn walker previously entered ALL
+        // inline mod bodies regardless of visibility, surfacing pub
+        // items from non-pub mods. Items inside a non-pub mod are not
+        // externally reachable and must not appear in the public API.
+        let body = "mod inner { pub struct ShouldBeHidden; }\npub struct Public;\n";
+        let out = extract_rust_surface("c", &input("src/lib.rs", body));
+        let names: Vec<&str> = out.library_apis[0]
+            .pub_items
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"Public"),
+            "expected Public in pub items, got {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"ShouldBeHidden"),
+            "non-pub mod must not surface its pub items, got {:?}",
+            names
         );
     }
 }
