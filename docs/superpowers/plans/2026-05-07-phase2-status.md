@@ -6,7 +6,7 @@ prompt at `docs/superpowers/prompts/2026-05-07-vnext-continue.md` reads
 this file (via the `*phase2-plan*` wildcard match) to find the next PR
 to dispatch.
 
-**Last updated:** 2026-05-07 (PR-4 + PR-5 + PR-13 landed; Wave 1 in progress).
+**Last updated:** 2026-05-07 (PR-2 + PR-4 + PR-5 + PR-13 landed; Wave 1 in progress).
 
 ## PR status
 
@@ -16,7 +16,7 @@ commit sha + anything load-bearing the next session needs to know).
 
 - [x] PR-0  — Plan + status file (docs only)
 - [ ] PR-1  — TypeScript / JavaScript surface analyser (in-process)
-- [ ] PR-2  — Subprocess analyser transport (stdio JSON)
+- [x] PR-2  — Subprocess analyser transport (stdio JSON)
 - [ ] PR-3  — Python surface analyser (first subprocess analyser)
 - [x] PR-4  — Per-analyser `analyser_id` / `analyser_version` plumbing through L3 dispatch
 - [x] PR-5  — Rust binding extractor: regex → `syn`
@@ -105,7 +105,84 @@ Load-bearing context for Wave 1 reviewers:
 (awaiting subagent dispatch)
 
 ### PR-2
-(awaiting subagent dispatch)
+2026-05-07 — Landed as Atlas commits `9413ffb` (main change) +
+`293dc31` (SIGTERM fix) + `a5779a1` (shutdown-doc + stderr-on-crash
+fix); atlas-contracts commit `89ed6cd` on the contracts main
+(`SubprocessConfig::binary_sha` becomes load-bearing).
+
+**Schema-mutation contribution:** atlas-contracts
+`crates/atlas-index/src/analyzers.rs` —
+`SubprocessConfig::binary_sha: Option<String>` is now a load-bearing
+field that subprocess analysers populate at registration time. No
+surfaces.rs / schema.rs changes.
+
+**Wire protocol:** Length-prefixed framing — 4-byte big-endian u32
+length + UTF-8 JSON bytes; 16 MiB cap. Request kinds: `applies`,
+`fingerprint_inputs`, `analyse` (the `applies` variant is reserved on
+the wire; the proxy short-circuits locally against the predicate
+verified at handshake — kept on the wire for Phase 3+ dynamic
+predicates). Response kinds: `confident`, `graded`, `declines`,
+`error`. Manifest bytes carried as base64 to keep non-UTF-8 inputs
+safe.
+
+**Process-pool semantics:** one process per analyser (Phase 2;
+concurrent dispatch is Phase 3+). Lazy spawn on first dispatch. Pool
+ownership lives in `SubprocessAnalyzerProxy`; registry construction
+implicitly creates the pool, registry drop tears it down.
+Per-analyse-call timeout (60s default; configurable per analyser).
+Implementation: `Mutex<Option<ChildProcess>>` + worker thread +
+`mpsc::recv_timeout` for cancellable waits (Atlas is fully sync; no
+async dependency added).
+
+**Shutdown sequence:** `SIGTERM` (via `libc::kill` under
+`#[cfg(unix)]`), then EOF on stdin (via stdin drop), then `SIGKILL`
+after a 5-second grace. The fix-up commit `293dc31` added the
+explicit SIGTERM (the original implementation skipped it and went
+EOF → SIGKILL); on Windows the SIGTERM step is a no-op and shutdown
+falls through to forceful termination.
+
+**Crash-path stderr capture (`a5779a1`):** child's stderr handle is
+piped at spawn but not actively drained; on the crash path
+(read error / timeout / disconnected), up to ~4 KB of stderr tail is
+read synchronously (the kernel has already closed the pipe write end
+by then) and appended to the `CallFailed` `message` string. Improves
+PR-3 debuggability without restructuring `AnalyzerError`.
+
+**Tag-byte 0x06:** `FingerprintBuilder::add_analyzer_binary_sha`
+contributes the subprocess analyser binary's content sha to L-stage
+fingerprints. Tag table: 0x01..0x05 unchanged; 0x06 new.
+
+**`Box::leak` in `parse_fingerprint_inputs`:** the
+`FingerprintInput::Custom { tag: &'static str }` shape forces the
+parser to leak the tag string. Bounded per unique tag in practice
+(subprocess analysers declare a small fixed set), but unbounded if a
+hostile or buggy subprocess returns novel tags per call. TODO at
+the leak site marks `Cow<'static, str>` migration as Phase 3
+cleanup.
+
+**Echo fixture:** lives as a workspace `[[bin]]` declared on
+`atlas-analyzers/Cargo.toml`; tests resolve via
+`env!("CARGO_BIN_EXE_echo_subprocess")` so cargo handles build
+ordering. Configurable via CLI flags
+(`--stage`, `--crash-before-handshake`, `--hang-after-handshake`,
+etc.) — chosen over env-vars to avoid clobber under parallel test
+runs.
+
+**Tests:** all 5 §4 acceptance tests present and passing —
+`transport_round_trip`, `handshake_rejects_mismatched_capabilities`
+(unit + integration variants), `subprocess_crash_returns_call_failed`,
+`subprocess_timeout_returns_call_failed`,
+`binary_sha_change_invalidates_cache`. Plus 7 additional integration
+tests covering pool re-spawn after failure, process-pool drop,
+malformed JSON, etc. Total 12 integration tests in
+`crates/atlas-analyzers/tests/subprocess_transport.rs`.
+
+**Side effect during PR-2 verification:** clippy 1.93's
+`needless_lifetimes` lint surfaced pre-existing `'db` annotations in
+`l1_queries.rs` (5×), `l2_candidates.rs` (1×), and `l9_projections.rs`
+(1×). Auto-fix applied as a separate hygiene commit — see git log
+`phase2: clippy 1.93 needless_lifetimes hygiene sweep`. Per
+`feedback_fix_all_lints` rule.
 
 ### PR-3
 (awaiting subagent dispatch)
