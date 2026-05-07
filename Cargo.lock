@@ -98,6 +98,7 @@ dependencies = [
  "base64",
  "component-ontology",
  "globset",
+ "libc",
  "proc-macro2",
  "serde",
  "serde_json",

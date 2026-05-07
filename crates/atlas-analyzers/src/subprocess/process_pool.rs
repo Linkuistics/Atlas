@@ -29,6 +29,8 @@
 //! matches the §4 acceptance: "A subprocess that fails or times
 //! out does not poison the registry; later dispatches respawn it."
 
+#[cfg(unix)]
+use libc;
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -121,12 +123,36 @@ impl ChildProcess {
         Ok(cp)
     }
 
+    /// Send SIGTERM to the child process (Unix only).
+    ///
+    /// On Windows there is no SIGTERM equivalent; the caller will fall
+    /// through to `child.kill()` (TerminateProcess) after the grace
+    /// period.
+    #[cfg(unix)]
+    fn send_sigterm(&self) {
+        // SAFETY: libc::kill is async-signal-safe; we pass a valid
+        // pid obtained from the running child and a well-known signal
+        // number. The return value is intentionally ignored — if the
+        // process has already exited the kill(2) call returns ESRCH,
+        // which is benign.
+        unsafe {
+            libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM);
+        }
+    }
+
     fn shutdown(mut self) {
-        // Drop stdin first so the child sees EOF and gets a chance
-        // to exit cleanly.
-        drop(self.stdin);
-        // Wait up to SHUTDOWN_GRACE for a clean exit; otherwise
-        // SIGKILL.
+        // Send SIGTERM first (Unix). The spec requires
+        // "SIGTERM → 5s grace → SIGKILL". On Windows there is no
+        // SIGTERM so we fall through directly to kill() below.
+        #[cfg(unix)]
+        self.send_sigterm();
+
+        // Drop stdin to signal EOF. This helps analysers that do not
+        // install a SIGTERM handler but do exit on stdin close.
+        let _ = self.stdin;
+
+        // Poll for a clean exit up to SHUTDOWN_GRACE; escalate to
+        // SIGKILL if the child is still alive after the deadline.
         let deadline = Instant::now() + SHUTDOWN_GRACE;
         loop {
             match self.child.try_wait() {

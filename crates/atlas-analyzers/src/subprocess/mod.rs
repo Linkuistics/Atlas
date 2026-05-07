@@ -374,6 +374,11 @@ fn parse_fingerprint_inputs(payload: &serde_json::Value) -> Result<Vec<Fingerpri
                 // decoded tag for the lifetime of the process.
                 // Subprocess analysers should declare a small,
                 // bounded set of tags so the leak is bounded.
+                // TODO(phase3): replace `tag: &'static str` in
+                // FingerprintInput::Custom with an owned
+                // `Cow<'static, str>` so that novel tags from a
+                // subprocess do not accumulate unbounded leaked
+                // allocations. See PR-2 spec-review notes.
                 let leaked: &'static str = Box::leak(tag.into_boxed_str());
                 out.push(FingerprintInput::Custom { tag: leaked, bytes });
             }

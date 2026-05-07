@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 atlas-index = { workspace = true }
+libc = "0.2"
 atlas-llm = { path = "../atlas-llm" }
 base64 = { workspace = true }
 component-ontology = { workspace = true }
