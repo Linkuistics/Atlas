@@ -40,6 +40,7 @@ pub mod dockerfile_classifier;
 pub mod llm_classify;
 pub mod registry;
 pub mod rust_surface_analyzer;
+pub mod subprocess;
 
 use std::any::Any;
 use std::collections::BTreeSet;
@@ -55,6 +56,10 @@ pub use llm_classify::{LlmClassifyAnalyzer, LlmHook, LlmHookError};
 pub use registry::{AnalyzerRegistry, REGISTRY_HASH_NAMESPACE};
 pub use rust_surface_analyzer::{
     extract_rust_surface, RustSourceInputs, RustSurfaceAnalyzer, RustSurfaceOutput,
+};
+pub use subprocess::{
+    handshake::{verify_capabilities, Capabilities, HandshakeError},
+    hash_binary, SubprocessAnalyzerProxy, SubprocessAnalyzerSpec, SubprocessOutput,
 };
 
 /// SHA-256 hex of a half-open byte range `bytes[span.0..span.1]`.

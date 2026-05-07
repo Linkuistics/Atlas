@@ -23,6 +23,7 @@
 //! | `0x03` | `add_llm_fingerprint`          | length-framed concatenation of `template_sha` ‖ `ontology_sha` ‖ `model_id` ‖ `backend_version` |
 //! | `0x04` | `add_participant_surface_sha`  | UTF-8 bytes of the sha256 hex string  |
 //! | `0x05` | `add_analyzer_registry_sha`    | UTF-8 bytes of the sha256 hex string (per design §8.1, contributes to L3+ stage cache keys so a registry shape change invalidates every downstream cache entry automatically) |
+//! | `0x06` | `add_analyzer_binary_sha`      | UTF-8 bytes of the sha256 hex string (Phase 2 PR-2: subprocess analyser binary content sha; a rebuilt analyser binary invalidates downstream cache entries even when the YAML spec is byte-identical) |
 //!
 //! Each entry in the `BTreeSet` is `(tag, bytes)`; sort order is by
 //! tag first, then lex order on bytes. New tags must be appended (never
@@ -48,6 +49,7 @@ const TAG_PROMPT_SHA: u8 = 0x02;
 const TAG_LLM_FINGERPRINT: u8 = 0x03;
 const TAG_PARTICIPANT_SURFACE_SHA: u8 = 0x04;
 const TAG_ANALYZER_REGISTRY_SHA: u8 = 0x05;
+const TAG_ANALYZER_BINARY_SHA: u8 = 0x06;
 
 /// Builder for a stage cache fingerprint.
 ///
@@ -162,6 +164,20 @@ impl FingerprintBuilder {
     pub fn add_analyzer_registry_sha(&mut self, sha: &Sha256Hex) {
         self.entries
             .insert((TAG_ANALYZER_REGISTRY_SHA, sha.as_bytes().to_vec()));
+    }
+
+    /// Contribute a subprocess analyser binary's content sha
+    /// (Phase 2 PR-2). The engine computes this once at registry
+    /// construction by hashing the analyser binary on disk and
+    /// records it via this method on every L-stage fingerprint the
+    /// analyser participates in. A rebuilt analyser binary thus
+    /// invalidates downstream cache entries even when the
+    /// `analyzers.yaml` spec is byte-identical — recompiling the
+    /// analyser is enough to change behaviour, so the cache key has
+    /// to track binary identity in addition to declared metadata.
+    pub fn add_analyzer_binary_sha(&mut self, sha: &Sha256Hex) {
+        self.entries
+            .insert((TAG_ANALYZER_BINARY_SHA, sha.as_bytes().to_vec()));
     }
 
     /// Finalise the builder and return the lowercase 64-character
@@ -343,6 +359,55 @@ mod tests {
     }
 
     #[test]
+    fn add_analyzer_binary_sha_changes_fingerprint() {
+        // PR-2: the analyser-binary sha contributes to every L-stage
+        // fingerprint whose dispatcher consulted a subprocess
+        // analyser.
+        let base = FingerprintBuilder::new(Stage::L3, "an", "v").finalise();
+        let mut with_one = FingerprintBuilder::new(Stage::L3, "an", "v");
+        with_one.add_analyzer_binary_sha(&"abc".to_string());
+        assert_ne!(base, with_one.finalise());
+    }
+
+    #[test]
+    fn analyzer_binary_sha_tag_disambiguates_from_registry_sha() {
+        // The registry-sha (tag 0x05) and binary-sha (tag 0x06) live
+        // on distinct tags; identical bytes contributed via each
+        // method must NOT collide.
+        let mut a = FingerprintBuilder::new(Stage::L3, "an", "v");
+        a.add_analyzer_registry_sha(&"abc".to_string());
+        let mut b = FingerprintBuilder::new(Stage::L3, "an", "v");
+        b.add_analyzer_binary_sha(&"abc".to_string());
+        assert_ne!(a.finalise(), b.finalise());
+    }
+
+    #[test]
+    fn binary_sha_change_invalidates_cache() {
+        // PR-2 acceptance: replacing the analyser binary must change
+        // the L-stage fingerprint. We exercise the contract directly
+        // through the FingerprintBuilder: two builders that differ
+        // only in the binary sha must produce different fingerprints.
+        let mut before = FingerprintBuilder::new(Stage::L5, "py-surface", "0.1.0");
+        before.add_file_content_sha(&"file-sha".to_string());
+        before.add_analyzer_binary_sha(
+            &"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+        );
+        let before_fp = before.finalise();
+
+        let mut after = FingerprintBuilder::new(Stage::L5, "py-surface", "0.1.0");
+        after.add_file_content_sha(&"file-sha".to_string());
+        after.add_analyzer_binary_sha(
+            &"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210".to_string(),
+        );
+        let after_fp = after.finalise();
+
+        assert_ne!(
+            before_fp, after_fp,
+            "rebuilt analyser binary must change the L-stage fingerprint"
+        );
+    }
+
+    #[test]
     fn equal_inputs_produce_equal_fingerprints() {
         let mut a = FingerprintBuilder::new(Stage::L6, "edges-llm", "1.0");
         a.add_llm_fingerprint(&fp());
@@ -382,6 +447,7 @@ mod tests {
         Llm(String, String, [u8; 32], [u8; 32]),
         ParticipantSurface(String),
         AnalyzerRegistry(String),
+        AnalyzerBinary(String),
     }
 
     fn arb_hex_sha() -> impl Strategy<Value = String> {
@@ -406,6 +472,7 @@ mod tests {
                 )),
             arb_hex_sha().prop_map(Contribution::ParticipantSurface),
             arb_hex_sha().prop_map(Contribution::AnalyzerRegistry),
+            arb_hex_sha().prop_map(Contribution::AnalyzerBinary),
         ]
     }
 
@@ -423,6 +490,7 @@ mod tests {
             }
             Contribution::ParticipantSurface(s) => builder.add_participant_surface_sha(s),
             Contribution::AnalyzerRegistry(s) => builder.add_analyzer_registry_sha(s),
+            Contribution::AnalyzerBinary(s) => builder.add_analyzer_binary_sha(s),
         }
     }
 

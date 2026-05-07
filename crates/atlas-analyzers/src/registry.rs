@@ -21,6 +21,7 @@
 //! is preserved so callers (and the fingerprint computation) see a
 //! stable shape regardless of dispatch order.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use atlas_index::{AnalyzerSpec, AnalyzersFile, Stage, ANALYZERS_SCHEMA_VERSION};
@@ -30,7 +31,8 @@ use crate::cargo_classifier::CargoClassifier;
 use crate::dockerfile_classifier::DockerfileClassifier;
 use crate::llm_classify::LlmClassifyAnalyzer;
 use crate::rust_surface_analyzer::RustSurfaceAnalyzer;
-use crate::Analyzer;
+use crate::subprocess::{SubprocessAnalyzerProxy, SubprocessAnalyzerSpec};
+use crate::{Analyzer, AnalyzerError};
 
 /// Namespace string mixed into the `analyzer_registry_sha` so a future
 /// hash redefinition can be distinguished from the v1 form. The hash
@@ -48,6 +50,14 @@ pub struct AnalyzerRegistry {
     /// Declarative shape for the merged registry, used to compute
     /// the canonical [`AnalyzersFile`] and its sha256.
     declared: AnalyzersFile,
+    /// Per-analyser binary content shas for subprocess analysers
+    /// registered via [`AnalyzerRegistry::register_subprocess`].
+    /// Keyed on analyser id. The engine reads this map when
+    /// computing L-stage cache fingerprints — every subprocess
+    /// analyser the dispatcher consulted contributes its binary
+    /// sha via `FingerprintBuilder::add_analyzer_binary_sha`
+    /// (PR-2 tag `0x06`).
+    binary_shas: BTreeMap<String, String>,
 }
 
 impl std::fmt::Debug for AnalyzerRegistry {
@@ -87,6 +97,7 @@ impl AnalyzerRegistry {
         AnalyzerRegistry {
             analyzers,
             declared,
+            binary_shas: BTreeMap::new(),
         }
     }
 
@@ -97,6 +108,7 @@ impl AnalyzerRegistry {
         AnalyzerRegistry {
             analyzers: Vec::new(),
             declared: AnalyzersFile::default(),
+            binary_shas: BTreeMap::new(),
         }
     }
 
@@ -106,6 +118,55 @@ impl AnalyzerRegistry {
     pub fn register(&mut self, analyzer: Arc<dyn Analyzer>) {
         self.declared.analyzers.push(spec_for_analyzer(&analyzer));
         self.analyzers.push(analyzer);
+    }
+
+    /// Register a subprocess analyser. Constructs a
+    /// [`SubprocessAnalyzerProxy`] (which hashes the binary at
+    /// `spec.binary_path`), stores it as the registered analyser
+    /// instance, and records the binary sha so engine-side
+    /// fingerprinting can look it up by id.
+    ///
+    /// Returns the proxy's binary sha on success — the engine may
+    /// already know it (PR-2 wires the cache integration) but
+    /// surfacing it here keeps the registry the single source of
+    /// truth.
+    pub fn register_subprocess(
+        &mut self,
+        spec: SubprocessAnalyzerSpec,
+    ) -> Result<String, AnalyzerError> {
+        let proxy = SubprocessAnalyzerProxy::new(spec.clone())?;
+        let id = proxy.id().to_string();
+        let binary_sha = proxy.binary_sha().to_string();
+        // Build a declared `AnalyzerSpec` mirroring the in-process
+        // form. The subprocess transport carries the binary_sha
+        // load-bearingly via the SubprocessConfig.
+        let declared = AnalyzerSpec {
+            id: spec.id.clone(),
+            stage: spec.stage,
+            applicability: spec.applicability.clone(),
+            cost_class: spec.cost_class,
+            confidence: Some(atlas_index::Confidence::Binary),
+            transport: atlas_index::Transport::Subprocess,
+            subprocess: Some(atlas_index::SubprocessConfig {
+                command: spec.command.clone(),
+                timeout_seconds: spec
+                    .timeout
+                    .map(|d| d.as_secs().min(u32::MAX as u64) as u32),
+                binary_sha: Some(binary_sha.clone()),
+            }),
+            version: spec.version.clone(),
+        };
+        self.declared.analyzers.push(declared);
+        self.binary_shas.insert(id, binary_sha.clone());
+        self.analyzers.push(Arc::new(proxy) as Arc<dyn Analyzer>);
+        Ok(binary_sha)
+    }
+
+    /// Look up a registered subprocess analyser's binary content
+    /// sha by id. Returns `None` for in-process analysers (they
+    /// have no binary on disk distinct from the engine itself).
+    pub fn binary_sha(&self, analyzer_id: &str) -> Option<&str> {
+        self.binary_shas.get(analyzer_id).map(|s| s.as_str())
     }
 
     /// Number of registered analyser instances (built-ins plus any

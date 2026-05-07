@@ -10,6 +10,7 @@ repository.workspace = true
 anyhow = { workspace = true }
 atlas-index = { workspace = true }
 atlas-llm = { path = "../atlas-llm" }
+base64 = { workspace = true }
 component-ontology = { workspace = true }
 globset = { workspace = true }
 # `span-locations` enables `proc_macro2::Span::byte_range` outside the
@@ -24,6 +25,21 @@ sha2 = { workspace = true }
 syn = { version = "2.0.117", features = ["full"] }
 thiserror = { workspace = true }
 toml = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+# Reference echo binary — exercised by the subprocess transport
+# integration tests (PR-2). The fixture lives under
+# `tests/fixtures/echo_subprocess/main.rs` and is shipped only as a
+# test artefact; production code never spawns it. Cargo writes the
+# binary to the same `target/<profile>` directory as the crate's
+# tests, and tests look it up via `env!("CARGO_BIN_EXE_echo_subprocess")`.
+[[bin]]
+name = "echo_subprocess"
+path = "tests/fixtures/echo_subprocess/main.rs"
+test = false
+doc = false
 
 [lints]
 workspace = true
