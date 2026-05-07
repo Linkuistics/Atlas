@@ -75,7 +75,35 @@ pub fn is_manifest_file(path: &Path) -> bool {
     if basename.ends_with(".sld") {
         return true;
     }
+    // Dockerfile suffix patterns (`Dockerfile.<suffix>`, e.g. dull/'s
+    // CI naming `Dockerfile.frontend.buildkite`). Phase 2 PR-14
+    // extends the Phase 1 PR-9 dockerfile classifier to handle these
+    // (the brief explicitly verifies `*.buildkite` flow through).
+    if is_dockerfile_basename(basename) {
+        return true;
+    }
     is_compose_manifest_basename(basename)
+}
+
+/// Return `true` when `basename` is the canonical `Dockerfile` or any
+/// `Dockerfile.<suffix>` form. The suffix must be non-empty so we
+/// don't match `Dockerfile.` (with a trailing dot and nothing after).
+///
+/// Phase 1 PR-9's classifier only recognised the exact basename
+/// `Dockerfile`. Phase 2 PR-14's polyglot acceptance fixture requires
+/// the engine to discover dull/' CI-naming variants such as
+/// `Dockerfile.frontend.buildkite` as L1 manifests so the dockerfile
+/// classifier sees them on its `Target.manifests` slice.
+pub(crate) fn is_dockerfile_basename(basename: &str) -> bool {
+    if basename == "Dockerfile" {
+        return true;
+    }
+    if let Some(rest) = basename.strip_prefix("Dockerfile.") {
+        if !rest.is_empty() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Return `true` when `basename` matches one of the four canonical Docker

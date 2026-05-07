@@ -120,22 +120,44 @@ impl Analyzer for DockerfileClassifier {
     }
 
     fn applies(&self, target: &Target) -> bool {
-        target.manifest_by_name("Dockerfile").is_some()
-            || target.top_level_files.iter().any(|n| n == "Dockerfile")
+        target
+            .manifests
+            .iter()
+            .any(|m| is_dockerfile_basename(&m.name))
+            || target
+                .top_level_files
+                .iter()
+                .any(|n| is_dockerfile_basename(n))
     }
 
     fn fingerprint_inputs(&self, target: &Target) -> Vec<FingerprintInput> {
         target
-            .manifest_by_name("Dockerfile")
-            .map(|m| vec![FingerprintInput::FileContentSha(m.content_sha.clone())])
-            .unwrap_or_default()
+            .manifests
+            .iter()
+            .filter(|m| is_dockerfile_basename(&m.name))
+            .map(|m| FingerprintInput::FileContentSha(m.content_sha.clone()))
+            .collect()
     }
 
     fn analyse(&self, _ctx: &AnalysisContext, target: &Target) -> AnalyzerResult {
-        let Some(manifest) = target.manifest_by_name("Dockerfile") else {
-            // The engine pre-loads `Dockerfile` into `Target.manifests`
-            // when it discovers one; absent it, the analyser cannot
-            // run. Decline so the dispatcher consults the next.
+        // Pick the lexicographically-first Dockerfile-named manifest
+        // (e.g. `Dockerfile` before `Dockerfile.backend.buildkite`).
+        // Phase 2 PR-14 extends the Phase 1 PR-9 classifier to
+        // recognise `Dockerfile.<suffix>` files in addition to the
+        // canonical `Dockerfile` basename — the brief's polyglot
+        // fixture verifies dull/'s `*.buildkite` CI naming flows
+        // through here unchanged.
+        let mut dockerfile_manifests: Vec<&crate::TargetFile> = target
+            .manifests
+            .iter()
+            .filter(|m| is_dockerfile_basename(&m.name))
+            .collect();
+        dockerfile_manifests.sort_by(|a, b| a.name.cmp(&b.name));
+        let Some(manifest) = dockerfile_manifests.first().copied() else {
+            // The engine pre-loads `Dockerfile`-shaped manifests into
+            // `Target.manifests` when it discovers them; absent any,
+            // the analyser cannot run. Decline so the dispatcher
+            // consults the next.
             return AnalyzerResult::Declines;
         };
 
@@ -144,7 +166,7 @@ impl Analyzer for DockerfileClassifier {
             Err(e) => {
                 return AnalyzerResult::Error(AnalyzerError::MalformedInput {
                     analyzer_id: ANALYZER_ID.into(),
-                    message: format!("Dockerfile is not valid UTF-8: {e}"),
+                    message: format!("{} is not valid UTF-8: {e}", manifest.name),
                 });
             }
         };
@@ -162,9 +184,10 @@ impl Analyzer for DockerfileClassifier {
             lifecycle_roles: vec!["deploy".into()],
             build_system: Some("docker".into()),
             role: None,
-            evidence_fields: vec!["Dockerfile:FROM".into()],
+            evidence_fields: vec![format!("{}:FROM", manifest.name)],
             rationale: format!(
-                "Dockerfile declares {} FROM instruction(s); base image: {}",
+                "{} declares {} FROM instruction(s); base image: {}",
+                manifest.name,
                 parsed.from_images.len(),
                 parsed.from_images[0].image
             ),
@@ -172,6 +195,27 @@ impl Analyzer for DockerfileClassifier {
             parsed,
         }))
     }
+}
+
+/// Return `true` when `basename` is the canonical `Dockerfile` or any
+/// `Dockerfile.<suffix>` form (e.g. dull/'s CI naming
+/// `Dockerfile.frontend.buildkite`). The trailing-dot edge case
+/// (`Dockerfile.`) is rejected — a non-empty suffix is required.
+///
+/// Mirrors the engine-side `manifest_patterns::is_dockerfile_basename`
+/// so the L1 manifest walk and the analyser's `applies` predicate
+/// stay in sync. The two functions exist as siblings because the
+/// analyser crate does not depend on `atlas-engine`.
+fn is_dockerfile_basename(basename: &str) -> bool {
+    if basename == "Dockerfile" {
+        return true;
+    }
+    if let Some(rest) = basename.strip_prefix("Dockerfile.") {
+        if !rest.is_empty() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Parse a Dockerfile body into a [`DockerfileShape`]. Pure function;

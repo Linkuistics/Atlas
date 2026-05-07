@@ -99,8 +99,13 @@ pub fn composition_edges_from_dockerfiles(db: &AtlasDatabase) -> Vec<Edge> {
         let Some(image_dir) = absolute_component_dir(image_component, &roots) else {
             continue;
         };
-        let dockerfile_path = image_dir.join("Dockerfile");
-        let Some(bytes) = file_content(db, &dockerfile_path) else {
+        // Find the Dockerfile-named file in `image_dir`. Prefers the
+        // canonical basename `Dockerfile`; falls back to the
+        // lex-first `Dockerfile.<suffix>` (e.g. dull/'s CI naming
+        // convention `Dockerfile.frontend.buildkite`). Phase 2 PR-14
+        // extends the Phase 1 PR-9 hard-coded `Dockerfile` lookup so
+        // composition edges flow through `*.buildkite` files too.
+        let Some((_dockerfile_filename, bytes)) = locate_dockerfile_in_dir(db, &image_dir) else {
             // The L3 driver only classifies a dir as `docker-image`
             // when it observed a Dockerfile, so this branch is mostly
             // a defensive fallback for direct overrides that pin a
@@ -183,6 +188,46 @@ pub fn composition_edges_from_dockerfiles(db: &AtlasDatabase) -> Vec<Edge> {
     }
 
     out
+}
+
+/// Locate the Dockerfile-named file inside `image_dir`. Prefers the
+/// canonical basename `Dockerfile`; falls back to the
+/// lexicographically-first `Dockerfile.<suffix>` form (e.g.
+/// `Dockerfile.frontend.buildkite`). Returns `(basename, bytes)` or
+/// `None` when no match is found.
+///
+/// The probe is filesystem-backed (`std::fs::read_dir`) rather than
+/// going through the engine's L1 walk so that components-by-addition
+/// (which carry no manifests slice) still resolve their Dockerfile
+/// when the dir is on disk.
+fn locate_dockerfile_in_dir(
+    db: &AtlasDatabase,
+    image_dir: &Path,
+) -> Option<(String, Arc<Vec<u8>>)> {
+    // Canonical-name fast path.
+    let canonical = image_dir.join("Dockerfile");
+    if let Some(bytes) = file_content(db, &canonical) {
+        return Some(("Dockerfile".to_string(), bytes));
+    }
+    // Fallback: scan for any `Dockerfile.<suffix>` file. Sort by
+    // basename so the result is deterministic across runs.
+    let entries = std::fs::read_dir(image_dir).ok()?;
+    let mut suffix_matches: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            if let Some(rest) = name.strip_prefix("Dockerfile.") {
+                if !rest.is_empty() {
+                    return Some(name);
+                }
+            }
+            None
+        })
+        .collect();
+    suffix_matches.sort();
+    let chosen = suffix_matches.into_iter().next()?;
+    let bytes = file_content(db, &image_dir.join(&chosen))?;
+    Some((chosen, bytes))
 }
 
 /// Given a `COPY` source path and the docker-image's enclosing dir

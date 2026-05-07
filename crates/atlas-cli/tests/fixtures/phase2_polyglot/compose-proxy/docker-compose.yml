@@ -1,0 +1,10 @@
+version: "3.8"
+services:
+  py-svc:
+    build:
+      context: ../dockerfiles/docker-backend
+      dockerfile: Dockerfile.backend.buildkite
+  rust-proxy:
+    build:
+      context: ../dockerfiles/docker-main
+      dockerfile: Dockerfile

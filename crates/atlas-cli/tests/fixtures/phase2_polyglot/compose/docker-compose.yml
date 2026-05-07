@@ -1,0 +1,10 @@
+version: "3.8"
+services:
+  rust-svc:
+    build:
+      context: ../dockerfiles/docker-main
+      dockerfile: Dockerfile
+  ts-svc:
+    build:
+      context: ../dockerfiles/docker-frontend
+      dockerfile: Dockerfile.frontend.buildkite
