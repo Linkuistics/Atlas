@@ -765,24 +765,40 @@ fn write_per_component_files(
         };
 
         // Resolve the component's absolute on-disk directory. The
-        // segment path is relative to one of `roots`; use the same
-        // longest-prefix matcher as the engine.
+        // segment path is relative to one of `roots`; we don't have
+        // explicit ownership recorded on the segment, so probe for the
+        // root whose `<root>/<segment>` actually contains the component's
+        // manifests. For multi-root layouts where the peer-root component
+        // sits at the peer root (segment.path == "") both `roots[0]` and
+        // `roots[1]` "contain" the segment dir (each is itself a dir),
+        // so the existence-of-the-segment-dir check is insufficient —
+        // we need to disambiguate via the entry's manifests.
         let candidate_abs = if segment.path.is_absolute() {
             segment.path.clone()
         } else {
-            // Try every root in turn — the segment is relative to the
-            // root that owns the component. We don't have explicit
-            // ownership recorded on the segment, so probe by joining
-            // and accepting the first root whose `<root>/<segment>`
-            // exists. Fall back to the primary root if nothing
-            // exists (the writer's mkdir will create whatever the
-            // join names; the path will still be correct because
-            // segment paths are unambiguous under their root).
+            let pick_root = |root: &Path| -> Option<PathBuf> {
+                let abs = root.join(&segment.path);
+                if !abs.exists() {
+                    return None;
+                }
+                // If the entry has manifests, require at least one to
+                // resolve to an existing file under this root —
+                // disambiguates the "both roots have a segment dir but
+                // only one carries the manifests" cross-tree case.
+                if entry.manifests.is_empty() {
+                    return Some(abs);
+                }
+                let any_manifest_present = entry.manifests.iter().any(|m| root.join(m).exists());
+                if any_manifest_present {
+                    Some(abs)
+                } else {
+                    None
+                }
+            };
             let mut chosen: Option<PathBuf> = None;
             for root in roots {
-                let candidate = root.join(&segment.path);
-                if candidate.exists() {
-                    chosen = Some(candidate);
+                if let Some(abs) = pick_root(root) {
+                    chosen = Some(abs);
                     break;
                 }
             }
