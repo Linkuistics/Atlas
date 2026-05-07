@@ -6,7 +6,7 @@ prompt at `docs/superpowers/prompts/2026-05-07-vnext-continue.md` reads
 this file (via the `*phase2-plan*` wildcard match) to find the next PR
 to dispatch.
 
-**Last updated:** 2026-05-07 (PR-5 + PR-13 landed; Wave 1 in progress).
+**Last updated:** 2026-05-07 (PR-4 + PR-5 + PR-13 landed; Wave 1 in progress).
 
 ## PR status
 
@@ -18,7 +18,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [ ] PR-1  — TypeScript / JavaScript surface analyser (in-process)
 - [ ] PR-2  — Subprocess analyser transport (stdio JSON)
 - [ ] PR-3  — Python surface analyser (first subprocess analyser)
-- [ ] PR-4  — Per-analyser `analyser_id` / `analyser_version` plumbing through L3 dispatch
+- [x] PR-4  — Per-analyser `analyser_id` / `analyser_version` plumbing through L3 dispatch
 - [x] PR-5  — Rust binding extractor: regex → `syn`
 - [ ] PR-6  — C# surface analyser (subprocess)
 - [ ] PR-7  — Dart / Flutter surface analyser (subprocess)
@@ -111,7 +111,63 @@ Load-bearing context for Wave 1 reviewers:
 (awaiting subagent dispatch)
 
 ### PR-4
-(awaiting subagent dispatch)
+2026-05-07 — Landed as Atlas commits `a1b8f20` (main change) +
+`b705926` (code-quality fix preserving OVERRIDE sentinel for
+additions); atlas-contracts commit `d1e7ade` on the contracts main
+(per_component docstring listing the sentinel ids).
+
+**Schema-mutation contribution:** atlas-contracts `per_component.rs`
+docstring extended to enumerate the analyser ids the field can hold
+(`cargo-toml-classifier`, `dockerfile-l3`, `python-surface-analyzer`,
+`typescript-package-classifier`, plus `"none"` and `"override"` sentinels).
+
+**Implementation:** `dispatch` and `dispatch_with_filter` now return
+`(DispatchOutcome, &'a str /* analyser_id */, &'a str /* analyser_version */)`
+with the slices borrowed from the registry's analyser instances. New
+public sentinels in `atlas-analyzers`: `NONE_ANALYZER_ID = "none"` /
+`NONE_ANALYZER_VERSION = "0.0.0"` (returned on `AllDeclined`). New
+engine-side sentinels in `l3_classify`: `OVERRIDE_ANALYSER_ID = "override"`
+/ `OVERRIDE_ANALYSER_VERSION = "0.0.0"` (used by `addition_to_classification`
+in `l4_tree.rs` for hand-authored additions and by `pins_to_classification`
+for explicit pins). New engine-side sentinels in `heuristics`:
+`LEGACY_ANALYSER_ID = "legacy-deterministic-rules"` /
+`LEGACY_ANALYSER_VERSION = "1.0.0"` (used by the npm / pyproject /
+bare-git rule table).
+
+**Code-quality fix `b705926`:** the original `lookup_analyser_identity`
+in `l9_projections.rs` re-invoked `is_component`, which followed the
+deterministic / heuristic / LLM path and missed the `addition_to_classification`
+path that already stamped the OVERRIDE sentinel. Hand-authored
+`overrides.additions` entries without corresponding pins were silently
+recorded as `analyser_id: "none"`. Approach A: a new `AnalyserIdentityMap`
+type alias and `all_component_analyser_identities` query in `l4_tree.rs`
+expose the live tree's classification identities; `lookup_analyser_identity`
+now consults that map first and only falls back to `is_component` for
+components not in the map. The `is_component` fallback is defensive only
+— the live tree is the canonical source. Also added a TODO comment at
+`DispatchOutcome::analyzer_id` noting it is now redundant with the tuple
+return and can be removed in a future cleanup.
+
+**Tests:** `dispatch_returns_winning_analyser_identity` and
+`dispatch_all_declined_returns_none_identity` added to `dispatcher.rs`'s
+test module. Two new integration tests in
+`crates/atlas-cli/tests/scattered_atlas_layout.rs`:
+`cargo_classified_component_records_cargo_analyser_identity` (asserts
+`"cargo-toml-classifier"`) and `dockerfile_classified_component_records_dockerfile_analyser_identity`
+(asserts `"dockerfile-l3"`). The fix-commit added
+`overrides_addition_records_override_analyser_id` pinning the corrected
+addition path. The Python-classified-component criterion in §5 is
+correctly absent (deferred to PR-3 / PR-14, since the Python analyser
+does not exist until PR-3). The L3 stage fingerprint's `"l3-driver"` /
+`"1.0.0"` placeholder was replaced with the LLM analyser's id/version
+(the fingerprint only gates the LLM-classify branch). The
+`L3_DRIVER_VERSION` const is deleted from both `l9_projections.rs` and
+the `lib.rs` re-export.
+
+**Cleanups beyond §4 (greenfield):** `addition_to_classification` and
+the four heuristics rules learned the new id/version fields by virtue
+of `Classification` growing them; `parse_llm_response`,
+`pins_to_classification`, `unknown_classification` updated similarly.
 
 ### PR-5
 2026-05-07 — Landed as commits `ffe26c1` (main rewrite) + `a5a503e`
