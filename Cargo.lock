@@ -200,6 +200,7 @@ dependencies = [
  "petgraph",
  "proptest",
  "rayon",
+ "regex",
  "salsa",
  "serde",
  "serde_json",
