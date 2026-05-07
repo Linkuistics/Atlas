@@ -28,6 +28,7 @@ pub mod l5_surface;
 pub mod l6_compose_edges;
 pub mod l6_composition;
 pub mod l6_edges;
+pub(crate) mod l6_paths;
 pub mod l7_structural;
 pub mod l8_recurse;
 pub mod l9_projections;

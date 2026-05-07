@@ -45,7 +45,10 @@ use component_ontology::{Edge, EdgeKind, EvidenceGrade, LifecycleScope};
 use crate::db::AtlasDatabase;
 use crate::l1_queries::file_content;
 use crate::l4_tree::all_components;
-use crate::roots::best_root_for;
+use crate::l6_paths::{
+    absolute_component_dir, build_component_segment_dirs, component_id_leaf, normalise_path,
+    path_prefix_lookup,
+};
 
 /// Canonical compose filenames probed in preference order.
 const COMPOSE_FILENAMES: &[&str] = &[
@@ -297,66 +300,6 @@ fn external_component_id(image_ref: &str) -> String {
     format!("external-{slug}")
 }
 
-// ─── path utilities ──────────────────────────────────────────────────────────
-
-/// Longest-prefix lookup: find the component whose segment dir is the
-/// longest prefix of `abs_path`. Returns `None` when no segment dir
-/// is a prefix.
-fn path_prefix_lookup(abs_path: &Path, segment_dirs: &[(String, PathBuf)]) -> Option<String> {
-    let mut best: Option<(&str, usize)> = None;
-    for (id, dir) in segment_dirs {
-        if abs_path.starts_with(dir) {
-            let depth = dir.components().count();
-            match best {
-                Some((_, best_depth)) if best_depth >= depth => {}
-                _ => best = Some((id.as_str(), depth)),
-            }
-        }
-    }
-    best.map(|(id, _)| id.to_string())
-}
-
-/// Extract the leaf segment of a slash-delimited component id.
-fn component_id_leaf(id: &str) -> &str {
-    match id.rfind('/') {
-        Some(idx) => &id[idx + 1..],
-        None => id,
-    }
-}
-
-/// Build the `(component_id, absolute_segment_dir)` lookup table.
-fn build_component_segment_dirs(
-    components: &[&ComponentEntry],
-    roots: &[PathBuf],
-) -> Vec<(String, PathBuf)> {
-    let mut out = Vec::new();
-    for c in components {
-        for seg in &c.path_segments {
-            let abs = absolute_under_any_root(&seg.path, roots);
-            out.push((c.id.as_str().to_string(), abs));
-        }
-    }
-    out
-}
-
-fn absolute_under_any_root(rel: &Path, roots: &[PathBuf]) -> PathBuf {
-    if rel.is_absolute() {
-        return rel.to_path_buf();
-    }
-    if let Some(root) = best_root_for(roots, rel) {
-        return root.join(rel);
-    }
-    if let Some(first) = roots.first() {
-        return first.join(rel);
-    }
-    rel.to_path_buf()
-}
-
-fn absolute_component_dir(component: &ComponentEntry, roots: &[PathBuf]) -> Option<PathBuf> {
-    let seg = component.path_segments.first()?;
-    Some(absolute_under_any_root(&seg.path, roots))
-}
-
 /// Load a compose file from `dir`, trying canonical filenames in order.
 /// Returns `(filename, parsed-shape)` or `None` when nothing is found
 /// or nothing parses successfully.
@@ -373,35 +316,6 @@ fn load_compose_shape(db: &AtlasDatabase, dir: &Path) -> Option<(String, Compose
         }
     }
     None
-}
-
-/// Resolve `..` and `.` components in a path without touching the
-/// filesystem (mirrors the equivalent in `l6_composition.rs`).
-fn normalise_path(path: &Path) -> PathBuf {
-    use std::path::Component as C;
-    let mut out: Vec<C> = Vec::new();
-    for c in path.components() {
-        match c {
-            C::ParentDir => {
-                let popped = out
-                    .last()
-                    .map(|c| matches!(c, C::Normal(_)))
-                    .unwrap_or(false);
-                if popped {
-                    out.pop();
-                } else {
-                    out.push(c);
-                }
-            }
-            C::CurDir => {}
-            other => out.push(other),
-        }
-    }
-    let mut buf = PathBuf::new();
-    for c in out {
-        buf.push(c.as_os_str());
-    }
-    buf
 }
 
 // ─── tests ───────────────────────────────────────────────────────────────────
