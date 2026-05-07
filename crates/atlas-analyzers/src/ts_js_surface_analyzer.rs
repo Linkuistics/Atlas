@@ -116,10 +116,11 @@ impl Analyzer for TsJsSurfaceAnalyzer {
     }
 
     fn analyse(&self, _ctx: &AnalysisContext, _target: &Target) -> AnalyzerResult {
-        // Like the Rust surface analyser, the dispatcher path is
-        // reserved for a future driver that hands the analyser a
-        // populated `Target` carrying source bytes. The current PR-1
-        // surface is exercised through [`extract_ts_js_surface`].
+        // Intentionally Declines: matches RustSurfaceAnalyzer pattern —
+        // the engine drives surface extraction directly via
+        // `surface_artefacts_of` in l5_surface.rs, not via the trait
+        // dispatcher. A future driver may populate `Target` with source
+        // bytes and route through here instead.
         AnalyzerResult::Declines
     }
 }

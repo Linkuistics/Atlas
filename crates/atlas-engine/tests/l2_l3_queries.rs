@@ -12,14 +12,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use atlas_engine::{
-    candidate_components_at, is_component, parse_embedded_component_kinds_yaml,
-    render_kinds_for_prompt, render_lifecycle_scopes_for_prompt, seed_filesystem, AtlasDatabase,
-    ComponentKind,
+    all_components, candidate_components_at, is_component, parse_embedded_component_kinds_yaml,
+    render_kinds_for_prompt, render_lifecycle_scopes_for_prompt, seed_filesystem,
+    surface_artefacts_of, AtlasDatabase, ComponentKind,
 };
 use atlas_index::{
     AlwaysTrue, ComponentEntry, OverridesFile, PathSegment, PinValue, OVERRIDES_SCHEMA_VERSION,
 };
-use atlas_llm::{LlmFingerprint, PromptId, TestBackend};
+use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId, TestBackend};
 use component_ontology::EvidenceGrade;
 use serde_json::json;
 use tempfile::TempDir;
@@ -43,6 +43,58 @@ fn build_db(backend: Arc<TestBackend>, root: &Path) -> AtlasDatabase {
 /// no canned responses — any accidental LLM dispatch fails.
 fn db_without_llm(root: &Path) -> AtlasDatabase {
     build_db(Arc::new(TestBackend::new()), root)
+}
+
+/// A lenient LLM backend that returns minimal valid stubs for every
+/// prompt. Used by surface-emission tests that need the full pipeline
+/// (L3 + L5) without a real LLM. Mirrors
+/// `surfaces_emission_rust::LenientBackend`.
+struct LenientStubBackend {
+    fingerprint: LlmFingerprint,
+}
+
+impl LenientStubBackend {
+    fn new() -> Arc<Self> {
+        Arc::new(LenientStubBackend {
+            fingerprint: default_fingerprint(),
+        })
+    }
+}
+
+impl LlmBackend for LenientStubBackend {
+    fn call(&self, req: &LlmRequest) -> Result<serde_json::Value, LlmError> {
+        Ok(match req.prompt_template {
+            PromptId::Classify => json!({
+                "kind": "typescript-package",
+                "language": "typescript",
+                "build_system": "npm",
+                "evidence_grade": "strong",
+                "evidence_fields": [],
+                "rationale": "stub",
+                "is_boundary": false,
+            }),
+            PromptId::Stage1Surface => json!({ "purpose": "stub", "notes": "" }),
+            PromptId::Stage2Edges => json!([]),
+            PromptId::Subcarve => json!({
+                "should_subcarve": false,
+                "sub_dirs": [],
+                "rationale": "policy declined",
+            }),
+        })
+    }
+
+    fn fingerprint(&self) -> LlmFingerprint {
+        self.fingerprint.clone()
+    }
+}
+
+/// Build a seeded database with a lenient stub backend so both
+/// deterministic and LLM-reliant pipeline stages succeed.
+fn build_db_lenient(root: &Path) -> AtlasDatabase {
+    let backend = LenientStubBackend::new();
+    let mut db = AtlasDatabase::new(backend, vec![root.to_path_buf()], default_fingerprint());
+    seed_filesystem(&mut db, &[root.to_path_buf()], false).expect("seed_filesystem must succeed");
+    db
 }
 
 // ---------------------------------------------------------------------
@@ -287,6 +339,74 @@ fn l3_package_json_with_tsconfig_classifies_as_typescript_package_without_llm_ca
         c.languages
     );
     assert_eq!(c.evidence_grade, EvidenceGrade::Strong);
+}
+
+#[test]
+fn l5_typescript_package_surface_artefacts_include_exported_hello_symbol() {
+    // Phase 2 PR-1 spec-review fix: `surface_artefacts_of` must drive
+    // `extract_ts_js_surface` for typescript-package components and
+    // return a `LibraryApi` whose `pub_items` includes every exported
+    // symbol from the component's source files.
+    //
+    // Fixture: `package.json` + `tsconfig.json` + `src/index.ts` that
+    // exports `hello`. The test asserts that after L5 extraction the
+    // resulting `SurfaceArtefacts` contains a binding for `hello` and
+    // a `LibraryApi` with `hello` in its `pub_items`.
+    let td = TempDir::new().unwrap();
+    let root = td.path().to_path_buf();
+    std::fs::write(
+        root.join("package.json"),
+        "{\"name\":\"my-pkg\",\"version\":\"0.1.0\"}",
+    )
+    .unwrap();
+    std::fs::write(root.join("tsconfig.json"), "{\"compilerOptions\":{}}").unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("src/index.ts"),
+        "export function hello(): string { return \"world\"; }\n",
+    )
+    .unwrap();
+
+    let db = build_db_lenient(&root);
+
+    // Locate the component produced by L3 for the root fixture.
+    let components = all_components(&db);
+    let comp = components
+        .iter()
+        .find(|c| !c.deleted)
+        .expect("fixture must produce at least one live component");
+    let comp_id = comp.id.clone();
+
+    // Drive L5 surface extraction through the production path.
+    let artefacts = surface_artefacts_of(&db, comp_id);
+
+    // At least one binding for `hello` must be present.
+    let hello_binding = artefacts
+        .bindings
+        .iter()
+        .find(|b| b.symbol == "hello")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a binding for `hello` in surface artefacts, got bindings: {:?}",
+                artefacts.bindings
+            )
+        });
+    assert_eq!(hello_binding.language, "typescript");
+
+    // The `LibraryApi` must be present and list `hello` in `pub_items`.
+    assert_eq!(
+        artefacts.library_apis.len(),
+        1,
+        "expected exactly one LibraryApi, got {:?}",
+        artefacts.library_apis
+    );
+    let api = &artefacts.library_apis[0];
+    assert_eq!(api.language, "typescript");
+    let pub_names: Vec<&str> = api.pub_items.iter().map(|p| p.name.as_str()).collect();
+    assert!(
+        pub_names.contains(&"hello"),
+        "`hello` must appear in library_api pub_items; got: {pub_names:?}"
+    );
 }
 
 #[test]

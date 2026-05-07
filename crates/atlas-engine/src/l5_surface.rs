@@ -19,7 +19,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use atlas_analyzers::{extract_rust_surface, RustSourceInputs};
+use atlas_analyzers::{
+    extract_rust_surface, extract_ts_js_surface, RustSourceInputs, TsJsSourceInputs,
+};
 use atlas_index::{Binding, ComponentEntry, Contract, LibraryApi, OverridesFile, PinValue, Stage};
 use atlas_llm::{LlmRequest, PromptId, ResponseSchema};
 use component_ontology::ComponentId;
@@ -225,9 +227,90 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
         });
     };
 
-    // 3. Skip non-Rust components: only the deterministic scanner
-    //    produces output, and it only knows Rust. A polyglot
-    //    component that *includes* Rust still gets the Rust subset.
+    // 3a. TypeScript / JavaScript branch — drive the TS/JS-surface
+    //     extractor in-process. A component is handled here when it
+    //     carries "typescript" or "javascript" in its language set, or
+    //     its kind is a recognised TS/JS package kind.
+    let is_ts_js = entry.languages.contains("typescript")
+        || entry.languages.contains("javascript")
+        || entry.kind == "typescript-package"
+        || entry.kind == "javascript-package";
+
+    if is_ts_js {
+        let is_typescript =
+            entry.languages.contains("typescript") || entry.kind == "typescript-package";
+
+        let mut sources: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+        let mut package_json: Option<Vec<u8>> = None;
+
+        for segment in &entry.path_segments {
+            let candidate_roots: Vec<PathBuf> = if segment.path.is_absolute() {
+                vec![PathBuf::new()]
+            } else if let Some(owning_root) = best_root_for(&roots, &segment.path) {
+                vec![owning_root.to_path_buf()]
+            } else {
+                roots.clone()
+            };
+
+            for root in &candidate_roots {
+                let absolute_dir = if segment.path.is_absolute() {
+                    segment.path.clone()
+                } else {
+                    root.join(&segment.path)
+                };
+
+                // Collect well-known source files: `src/<name>.<ext>`.
+                // Phase 1 probes the `src/` subdirectory only; deeper
+                // nesting is Phase 2 (full tree walk). This is the
+                // simplest pattern that works for the integration
+                // fixture (which has just `src/index.ts`).
+                for filename in &[
+                    "src/index.ts",
+                    "src/index.tsx",
+                    "src/index.js",
+                    "src/index.jsx",
+                    "src/main.ts",
+                    "src/main.tsx",
+                    "src/main.js",
+                    "src/main.jsx",
+                ] {
+                    let candidate = absolute_dir.join(filename);
+                    if let Some(bytes) = file_content(db, &candidate) {
+                        let rel = PathBuf::from(filename);
+                        if !sources.iter().any(|(p, _)| p == &rel) {
+                            sources.push((rel, (*bytes).clone()));
+                        }
+                    }
+                }
+
+                // Also read `package.json` for entrypoint resolution.
+                if package_json.is_none() {
+                    let pkg_candidate = absolute_dir.join("package.json");
+                    if let Some(bytes) = file_content(db, &pkg_candidate) {
+                        package_json = Some((*bytes).clone());
+                    }
+                }
+            }
+        }
+
+        let inputs = TsJsSourceInputs {
+            sources,
+            package_json,
+            is_typescript,
+        };
+        let surface_output = extract_ts_js_surface(id.as_str(), &inputs);
+
+        return Arc::new(SurfaceArtefacts {
+            record,
+            contracts: surface_output.contracts,
+            bindings: surface_output.bindings,
+            library_apis: surface_output.library_apis,
+        });
+    }
+
+    // 3b. Skip non-Rust, non-TS/JS components: only the deterministic
+    //     scanner produces output, and it only knows Rust. A polyglot
+    //     component that *includes* Rust still gets the Rust subset.
     if !entry.languages.contains("rust") && entry.kind != "rust-library" && entry.kind != "rust-cli"
     {
         return Arc::new(SurfaceArtefacts {
