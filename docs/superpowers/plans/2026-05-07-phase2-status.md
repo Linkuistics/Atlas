@@ -6,7 +6,7 @@ prompt at `docs/superpowers/prompts/2026-05-07-vnext-continue.md` reads
 this file (via the `*phase2-plan*` wildcard match) to find the next PR
 to dispatch.
 
-**Last updated:** 2026-05-08 (Wave 3 complete: PR-6/7/8/9/10/11/12 all landed; only PR-14 acceptance smoke-test remains for Phase 2 closeout).
+**Last updated:** 2026-05-08 (Phase 2 COMPLETE — PR-14 acceptance smoke test landed; all 15 PRs [x]).
 
 ## PR status
 
@@ -28,7 +28,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-11 — Compose composition-edge analyser (deterministic, in-process)
 - [x] PR-12 — Shell-script LLM-fallback analyser (in-process)
 - [x] PR-13 — Phase 1 hangover bundle (L8 phantoms + PR-12-of-Phase-1 polish)
-- [ ] PR-14 — Acceptance: polyglot dull-shaped fixture (smoke test)
+- [x] PR-14 — Acceptance: polyglot dull-shaped fixture (smoke test)
 
 When every box is `[x]`, Phase 2 is complete and the continuation prompt
 should report success and stop.
@@ -1252,4 +1252,118 @@ layer (not salsa-tracked).
 **Deferred:** none — all four hangover items closed.
 
 ### PR-14
-(awaiting subagent dispatch)
+2026-05-08 — Landed as Atlas commit `718ca88` (squashed integration of
+worktree branch `phase2-pr14-impl`). Per-stage history preserved on the
+branch ref:
+- `2ece907` PR-14 deviation — Dockerfile.<suffix> recognition for *.buildkite.
+- `5fba23c` PR-14 acceptance — polyglot smoke test (Wave 4 final).
+
+No atlas-contracts companion (PR-14 is end-to-end test only; every kind
+already in the contracts vocabulary from prior PRs).
+
+**Schema-mutation contribution:** none (test-only PR plus the
+Dockerfile.<suffix> production fix; no schema changes).
+
+**Implementation map:**
+- New file `crates/atlas-cli/tests/phase2_polyglot_fixture.rs` (715
+  LOC) — three end-to-end acceptance tests + the `PR14Backend` lenient
+  recording backend. Tests:
+  1. `polyglot_fixture_classifies_all_components_and_emits_expected_edges`
+     — covers AC#1 (every component classified to its kind), AC#2
+     (non-empty surfaces.yaml), AC#3 (edge counts: ≥2 bundled-into from
+     compose, ≥2 deployed-with, ≥3 bundled-into from Dockerfiles, ≥1
+     defines-contract from Elixir behaviour, ≥1 consumes-contract from
+     path-deps).
+  2. `polyglot_no_op_rerun_is_zero_llm_calls` — covers AC#4 (warm rerun
+     produces zero LLM calls; cold run records 26 LLM calls, all
+     L6 Stage2Edges + Subcarve, none Classify/Stage1Surface).
+  3. `polyglot_targeted_edit_invalidates_only_affected_entries` — covers
+     AC#5 (editing one component's source invalidates only its L5 +
+     consumers' L6; cold=26 calls, post-edit=2 calls).
+- New 30-file hermetic fixture under
+  `crates/atlas-cli/tests/fixtures/phase2_polyglot/`: csharp_lib (csproj +
+  Csharp/Lib.cs), dart_lib (pubspec + lib/dart_lib.dart), flutter_app
+  (pubspec with `flutter:` block + lib/main.dart), ts_pkg + js_pkg, py_pkg
+  (pyproject + pkg/__init__.py + pkg/mod.py), ex_app (mix.exs +
+  lib/ex_app.ex declaring a `defprotocol`), rkt_pkg (info.rkt + main.rkt),
+  lk_pkg (package.scm + main.sld), rust_lib (Cargo.toml + src/lib.rs with
+  nested `pub mod foo { pub struct Bar; }` to verify PR-5's syn
+  extractor), three Dockerfiles (`Dockerfile`, `Dockerfile.frontend.buildkite`,
+  `Dockerfile.backend.buildkite`), two compose files (each in its own
+  dir to satisfy the ≥2 deployed-with edges requirement: `compose/` and
+  `compose-proxy/`), and `build_glue/Makefile` + `scripts/deploy.sh`.
+
+**Production fixes (intrinsically tied to the integration test, ~131
+insertions / 14 deletions across 3 files):**
+- `crates/atlas-engine/src/manifest_patterns.rs` — new
+  `is_dockerfile_basename` recognising `Dockerfile`, `Dockerfile.<suffix>`,
+  and `Containerfile`; plumbed into `is_manifest_file`.
+- `crates/atlas-analyzers/src/dockerfile_classifier.rs` — `applies` /
+  `fingerprint_inputs` / `analyse` widened to find any Dockerfile-shaped
+  manifest (lex-first order for determinism), not just the bare basename.
+- `crates/atlas-engine/src/l6_composition.rs` — new `locate_dockerfile_in_dir`
+  helper so composition-edge emission flows through `*.buildkite`-suffix
+  files. All five existing `compose_edges` tests + five `composition_edges`
+  tests stay green; no regressions.
+
+**LLM call accounting:**
+- Cold run: 26 LLM calls (Stage2Edges batch + Subcarve calls per L8
+  candidate). Zero Classify or Stage1Surface calls — the 10 deterministic
+  language analysers + Dockerfile + Compose all classify without LLM
+  consultation, and the surface analysers are deterministic.
+- Warm rerun: **0 LLM calls** (100% persistent-cache hit) — the load-bearing
+  invariant.
+- Post-edit run (touching `ex_app/lib/ex_app.ex`): 2 LLM calls (only
+  ex-app's slice + L6 batch reshape).
+
+**Component count: 17 (vs the brief's 16):**
+- 10 language components: csharp-project, dart-package, flutter-package,
+  typescript-package, javascript-package, python-package, elixir-project,
+  racket-package, lispkit-package, rust-library.
+- 3 docker-image components (one per Dockerfile, including the two
+  `*.buildkite`-suffix ones).
+- 2 compose-orchestration components (one per compose dir; PR-11's
+  classifier emits one orchestration per dir, not per file).
+- 1 makefile-orchestration + 1 shell-script (both injected via
+  `OverridesFile.additions`, matching PR-12's own integration-test pattern
+  in `l5_shell_surface.rs` — PR-12's `applies()` predicate gates on the
+  file living in `target.manifests`, which requires the basename in
+  `manifest_patterns::is_manifest_file`; neither `Makefile` nor `*.sh`
+  are listed there. The deeper fix is Phase 3 scope.)
+
+**Decisions / deviations:**
+- **Dockerfile.<suffix> production fix (~131 LOC).** ~3x the Phase 1
+  PR-12 deviation precedent of 37 LOC, but well within the brief's
+  "2x of PR estimate" scope-blowup limit (PR-14 total: 846 LOC vs
+  1000-1500 estimate). Intrinsically required: without it, no
+  `bundled-into` edges flow from `*.buildkite` Dockerfiles, which is a
+  PR-14 acceptance criterion.
+- **17 components vs brief's 16.** Documented in the test's module
+  docstring; root cause is PR-11's compose-orchestration-per-dir
+  semantic (not per-file).
+- **Shell-script + makefile-orchestration via `OverridesFile.additions`,
+  not auto-discovery.** Matches PR-12's own integration-test pattern.
+  Phase 3 may extend `is_manifest_file` to recognise Makefile / *.sh.
+- **JS source moved to `js_pkg/src/index.js`** from the brief's
+  `js_pkg/index.js` — PR-1's L5 driver only probes
+  `src/index.{ts,tsx,js,jsx}`. Test-side adjustment, no production
+  change.
+
+**Cleanups deferred (cumulative across Wave 3 + Wave 4):**
+- `LenientBackend` test-helper extraction (deferred from PR-3 → PR-6 →
+  PR-7 → PR-8 → PR-9 → PR-10 → PR-14; now seven copy sites).
+- C# / Dart / Elixir / Racket subprocess decoders consolidation onto
+  the shared `decode_subprocess_surface_payload` helper (introduced in
+  PR-10's F-CQ-2 generalisation).
+- `is_manifest_file` extension to recognise `Makefile`/`GNUmakefile`/`*.mk`/`*.sh`/`*.bash`/`*.zsh`
+  so PR-12's auto-discovery path covers shell-script components without
+  `OverridesFile.additions` injection.
+- Per-language Phase 3 cleanups (full tree-sitter-dart, raco-driven
+  Racket dep resolution, Phoenix sub-kinds for Elixir, Mix umbrella
+  decomposition, LispKit `(import ...)` symbolic resolution, etc. —
+  enumerated in each language PR's per-PR note).
+
+**Phase 2 closeout:** all 15 PRs (PR-0..PR-14) [x]. The continuation
+prompt's Step 3 termination condition is met — next paste enters Step 1
+again, detects Phase 2 closed, and either reports completion (if no
+Phase 3 plan exists) or pivots to Phase 3 planning.
