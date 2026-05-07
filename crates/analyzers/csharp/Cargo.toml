@@ -1,0 +1,38 @@
+[package]
+name = "atlas-csharp-analyzer"
+version.workspace = true
+description = "Atlas vNext Phase 2 PR-6 — out-of-process C# surface analyser. Emits library bindings, explicit visibility, namespace-derived module paths, and C# attribute metadata from `*.csproj`-shaped components."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "atlas_csharp_analyzer"
+path = "src/lib.rs"
+
+# The subprocess entry point. Cargo emits CARGO_BIN_EXE_csharp-analyzer
+# at test time; the in-process wrapper in atlas-analyzers picks it up
+# via env! the same way the PR-2 echo fixture is wired.
+[[bin]]
+name = "csharp-analyzer"
+path = "src/main.rs"
+test = false
+doc = false
+
+[dependencies]
+anyhow = { workspace = true }
+atlas-analyzers = { path = "../../atlas-analyzers" }
+atlas-index = { workspace = true }
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sha2 = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-c-sharp = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

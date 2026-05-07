@@ -6,6 +6,7 @@ members = [
   "crates/atlas-llm",
   "crates/atlas-cli",
   "crates/analyzers/python",
+  "crates/analyzers/csharp",
   "evaluation/harness",
 ]
 
@@ -18,6 +19,8 @@ version = "1.3.0"
 [workspace.dependencies]
 anyhow = "1"
 base64 = "0.22"
+tree-sitter = "0.25"
+tree-sitter-c-sharp = "0.23"
 clap = { version = "4", features = ["derive"] }
 globset = "0.4"
 ignore = "0.4"
