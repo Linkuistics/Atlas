@@ -20,9 +20,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use atlas_analyzers::{
-    extract_rust_surface, extract_ts_js_surface, locate_python_analyzer_binary,
-    python_subprocess_spec, Analyzer, AnalyzerResult, RustSourceInputs, SubprocessAnalyzerProxy,
-    SubprocessOutput, TsJsSourceInputs,
+    cached_subprocess_proxy, extract_rust_surface, extract_ts_js_surface,
+    locate_python_analyzer_binary, python_subprocess_spec, Analyzer, AnalyzerResult,
+    RustSourceInputs, SubprocessOutput, TsJsSourceInputs,
 };
 use atlas_index::{Binding, ComponentEntry, Contract, LibraryApi, OverridesFile, PinValue, Stage};
 use atlas_llm::{LlmRequest, PromptId, ResponseSchema};
@@ -496,7 +496,12 @@ fn python_surface_artefacts(
     };
 
     let spec = python_subprocess_spec(binary);
-    let proxy = SubprocessAnalyzerProxy::new(spec).ok()?;
+    // F-CQ-1: amortise proxy construction (which hashes the binary
+    // and primes the process pool) across all Python components in
+    // the workspace. Without the cache, a workspace with N Python
+    // components incurred N binary hashes + N spawns; with it,
+    // exactly one of each.
+    let proxy = cached_subprocess_proxy(spec).ok()?;
     let ctx = atlas_analyzers::AnalysisContext::deterministic_only();
     let result = proxy.analyse(&ctx, &target);
 
@@ -617,12 +622,23 @@ fn decode_python_surface_payload(
                 .map(|m| {
                     m.iter()
                         .filter_map(|(k, v)| {
-                            // Round-trip JSON → YAML via the
-                            // serde_yaml::Value parser (yaml is a
-                            // superset of json so this is loss-free
-                            // for the shapes we use).
-                            let yaml: serde_yaml::Value =
-                                serde_yaml::from_str(&v.to_string()).ok()?;
+                            // Convert JSON → YAML losslessly via the
+                            // generic `serde_json::from_value`
+                            // adapter into `serde_yaml::Value`. The
+                            // earlier two-step idiom
+                            // (`serde_yaml::from_str(&v.to_string())`)
+                            // round-tripped *strings* through the
+                            // YAML parser, which corrupts values
+                            // containing YAML-special characters
+                            // (`#`, `:`, `|`, `&`, `*`, `!`, …) —
+                            // see PR-3 code-quality F-CQ-3 for the
+                            // pathological case. `from_value` walks
+                            // the JSON tree directly and emits the
+                            // matching YAML primitive, so a JSON
+                            // string `"key: value"` round-trips as a
+                            // YAML *scalar* string rather than being
+                            // re-parsed as a YAML mapping.
+                            let yaml: serde_yaml::Value = serde_json::from_value(v.clone()).ok()?;
                             Some((k.clone(), yaml))
                         })
                         .collect()
@@ -1159,5 +1175,78 @@ mod tests {
     fn parse_surface_response_rejects_non_object() {
         let err = parse_surface_response(&json!("string-value")).unwrap_err();
         assert!(err.contains("object"), "{err}");
+    }
+
+    /// PR-3 code-quality F-CQ-3 regression pin. The earlier
+    /// JSON-string→YAML conversion went via `serde_yaml::from_str(&v.to_string())`,
+    /// which round-tripped attribute *string values* through the YAML
+    /// parser. For values containing YAML-special characters (`:` is
+    /// the canonical case), the round-trip silently re-parsed the
+    /// string as a YAML mapping or other compound, corrupting the
+    /// payload. The fix uses `serde_json::from_value` directly, which
+    /// walks the JSON tree and emits the matching YAML primitive.
+    /// This test pins the pathological `"key: value"` case so a
+    /// future refactor can't regress it.
+    #[test]
+    fn decode_python_surface_payload_preserves_yaml_special_chars_in_string_values() {
+        // Wave 3 C# attribute values may carry `:` / `#` / etc.; the
+        // fix-up's regression pin uses `:` (the most pernicious) plus
+        // a `#` for good measure.
+        let payload = json!({
+            "bindings": [
+                {
+                    "language": "python",
+                    "symbol": "demo",
+                    "file": "demo.py",
+                    "span": [0, 1],
+                    "content_sha": "0".repeat(64),
+                    "visibility": { "kind": "conventional" },
+                    "module_path": [],
+                    "attributes": {
+                        // Two pathological values: a string containing
+                        // `:` (would otherwise be reparsed as a YAML
+                        // mapping `{ "key": " value" }`), and a
+                        // `# `-prefixed string (would otherwise be
+                        // treated as a YAML comment and resolve to
+                        // null).
+                        "literal_with_colon": "key: value",
+                        "literal_with_hash": "# not a comment",
+                        // Also pin the simple-bool / array shapes the
+                        // earlier idiom did get right, so we don't
+                        // accidentally regress them.
+                        "private": true,
+                        "decorator_chain": ["dataclass"],
+                    },
+                }
+            ],
+            "library_apis": [],
+        });
+        let (bindings, _apis) = decode_python_surface_payload(&payload, "comp");
+        assert_eq!(bindings.len(), 1);
+        let attrs = &bindings[0].attributes;
+        assert_eq!(
+            attrs.get("literal_with_colon"),
+            Some(&serde_yaml::Value::String("key: value".into())),
+            "`:`-bearing string must round-trip as a YAML scalar, not be \
+             reparsed as a mapping"
+        );
+        assert_eq!(
+            attrs.get("literal_with_hash"),
+            Some(&serde_yaml::Value::String("# not a comment".into())),
+            "`#`-prefixed string must round-trip as a YAML scalar, not be \
+             treated as a YAML comment"
+        );
+        assert_eq!(
+            attrs.get("private"),
+            Some(&serde_yaml::Value::Bool(true)),
+            "boolean values must remain booleans after the JSON→YAML conversion"
+        );
+        assert_eq!(
+            attrs.get("decorator_chain"),
+            Some(&serde_yaml::Value::Sequence(vec![
+                serde_yaml::Value::String("dataclass".into())
+            ])),
+            "array values must remain sequences after the JSON→YAML conversion"
+        );
     }
 }

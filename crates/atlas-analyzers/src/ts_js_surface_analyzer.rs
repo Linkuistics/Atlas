@@ -51,7 +51,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use atlas_index::{
-    Binding, Contract, ContractKind, CostClass, LibraryApi, PubItem, PubItemKind, Stage, Visibility,
+    Binding, Contract, ContractKind, CostClass, LibraryApi, PubItem, PubItemKind, Stage,
+    Visibility, ATTR_MODULE_SYSTEM, ATTR_TYPE_ONLY,
 };
 use serde_yaml::Value as YamlValue;
 use swc_common::{sync::Lrc, BytePos, FileName, SourceMap, Spanned};
@@ -364,11 +365,11 @@ fn parse_with_syntax(
 fn esm_meta(type_only: bool) -> BindingMeta {
     let mut attributes: BTreeMap<String, YamlValue> = BTreeMap::new();
     attributes.insert(
-        "module_system".into(),
+        ATTR_MODULE_SYSTEM.into(),
         YamlValue::String(MODULE_SYSTEM_ESM.into()),
     );
     if type_only {
-        attributes.insert("type_only".into(), YamlValue::Bool(true));
+        attributes.insert(ATTR_TYPE_ONLY.into(), YamlValue::Bool(true));
     }
     BindingMeta {
         visibility: Visibility::Explicit {
@@ -661,7 +662,7 @@ fn extract_decl_for_export(
 fn cjs_meta(visibility: Visibility) -> BindingMeta {
     let mut attributes: BTreeMap<String, YamlValue> = BTreeMap::new();
     attributes.insert(
-        "module_system".into(),
+        ATTR_MODULE_SYSTEM.into(),
         YamlValue::String(MODULE_SYSTEM_CJS.into()),
     );
     BindingMeta {

@@ -59,8 +59,8 @@ pub use dockerfile_classifier::DockerfileClassifier;
 pub use llm_classify::{LlmClassifyAnalyzer, LlmHook, LlmHookError};
 pub use python_classifier::{PythonClassificationOutput, PythonClassifier};
 pub use python_surface_analyzer::{
-    locate_python_analyzer_binary, python_subprocess_spec, PYTHON_ANALYZER_DEFAULT_TIMEOUT_SECS,
-    PYTHON_ANALYZER_ID, PYTHON_ANALYZER_VERSION,
+    cached_subprocess_proxy, locate_python_analyzer_binary, python_subprocess_spec,
+    PYTHON_ANALYZER_DEFAULT_TIMEOUT_SECS, PYTHON_ANALYZER_ID, PYTHON_ANALYZER_VERSION,
 };
 pub use registry::{AnalyzerRegistry, REGISTRY_HASH_NAMESPACE};
 pub use rust_surface_analyzer::{

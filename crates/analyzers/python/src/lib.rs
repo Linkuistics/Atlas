@@ -49,7 +49,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use atlas_index::{Binding, ContractKind, LibraryApi, PubItem, PubItemKind, Visibility};
+use atlas_index::{
+    Binding, ContractKind, LibraryApi, PubItem, PubItemKind, Visibility, ATTR_DECORATOR_CHAIN,
+    ATTR_PRIVATE,
+};
 use rustpython_parser::ast::{self, Stmt, Suite};
 use rustpython_parser::Parse;
 use serde_yaml::Value as YamlValue;
@@ -283,14 +286,14 @@ fn push_binding(
         // here because top-level dunders are typically protocol-shaped
         // (e.g. `__all__`) and deserve their own attribute treatment
         // if they ever surface.
-        attributes.insert("private".into(), YamlValue::Bool(true));
+        attributes.insert(ATTR_PRIVATE.into(), YamlValue::Bool(true));
     }
     if !decorators.is_empty() {
         let chain: Vec<YamlValue> = decorators
             .iter()
             .map(|d| YamlValue::String(d.clone()))
             .collect();
-        attributes.insert("decorator_chain".into(), YamlValue::Sequence(chain));
+        attributes.insert(ATTR_DECORATOR_CHAIN.into(), YamlValue::Sequence(chain));
     }
 
     // §4 PR-3 schema: `module_path` is the *file-path components*
@@ -418,7 +421,12 @@ fn library_api_fingerprint(api_id: &str, items: &[PubItem]) -> String {
     hex
 }
 
-fn pub_item_kind_str(kind: PubItemKind) -> &'static str {
+/// Stable wire string for a [`PubItemKind`]. Shared between the
+/// library-API fingerprint computation here and the
+/// `python-analyzer` binary's wire-form encoder in `main.rs`; the
+/// duplicate copy in `main.rs` was removed during the PR-3 code-quality
+/// fix-up to keep a single source of truth.
+pub fn pub_item_kind_str(kind: PubItemKind) -> &'static str {
     match kind {
         PubItemKind::Struct => "struct",
         PubItemKind::Enum => "enum",

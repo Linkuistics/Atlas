@@ -48,7 +48,9 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use atlas_python_analyzer::{extract_python_surface, ANALYZER_ID, ANALYZER_VERSION};
+use atlas_python_analyzer::{
+    extract_python_surface, pub_item_kind_str, ANALYZER_ID, ANALYZER_VERSION,
+};
 
 /// Wire-side representation of one [`atlas_index::Binding`]. Keeps
 /// the on-wire shape decoupled from the in-process struct so future
@@ -260,22 +262,6 @@ fn wire_library_api(api: &atlas_index::LibraryApi) -> WireLibraryApi {
                 kind: pub_item_kind_str(p.kind).to_string(),
             })
             .collect(),
-    }
-}
-
-fn pub_item_kind_str(kind: atlas_index::PubItemKind) -> &'static str {
-    use atlas_index::PubItemKind;
-    match kind {
-        PubItemKind::Struct => "struct",
-        PubItemKind::Enum => "enum",
-        PubItemKind::Fn => "fn",
-        PubItemKind::Trait => "trait",
-        PubItemKind::Mod => "mod",
-        PubItemKind::TypeAlias => "type-alias",
-        PubItemKind::Const => "const",
-        PubItemKind::Static => "static",
-        PubItemKind::Union => "union",
-        PubItemKind::Macro => "macro",
     }
 }
 
