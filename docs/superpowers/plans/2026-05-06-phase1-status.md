@@ -5,7 +5,7 @@ This file tracks per-PR completion state across sessions. The session
 prompt at `docs/superpowers/plans/2026-05-06-phase1-session-prompt.md`
 reads this file to find the next PR to dispatch.
 
-**Last updated:** 2026-05-07 (PR-5 + PR-6 + PR-7 + PR-10 landed).
+**Last updated:** 2026-05-07 (PR-5 + PR-6 + PR-7 + PR-9 + PR-10 landed).
 
 ## PR status
 
@@ -22,7 +22,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-6  — Scattered per-component `.atlas/` writers
 - [x] PR-7  — `surfaces.yaml` emission (Rust binding shape)
 - [ ] PR-8  — Contract participants in `related-components.yaml`
-- [ ] PR-9  — Composition edges from Dockerfiles
+- [x] PR-9  — Composition edges from Dockerfiles
 - [x] PR-10 — Wire persistent cache into L3 / L5 / L6
 - [ ] PR-11 — L6 cache key includes participant surface shas
 - [ ] PR-12 — Acceptance: atlas-contracts visible in Ravel-Lite
@@ -666,7 +666,106 @@ Carry-over for downstream PRs:
 (none yet)
 
 ### PR-9
-(none yet)
+2026-05-07 — Landed on Atlas main as `0d0e581`.
+
+**New module (atlas-engine):**
+- `crates/atlas-engine/src/l6_composition.rs::composition_edges_from_dockerfiles(db) -> Vec<Edge>`
+  — pure deterministic composition-edge generator. Walks every live
+  `kind: docker-image` component, reads its `Dockerfile` via
+  `file_content(db, ...)` (Salsa-tracked, so cache-correct), re-parses
+  via `atlas_analyzers::dockerfile_classifier::parse_dockerfile` (the
+  brief's option (1) — re-parse instead of threading the L3 Salsa
+  output, materially simpler for the same correctness).
+- Two-tier source resolver:
+  - **Tier 1 (build-output basename):** `target/(release|debug)[/<sub>]/...<name>`
+    is stripped to `<name>`, with the optional target-triple sub-dir
+    handled, and the unique component leaf id matching `<name>` is
+    returned. This is the canonical case the plan's worked example
+    pins (`COPY target/release/billing-core` → `<root>/billing-core`).
+  - **Tier 2 (longest-path-prefix):** falls back to longest-prefix
+    match against pre-computed `(component_id, absolute_segment_dir)`
+    pairs. Pre-computed once per call so per-COPY cost is O(1).
+- `--from=<stage>` directives skipped (image-internal copies, no
+  host-repo source).
+- Self-edge guard for pathological `COPY .` patterns (would otherwise
+  fail `Edge::validate`).
+- Re-exports from `atlas_engine::lib`: `composition_edges_from_dockerfiles`,
+  `composition_edges_arc`.
+
+**L6 wiring (`l6_edges.rs::all_proposed_edges`):**
+- Composition edges are computed *before* the `live.len() < 2` early
+  return — single-component workspaces still flow composition edges
+  for any `docker-image` they contain.
+- LLM error-path fallback returns canonicalised composition edges
+  instead of an empty `Vec` — deterministic edges no longer depend on
+  LLM availability.
+- Composition edges are pushed *first* into `canonicalise_edges`'s
+  combined vec, exploiting its "first wins on duplicate canonical
+  key" rule. The LLM batch may restate a composition edge but cannot
+  override it.
+- The `TODO(PR-11)` marker for `add_participant_surface_sha` is
+  preserved verbatim in the unchanged fingerprint block.
+
+**Lex-order projection (`l9_projections.rs::related_components_yaml_snapshot`):**
+- Edges now sort lex-ascending on `(kind, lifecycle, participants)`
+  via `Edge::canonical_key()` — single source of truth for the
+  comparison. Stable sort preserves the "first wins on duplicate
+  canonical key" interaction. PR-8's contract edges and v1's
+  `depends-on` edges interleave with PR-9's composition edges in
+  alphabetical order on `EdgeKind::as_str`.
+
+**Tests:**
+- 10 unit tests in `l6_composition::tests` covering the resolvers
+  (`strip_build_output_prefix_*`, `resolve_source_to_component_*`,
+  `component_id_leaf_returns_last_path_segment`,
+  `normalise_path_resolves_dot_and_double_dot`).
+- 5 integration tests in `crates/atlas-engine/tests/composition_edges.rs`:
+  `dockerfile_copy_of_build_output_emits_bundled_into_edge`,
+  `dockerfile_bundling_two_binaries_emits_deployed_with_edge`,
+  `fixture_without_dockerfiles_emits_no_composition_edges`,
+  `copy_from_stage_directives_are_skipped`,
+  `related_components_snapshot_orders_edges_lexicographically`.
+
+**Hand-off for PR-8 reviewers:**
+- The lex-sort in `related_components_yaml_snapshot` already handles
+  PR-8's contract edges via `canonical_key()`. PR-8 only needs to
+  emit `defines-contract` / `implements-contract` / `consumes-contract`
+  edges into `all_proposed_edges`; sorting is automatic.
+
+**Hand-off for PR-11 reviewers:**
+- The `TODO(PR-11)` marker in `l6_edges.rs` is at the unchanged line
+  inside the `let l6_fingerprint = { ... }` block. PR-9 did not move
+  it.
+- Composition edges contribute to the L6 cache via the existing per-
+  component `file_content_sha` loop (the Dockerfile lives as path-
+  segment content of the docker-image component; any source or
+  Dockerfile change observed by the existing fingerprint inputs).
+  PR-11 still owns adding `participant_surface_sha`.
+
+**Deviations from the brief (reviewers please note):**
+- The deliverable id assertion in the integration test resolves the
+  docker-image component via `kind == "docker-image"` filtering
+  rather than asserting the spec's worded example id
+  `<root>/billing-image` — L4's id allocator is path-derived from the
+  dir basename (`deploy/billing` → leaf `billing`), not from the
+  spec's hand-rolled `billing-image` namespace. The acceptance is
+  semantic ("a `bundled-into` edge from the binary's source-component
+  to the docker-image-component"); the slug shape is workspace-
+  determined.
+- atlas-contracts was NOT modified. PR-1 already provides every edge
+  variant. `Edge.lifecycle: LifecycleScope` (not `Option<...>`) — the
+  composition edges set it directly.
+
+**Files created:**
+- `crates/atlas-engine/src/l6_composition.rs` (504 lines incl. 10 tests).
+- `crates/atlas-engine/tests/composition_edges.rs` (363 lines, 5 tests).
+
+**Files modified (Atlas):**
+- `crates/atlas-engine/src/l6_edges.rs` — composition merge + early-
+  return changes; TODO(PR-11) preserved.
+- `crates/atlas-engine/src/l9_projections.rs` — lex-sort by
+  `canonical_key()`.
+- `crates/atlas-engine/src/lib.rs` — re-exports.
 
 ### PR-10
 2026-05-07 — Landed on Atlas main as `8a1da7c`. The subagent's
