@@ -6,7 +6,7 @@ prompt at `docs/superpowers/prompts/2026-05-07-vnext-continue.md` reads
 this file (via the `*phase2-plan*` wildcard match) to find the next PR
 to dispatch.
 
-**Last updated:** 2026-05-08 (Wave 3 in flight: PR-6/7 landed; PR-8/9/10/12 worktrees pending merge).
+**Last updated:** 2026-05-08 (Wave 3 in flight: PR-6/7/8 landed; PR-9/10/12 worktrees pending merge).
 
 ## PR status
 
@@ -22,7 +22,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-5  — Rust binding extractor: regex → `syn`
 - [x] PR-6  — C# surface analyser (subprocess)
 - [x] PR-7  — Dart / Flutter surface analyser (subprocess)
-- [ ] PR-8  — Elixir surface analyser (subprocess)
+- [x] PR-8  — Elixir surface analyser (subprocess)
 - [ ] PR-9  — Racket surface analyser (subprocess)
 - [ ] PR-10 — LispKit surface analyser (subprocess)
 - [x] PR-11 — Compose composition-edge analyser (deterministic, in-process)
@@ -764,7 +764,111 @@ analyser crate + classifier unit tests + integration tests under
   Wave 4 cleanup PR).
 
 ### PR-8
-(awaiting subagent dispatch)
+2026-05-08 — Landed as Atlas commit `d2afa16` (squashed integration of
+`phase2-pr8-impl`: scaffold → wiring → tests → quality fixes
+F-CQ-1/2/4/5 → cargo fmt). Atlas-contracts companion was landed before
+the orchestrator merge as commits `2b3f558` (`ContractKind::Behaviour`
++ `ATTR_SPEC` / `ATTR_DOC` + `elixir-project` kind docstring) and
+`2f7d41d` (re-export `ATTR_SPEC` and `ATTR_DOC` from atlas-index root)
+on the atlas-contracts main; the orchestrator did NOT author a
+PR-8 atlas-contracts companion. Per-stage commits preserved on the
+branch ref `phase2-pr8-impl`.
+
+**Schema-mutation contribution:** atlas-contracts
+`crates/atlas-index/src/surfaces.rs` —
+- `ContractKind::Behaviour` variant added to the enum (Phase 2's
+  greenfield `kind` open vocabulary). Behaviour-shaped contracts
+  (Elixir's `defprotocol` + `@callback` decls) flow through the
+  existing `Contract` type with the new variant.
+- `ATTR_SPEC` and `ATTR_DOC` const keys for `Binding.attributes`
+  (re-exported from the atlas-index crate root). Wave 3 PRs that
+  touch the same attribute namespace adopt the `ATTR_*` const-key
+  convention PR-3 established.
+- atlas-index `crates/atlas-index/src/schema.rs` `kind` docstring
+  extended with a PR-8 paragraph (`elixir-project`).
+
+**Parser library:** `tree-sitter` + `tree-sitter-elixir` 0.3.5
+(latest published at the time of PR-8). The crate's Cargo.toml
+originally pinned `tree-sitter = "0.24"` directly; the orchestrator
+switched to `tree-sitter = { workspace = true }` (0.25 from PR-6) —
+`tree-sitter-elixir-0.3.5` only takes a dev-dep on `tree-sitter`, so
+the 0.25 runtime is fine and the `links = "tree-sitter"` duplicate
+goes away.
+
+**Implementation map:**
+- New workspace member `crates/analyzers/elixir` (lib + `elixir-analyzer`
+  subprocess binary), speaking PR-2's wire protocol verbatim.
+- `atlas_analyzers::elixir_classifier` (in-process L3 deterministic):
+  recognises `mix.exs` → `elixir-project`. Phase 2 lands the
+  shape-agnostic `elixir-project` kind; finer sub-kinds (e.g.
+  `phoenix-app`) are Phase 3+.
+- `atlas_analyzers::elixir_surface_analyzer` —
+  `elixir_subprocess_spec(binary_path)` builds the spec;
+  `cached_elixir_subprocess_proxy(spec)` caches the proxy keyed on
+  binary path; `locate_elixir_analyzer_binary()` walks up from
+  `current_exe()`.
+- `crates/atlas-engine/src/l5_surface.rs` extended with an Elixir
+  branch in `surface_artefacts_of` that pre-loads `mix.exs`, drives
+  the subprocess, and decodes the JSON response into typed `Binding`
+  / `LibraryApi` / `Contract` values via
+  `decode_elixir_surface_payload` — the only Wave-3 decoder so far
+  that returns three vecs (the Elixir `defprotocol` / `@callback`
+  pairs surface as `Contract`s with `ContractKind::Behaviour`).
+- `crates/atlas-engine/src/manifest_parse.rs` gains
+  `extract_mix_exs_path_deps`: regex-based scanner for the
+  `path: "../sibling"` form inside `deps()` blocks. Pure-Rust;
+  no Mix runtime invoked.
+- `crates/atlas-engine/src/root_expansion.rs` walks `mix.exs`
+  alongside the other path-dep-bearing manifests;
+  `enclosing_manifest_root` recognises a `mix.exs` ancestor as a
+  project root via the new `elixir_root` candidate (tail of the
+  `workspace_root.or(crate_root).or(python_root).or(csharp_root)
+  .or(dart_root).or(elixir_root)` precedence chain).
+- `ComponentKind::ElixirProject` variant + `elixir-project` entry
+  in `defaults/component-kinds.yaml`. `subcarve_policy` adds
+  `ElixirProject` to the library-shaped kinds.
+
+**Binding extraction shape:**
+- `def name`/`defp name` → `Binding` with `Visibility::Explicit
+  { keyword: "def" }` for public, `Visibility::Conventional` +
+  `attributes.private: true` for `defp`.
+- Elixir `@spec` / `@doc` module attributes captured as
+  `attributes.spec: "..."` / `attributes.doc: "..."` via the new
+  `ATTR_SPEC` / `ATTR_DOC` const keys (atlas-contracts).
+- F-CQ-1 quality fix: `@spec` / `@doc` parsing handles the
+  unary_operator AST node shape (where the LHS of `@` is wrapped in
+  a unary tree); previously misparsed.
+
+**Tests:** §4 PR-8 acceptance criteria 1–4 covered + classifier unit
+tests + integration tests in
+`crates/atlas-engine/tests/l5_elixir_surface.rs`.
+
+**Decisions / deviations:**
+- **`ad0cdbf` "DO NOT CHERRY-PICK" Cargo.toml repoint reverted.**
+  The PR-8 worktree carried a transient repoint of the atlas-contracts
+  workspace path-deps to a sibling worktree (`atlas-contracts-phase2-pr8`).
+  The squash absorbed that diff; the orchestrator manually reverted to
+  the canonical `../atlas-contracts/...` path-deps before committing.
+- **No L6 `implemented_contracts` projection yet.** The elixir analyser
+  emits `WireBinding.implemented_contracts` (populated by `@behaviour
+  Foo.Bar` declarations) but the engine-side `SurfaceArtefacts` does
+  not yet carry a structured `implemented_contracts` field. Decode
+  silently drops the data; a future PR adds the field and the
+  decode logic. Documented in the decoder body as a Phase-2 scope
+  boundary.
+- **Tree-sitter dep alignment.** Branch pinned `tree-sitter = "0.24"`;
+  workspace is on 0.25 (PR-6). Switched the elixir crate to
+  `tree-sitter = { workspace = true }` to satisfy the
+  links="tree-sitter" single-copy constraint.
+
+**Cleanups deferred:**
+- L6 `implemented_contracts` projection (Phase 3+).
+- Phoenix sub-kind discrimination (`phoenix-app` etc.) — Phase 3+.
+- Mix umbrella-app shape (multiple sub-projects under `apps/`)
+  is currently treated as a single `elixir-project`; Phase 3 may
+  decompose into per-sub-app components.
+- `LenientBackend` test-helper extraction (still warranted; cumulative
+  deferral from PR-3 / PR-6 / PR-7 / PR-8; Wave 4 cleanup PR).
 
 ### PR-9
 (awaiting subagent dispatch)
