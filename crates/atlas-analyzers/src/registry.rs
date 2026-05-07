@@ -490,9 +490,9 @@ mod tests {
         // The built-in analyser instances are unchanged in count
         // (unknown spec is recorded but does not produce a runnable
         // instance).
-        assert_eq!(r.len(), 8);
+        assert_eq!(r.len(), 9);
         // The declared list grew by one.
-        assert_eq!(r.declared().analyzers.len(), 9);
+        assert_eq!(r.declared().analyzers.len(), 10);
     }
 
     #[test]
@@ -513,7 +513,7 @@ mod tests {
             version: "9.9.9".into(),
         });
         r.merge_yaml(&yaml);
-        assert_eq!(r.declared().analyzers.len(), 8);
+        assert_eq!(r.declared().analyzers.len(), 9);
         let cargo = r
             .declared()
             .analyzers
