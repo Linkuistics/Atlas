@@ -41,6 +41,8 @@ pub mod llm_classify;
 pub mod registry;
 pub mod rust_surface_analyzer;
 pub mod subprocess;
+pub mod ts_js_classifier;
+pub mod ts_js_surface_analyzer;
 
 use std::any::Any;
 use std::collections::BTreeSet;
@@ -60,6 +62,10 @@ pub use rust_surface_analyzer::{
 pub use subprocess::{
     handshake::{verify_capabilities, Capabilities, HandshakeError},
     hash_binary, SubprocessAnalyzerProxy, SubprocessAnalyzerSpec, SubprocessOutput,
+};
+pub use ts_js_classifier::{TsJsClassificationOutput, TsJsClassifier};
+pub use ts_js_surface_analyzer::{
+    extract_ts_js_surface, TsJsSourceInputs, TsJsSurfaceAnalyzer, TsJsSurfaceOutput,
 };
 
 /// SHA-256 hex of a half-open byte range `bytes[span.0..span.1]`.
@@ -345,6 +351,7 @@ impl_stage_output!(
     cargo_classifier::CargoClassificationOutput,
     dockerfile_classifier::DockerfileClassificationOutput,
     llm_classify::LlmClassifyOutput,
+    ts_js_classifier::TsJsClassificationOutput,
 );
 
 #[cfg(test)]

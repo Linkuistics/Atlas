@@ -96,13 +96,18 @@ pub fn decide_kind_only(kind: ComponentKind) -> Option<PolicyDecision> {
         ComponentKind::External | ComponentKind::NonComponent => Some(PolicyDecision::Stop),
 
         // Libraries: depth cap depends on modularity_hint, so the
-        // verdict needs structural signals.
+        // verdict needs structural signals. The TS/JS package kinds
+        // (PR-1) are library-shaped: they may carry sub-modules that
+        // L8 should consider carving on, so they share the
+        // structural-signal path.
         ComponentKind::RustLibrary
         | ComponentKind::NodeLibrary
         | ComponentKind::PythonLibrary
         | ComponentKind::DartLibrary
         | ComponentKind::DotnetLibrary
-        | ComponentKind::ReactLibrary => None,
+        | ComponentKind::ReactLibrary
+        | ComponentKind::TypescriptPackage
+        | ComponentKind::JavascriptPackage => None,
     }
 }
 

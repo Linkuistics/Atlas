@@ -257,6 +257,39 @@ fn l3_package_json_with_main_only_classifies_as_node_package() {
 }
 
 #[test]
+fn l3_package_json_with_tsconfig_classifies_as_typescript_package_without_llm_call() {
+    // Phase 2 PR-1 acceptance: a `package.json` + `tsconfig.json` +
+    // `src/index.ts` fixture is classified as `typescript-package`
+    // by the new TS/JS classifier, deterministically, without any
+    // LLM dispatch.
+    let td = TempDir::new().unwrap();
+    let root = td.path().to_path_buf();
+    std::fs::write(
+        root.join("package.json"),
+        "{\"name\":\"my-pkg\",\"version\":\"0.1.0\"}",
+    )
+    .unwrap();
+    std::fs::write(root.join("tsconfig.json"), "{\"compilerOptions\":{}}").unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("src/index.ts"),
+        "export function hello(): string { return \"world\"; }\n",
+    )
+    .unwrap();
+
+    let db = db_without_llm(&root);
+    let ws = db.workspace();
+    let c = is_component(&db, ws, root.clone());
+    assert_eq!(c.kind, ComponentKind::TypescriptPackage);
+    assert!(
+        c.languages.contains("typescript"),
+        "expected typescript in languages, got {:?}",
+        c.languages
+    );
+    assert_eq!(c.evidence_grade, EvidenceGrade::Strong);
+}
+
+#[test]
 fn l3_pyproject_toml_classifies_as_python_package() {
     let td = TempDir::new().unwrap();
     let root = td.path().to_path_buf();

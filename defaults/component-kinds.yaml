@@ -63,6 +63,24 @@ kinds:
       A Node.js / TypeScript package that installs one or more CLI
       executables. Recognised by `package.json` with a `bin` field.
 
+  - name: typescript-package
+    description: |
+      A TypeScript package — a `package.json` accompanied by a
+      `tsconfig.json`. Recognised deterministically at L3 by the TS/JS
+      classifier; the language is TypeScript regardless of whether
+      sources also include `.js` files. Distinct from `node-library` /
+      `node-cli`, which describe Node.js packaging shape (`main` / `bin`)
+      independent of the source language.
+
+  - name: javascript-package
+    description: |
+      A JavaScript package — a `package.json` with no `tsconfig.json`.
+      Recognised deterministically at L3 by the TS/JS classifier.
+      Distinct from `node-library` / `node-cli`, which describe Node.js
+      packaging shape (`main` / `bin`); a `javascript-package` is the
+      language-pinned classification a TS/JS surface analyser produces
+      when no TypeScript config is present.
+
   - name: react-app
     description: |
       A React-based frontend application — typically a Create React

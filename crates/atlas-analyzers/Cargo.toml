@@ -24,6 +24,14 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 sha2 = { workspace = true }
 syn = { version = "2.0.117", features = ["full"] }
+# swc_ecma_parser pulls in swc_ecma_ast / swc_common transitively. Used
+# by ts_js_surface_analyzer for in-process TypeScript / JavaScript parsing
+# (Phase 2 PR-1). Pinned at the major version available on crates.io
+# at the time of PR-1; bumps require parser-shape verification because
+# swc's AST evolves between major versions.
+swc_common = "21"
+swc_ecma_ast = "23"
+swc_ecma_parser = "39"
 thiserror = { workspace = true }
 toml = { workspace = true }
 

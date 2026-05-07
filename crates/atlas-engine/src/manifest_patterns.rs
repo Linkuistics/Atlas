@@ -8,6 +8,12 @@ use std::path::Path;
 const EXACT_MANIFEST_BASENAMES: &[&str] = &[
     "Cargo.toml",
     "package.json",
+    // tsconfig.json is recognised as a manifest so the Phase 2 PR-1
+    // TS/JS classifier sees it via `Target.manifests`. It is not the
+    // primary manifest of a TypeScript package (that is `package.json`)
+    // but its presence flips the kind from `javascript-package` to
+    // `typescript-package`.
+    "tsconfig.json",
     "pyproject.toml",
     "go.mod",
     "setup.py",

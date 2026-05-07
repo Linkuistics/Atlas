@@ -32,6 +32,8 @@ use crate::dockerfile_classifier::DockerfileClassifier;
 use crate::llm_classify::LlmClassifyAnalyzer;
 use crate::rust_surface_analyzer::RustSurfaceAnalyzer;
 use crate::subprocess::{SubprocessAnalyzerProxy, SubprocessAnalyzerSpec};
+use crate::ts_js_classifier::TsJsClassifier;
+use crate::ts_js_surface_analyzer::TsJsSurfaceAnalyzer;
 use crate::{Analyzer, AnalyzerError};
 
 /// Namespace string mixed into the `analyzer_registry_sha` so a future
@@ -76,17 +78,24 @@ impl AnalyzerRegistry {
     /// Phase 1 ships four analysers: `cargo-toml-classifier`,
     /// `dockerfile-l3` (both L3 deterministic), `llm-classify-fallback`
     /// (L3 LLM), and `rust-surface-analyzer` (L5 deterministic; PR-7).
+    /// Phase 2 PR-1 adds `ts-js-classifier` (L3 deterministic) and
+    /// `ts-js-surface-analyzer` (L5 deterministic) for TypeScript /
+    /// JavaScript components.
     pub fn builtin() -> Self {
         let cargo = Arc::new(CargoClassifier::new()) as Arc<dyn Analyzer>;
         let docker = Arc::new(DockerfileClassifier::new()) as Arc<dyn Analyzer>;
+        let ts_js = Arc::new(TsJsClassifier::new()) as Arc<dyn Analyzer>;
         let llm = Arc::new(LlmClassifyAnalyzer::new()) as Arc<dyn Analyzer>;
         let rust_surface = Arc::new(RustSurfaceAnalyzer::new()) as Arc<dyn Analyzer>;
+        let ts_js_surface = Arc::new(TsJsSurfaceAnalyzer::new()) as Arc<dyn Analyzer>;
 
         let analyzers = vec![
             cargo.clone(),
             docker.clone(),
+            ts_js.clone(),
             llm.clone(),
             rust_surface.clone(),
+            ts_js_surface.clone(),
         ];
         let declared = AnalyzersFile {
             schema_version: ANALYZERS_SCHEMA_VERSION,
@@ -338,6 +347,14 @@ fn spec_for_analyzer(analyzer: &Arc<dyn Analyzer>) -> AnalyzerSpec {
             file_globs: vec!["**/Cargo.toml".into()],
             ..Default::default()
         }
+    } else if id == crate::ts_js_classifier::ANALYZER_ID
+        || id == crate::ts_js_surface_analyzer::ANALYZER_ID
+    {
+        // Both TS/JS analysers key on `package.json` presence.
+        atlas_index::ApplicabilityPredicate {
+            file_globs: vec!["**/package.json".into()],
+            ..Default::default()
+        }
     } else {
         atlas_index::ApplicabilityPredicate::default()
     };
@@ -359,22 +376,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_lists_four_analysers() {
+    fn builtin_lists_six_analysers() {
         let r = AnalyzerRegistry::builtin();
-        assert_eq!(r.len(), 4);
+        assert_eq!(r.len(), 6);
         let ids: Vec<&str> = r.iter_dispatch_order().map(|a| a.id()).collect();
         assert!(ids.contains(&crate::cargo_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::dockerfile_classifier::ANALYZER_ID));
+        assert!(ids.contains(&crate::ts_js_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::llm_classify::ANALYZER_ID));
         assert!(ids.contains(&crate::rust_surface_analyzer::ANALYZER_ID));
+        assert!(ids.contains(&crate::ts_js_surface_analyzer::ANALYZER_ID));
         // L3 deterministic analysers come first, then L3 LLM, then L5
         // analysers (sorted by `(stage, cost_class)`). LLM-classify is
-        // the last L3 analyser; rust-surface-analyzer is L5 and lands
-        // after every L3 entry.
-        assert_eq!(
-            *ids.last().unwrap(),
-            crate::rust_surface_analyzer::ANALYZER_ID
-        );
+        // the last L3 analyser; the L5 analysers land after every L3
+        // entry.
+        let last_two: Vec<&str> = ids.iter().rev().take(2).copied().collect();
+        assert!(last_two.contains(&crate::rust_surface_analyzer::ANALYZER_ID));
+        assert!(last_two.contains(&crate::ts_js_surface_analyzer::ANALYZER_ID));
     }
 
     #[test]
@@ -417,9 +435,9 @@ mod tests {
         // The built-in analyser instances are unchanged in count
         // (unknown spec is recorded but does not produce a runnable
         // instance).
-        assert_eq!(r.len(), 4);
+        assert_eq!(r.len(), 6);
         // The declared list grew by one.
-        assert_eq!(r.declared().analyzers.len(), 5);
+        assert_eq!(r.declared().analyzers.len(), 7);
     }
 
     #[test]
@@ -440,7 +458,7 @@ mod tests {
             version: "9.9.9".into(),
         });
         r.merge_yaml(&yaml);
-        assert_eq!(r.declared().analyzers.len(), 4);
+        assert_eq!(r.declared().analyzers.len(), 6);
         let cargo = r
             .declared()
             .analyzers
@@ -487,6 +505,11 @@ mod tests {
         assert_eq!(
             RustSurfaceAnalyzer.id(),
             crate::rust_surface_analyzer::ANALYZER_ID
+        );
+        assert_eq!(TsJsClassifier.id(), crate::ts_js_classifier::ANALYZER_ID);
+        assert_eq!(
+            TsJsSurfaceAnalyzer.id(),
+            crate::ts_js_surface_analyzer::ANALYZER_ID
         );
     }
 }
