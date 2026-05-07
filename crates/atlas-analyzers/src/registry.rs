@@ -29,6 +29,7 @@ use sha2::{Digest, Sha256};
 
 use crate::cargo_classifier::CargoClassifier;
 use crate::compose_classifier::ComposeClassifier;
+use crate::csharp_classifier::CsharpClassifier;
 use crate::dockerfile_classifier::DockerfileClassifier;
 use crate::llm_classify::LlmClassifyAnalyzer;
 use crate::python_classifier::PythonClassifier;
@@ -89,12 +90,17 @@ impl AnalyzerRegistry {
     /// binary is locatable — see [`AnalyzerRegistry::builtin_with_python_surface`]).
     /// Phase 2 PR-11 adds `compose-classifier` (L3 deterministic,
     /// in-process) for Docker Compose files.
+    /// Phase 2 PR-6 adds `csharp-classifier` (L3 deterministic, in-process)
+    /// for C# components; the matching surface analyser at L5 is the
+    /// out-of-process `csharp-surface-analyzer` (registered separately
+    /// when its binary is locatable).
     pub fn builtin() -> Self {
         let cargo = Arc::new(CargoClassifier::new()) as Arc<dyn Analyzer>;
         let docker = Arc::new(DockerfileClassifier::new()) as Arc<dyn Analyzer>;
         let compose = Arc::new(ComposeClassifier::new()) as Arc<dyn Analyzer>;
         let ts_js = Arc::new(TsJsClassifier::new()) as Arc<dyn Analyzer>;
         let python = Arc::new(PythonClassifier::new()) as Arc<dyn Analyzer>;
+        let csharp = Arc::new(CsharpClassifier::new()) as Arc<dyn Analyzer>;
         let llm = Arc::new(LlmClassifyAnalyzer::new()) as Arc<dyn Analyzer>;
         let rust_surface = Arc::new(RustSurfaceAnalyzer::new()) as Arc<dyn Analyzer>;
         let ts_js_surface = Arc::new(TsJsSurfaceAnalyzer::new()) as Arc<dyn Analyzer>;
@@ -105,6 +111,7 @@ impl AnalyzerRegistry {
             compose.clone(),
             ts_js.clone(),
             python.clone(),
+            csharp.clone(),
             llm.clone(),
             rust_surface.clone(),
             ts_js_surface.clone(),
@@ -394,6 +401,12 @@ fn spec_for_analyzer(analyzer: &Arc<dyn Analyzer>) -> AnalyzerSpec {
             ],
             ..Default::default()
         }
+    } else if id == crate::csharp_classifier::ANALYZER_ID {
+        // C# L3 classifier keys on *.csproj and *.sln manifest signals.
+        atlas_index::ApplicabilityPredicate {
+            file_globs: vec!["**/*.csproj".into(), "**/*.sln".into()],
+            ..Default::default()
+        }
     } else {
         atlas_index::ApplicabilityPredicate::default()
     };
@@ -415,15 +428,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_lists_eight_analysers() {
+    fn builtin_lists_nine_analysers() {
         let r = AnalyzerRegistry::builtin();
-        assert_eq!(r.len(), 8);
+        assert_eq!(r.len(), 9);
         let ids: Vec<&str> = r.iter_dispatch_order().map(|a| a.id()).collect();
         assert!(ids.contains(&crate::cargo_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::compose_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::dockerfile_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::ts_js_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::python_classifier::ANALYZER_ID));
+        assert!(ids.contains(&crate::csharp_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::llm_classify::ANALYZER_ID));
         assert!(ids.contains(&crate::rust_surface_analyzer::ANALYZER_ID));
         assert!(ids.contains(&crate::ts_js_surface_analyzer::ANALYZER_ID));
@@ -538,6 +552,10 @@ mod tests {
         // analyser instances' own `id()` returns. A drift here would
         // silently break `merge_yaml`'s in-place update behaviour.
         assert_eq!(CargoClassifier.id(), crate::cargo_classifier::ANALYZER_ID);
+        assert_eq!(
+            CsharpClassifier.id(),
+            crate::csharp_classifier::ANALYZER_ID
+        );
         assert_eq!(
             DockerfileClassifier.id(),
             crate::dockerfile_classifier::ANALYZER_ID

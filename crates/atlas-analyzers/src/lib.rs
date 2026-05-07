@@ -36,6 +36,8 @@
 
 pub mod cargo_classifier;
 pub mod compose_classifier;
+pub mod csharp_classifier;
+pub mod csharp_surface_analyzer;
 pub mod dispatcher;
 pub mod dockerfile_classifier;
 pub mod llm_classify;
@@ -56,6 +58,11 @@ use atlas_index::{CostClass, Stage};
 
 pub use cargo_classifier::CargoClassifier;
 pub use compose_classifier::{ComposeClassificationOutput, ComposeClassifier, ComposeShape};
+pub use csharp_classifier::{CsharpClassificationOutput, CsharpClassifier};
+pub use csharp_surface_analyzer::{
+    cached_csharp_subprocess_proxy, csharp_subprocess_spec, locate_csharp_analyzer_binary,
+    CSHARP_ANALYZER_DEFAULT_TIMEOUT_SECS, CSHARP_ANALYZER_ID, CSHARP_ANALYZER_VERSION,
+};
 pub use dispatcher::{DispatchOutcome, NONE_ANALYZER_ID, NONE_ANALYZER_VERSION};
 pub use dockerfile_classifier::DockerfileClassifier;
 pub use llm_classify::{LlmClassifyAnalyzer, LlmHook, LlmHookError};
@@ -359,6 +366,7 @@ pub trait Analyzer: Send + Sync {
 impl_stage_output!(
     cargo_classifier::CargoClassificationOutput,
     compose_classifier::ComposeClassificationOutput,
+    csharp_classifier::CsharpClassificationOutput,
     dockerfile_classifier::DockerfileClassificationOutput,
     llm_classify::LlmClassifyOutput,
     python_classifier::PythonClassificationOutput,

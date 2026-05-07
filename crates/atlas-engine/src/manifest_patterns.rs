@@ -34,6 +34,9 @@ const EXACT_MANIFEST_BASENAMES: &[&str] = &[
 ///
 /// - `*.nix` suffix rule (subsumes `flake.nix`; explicit entry kept above
 ///   for reader clarity).
+/// - C# manifests: `*.csproj` (project files) and `*.sln` (solution
+///   files). Both are recognised as component boundaries by the
+///   `csharp-classifier` (PR-6).
 /// - Docker Compose filename patterns: `docker-compose.yml`,
 ///   `docker-compose.yaml`, `docker-compose.*.yml`,
 ///   `docker-compose.*.yaml`, `compose.yml`, `compose.yaml`,
@@ -47,7 +50,15 @@ pub fn is_manifest_file(path: &Path) -> bool {
     if EXACT_MANIFEST_BASENAMES.contains(&basename) {
         return true;
     }
+    // *.nix subsumes flake.nix (kept explicitly above for
+    // self-documentation).
     if basename.ends_with(".nix") {
+        return true;
+    }
+    // C# manifests: *.csproj (project files) and *.sln (solution
+    // files). Both are recognised as component boundaries by the
+    // `csharp-classifier` (PR-6).
+    if basename.ends_with(".csproj") || basename.ends_with(".sln") {
         return true;
     }
     is_compose_manifest_basename(basename)
@@ -151,5 +162,17 @@ mod tests {
         assert!(!is_manifest_file(&PathBuf::from("docker-compose..yml")));
         assert!(!is_manifest_file(&PathBuf::from("not-compose.yml")));
         assert!(!is_manifest_file(&PathBuf::from("compose")));
+    }
+
+    #[test]
+    fn recognises_csharp_project_file() {
+        assert!(is_manifest_file(&PathBuf::from("MyApp.csproj")));
+        assert!(is_manifest_file(&PathBuf::from("src/MyApp.csproj")));
+    }
+
+    #[test]
+    fn recognises_csharp_solution_file() {
+        assert!(is_manifest_file(&PathBuf::from("MySolution.sln")));
+        assert!(is_manifest_file(&PathBuf::from("workspace/MySolution.sln")));
     }
 }

@@ -26,6 +26,7 @@ use std::sync::Arc;
 use atlas_analyzers::{
     cargo_classifier::CargoClassificationOutput,
     compose_classifier::ComposeClassificationOutput,
+    csharp_classifier::CsharpClassificationOutput,
     dispatcher::DispatchOutcome,
     dockerfile_classifier::DockerfileClassificationOutput,
     llm_classify::{LlmClassifyOutput, LlmHook, LlmHookError},
@@ -436,6 +437,12 @@ fn classification_from_output(
     {
         return python_to_classification(py, analyser_id, analyser_version);
     }
+    if let Some(cs) = (*output)
+        .as_any()
+        .downcast_ref::<CsharpClassificationOutput>()
+    {
+        return csharp_to_classification(cs, analyser_id, analyser_version);
+    }
     if let Some(llm) = (*output).as_any().downcast_ref::<LlmClassifyOutput>() {
         return parse_llm_response(llm.response.clone(), analyser_id, analyser_version)
             .unwrap_or_else(|reason| {
@@ -563,6 +570,37 @@ fn ts_js_to_classification(
 /// the analyser identity flows through unchanged via PR-4's plumbing.
 fn python_to_classification(
     out: &PythonClassificationOutput,
+    analyser_id: &str,
+    analyser_version: &str,
+) -> Classification {
+    let kind = ComponentKind::parse(&out.kind).unwrap_or(ComponentKind::NonComponent);
+    let lifecycle_roles = out
+        .lifecycle_roles
+        .iter()
+        .filter_map(|s| LifecycleScope::parse(s))
+        .collect();
+    let mut languages = BTreeSet::new();
+    languages.insert(out.language.clone());
+    Classification {
+        kind,
+        languages,
+        build_system: out.build_system.clone(),
+        lifecycle_roles,
+        role: out.role.clone(),
+        evidence_grade: EvidenceGrade::Strong,
+        evidence_fields: out.evidence_fields.clone(),
+        rationale: out.rationale.clone(),
+        is_boundary: out.is_boundary,
+        analyser_id: analyser_id.to_string(),
+        analyser_version: analyser_version.to_string(),
+    }
+}
+
+/// Translate a [`CsharpClassificationOutput`] into a [`Classification`].
+/// PR-6 of Phase 2: the `csharp-project` and `csharp-solution` kinds land
+/// here, with `language: "csharp"` flowing from the classifier output.
+fn csharp_to_classification(
+    out: &CsharpClassificationOutput,
     analyser_id: &str,
     analyser_version: &str,
 ) -> Classification {

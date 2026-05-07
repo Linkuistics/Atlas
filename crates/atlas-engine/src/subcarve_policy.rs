@@ -96,6 +96,16 @@ pub fn decide_kind_only(kind: ComponentKind) -> Option<PolicyDecision> {
         // been marked `is_boundary: false` and should never reach here.
         ComponentKind::External | ComponentKind::NonComponent => Some(PolicyDecision::Stop),
 
+        // C# project / solution kinds: projects are leaf-like (one
+        // MSBuild boundary), solutions recurse to find contained
+        // projects. Both are treated as Stop here — L8 will recurse
+        // into solution dirs because their `*.csproj` children emit
+        // separate component boundaries, not because the solution
+        // itself has call-graph structure.
+        ComponentKind::CsharpProject | ComponentKind::CsharpSolution => {
+            Some(PolicyDecision::Stop)
+        }
+
         // Libraries: depth cap depends on modularity_hint, so the
         // verdict needs structural signals. The TS/JS package kinds
         // (PR-1) are library-shaped: they may carry sub-modules that

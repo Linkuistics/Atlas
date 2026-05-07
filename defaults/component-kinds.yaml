@@ -137,6 +137,20 @@ kinds:
       top-level key and depending on the `flutter` SDK. Distinct
       from `dart-app` because Flutter has its own build/deploy chain.
 
+  - name: csharp-project
+    description: |
+      A C# project — recognised deterministically at L3 by the presence
+      of a `*.csproj` file. Covers libraries, applications, and test
+      projects. The project's build system is MSBuild / the .NET SDK;
+      public surface is extracted by the `csharp-surface-analyzer` at L5.
+
+  - name: csharp-solution
+    description: |
+      A C# solution — recognised deterministically at L3 by the presence
+      of a `*.sln` file. A solution groups multiple `csharp-project`
+      components under one boundary. The surface analyser is dispatched
+      independently for each contained project.
+
   - name: dotnet-library
     description: |
       A .NET class library — recognised by a `.csproj` / `.fsproj` /
