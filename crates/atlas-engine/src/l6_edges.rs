@@ -32,6 +32,7 @@ use sha2::{Digest, Sha256};
 use crate::db::AtlasDatabase;
 use crate::l4_tree::all_components;
 use crate::l5_surface::surface_of;
+use crate::l6_composition::composition_edges_from_dockerfiles;
 use crate::surface_types::SurfaceRecord;
 
 /// Driver version baked into the L6 stage fingerprint (PR-10). Bump
@@ -71,11 +72,20 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
     let components = all_components(db);
     let live: Vec<&ComponentEntry> = components.iter().filter(|c| !c.deleted).collect();
 
+    // PR-9: deterministic composition edges from Dockerfile `COPY`
+    // directives. Computed regardless of `live.len()` because a
+    // single-component workspace can still carry a docker-image
+    // bundling external sources (none today, but the contract is
+    // "composition edges flow whenever Dockerfiles exist"). The
+    // result is merged with the LLM batch below before
+    // canonicalisation; canonicalise_edges dedupes any overlap.
+    let composition_edges = composition_edges_from_dockerfiles(db);
+
     if live.len() < 2 {
-        // A single-component run has no pairs to consider; the
-        // prompt still technically runs, but we skip it to avoid
-        // wasting tokens on a no-op.
-        return Arc::new(Vec::new());
+        // A single-component run has no pairs to consider for the
+        // LLM Stage 2 batch; skip the prompt to avoid wasting tokens
+        // on a no-op. Composition edges still flow — see above.
+        return Arc::new(canonicalise_edges(composition_edges));
     }
 
     let surfaces: Vec<SurfaceWithId> = live
@@ -141,11 +151,20 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
 
     let value = match db.call_llm_cached_with_fp(Stage::L6, &l6_fingerprint, &request) {
         Ok(v) => v,
-        Err(_) => return Arc::new(Vec::new()),
+        Err(_) => return Arc::new(canonicalise_edges(composition_edges)),
     };
 
-    let parsed = parse_edges_response(&value).unwrap_or_default();
-    let canonicalised = canonicalise_edges(parsed);
+    let mut parsed = parse_edges_response(&value).unwrap_or_default();
+    // PR-9: merge deterministic composition edges with the LLM batch
+    // before canonicalisation. The composition edges go *first* so
+    // that on a `(kind, lifecycle, participants)` collision the
+    // deterministic edge wins (`canonicalise_edges` keeps the first
+    // insertion per canonical key). The LLM batch is allowed to
+    // restate a composition edge but cannot override it.
+    let mut combined: Vec<Edge> = Vec::with_capacity(composition_edges.len() + parsed.len());
+    combined.extend(composition_edges);
+    combined.append(&mut parsed);
+    let canonicalised = canonicalise_edges(combined);
     Arc::new(canonicalised)
 }
 

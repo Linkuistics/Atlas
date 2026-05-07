@@ -291,14 +291,34 @@ pub fn external_components_yaml_snapshot(db: &AtlasDatabase) -> Arc<ExternalsFil
 /// Edges are already canonicalised by L6; dedup is re-applied here
 /// against `canonical_key` so any caller-side manipulation that adds
 /// duplicates gets collapsed, and every surviving edge is re-validated.
+///
+/// **Order (PR-9):** edges are emitted in lex-ascending order on the
+/// `(kind, lifecycle, participants)` triple — the same key
+/// [`Edge::canonical_key`] returns. Composition edges
+/// (`bundled-into`, `deployed-with`) and contract edges (PR-8 family)
+/// interleave with v1 edges (`depends-on`, etc.) in alphabetical
+/// order on `EdgeKind::as_str`. Re-runs over identical inputs produce
+/// byte-identical YAML.
 pub fn related_components_yaml_snapshot(db: &AtlasDatabase) -> Arc<RelatedComponentsFile> {
     let edges = all_proposed_edges(db);
+    let mut sorted: Vec<component_ontology::Edge> = (*edges).clone();
+    // Lex sort by (kind, lifecycle, participants). `canonical_key`
+    // returns this exact triple already canonicalised (sorted
+    // participants for symmetric kinds, caller order for directed).
+    // Stable sort so two edges sharing a canonical key keep insertion
+    // order — matches the "first wins on duplicate key" rule in
+    // `l6_edges::canonicalise_edges`.
+    sorted.sort_by(|a, b| {
+        let ka = a.canonical_key();
+        let kb = b.canonical_key();
+        (ka.0.as_str(), ka.1.as_str(), ka.2).cmp(&(kb.0.as_str(), kb.1.as_str(), kb.2))
+    });
     let mut file = RelatedComponentsFile {
         schema_version: RELATED_SCHEMA_VERSION,
         edges: Vec::new(),
     };
-    for edge in edges.iter() {
-        let _ = file.add_edge(edge.clone());
+    for edge in sorted {
+        let _ = file.add_edge(edge);
     }
     Arc::new(file)
 }
