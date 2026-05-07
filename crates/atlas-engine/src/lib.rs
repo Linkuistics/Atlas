@@ -77,7 +77,8 @@ pub use l5_surface::{
 };
 pub use l6_composition::{composition_edges_arc, composition_edges_from_dockerfiles};
 pub use l6_edges::{
-    all_proposed_edges, candidate_edges_for, EMBEDDED_STAGE2_EDGES_PROMPT, L6_DRIVER_VERSION,
+    all_proposed_edges, candidate_edges_for, contract_edges_from_surfaces,
+    EMBEDDED_STAGE2_EDGES_PROMPT, L6_DRIVER_VERSION,
 };
 pub use l7_structural::{
     cliques, edge_graph, modularity_hint, sccs, seam_density, Clique, EdgeGraph, ModularityHint,

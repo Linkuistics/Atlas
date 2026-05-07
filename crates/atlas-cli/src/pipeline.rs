@@ -32,10 +32,11 @@ use std::time::{Instant, SystemTime};
 use anyhow::{Context, Result};
 use atlas_analyzers::AnalyzerRegistry;
 use atlas_engine::{
-    components_yaml_snapshot_with_prompt_shas, expand_roots, external_components_yaml_snapshot,
-    per_component_yaml_snapshot, related_components_yaml_snapshot, run_fixedpoint,
-    seed_filesystem_excluding, surfaces_yaml_snapshot, AtlasDatabase, FixedpointConfig,
-    LlmResponseCache, PersistentCache, Phase, ProgressEvent, ProgressSink,
+    all_components, components_yaml_snapshot_with_prompt_shas, expand_roots,
+    external_components_yaml_snapshot, per_component_yaml_snapshot,
+    related_components_yaml_snapshot, run_fixedpoint, seed_filesystem_excluding,
+    surfaces_yaml_snapshot, AtlasDatabase, FixedpointConfig, LlmResponseCache, PersistentCache,
+    Phase, ProgressEvent, ProgressSink,
 };
 use atlas_index::{
     load_or_default_components, load_or_default_externals, load_or_default_overrides,
@@ -45,6 +46,7 @@ use atlas_index::{
     OverridesFile, SubsystemsFile, SubsystemsOverridesFile,
 };
 use atlas_llm::{LlmBackend, LlmFingerprint, TokenCounter};
+use component_ontology::validate_contract_participants_resolve;
 
 use crate::backend::BudgetSentinel;
 use crate::timestamp::format_utc_rfc3339;
@@ -555,6 +557,58 @@ pub fn run_index(
         save_externals_atomic(&prior_externals_path, &externals_file).map_err(IndexError::Other)?;
         save_related_components_atomic(&prior_related_path, &related_file)
             .map_err(IndexError::Other)?;
+
+        // PR-8: validate that every contract participant in the
+        // emitted `related-components.yaml` resolves to a contract
+        // defined in some live component's `surfaces.yaml`. The
+        // file is written first (so the user has it for inspection
+        // when diagnosing the failure). `outputs_written` is `true`
+        // for this error path — the write already landed.
+        {
+            let live_ids: Vec<component_ontology::ComponentId> = all_components(&db)
+                .iter()
+                .filter(|c| !c.deleted)
+                .filter_map(|c| component_ontology::ComponentId::parse(c.id.as_str()).ok())
+                .collect();
+            // Collect every contract id defined in any live component's
+            // surfaces.yaml. `surfaces_yaml_snapshot` is Salsa-memoised —
+            // these calls are cheap after the L9 walk above pre-warmed them.
+            let known_ids_owned: Vec<String> = live_ids
+                .iter()
+                .filter_map(|cid| surfaces_yaml_snapshot(&db, cid).ok())
+                .flat_map(|sf| {
+                    sf.contracts_defined
+                        .iter()
+                        .map(|c| c.id.clone())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let known_contract_ids: std::collections::BTreeSet<&str> =
+                known_ids_owned.iter().map(String::as_str).collect();
+            if let Err(unresolved) =
+                validate_contract_participants_resolve(&related_file.edges, &known_contract_ids)
+            {
+                let lines: Vec<String> = unresolved
+                    .iter()
+                    .map(|u| {
+                        format!(
+                            "  {} edge: component `{}` → unresolved contract `{}`",
+                            u.edge_kind.as_str(),
+                            u.component_participant,
+                            u.unresolved_contract_id,
+                        )
+                    })
+                    .collect();
+                return Err(IndexError::Other(anyhow::anyhow!(
+                    "related-components.yaml contains {} unresolved contract participant(s);\n\
+                     inspect {} for details:\n{}",
+                    unresolved.len(),
+                    prior_related_path.display(),
+                    lines.join("\n"),
+                )));
+            }
+        }
+
         save_subsystems_atomic(&subsystems_path, &subsystems_file).map_err(IndexError::Other)?;
 
         // PR-6: walk every component and write its per-component

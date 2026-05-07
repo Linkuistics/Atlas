@@ -31,7 +31,7 @@ use sha2::{Digest, Sha256};
 
 use crate::db::AtlasDatabase;
 use crate::l4_tree::all_components;
-use crate::l5_surface::surface_of;
+use crate::l5_surface::{surface_artefacts_of, surface_of};
 use crate::l6_composition::composition_edges_from_dockerfiles;
 use crate::surface_types::SurfaceRecord;
 
@@ -72,6 +72,12 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
     let components = all_components(db);
     let live: Vec<&ComponentEntry> = components.iter().filter(|c| !c.deleted).collect();
 
+    // PR-8: deterministic contract edges from per-component
+    // surfaces.yaml. Computed regardless of `live.len()` because a
+    // single-component workspace that defines a contract still emits
+    // its `defines-contract` / `implements-contract` edges.
+    let contract_edges = contract_edges_from_surfaces(db);
+
     // PR-9: deterministic composition edges from Dockerfile `COPY`
     // directives. Computed regardless of `live.len()` because a
     // single-component workspace can still carry a docker-image
@@ -84,8 +90,13 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
     if live.len() < 2 {
         // A single-component run has no pairs to consider for the
         // LLM Stage 2 batch; skip the prompt to avoid wasting tokens
-        // on a no-op. Composition edges still flow — see above.
-        return Arc::new(canonicalise_edges(composition_edges));
+        // on a no-op. Contract edges and composition edges still flow
+        // — see above.
+        let mut combined: Vec<Edge> =
+            Vec::with_capacity(contract_edges.len() + composition_edges.len());
+        combined.extend(contract_edges);
+        combined.extend(composition_edges);
+        return Arc::new(canonicalise_edges(combined));
     }
 
     let surfaces: Vec<SurfaceWithId> = live
@@ -151,21 +162,94 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
 
     let value = match db.call_llm_cached_with_fp(Stage::L6, &l6_fingerprint, &request) {
         Ok(v) => v,
-        Err(_) => return Arc::new(canonicalise_edges(composition_edges)),
+        Err(_) => {
+            // LLM call failed — return only the deterministic edges.
+            let mut combined: Vec<Edge> =
+                Vec::with_capacity(contract_edges.len() + composition_edges.len());
+            combined.extend(contract_edges);
+            combined.extend(composition_edges);
+            return Arc::new(canonicalise_edges(combined));
+        }
     };
 
     let mut parsed = parse_edges_response(&value).unwrap_or_default();
-    // PR-9: merge deterministic composition edges with the LLM batch
-    // before canonicalisation. The composition edges go *first* so
-    // that on a `(kind, lifecycle, participants)` collision the
-    // deterministic edge wins (`canonicalise_edges` keeps the first
-    // insertion per canonical key). The LLM batch is allowed to
-    // restate a composition edge but cannot override it.
-    let mut combined: Vec<Edge> = Vec::with_capacity(composition_edges.len() + parsed.len());
+    // PR-8: merge deterministic contract edges + composition edges
+    // with the LLM batch before canonicalisation. Deterministic edges
+    // go first so that on a `(kind, lifecycle, participants)` collision
+    // the deterministic edge wins (`canonicalise_edges` keeps the
+    // first insertion per canonical key). Contract edges precede
+    // composition edges for readability; neither can collide with the
+    // other on canonical key (different EdgeKinds).
+    let mut combined: Vec<Edge> =
+        Vec::with_capacity(contract_edges.len() + composition_edges.len() + parsed.len());
+    combined.extend(contract_edges);
     combined.extend(composition_edges);
     combined.append(&mut parsed);
     let canonicalised = canonicalise_edges(combined);
     Arc::new(canonicalised)
+}
+
+/// Build every deterministic contract edge implied by each live
+/// component's surface artefacts.
+///
+/// For each component:
+///
+/// - **`defines-contract`** — one edge per entry in the
+///   component's `SurfaceArtefacts.contracts` list (code-derived
+///   contracts the component defines).
+/// - **`implements-contract`** — one edge per defined contract (the
+///   defining component is also the defining-binding implementer of
+///   its own contracts, per design §6.3).
+///
+/// `consumes-contract` edges are *not* emitted here; they flow
+/// through the LLM Stage 2 batch (the model already knows the kind
+/// via `{{ONTOLOGY_KINDS}}`). See the PR-8 architectural context for
+/// why.
+///
+/// Components that have no code-derived contracts contribute nothing.
+/// The result is **not** canonicalised — the caller feeds it through
+/// [`canonicalise_edges`] alongside the LLM batch.
+pub fn contract_edges_from_surfaces(db: &AtlasDatabase) -> Vec<Edge> {
+    let components = all_components(db);
+    let live = components.iter().filter(|c| !c.deleted);
+    let mut out: Vec<Edge> = Vec::new();
+
+    for entry in live {
+        let component_id_str = entry.id.as_str().to_string();
+        // `surface_artefacts_of` is Salsa-memoised — cost is one
+        // Salsa lookup per call; no disk I/O after the first call.
+        let artefacts = surface_artefacts_of(db, entry.id.clone());
+
+        // defines-contract edges: one per code-derived contract.
+        for contract in &artefacts.contracts {
+            out.push(Edge {
+                kind: EdgeKind::DefinesContract,
+                lifecycle: LifecycleScope::Design,
+                participants: vec![component_id_str.clone(), contract.id.clone()],
+                evidence_grade: EvidenceGrade::Strong,
+                evidence_fields: vec!["surfaces.yaml:contracts_defined".to_string()],
+                rationale: format!(
+                    "component `{}` lists contract `{}` under contracts_defined",
+                    component_id_str, contract.id
+                ),
+            });
+            // The defining component is also the defining-binding
+            // implementer (design §6.3).
+            out.push(Edge {
+                kind: EdgeKind::ImplementsContract,
+                lifecycle: LifecycleScope::Design,
+                participants: vec![component_id_str.clone(), contract.id.clone()],
+                evidence_grade: EvidenceGrade::Strong,
+                evidence_fields: vec!["surfaces.yaml:contracts_implemented".to_string()],
+                rationale: format!(
+                    "component `{}` lists contract `{}` under contracts_implemented",
+                    component_id_str, contract.id
+                ),
+            });
+        }
+    }
+
+    out
 }
 
 /// Surface record bundled with its component id — the shape the
