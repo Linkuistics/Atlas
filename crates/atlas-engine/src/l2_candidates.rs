@@ -34,8 +34,8 @@ use crate::types::{Candidate, RationaleBundle};
 /// Each emitted [`Candidate`] carries a [`RationaleBundle`] with the
 /// scoped signals at its own directory.
 #[salsa::tracked]
-pub fn candidate_components_at<'db>(
-    db: &'db dyn salsa::Database,
+pub fn candidate_components_at(
+    db: &dyn salsa::Database,
     workspace: Workspace,
     dir: PathBuf,
 ) -> Arc<Vec<Candidate>> {

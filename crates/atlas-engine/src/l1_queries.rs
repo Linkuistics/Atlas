@@ -40,8 +40,8 @@ fn path_is_inside(candidate: &Path, dir: &Path) -> bool {
 
 /// Paths of all manifest files under `dir`, sorted for determinism.
 #[salsa::tracked]
-pub fn manifests_in<'db>(
-    db: &'db dyn salsa::Database,
+pub fn manifests_in(
+    db: &dyn salsa::Database,
     workspace: Workspace,
     dir: PathBuf,
 ) -> Arc<Vec<PathBuf>> {
@@ -59,8 +59,8 @@ pub fn manifests_in<'db>(
 
 /// Directories containing a `.git` marker under `dir`, sorted.
 #[salsa::tracked]
-pub fn git_boundaries<'db>(
-    db: &'db dyn salsa::Database,
+pub fn git_boundaries(
+    db: &dyn salsa::Database,
     workspace: Workspace,
     dir: PathBuf,
 ) -> Arc<Vec<PathBuf>> {
@@ -88,8 +88,8 @@ fn is_readmelike(path: &Path) -> bool {
 /// `dir`.  Only lines of the form `^#{1,6}\s+text` at column zero count;
 /// headings inside fenced code blocks are ignored.
 #[salsa::tracked]
-pub fn doc_headings<'db>(
-    db: &'db dyn salsa::Database,
+pub fn doc_headings(
+    db: &dyn salsa::Database,
     workspace: Workspace,
     dir: PathBuf,
 ) -> Arc<Vec<DocHeading>> {
@@ -155,8 +155,8 @@ fn parse_atx_heading(line: &str) -> Option<(u8, String)> {
 /// enough signal in practice and avoids platform-dependent metadata
 /// reads.
 #[salsa::tracked]
-pub fn shebangs<'db>(
-    db: &'db dyn salsa::Database,
+pub fn shebangs(
+    db: &dyn salsa::Database,
     workspace: Workspace,
     dir: PathBuf,
 ) -> Arc<Vec<ShebangEntry>> {
@@ -192,11 +192,7 @@ pub fn shebangs<'db>(
 /// under `dir`, yielding a stable fingerprint that changes iff any
 /// file under `dir` changes content, is added, or is removed.
 #[salsa::tracked]
-pub fn file_tree_sha<'db>(
-    db: &'db dyn salsa::Database,
-    workspace: Workspace,
-    dir: PathBuf,
-) -> [u8; 32] {
+pub fn file_tree_sha(db: &dyn salsa::Database, workspace: Workspace, dir: PathBuf) -> [u8; 32] {
     let files = workspace.files(db);
     let mut entries: Vec<(PathBuf, [u8; 32])> = Vec::new();
     for file in files {

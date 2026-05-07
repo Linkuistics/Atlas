@@ -403,8 +403,8 @@ pub fn related_components_yaml_snapshot(db: &AtlasDatabase) -> Arc<RelatedCompon
 /// degraded to "no facts" by [`crate::manifest_parse`], and externals
 /// discovery should not be stricter than classification.
 #[salsa::tracked]
-pub fn externals_from_manifests<'db>(
-    db: &'db dyn salsa::Database,
+pub fn externals_from_manifests(
+    db: &dyn salsa::Database,
     workspace: Workspace,
     dir: PathBuf,
 ) -> Arc<Vec<ExternalEntry>> {
