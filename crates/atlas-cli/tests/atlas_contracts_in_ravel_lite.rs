@@ -106,16 +106,31 @@ impl PR12Backend {
     }
 
     /// Number of Stage1Surface calls whose canonical inputs JSON
-    /// contains `"COMPONENT_ID":"<id>"`.  Used by AC#5 to prove that
-    /// editing atlas-contracts's source did NOT invalidate the
-    /// consumer's L5 entry.
+    /// has a `COMPONENT_ID` field equal to `component_id`.  Used by AC#5
+    /// to prove that editing atlas-contracts's source did NOT
+    /// invalidate the consumer's L5 entry.
+    ///
+    /// Parses the canonical inputs JSON via `serde_json::from_str` and
+    /// looks up the structured `COMPONENT_ID` field — robust against
+    /// key-ordering / whitespace changes in Stage 1's input
+    /// canonicaliser. Calls whose inputs are not parseable JSON or
+    /// whose top level is not an object are skipped (they cannot match
+    /// any component id by construction).
     fn surface_calls_for(&self, component_id: &str) -> usize {
-        let needle = format!("\"COMPONENT_ID\":\"{component_id}\"");
         self.call_log
             .lock()
             .unwrap()
             .iter()
-            .filter(|(p, inputs)| *p == PromptId::Stage1Surface && inputs.contains(&needle))
+            .filter(|(p, inputs)| {
+                if *p != PromptId::Stage1Surface {
+                    return false;
+                }
+                let parsed: Value = match serde_json::from_str(inputs) {
+                    Ok(v) => v,
+                    Err(_) => return false,
+                };
+                parsed.get("COMPONENT_ID").and_then(Value::as_str) == Some(component_id)
+            })
             .count()
     }
 }

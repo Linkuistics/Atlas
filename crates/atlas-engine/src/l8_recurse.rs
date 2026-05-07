@@ -42,7 +42,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use atlas_index::{ComponentEntry, PathSegment, PinValue};
+use atlas_index::{ComponentEntry, PinValue};
 use rayon::prelude::*;
 
 use crate::db::{AtlasDatabase, Workspace};
@@ -242,11 +242,10 @@ fn map_reduce_subcarve(
     let roots = workspace.roots(db as &dyn salsa::Database).clone();
 
     let suppressed = pin_suppressed_keys(&signals.pin_suppressed_children);
-    let candidates: Vec<PathBuf> =
-        enumerate_immediate_subdirs(db, workspace, &roots, &entry.path_segments)
-            .into_iter()
-            .filter(|abs_dir| !is_pin_suppressed(abs_dir, &suppressed))
-            .collect();
+    let candidates: Vec<PathBuf> = enumerate_immediate_subdirs(db, workspace, &roots, entry)
+        .into_iter()
+        .filter(|abs_dir| !is_pin_suppressed(abs_dir, &suppressed))
+        .collect();
 
     if candidates.is_empty() {
         return SubcarveDecision::stopped("no eligible immediate sub-directories");
@@ -264,15 +263,28 @@ fn map_reduce_subcarve(
     let mut rejected = 0usize;
     for (abs_dir, classification) in candidates.iter().zip(verdicts.iter()) {
         if classification.is_boundary {
-            // Multi-root: relativise against the longest matching root
-            // so a sub-dir under a peer root appears as `crate-name`
-            // rather than `../peer/crate-name`.
+            // Push the ABSOLUTE path so L2's source-4 interpretation
+            // routes the candidate under the correct root in
+            // multi-root layouts. A relative `src`-style value is
+            // ambiguous when both `<primary>/src` and `<peer>/src`
+            // would pass `path_is_inside` against their respective
+            // roots — pre-PR-13 single-segment relative paths
+            // happened to be unambiguous because the phantom paths
+            // resolved under exactly one root, but with the L8
+            // peer-root fix in place that invariant no longer holds
+            // and we'd phantom-resolve `<peer>/src` to
+            // `<primary>/src` (which has no real files). Storing
+            // absolute paths is also what `absolute_under_root` in
+            // L2 already supports out of the box (`if is_absolute()`
+            // returns the path unchanged).
+            sub_dirs.push(abs_dir.clone());
+            // Rationale stays relative-against-best-root for human
+            // readability — consumers don't parse it.
             let owning_root = best_root_for(&roots, abs_dir);
             let rel = match owning_root {
                 Some(root) => abs_dir.strip_prefix(root).unwrap_or(abs_dir),
                 None => abs_dir.as_path(),
             };
-            sub_dirs.push(rel.to_path_buf());
             accepted_summaries.push(format!(
                 "{} ({})",
                 path_to_forward_slash(rel),
@@ -415,18 +427,22 @@ fn enumerate_immediate_subdirs(
     db: &AtlasDatabase,
     workspace: Workspace,
     roots: &[PathBuf],
-    path_segments: &[PathSegment],
+    entry: &ComponentEntry,
 ) -> Vec<PathBuf> {
     let dyn_db: &dyn salsa::Database = db;
     // Multi-root: each path segment is relative to one of the roots.
     // For each segment, try every root and keep the absolutised
     // version that actually corresponds to a file the workspace knows
     // about — i.e. for which at least one registered file's path
-    // starts with the candidate. Falling back to the primary root
-    // matches the old single-root behaviour for the common case.
-    let owned_dirs: BTreeSet<PathBuf> = path_segments
+    // starts with the candidate. The component's manifests
+    // disambiguate the peer-root-with-empty-segment case where every
+    // root trivially "contains" `<root>/<empty>`. Falling back to the
+    // primary root matches the old single-root behaviour for the
+    // common case.
+    let owned_dirs: BTreeSet<PathBuf> = entry
+        .path_segments
         .iter()
-        .map(|seg| absolutise_under_any_root(roots, workspace, dyn_db, &seg.path))
+        .map(|seg| absolutise_under_any_root(roots, workspace, dyn_db, &seg.path, &entry.manifests))
         .collect();
 
     let mut immediate: BTreeSet<PathBuf> = BTreeSet::new();
@@ -467,15 +483,31 @@ fn absolutise(workspace_root: &Path, segment_path: &Path) -> PathBuf {
 }
 
 /// Resolve a relative path segment against the most plausible root.
-/// Strategy: try each root in order; if the absolutised path is a
-/// prefix of any registered file's path, accept it. Falls back to
-/// `roots[0]` if no root matches — matching the v1 single-root
-/// behaviour.
+///
+/// Strategy:
+///
+/// 1. If the entry has manifests, prefer the root under which at least
+///    one of `<root>/<manifest>` actually exists in the registered
+///    files. This disambiguates the cross-tree peer-root case where
+///    `segment_path == ""` (or any other path that trivially exists
+///    under multiple roots) and the manifest existence is the only
+///    signal that distinguishes the owning root. Mirrors the same
+///    disambiguation that `pipeline.rs::write_per_component_files`
+///    applies on the output side — without it, L8 would phantom-emit
+///    sub-components for the wrong root and the output writer would
+///    correct the path silently, leaving the engine and the on-disk
+///    artefacts disagreeing.
+/// 2. Otherwise (no manifests on the entry, or none resolve under any
+///    root), accept the first root whose `<root>/<segment>` is a
+///    prefix of any registered file's path.
+/// 3. If neither rule selects a root, fall back to `roots[0]` —
+///    matching the v1 single-root behaviour for the common case.
 fn absolutise_under_any_root(
     roots: &[PathBuf],
     workspace: Workspace,
     dyn_db: &dyn salsa::Database,
     segment_path: &Path,
+    manifests: &[PathBuf],
 ) -> PathBuf {
     if segment_path.is_absolute() {
         return segment_path.to_path_buf();
@@ -487,6 +519,28 @@ fn absolutise_under_any_root(
         return absolutise(&roots[0], segment_path);
     }
     let files = workspace.files(dyn_db);
+
+    // Pass 1: manifest-disambiguated selection. Skip when the entry has
+    // no manifests, since the check would unconditionally fail.
+    if !manifests.is_empty() {
+        for root in roots {
+            let candidate = root.join(segment_path);
+            let any_manifest_present = manifests.iter().any(|m| {
+                let absolute_manifest = root.join(m);
+                files
+                    .iter()
+                    .any(|f| f.path(dyn_db) == absolute_manifest.as_path())
+            });
+            if any_manifest_present && files.iter().any(|f| f.path(dyn_db).starts_with(&candidate))
+            {
+                return candidate;
+            }
+        }
+    }
+
+    // Pass 2: legacy "first root whose <root>/<segment> contains a
+    // registered file" — preserves single-segment / no-manifest
+    // behaviour.
     for root in roots {
         let candidate = root.join(segment_path);
         if files.iter().any(|f| f.path(dyn_db).starts_with(&candidate)) {

@@ -241,34 +241,43 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
     //    Phase 2 (rust-analyzer wire-up).
     let mut sources: Vec<(PathBuf, Vec<u8>)> = Vec::new();
     for segment in &entry.path_segments {
-        // Segment paths are relative to one of the roots. `best_root_for`
-        // operates on absolute paths only — for relative segments, probe
-        // each root in turn for one whose `<root>/<segment>/src/{lib,main}.rs`
-        // resolves to known file bytes. This is the load-bearing resolution
-        // for cross-tree (peer-root) components whose
-        // `path_segments[0].path` is empty or root-leaf-only — for those,
-        // `<root>/<segment>` is itself a directory under both roots and
-        // the only signal that distinguishes them is the presence of the
-        // Rust source files we're about to read.
-        let candidate_roots: Vec<PathBuf> = if segment.path.is_absolute() {
-            vec![PathBuf::new()]
-        } else if let Some(owning_root) = best_root_for(&roots, &segment.path) {
-            // Absolute segment path that happens to be a descendant of
-            // some root (rare; produced by overrides that synthesise an
-            // absolute path).
-            vec![owning_root.to_path_buf()]
-        } else {
-            roots.clone()
-        };
+        // Absolute segment paths short-circuit: there is exactly one
+        // candidate (the segment itself), no roots involved. We handle
+        // this as an early step so the relative-path branch below can
+        // reason in terms of `roots` alone.
+        if segment.path.is_absolute() {
+            for filename in ["src/lib.rs", "src/main.rs"] {
+                let candidate = segment.path.join(filename);
+                if let Some(bytes) = file_content(db, &candidate) {
+                    let rel = PathBuf::from(filename);
+                    if !sources.iter().any(|(p, _)| p == &rel) {
+                        sources.push((rel, (*bytes).clone()));
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Relative segment: probe each candidate root for the one whose
+        // `<root>/<segment>/src/{lib,main}.rs` resolves to known file
+        // bytes. Load-bearing for cross-tree (peer-root) components
+        // whose `path_segments[0].path` is empty or root-leaf-only —
+        // for those, `<root>/<segment>` is itself a directory under
+        // every root and the only signal that distinguishes them is the
+        // presence of the Rust source files we're about to read.
+        let candidate_roots: Vec<PathBuf> =
+            if let Some(owning_root) = best_root_for(&roots, &segment.path) {
+                // The relative path happens to also be a descendant of
+                // some root (rare; produced by overrides that synthesise
+                // a path that resolves under one root unambiguously).
+                vec![owning_root.to_path_buf()]
+            } else {
+                roots.clone()
+            };
 
         for filename in ["src/lib.rs", "src/main.rs"] {
             for root in &candidate_roots {
-                let absolute_dir = if segment.path.is_absolute() {
-                    segment.path.clone()
-                } else {
-                    root.join(&segment.path)
-                };
-                let candidate = absolute_dir.join(filename);
+                let candidate = root.join(&segment.path).join(filename);
                 if let Some(bytes) = file_content(db, &candidate) {
                     let rel = PathBuf::from(filename);
                     // De-duplicate against earlier segments contributing

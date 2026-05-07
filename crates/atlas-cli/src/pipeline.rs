@@ -730,6 +730,79 @@ fn persist_discovered_roots(output_dir: &Path, roots: &[PathBuf]) -> Result<()> 
     Ok(())
 }
 
+/// Outcome of [`resolve_component_abs_dir`]: the absolute directory
+/// for the component plus a boolean flag noting whether the resolution
+/// fell back to `roots[0]` because no root passed the manifest /
+/// existence check. The flag is exposed so the caller can emit a
+/// warning, and so unit tests can assert the fallback fires when
+/// expected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedComponentDir {
+    path: PathBuf,
+    fell_back: bool,
+}
+
+/// Resolve a component's absolute on-disk directory from its
+/// `path_segments[0].path` against the workspace `roots`. Disambiguates
+/// the multi-root cross-tree case via the entry's `manifests`:
+///
+/// - If `segment_path` is absolute, return it unchanged (no fallback).
+/// - Otherwise, walk `roots` in order. A root matches when
+///   `<root>/<segment_path>` exists AND (the entry has zero manifests
+///   OR at least one of its manifests resolves to an existing file
+///   under the root).
+/// - If no root matches, fall back to `roots[0]` (or the segment_path
+///   itself when `roots` is empty) and set `fell_back = true`.
+///
+/// `path_exists` abstracts the filesystem check so unit tests can
+/// stub directory presence without materialising real files. The
+/// production caller passes `Path::exists`.
+fn resolve_component_abs_dir<F>(
+    segment_path: &Path,
+    manifests: &[PathBuf],
+    roots: &[PathBuf],
+    path_exists: F,
+) -> ResolvedComponentDir
+where
+    F: Fn(&Path) -> bool,
+{
+    if segment_path.is_absolute() {
+        return ResolvedComponentDir {
+            path: segment_path.to_path_buf(),
+            fell_back: false,
+        };
+    }
+
+    for root in roots {
+        let abs = root.join(segment_path);
+        if !path_exists(&abs) {
+            continue;
+        }
+        if manifests.is_empty() {
+            return ResolvedComponentDir {
+                path: abs,
+                fell_back: false,
+            };
+        }
+        let any_manifest_present = manifests.iter().any(|m| path_exists(&root.join(m)));
+        if any_manifest_present {
+            return ResolvedComponentDir {
+                path: abs,
+                fell_back: false,
+            };
+        }
+    }
+
+    let fallback = roots
+        .first()
+        .map(|r| r.join(segment_path))
+        .unwrap_or_else(|| segment_path.to_path_buf());
+    ResolvedComponentDir {
+        path: fallback,
+        fell_back: true,
+    }
+}
+
 /// Walk every (non-deleted) component in `components_file` and emit
 /// per-component `<component-path>/.atlas/component.yaml` (PR-6) and
 /// `<component-path>/.atlas/surfaces.yaml` (PR-7) files. The
@@ -773,43 +846,25 @@ fn write_per_component_files(
         // `roots[1]` "contain" the segment dir (each is itself a dir),
         // so the existence-of-the-segment-dir check is insufficient —
         // we need to disambiguate via the entry's manifests.
-        let candidate_abs = if segment.path.is_absolute() {
-            segment.path.clone()
-        } else {
-            let pick_root = |root: &Path| -> Option<PathBuf> {
-                let abs = root.join(&segment.path);
-                if !abs.exists() {
-                    return None;
-                }
-                // If the entry has manifests, require at least one to
-                // resolve to an existing file under this root —
-                // disambiguates the "both roots have a segment dir but
-                // only one carries the manifests" cross-tree case.
-                if entry.manifests.is_empty() {
-                    return Some(abs);
-                }
-                let any_manifest_present = entry.manifests.iter().any(|m| root.join(m).exists());
-                if any_manifest_present {
-                    Some(abs)
-                } else {
-                    None
-                }
-            };
-            let mut chosen: Option<PathBuf> = None;
-            for root in roots {
-                if let Some(abs) = pick_root(root) {
-                    chosen = Some(abs);
-                    break;
-                }
-            }
-            match chosen {
-                Some(p) => p,
-                None => roots
-                    .first()
-                    .map(|r| r.join(&segment.path))
-                    .unwrap_or_else(|| segment.path.clone()),
-            }
-        };
+        let resolution =
+            resolve_component_abs_dir(&segment.path, &entry.manifests, roots, |p| p.exists());
+        if resolution.fell_back {
+            // Defensive fallback: every live component has manifests
+            // today, so reaching this branch means either (a) the
+            // entry has manifests but none resolve under any root
+            // or (b) the entry has zero manifests AND no root
+            // contains `<root>/<segment>`. Both shapes are
+            // unexpected — emit a warning so the operator can see
+            // the misrouting before files land in the wrong tree.
+            eprintln!(
+                "warning: component `{}` segment `{}` did not match any root via \
+                 manifest existence; falling back to roots[0]. The per-component \
+                 .atlas/ files may land under the wrong root.",
+                entry.id.as_str(),
+                segment.path.display()
+            );
+        }
+        let candidate_abs = resolution.path;
 
         let target_dir = candidate_abs.join(".atlas");
 
@@ -985,5 +1040,91 @@ mod tests {
         let result = stable_generated_at(&path, &prior, &fresh, now);
 
         assert_eq!(result, "2025-04-24T00:00:00Z");
+    }
+
+    // -----------------------------------------------------------------
+    // resolve_component_abs_dir — PR-13 hangover bundle.
+    // -----------------------------------------------------------------
+
+    /// Build a closure that "exists" iff the candidate path matches one
+    /// of the strings in `present`. Avoids touching the real filesystem
+    /// for unit-level coverage of the resolution algorithm.
+    fn exists_in(present: Vec<PathBuf>) -> impl Fn(&Path) -> bool {
+        move |p: &Path| present.iter().any(|x| x == p)
+    }
+
+    #[test]
+    fn resolve_component_abs_dir_picks_root_with_manifest_present() {
+        let primary = PathBuf::from("/p/primary");
+        let peer = PathBuf::from("/p/peer");
+        let segment = PathBuf::from(""); // peer-root component, segment.path == ""
+        let manifests = vec![PathBuf::from("Cargo.toml")];
+        let roots = vec![primary.clone(), peer.clone()];
+
+        // Both roots "contain" segment.path (each is itself a dir), but
+        // only the peer carries `Cargo.toml`.
+        let present = vec![primary.clone(), peer.clone(), peer.join("Cargo.toml")];
+        let r = resolve_component_abs_dir(&segment, &manifests, &roots, exists_in(present));
+        assert!(!r.fell_back);
+        assert_eq!(r.path, peer);
+    }
+
+    #[test]
+    fn resolve_component_abs_dir_falls_back_when_no_manifest_resolves() {
+        let primary = PathBuf::from("/p/primary");
+        let peer = PathBuf::from("/p/peer");
+        let segment = PathBuf::from("");
+        let manifests = vec![PathBuf::from("Cargo.toml")];
+        let roots = vec![primary.clone(), peer.clone()];
+
+        // Both root dirs exist but neither carries the manifest. The
+        // function must signal `fell_back: true` (the warning trigger)
+        // and choose `roots[0]`.
+        let present = vec![primary.clone(), peer.clone()];
+        let r = resolve_component_abs_dir(&segment, &manifests, &roots, exists_in(present));
+        assert!(
+            r.fell_back,
+            "no manifest resolves under any root; the caller MUST emit \
+             the defensive warning (fell_back must be true)"
+        );
+        assert_eq!(r.path, primary);
+    }
+
+    #[test]
+    fn resolve_component_abs_dir_no_manifests_accepts_first_existing_root() {
+        // Entries with zero manifests skip the manifest disambiguation;
+        // the first root whose `<root>/<segment>` exists wins, no
+        // fallback warning.
+        let primary = PathBuf::from("/p/primary");
+        let peer = PathBuf::from("/p/peer");
+        let segment = PathBuf::from("crate-x");
+        let roots = vec![primary.clone(), peer.clone()];
+
+        let present = vec![peer.join("crate-x")]; // primary doesn't have it
+        let r = resolve_component_abs_dir(&segment, &[], &roots, exists_in(present));
+        assert!(!r.fell_back);
+        assert_eq!(r.path, peer.join("crate-x"));
+    }
+
+    #[test]
+    fn resolve_component_abs_dir_absolute_segment_short_circuits() {
+        // Absolute segment paths bypass the roots walk entirely.
+        let segment = PathBuf::from("/absolute/path");
+        let roots = vec![PathBuf::from("/p/r1")];
+        let r = resolve_component_abs_dir(&segment, &[], &roots, |_| false);
+        assert!(!r.fell_back);
+        assert_eq!(r.path, segment);
+    }
+
+    #[test]
+    fn resolve_component_abs_dir_falls_back_when_no_root_contains_segment() {
+        // The segment dir itself is missing under every root — fall
+        // back to roots[0] and warn.
+        let primary = PathBuf::from("/p/primary");
+        let segment = PathBuf::from("nonexistent");
+        let roots = vec![primary.clone()];
+        let r = resolve_component_abs_dir(&segment, &[], &roots, exists_in(vec![]));
+        assert!(r.fell_back);
+        assert_eq!(r.path, primary.join("nonexistent"));
     }
 }
