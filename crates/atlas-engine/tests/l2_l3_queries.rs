@@ -444,7 +444,12 @@ fn l5_typescript_package_surface_artefacts_include_exported_hello_symbol() {
 }
 
 #[test]
-fn l3_pyproject_toml_classifies_as_python_package() {
+fn l3_pyproject_toml_classifies_as_python_package_without_llm_call() {
+    // Phase 2 PR-3 acceptance: a `pyproject.toml` fixture is
+    // classified as `python-package` at L3 deterministically by the
+    // new `python-classifier`, with no LLM dispatch. The analyser
+    // identity propagates through PR-4's id/version plumbing so
+    // downstream consumers can attribute the verdict.
     let td = TempDir::new().unwrap();
     let root = td.path().to_path_buf();
     std::fs::write(root.join("pyproject.toml"), "[project]\nname = \"x\"\n").unwrap();
@@ -452,7 +457,28 @@ fn l3_pyproject_toml_classifies_as_python_package() {
     let db = db_without_llm(&root);
     let ws = db.workspace();
     let c = is_component(&db, ws, root.clone());
-    assert_eq!(c.kind, ComponentKind::PythonLibrary);
+    assert_eq!(c.kind, ComponentKind::PythonPackage);
+    assert_eq!(c.analyser_id, "python-classifier");
+    assert_eq!(c.evidence_grade, EvidenceGrade::Strong);
+    assert!(c.languages.contains("python"));
+    assert_eq!(c.build_system.as_deref(), Some("pyproject"));
+}
+
+#[test]
+fn l3_setup_py_classifies_as_python_package() {
+    let td = TempDir::new().unwrap();
+    let root = td.path().to_path_buf();
+    std::fs::write(
+        root.join("setup.py"),
+        "from setuptools import setup\nsetup(name=\"x\")\n",
+    )
+    .unwrap();
+
+    let db = db_without_llm(&root);
+    let ws = db.workspace();
+    let c = is_component(&db, ws, root.clone());
+    assert_eq!(c.kind, ComponentKind::PythonPackage);
+    assert_eq!(c.analyser_id, "python-classifier");
 }
 
 #[test]

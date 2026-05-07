@@ -108,6 +108,16 @@ kinds:
       top-level `__main__.py`. Distinguished from `python-library`
       by a clear executable entry point.
 
+  - name: python-package
+    description: |
+      A Python package — `pyproject.toml`, `setup.py`, or
+      `requirements.txt` present. Recognised deterministically at L3
+      by the `python-classifier`; the language is Python regardless of
+      build-tool flavour (pyproject / setuptools / pip). Distinct from
+      `python-library` / `python-app`, which describe entry-point
+      shape; the `python-package` kind is shape-agnostic and is the
+      default verdict for Python sources Phase 2 PR-3 onward.
+
   - name: dart-library
     description: |
       A Dart package exposing a library interface. Recognised by a

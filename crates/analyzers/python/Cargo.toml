@@ -1,0 +1,43 @@
+[package]
+name = "atlas-python-analyzer"
+version.workspace = true
+description = "Atlas vNext Phase 2 PR-3 — out-of-process Python surface analyser. Emits library bindings, conventional-vs-explicit visibility, and decorator attributes from `pyproject.toml`-shaped components."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "atlas_python_analyzer"
+path = "src/lib.rs"
+
+# The subprocess entry point. Cargo emits CARGO_BIN_EXE_python-analyzer
+# at test time; the in-process wrapper in atlas-analyzers picks it up
+# via env! the same way the PR-2 echo fixture is wired.
+[[bin]]
+name = "python-analyzer"
+path = "src/main.rs"
+test = false
+doc = false
+
+[dependencies]
+anyhow = { workspace = true }
+atlas-analyzers = { path = "../../atlas-analyzers" }
+atlas-index = { workspace = true }
+base64 = { workspace = true }
+# rustpython-parser is the chosen pure-Rust Python parser (plan §4
+# PR-3, default choice). v0.4.0 is the latest published release at
+# the time of PR-3; subsequent bumps need surface-shape verification.
+# The `location` feature carries `proc_macro2`-style source-range
+# information so we can compute byte spans for `Binding.span`.
+rustpython-parser = { version = "0.4.0", default-features = false, features = ["location", "malachite-bigint"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sha2 = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

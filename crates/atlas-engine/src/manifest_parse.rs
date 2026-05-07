@@ -87,6 +87,52 @@ fn collect_path_deps_from_table(block: Option<&toml::Value>, out: &mut Vec<PathB
     }
 }
 
+/// Returns every path-dep target declared in a `pyproject.toml`
+/// manifest, as paths relative to the manifest's parent directory
+/// (callers canonicalise). Recognised forms:
+///
+/// - `[tool.poetry.dependencies]` `name = { path = "..." }` —
+///   Poetry's path-dep convention.
+/// - `[tool.poetry.dev-dependencies]` and
+///   `[tool.poetry.group.<name>.dependencies]` — Poetry's dev /
+///   group dependency tables.
+/// - `[tool.uv.sources]` `name = { path = "..." }` — uv's source map
+///   layered on PEP-621 projects.
+///
+/// Phase 2 PR-3 introduces this for the cross-tree fixed-point walk
+/// (mirroring the Cargo path-dep pattern). PEP 621's
+/// `[project.dependencies]` itself is a string-array form that does
+/// not standardise local-path dependencies, so it is intentionally
+/// not consulted here; tools layered on top (uv, Hatch) carry the
+/// path information in `tool.*` tables instead.
+///
+/// On a malformed manifest the function returns an empty Vec rather
+/// than erroring — the same degrade-to-default policy `parse_cargo_toml`
+/// uses.
+pub fn extract_pyproject_path_deps(contents: &str) -> Vec<PathBuf> {
+    let Ok(table) = contents.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = Vec::new();
+    if let Some(tool) = table.get("tool").and_then(toml::Value::as_table) {
+        if let Some(poetry) = tool.get("poetry").and_then(toml::Value::as_table) {
+            collect_path_deps_from_table(poetry.get("dependencies"), &mut out);
+            collect_path_deps_from_table(poetry.get("dev-dependencies"), &mut out);
+            if let Some(group_table) = poetry.get("group").and_then(toml::Value::as_table) {
+                for (_group_name, group_value) in group_table {
+                    if let Some(group_inner) = group_value.as_table() {
+                        collect_path_deps_from_table(group_inner.get("dependencies"), &mut out);
+                    }
+                }
+            }
+        }
+        if let Some(uv) = tool.get("uv").and_then(toml::Value::as_table) {
+            collect_path_deps_from_table(uv.get("sources"), &mut out);
+        }
+    }
+    out
+}
+
 /// Facts lifted from a `package.json` by serde_json. Missing fields
 /// degrade to `false`; malformed JSON degrades to an all-false shape,
 /// which sends the classifier down the LLM fallback path.

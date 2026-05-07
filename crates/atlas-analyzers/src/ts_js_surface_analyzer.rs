@@ -1113,7 +1113,10 @@ mod tests {
         assert!(names.contains(&"bar"));
         for b in cjs_bindings {
             assert_eq!(b.language, "javascript");
-            assert!(matches!(b.visibility, atlas_index::Visibility::Conventional));
+            assert!(matches!(
+                b.visibility,
+                atlas_index::Visibility::Conventional
+            ));
         }
     }
 

@@ -38,6 +38,8 @@ pub mod cargo_classifier;
 pub mod dispatcher;
 pub mod dockerfile_classifier;
 pub mod llm_classify;
+pub mod python_classifier;
+pub mod python_surface_analyzer;
 pub mod registry;
 pub mod rust_surface_analyzer;
 pub mod subprocess;
@@ -55,6 +57,11 @@ pub use cargo_classifier::CargoClassifier;
 pub use dispatcher::{DispatchOutcome, NONE_ANALYZER_ID, NONE_ANALYZER_VERSION};
 pub use dockerfile_classifier::DockerfileClassifier;
 pub use llm_classify::{LlmClassifyAnalyzer, LlmHook, LlmHookError};
+pub use python_classifier::{PythonClassificationOutput, PythonClassifier};
+pub use python_surface_analyzer::{
+    locate_python_analyzer_binary, python_subprocess_spec, PYTHON_ANALYZER_DEFAULT_TIMEOUT_SECS,
+    PYTHON_ANALYZER_ID, PYTHON_ANALYZER_VERSION,
+};
 pub use registry::{AnalyzerRegistry, REGISTRY_HASH_NAMESPACE};
 pub use rust_surface_analyzer::{
     extract_rust_surface, RustSourceInputs, RustSurfaceAnalyzer, RustSurfaceOutput,
@@ -351,6 +358,7 @@ impl_stage_output!(
     cargo_classifier::CargoClassificationOutput,
     dockerfile_classifier::DockerfileClassificationOutput,
     llm_classify::LlmClassifyOutput,
+    python_classifier::PythonClassificationOutput,
     ts_js_classifier::TsJsClassificationOutput,
 );
 

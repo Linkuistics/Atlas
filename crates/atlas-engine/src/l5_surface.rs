@@ -20,7 +20,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use atlas_analyzers::{
-    extract_rust_surface, extract_ts_js_surface, RustSourceInputs, TsJsSourceInputs,
+    extract_rust_surface, extract_ts_js_surface, locate_python_analyzer_binary,
+    python_subprocess_spec, Analyzer, AnalyzerResult, RustSourceInputs, SubprocessAnalyzerProxy,
+    SubprocessOutput, TsJsSourceInputs,
 };
 use atlas_index::{Binding, ComponentEntry, Contract, LibraryApi, OverridesFile, PinValue, Stage};
 use atlas_llm::{LlmRequest, PromptId, ResponseSchema};
@@ -227,6 +229,37 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
         });
     };
 
+    // 3a-python. Python branch — Phase 2 PR-3's first subprocess
+    //     analyser. A component is handled here when it carries
+    //     `python` in its language set or its kind is one of the
+    //     Python kinds (`python-library`, `python-app`, the new
+    //     `python-package` once a Python analyser-registered
+    //     classifier emits it). The L5 driver constructs a
+    //     [`SubprocessAnalyzerProxy`] on demand against the
+    //     `python-analyzer` binary located via
+    //     [`locate_python_analyzer_binary`] and invokes the proxy
+    //     directly. If the binary cannot be located (running outside
+    //     a cargo target tree or against a workspace where the
+    //     python analyser wasn't built), the artefact set is empty
+    //     for the component — same posture as the TS/JS branch when
+    //     no source is recognised.
+    let is_python = entry.languages.contains("python")
+        || entry.kind == "python-library"
+        || entry.kind == "python-app"
+        || entry.kind == "python-package";
+
+    if is_python {
+        if let Some(artefacts) = python_surface_artefacts(db, entry, &roots, &record) {
+            return artefacts;
+        }
+        // Fallthrough: no python-analyzer binary located. Emit empty
+        // artefacts (same as the catch-all branch below).
+        return Arc::new(SurfaceArtefacts {
+            record,
+            ..Default::default()
+        });
+    }
+
     // 3a. TypeScript / JavaScript branch — drive the TS/JS-surface
     //     extractor in-process. A component is handled here when it
     //     carries "typescript" or "javascript" in its language set, or
@@ -384,6 +417,268 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
         bindings: surface_output.bindings,
         library_apis: surface_output.library_apis,
     })
+}
+
+/// Drive a Python-component's surface extraction through PR-2's
+/// subprocess transport.
+///
+/// Discovery: walks `entry.path_segments` against the workspace roots
+/// to resolve the absolute candidate dir, locates the
+/// `python-analyzer` binary via
+/// [`atlas_analyzers::locate_python_analyzer_binary`], constructs a
+/// [`SubprocessAnalyzerProxy`] against it, and invokes the proxy's
+/// `analyse` method. The proxy spawns the child on first call,
+/// performs the wire handshake, and returns a `Confident` payload
+/// carrying the JSON surface produced by `extract_python_surface`.
+///
+/// Returns `None` when the binary cannot be located — the caller
+/// degrades to empty artefacts. Other failure modes (handshake
+/// mismatch, child crash, malformed payload) return `Some` with an
+/// empty artefact set so the failure is observable in tests but does
+/// not panic the pipeline.
+fn python_surface_artefacts(
+    db: &AtlasDatabase,
+    entry: &ComponentEntry,
+    roots: &[PathBuf],
+    record: &SurfaceRecord,
+) -> Option<Arc<SurfaceArtefacts>> {
+    let binary = locate_python_analyzer_binary()?;
+
+    // Resolve the candidate dir — first segment that resolves
+    // against any root wins.
+    let absolute_dir = resolve_python_component_dir(entry, roots)?;
+
+    // Build a minimal `Target` for the proxy. We pre-load
+    // `pyproject.toml` (the manifest the analyser cares about) so
+    // the subprocess sees it via `Target.manifests`. The python
+    // analyser's filesystem walk handles the source files itself
+    // (per the binary's docstring).
+    let mut manifests: Vec<atlas_analyzers::TargetFile> = Vec::new();
+    let pyproject_path = absolute_dir.join("pyproject.toml");
+    if let Some(bytes) = file_content(db, &pyproject_path) {
+        let bytes_vec = (*bytes).clone();
+        let content_sha = sha256_hex_bytes(&bytes_vec);
+        manifests.push(atlas_analyzers::TargetFile {
+            name: "pyproject.toml".into(),
+            relpath: PathBuf::from("pyproject.toml"),
+            bytes: bytes_vec,
+            content_sha,
+        });
+    }
+    let mut languages = std::collections::BTreeSet::new();
+    languages.insert("python".to_string());
+    let target = atlas_analyzers::Target {
+        dir: absolute_dir,
+        languages,
+        manifests,
+        top_level_files: Vec::new(),
+    };
+
+    let spec = python_subprocess_spec(binary);
+    let proxy = SubprocessAnalyzerProxy::new(spec).ok()?;
+    let ctx = atlas_analyzers::AnalysisContext::deterministic_only();
+    let result = proxy.analyse(&ctx, &target);
+
+    let payload = match result {
+        AnalyzerResult::Confident(output) => output
+            .as_any()
+            .downcast_ref::<SubprocessOutput>()?
+            .payload
+            .clone(),
+        _ => {
+            return Some(Arc::new(SurfaceArtefacts {
+                record: record.clone(),
+                ..Default::default()
+            }));
+        }
+    };
+
+    let (bindings, library_apis) = decode_python_surface_payload(&payload, entry.id.as_str());
+    Some(Arc::new(SurfaceArtefacts {
+        record: record.clone(),
+        contracts: Vec::new(),
+        bindings,
+        library_apis,
+    }))
+}
+
+/// Resolve a Python component's first path segment against the
+/// workspace roots, returning the absolute on-disk dir for the
+/// candidate. Mirrors the per-segment walk used by the TS/JS branch
+/// but stops at the first match (Python components canonically span
+/// one path segment).
+fn resolve_python_component_dir(entry: &ComponentEntry, roots: &[PathBuf]) -> Option<PathBuf> {
+    let segment = entry.path_segments.first()?;
+    if segment.path.is_absolute() {
+        return Some(segment.path.clone());
+    }
+    if let Some(owning_root) = best_root_for(roots, &segment.path) {
+        return Some(owning_root.join(&segment.path));
+    }
+    for root in roots {
+        let absolute = root.join(&segment.path);
+        if absolute.is_dir() {
+            return Some(absolute);
+        }
+    }
+    Some(roots.first()?.join(&segment.path))
+}
+
+/// Decode the JSON payload returned by the python-analyzer subprocess
+/// into typed `Binding` / `LibraryApi` values. The wire shape is
+/// defined inside the python-analyzer binary (`AnalysePayload`,
+/// `WireBinding`, `WireLibraryApi`); we re-derive the same types
+/// here as they're load-bearing for the engine-side projection.
+fn decode_python_surface_payload(
+    payload: &Value,
+    component_id: &str,
+) -> (Vec<Binding>, Vec<LibraryApi>) {
+    use atlas_index::{ContractKind, PubItem, PubItemKind, Visibility};
+    use std::collections::BTreeMap as StdBTreeMap;
+
+    let Some(obj) = payload.as_object() else {
+        return (Vec::new(), Vec::new());
+    };
+
+    // Decode bindings.
+    let mut bindings: Vec<Binding> = Vec::new();
+    if let Some(arr) = obj.get("bindings").and_then(Value::as_array) {
+        for v in arr {
+            let Some(b) = v.as_object() else { continue };
+            let language = b
+                .get("language")
+                .and_then(Value::as_str)
+                .unwrap_or("python")
+                .to_string();
+            let symbol = b
+                .get("symbol")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let file = b
+                .get("file")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .unwrap_or_default();
+            let span = b
+                .get("span")
+                .and_then(Value::as_array)
+                .and_then(|a| {
+                    let s = a.first().and_then(Value::as_u64)? as usize;
+                    let e = a.get(1).and_then(Value::as_u64)? as usize;
+                    Some((s, e))
+                })
+                .unwrap_or((0, 0));
+            let content_sha = b
+                .get("content_sha")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let visibility = b
+                .get("visibility")
+                .map(|v| {
+                    serde_json::from_value::<Visibility>(v.clone())
+                        .unwrap_or(Visibility::Conventional)
+                })
+                .unwrap_or(Visibility::Conventional);
+            let module_path = b
+                .get("module_path")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let attributes: StdBTreeMap<String, serde_yaml::Value> = b
+                .get("attributes")
+                .and_then(Value::as_object)
+                .map(|m| {
+                    m.iter()
+                        .filter_map(|(k, v)| {
+                            // Round-trip JSON → YAML via the
+                            // serde_yaml::Value parser (yaml is a
+                            // superset of json so this is loss-free
+                            // for the shapes we use).
+                            let yaml: serde_yaml::Value =
+                                serde_yaml::from_str(&v.to_string()).ok()?;
+                            Some((k.clone(), yaml))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            bindings.push(Binding {
+                language,
+                symbol,
+                file,
+                span,
+                content_sha,
+                visibility,
+                module_path,
+                attributes,
+            });
+        }
+    }
+
+    // Decode library APIs.
+    let mut library_apis: Vec<LibraryApi> = Vec::new();
+    if let Some(arr) = obj.get("library_apis").and_then(Value::as_array) {
+        for v in arr {
+            let Some(api) = v.as_object() else { continue };
+            let id = api
+                .get("id")
+                .and_then(Value::as_str)
+                .map(String::from)
+                .unwrap_or_else(|| format!("{component_id}/public-api"));
+            let language = api
+                .get("language")
+                .and_then(Value::as_str)
+                .unwrap_or("python")
+                .to_string();
+            let fingerprint = api
+                .get("fingerprint")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let pub_items: Vec<PubItem> = api
+                .get("pub_items")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|p| {
+                            let p = p.as_object()?;
+                            let name = p.get("name").and_then(Value::as_str)?.to_string();
+                            let file = p.get("file").and_then(Value::as_str).map(PathBuf::from)?;
+                            let kind_str = p.get("kind").and_then(Value::as_str)?;
+                            let kind = match kind_str {
+                                "struct" => PubItemKind::Struct,
+                                "enum" => PubItemKind::Enum,
+                                "fn" => PubItemKind::Fn,
+                                "trait" => PubItemKind::Trait,
+                                "mod" => PubItemKind::Mod,
+                                "type-alias" => PubItemKind::TypeAlias,
+                                "const" => PubItemKind::Const,
+                                "static" => PubItemKind::Static,
+                                "union" => PubItemKind::Union,
+                                "macro" => PubItemKind::Macro,
+                                _ => return None,
+                            };
+                            Some(PubItem { name, file, kind })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            library_apis.push(LibraryApi {
+                id,
+                kind: ContractKind::LibraryApi,
+                language,
+                fingerprint,
+                pub_items,
+            });
+        }
+    }
+
+    (bindings, library_apis)
 }
 
 /// JSON input document for the Stage 1 prompt. The key set is stable

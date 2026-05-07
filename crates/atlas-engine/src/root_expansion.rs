@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::manifest_parse::extract_path_deps;
+use crate::manifest_parse::{extract_path_deps, extract_pyproject_path_deps};
 
 /// Expand `primary` into the full set of roots reachable via Cargo
 /// path-deps. The returned Vec always begins with the canonicalised
@@ -84,7 +84,11 @@ pub fn expand_roots_with_warnings(
     let mut queue: VecDeque<PathBuf> = VecDeque::from([primary_canonical]);
 
     while let Some(root) = queue.pop_front() {
-        let manifests = enumerate_cargo_manifests(&root);
+        // Cargo + pyproject manifests: each contributes path-deps that
+        // can route to peer roots. Phase 2 PR-3 added the pyproject
+        // branch; the cycle / inside-known-root logic below is
+        // language-agnostic, so a single iteration handles both.
+        let manifests = enumerate_path_dep_manifests(&root);
         for manifest in manifests {
             let Ok(contents) = std::fs::read_to_string(&manifest) else {
                 continue;
@@ -94,7 +98,16 @@ pub fn expand_roots_with_warnings(
                 None => continue,
             };
 
-            for rel in extract_path_deps(&contents) {
+            let basename = manifest
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            let path_deps: Vec<PathBuf> = match basename {
+                "Cargo.toml" => extract_path_deps(&contents),
+                "pyproject.toml" => extract_pyproject_path_deps(&contents),
+                _ => continue,
+            };
+            for rel in path_deps {
                 let target = manifest_dir.join(&rel);
                 let Ok(target_canonical) = target.canonicalize() else {
                     // Target may not be checked out yet — that's not an
@@ -207,6 +220,11 @@ fn enclosing_manifest_root(start: &Path) -> PathBuf {
     // through.
     let mut crate_root: Option<PathBuf> = None;
     let mut workspace_root: Option<PathBuf> = None;
+    // Phase 2 PR-3: a Python path-dep target may resolve to a
+    // directory containing a `pyproject.toml` rather than a
+    // `Cargo.toml`. Treat it as a "crate root" candidate (no workspace
+    // shape — Python's analogue is the project root itself).
+    let mut python_root: Option<PathBuf> = None;
 
     loop {
         let manifest = cursor.join("Cargo.toml");
@@ -221,6 +239,10 @@ fn enclosing_manifest_root(start: &Path) -> PathBuf {
                 }
             }
         }
+        let pyproject = cursor.join("pyproject.toml");
+        if pyproject.is_file() && python_root.is_none() {
+            python_root = Some(cursor.clone());
+        }
         match cursor.parent() {
             Some(parent) if parent != cursor => cursor = parent.to_path_buf(),
             _ => break,
@@ -229,6 +251,7 @@ fn enclosing_manifest_root(start: &Path) -> PathBuf {
 
     workspace_root
         .or(crate_root)
+        .or(python_root)
         .unwrap_or_else(|| start.to_path_buf())
 }
 
@@ -239,18 +262,23 @@ fn is_inside_any(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| path.starts_with(root))
 }
 
-/// Recursively enumerate every `Cargo.toml` under `root`, skipping
-/// `target/`, `node_modules/`, and `.git/`. Manifests are returned in
-/// lexicographic order so the path-dep walk is deterministic across
-/// runs.
+/// Recursively enumerate every path-dep-bearing manifest under
+/// `root`, skipping `target/`, `node_modules/`, and `.git/`.
+/// Manifests are returned in lexicographic order so the path-dep walk
+/// is deterministic across runs.
+///
+/// Phase 2 PR-3 broadened this to include `pyproject.toml` alongside
+/// `Cargo.toml` so Python path-deps participate in the cross-tree
+/// fixed-point walk. Future PRs may extend with `pubspec.yaml` (Dart),
+/// `package.json` (npm `file:` deps), `mix.exs` (Elixir), etc.
 ///
 /// This is a fresh filesystem walk rather than a Salsa-tracked query
 /// because [`expand_roots`] runs once before the database is seeded —
 /// the tracked-query plumbing is not yet available. The walk uses
 /// `walkdir` semantics via `std::fs::read_dir` to avoid pulling in a
-/// new dependency; the output volume (one entry per Cargo manifest in
-/// the tree) is small enough that the naive walk is comfortable.
-fn enumerate_cargo_manifests(root: &Path) -> Vec<PathBuf> {
+/// new dependency; the output volume (one entry per manifest in the
+/// tree) is small enough that the naive walk is comfortable.
+fn enumerate_path_dep_manifests(root: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     walk(root, &mut out);
     out.sort();
@@ -272,15 +300,20 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
             // can balloon a Rust workspace by 10x, and is the only
             // directory that materially matters for path-dep walking.
             if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                if matches!(name, "target" | "node_modules" | ".git") {
+                if matches!(
+                    name,
+                    "target" | "node_modules" | ".git" | "__pycache__" | ".venv" | "venv"
+                ) {
                     continue;
                 }
             }
             walk(&path, out);
-        } else if file_type.is_file()
-            && path.file_name().and_then(|s| s.to_str()) == Some("Cargo.toml")
-        {
-            out.push(path);
+        } else if file_type.is_file() {
+            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                if matches!(name, "Cargo.toml" | "pyproject.toml") {
+                    out.push(path);
+                }
+            }
         }
     }
 }
@@ -298,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn enumerate_cargo_manifests_finds_nested_manifests_in_lex_order() {
+    fn enumerate_path_dep_manifests_finds_nested_manifests_in_lex_order() {
         let tmp = TempDir::new().unwrap();
         write(
             &tmp.path().join("Cargo.toml"),
@@ -318,7 +351,7 @@ mod tests {
             "[package]\nname = \"build-leftover\"\nversion = \"0.0.0\"\n",
         );
 
-        let manifests = enumerate_cargo_manifests(tmp.path());
+        let manifests = enumerate_path_dep_manifests(tmp.path());
         let names: Vec<_> = manifests
             .iter()
             .map(|p| {

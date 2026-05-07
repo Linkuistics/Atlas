@@ -103,6 +103,7 @@ pub fn decide_kind_only(kind: ComponentKind) -> Option<PolicyDecision> {
         ComponentKind::RustLibrary
         | ComponentKind::NodeLibrary
         | ComponentKind::PythonLibrary
+        | ComponentKind::PythonPackage
         | ComponentKind::DartLibrary
         | ComponentKind::DotnetLibrary
         | ComponentKind::ReactLibrary

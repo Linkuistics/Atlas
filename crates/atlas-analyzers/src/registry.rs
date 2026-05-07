@@ -30,6 +30,7 @@ use sha2::{Digest, Sha256};
 use crate::cargo_classifier::CargoClassifier;
 use crate::dockerfile_classifier::DockerfileClassifier;
 use crate::llm_classify::LlmClassifyAnalyzer;
+use crate::python_classifier::PythonClassifier;
 use crate::rust_surface_analyzer::RustSurfaceAnalyzer;
 use crate::subprocess::{SubprocessAnalyzerProxy, SubprocessAnalyzerSpec};
 use crate::ts_js_classifier::TsJsClassifier;
@@ -80,11 +81,16 @@ impl AnalyzerRegistry {
     /// (L3 LLM), and `rust-surface-analyzer` (L5 deterministic; PR-7).
     /// Phase 2 PR-1 adds `ts-js-classifier` (L3 deterministic) and
     /// `ts-js-surface-analyzer` (L5 deterministic) for TypeScript /
-    /// JavaScript components.
+    /// JavaScript components. Phase 2 PR-3 adds `python-classifier`
+    /// (L3 deterministic, in-process) for Python components; the
+    /// matching surface analyser at L5 is the out-of-process
+    /// `python-surface-analyzer` (registered separately when its
+    /// binary is locatable — see [`AnalyzerRegistry::builtin_with_python_surface`]).
     pub fn builtin() -> Self {
         let cargo = Arc::new(CargoClassifier::new()) as Arc<dyn Analyzer>;
         let docker = Arc::new(DockerfileClassifier::new()) as Arc<dyn Analyzer>;
         let ts_js = Arc::new(TsJsClassifier::new()) as Arc<dyn Analyzer>;
+        let python = Arc::new(PythonClassifier::new()) as Arc<dyn Analyzer>;
         let llm = Arc::new(LlmClassifyAnalyzer::new()) as Arc<dyn Analyzer>;
         let rust_surface = Arc::new(RustSurfaceAnalyzer::new()) as Arc<dyn Analyzer>;
         let ts_js_surface = Arc::new(TsJsSurfaceAnalyzer::new()) as Arc<dyn Analyzer>;
@@ -93,6 +99,7 @@ impl AnalyzerRegistry {
             cargo.clone(),
             docker.clone(),
             ts_js.clone(),
+            python.clone(),
             llm.clone(),
             rust_surface.clone(),
             ts_js_surface.clone(),
@@ -355,6 +362,17 @@ fn spec_for_analyzer(analyzer: &Arc<dyn Analyzer>) -> AnalyzerSpec {
             file_globs: vec!["**/package.json".into()],
             ..Default::default()
         }
+    } else if id == crate::python_classifier::ANALYZER_ID {
+        // Python L3 classifier keys on the three canonical Python
+        // manifest signals.
+        atlas_index::ApplicabilityPredicate {
+            file_globs: vec![
+                "**/pyproject.toml".into(),
+                "**/setup.py".into(),
+                "**/requirements.txt".into(),
+            ],
+            ..Default::default()
+        }
     } else {
         atlas_index::ApplicabilityPredicate::default()
     };
@@ -376,13 +394,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_lists_six_analysers() {
+    fn builtin_lists_seven_analysers() {
         let r = AnalyzerRegistry::builtin();
-        assert_eq!(r.len(), 6);
+        assert_eq!(r.len(), 7);
         let ids: Vec<&str> = r.iter_dispatch_order().map(|a| a.id()).collect();
         assert!(ids.contains(&crate::cargo_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::dockerfile_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::ts_js_classifier::ANALYZER_ID));
+        assert!(ids.contains(&crate::python_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::llm_classify::ANALYZER_ID));
         assert!(ids.contains(&crate::rust_surface_analyzer::ANALYZER_ID));
         assert!(ids.contains(&crate::ts_js_surface_analyzer::ANALYZER_ID));
@@ -435,9 +454,9 @@ mod tests {
         // The built-in analyser instances are unchanged in count
         // (unknown spec is recorded but does not produce a runnable
         // instance).
-        assert_eq!(r.len(), 6);
+        assert_eq!(r.len(), 7);
         // The declared list grew by one.
-        assert_eq!(r.declared().analyzers.len(), 7);
+        assert_eq!(r.declared().analyzers.len(), 8);
     }
 
     #[test]
@@ -458,7 +477,7 @@ mod tests {
             version: "9.9.9".into(),
         });
         r.merge_yaml(&yaml);
-        assert_eq!(r.declared().analyzers.len(), 6);
+        assert_eq!(r.declared().analyzers.len(), 7);
         let cargo = r
             .declared()
             .analyzers
@@ -511,5 +530,6 @@ mod tests {
             TsJsSurfaceAnalyzer.id(),
             crate::ts_js_surface_analyzer::ANALYZER_ID
         );
+        assert_eq!(PythonClassifier.id(), crate::python_classifier::ANALYZER_ID);
     }
 }
