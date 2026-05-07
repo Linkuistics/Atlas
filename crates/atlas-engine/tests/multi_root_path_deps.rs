@@ -673,3 +673,92 @@ fn csproj_path_dep_expands_to_peer_root() {
         "primary then lib_a's directory (no enclosing sln); got {roots:?}"
     );
 }
+
+// ---------------------------------------------------------------------
+// §4 PR-7 acceptance criterion (F2): cross-tree expand_roots for
+// pubspec.yaml path-deps.
+//
+// A Dart consumer whose `pubspec.yaml` carries a `dependencies:` entry
+// with `path: "../lib_a"` must cause `expand_roots` to include the
+// sibling `lib_a` directory as a peer root — matching the behaviour
+// that `pyproject_path_dep_expands_to_peer_root` proves for Python.
+// ---------------------------------------------------------------------
+
+/// Write a minimal `pubspec.yaml` at `dir/pubspec.yaml` with optional
+/// path-dep entries under `dependencies:`.
+fn write_pubspec_package(dir: &Path, name: &str, path_deps: &[(&str, &str)]) {
+    let mut manifest = format!("name: {name}\nversion: 0.1.0\n");
+    if !path_deps.is_empty() {
+        manifest.push_str("\ndependencies:\n");
+        for (dep_name, dep_path) in path_deps {
+            manifest.push_str(&format!("  {dep_name}:\n    path: {dep_path}\n"));
+        }
+    }
+    write(&dir.join("pubspec.yaml"), &manifest);
+}
+
+#[test]
+fn pubspec_path_dep_expands_to_peer_root() {
+    // Phase 2 PR-7 acceptance criterion (F2): a Dart consumer with
+    // `dependencies: { lib_a: { path: "../lib_a" } }` in its
+    // `pubspec.yaml` causes `expand_roots` to include `lib_a` as a
+    // peer root after multi-root expansion.
+    //
+    // Mirrors `pyproject_path_dep_expands_to_peer_root` for Python (PR-3).
+    let parent = TempDir::new().unwrap();
+    let primary = parent.path().join("primary");
+    let external = parent.path().join("external");
+
+    write_pubspec_package(
+        &primary.join("consumer"),
+        "consumer",
+        &[("lib_a", "../../external/lib_a")],
+    );
+    write_pubspec_package(&external.join("lib_a"), "lib_a", &[]);
+
+    let roots = expand_roots(&primary).expect("expand_roots succeeds");
+
+    let primary_canonical = primary.canonicalize().unwrap();
+    let lib_a_canonical = external.join("lib_a").canonicalize().unwrap();
+    assert_eq!(
+        roots,
+        vec![primary_canonical, lib_a_canonical],
+        "primary then lib_a's directory (pubspec path-dep cross-tree expansion)"
+    );
+}
+
+#[test]
+fn pubspec_multiple_path_deps_expand_to_multiple_peer_roots() {
+    // A Dart consumer with two path-dep siblings both appear as peer roots.
+    let parent = TempDir::new().unwrap();
+    let primary = parent.path().join("primary");
+    let external = parent.path().join("external");
+
+    write_pubspec_package(
+        &primary.join("consumer"),
+        "consumer",
+        &[
+            ("lib_a", "../../external/lib_a"),
+            ("lib_b", "../../external/lib_b"),
+        ],
+    );
+    write_pubspec_package(&external.join("lib_a"), "lib_a", &[]);
+    write_pubspec_package(&external.join("lib_b"), "lib_b", &[]);
+
+    let roots = expand_roots(&primary).expect("expand_roots succeeds");
+
+    assert_eq!(roots.len(), 3, "primary + lib_a + lib_b; got {roots:?}");
+    let primary_canonical = primary.canonicalize().unwrap();
+    assert_eq!(roots[0], primary_canonical);
+    let lib_a_canonical = external.join("lib_a").canonicalize().unwrap();
+    let lib_b_canonical = external.join("lib_b").canonicalize().unwrap();
+    // Both peers must be present (order within peers is discovery order).
+    assert!(
+        roots.contains(&lib_a_canonical),
+        "lib_a must be a peer root; got {roots:?}"
+    );
+    assert!(
+        roots.contains(&lib_b_canonical),
+        "lib_b must be a peer root; got {roots:?}"
+    );
+}

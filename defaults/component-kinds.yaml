@@ -130,12 +130,28 @@ kinds:
       directory containing the entry point. Use `flutter-app` when
       the manifest depends on the Flutter SDK.
 
+  - name: dart-package
+    description: |
+      A Dart package — `pubspec.yaml` present with no `flutter:` top-level
+      block. Recognised deterministically at L3 by the `dart-classifier`
+      (Phase 2 PR-7). Shape-agnostic default for Dart sources; use
+      `dart-library` or `dart-app` for finer-grained classification when
+      the entry-point shape is known.
+
   - name: flutter-app
     description: |
       A Flutter application targeting iOS, Android, web, or desktop.
       Recognised by `pubspec.yaml` declaring `flutter:` as a
       top-level key and depending on the `flutter` SDK. Distinct
       from `dart-app` because Flutter has its own build/deploy chain.
+
+  - name: flutter-package
+    description: |
+      A Flutter package — `pubspec.yaml` with a `flutter:` top-level
+      block. Recognised deterministically at L3 by the `dart-classifier`
+      (Phase 2 PR-7). Shape-agnostic default for Flutter sources; use
+      `flutter-app` when the component is confirmed to be a deployable
+      Flutter application.
 
   - name: csharp-project
     description: |

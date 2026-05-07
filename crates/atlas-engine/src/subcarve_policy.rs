@@ -69,6 +69,7 @@ pub fn decide_kind_only(kind: ComponentKind) -> Option<PolicyDecision> {
         | ComponentKind::PythonApp
         | ComponentKind::DartApp
         | ComponentKind::FlutterApp
+        | ComponentKind::FlutterPackage
         | ComponentKind::DotnetService
         | ComponentKind::Service
         | ComponentKind::Website
@@ -114,6 +115,7 @@ pub fn decide_kind_only(kind: ComponentKind) -> Option<PolicyDecision> {
         | ComponentKind::PythonLibrary
         | ComponentKind::PythonPackage
         | ComponentKind::DartLibrary
+        | ComponentKind::DartPackage
         | ComponentKind::DotnetLibrary
         | ComponentKind::ReactLibrary
         | ComponentKind::TypescriptPackage

@@ -7,6 +7,7 @@ members = [
   "crates/atlas-cli",
   "crates/analyzers/python",
   "crates/analyzers/csharp",
+  "crates/analyzers/dart",
   "evaluation/harness",
 ]
 

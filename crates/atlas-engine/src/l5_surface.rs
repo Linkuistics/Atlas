@@ -20,10 +20,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use atlas_analyzers::{
-    cached_csharp_subprocess_proxy, cached_subprocess_proxy, csharp_subprocess_spec,
-    extract_rust_surface, extract_ts_js_surface, locate_csharp_analyzer_binary,
-    locate_python_analyzer_binary, python_subprocess_spec, Analyzer, AnalyzerResult,
-    RustSourceInputs, SubprocessOutput, TsJsSourceInputs,
+    cached_csharp_subprocess_proxy, cached_dart_subprocess_proxy, cached_subprocess_proxy,
+    csharp_subprocess_spec, dart_subprocess_spec, extract_rust_surface, extract_ts_js_surface,
+    locate_csharp_analyzer_binary, locate_dart_analyzer_binary, locate_python_analyzer_binary,
+    python_subprocess_spec, Analyzer, AnalyzerResult, RustSourceInputs, SubprocessOutput,
+    TsJsSourceInputs,
 };
 use atlas_index::{Binding, ComponentEntry, Contract, LibraryApi, OverridesFile, PinValue, Stage};
 use atlas_llm::{LlmRequest, PromptId, ResponseSchema};
@@ -135,12 +136,10 @@ pub fn surface_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceRecord> {
     );
     let registry_sha = db.analyzer_registry().registry_sha();
     // Phase 2 PR-3: Python components contribute the python-analyzer
-    // binary's content sha to the L5 fingerprint via tag 0x06. A
-    // rebuilt analyser binary therefore invalidates the LLM-cached
-    // `SurfaceRecord` for every Python component, even when the
-    // model / prompt / inputs are byte-identical. The contribution
-    // is conditional so non-Python components are not coupled to the
-    // python-analyzer binary's churn.
+    // binary's content sha to the L5 fingerprint via tag 0x06.
+    // Phase 2 PR-7: Dart components contribute the dart-analyzer binary sha.
+    // Both contributions are conditional so unrelated components are not
+    // coupled to the other language analyser's binary churn.
     let python_binary_sha = if entry_is_python(entry) {
         locate_python_analyzer_binary().and_then(|p| atlas_analyzers::hash_binary(&p).ok())
     } else {
@@ -151,6 +150,14 @@ pub fn surface_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceRecord> {
     // analyser pattern.
     let csharp_binary_sha = if entry_is_csharp(entry) {
         locate_csharp_analyzer_binary().and_then(|p| atlas_analyzers::hash_binary(&p).ok())
+    } else {
+        None
+    };
+    // Phase 2 PR-7: Dart/Flutter components contribute the dart-analyzer
+    // binary sha to the L5 fingerprint via tag 0x06, mirroring the same
+    // pattern.
+    let dart_binary_sha = if entry_is_dart(entry) {
+        locate_dart_analyzer_binary().and_then(|p| atlas_analyzers::hash_binary(&p).ok())
     } else {
         None
     };
@@ -166,6 +173,9 @@ pub fn surface_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceRecord> {
             fb.add_analyzer_binary_sha(sha);
         }
         if let Some(sha) = &csharp_binary_sha {
+            fb.add_analyzer_binary_sha(sha);
+        }
+        if let Some(sha) = &dart_binary_sha {
             fb.add_analyzer_binary_sha(sha);
         }
         fb.finalise()
@@ -291,6 +301,23 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
     //     empty for the component.
     if entry_is_csharp(entry) {
         if let Some(artefacts) = csharp_surface_artefacts(db, entry, &roots, &record) {
+            return artefacts;
+        }
+        return Arc::new(SurfaceArtefacts {
+            record,
+            ..Default::default()
+        });
+    }
+
+    // 3a-dart. Dart branch — Phase 2 PR-7's subprocess analyser. A
+    //     component is handled here when it carries `dart` in its language
+    //     set or its kind is one of the Dart/Flutter kinds. The L5 driver
+    //     constructs a [`SubprocessAnalyzerProxy`] on demand against the
+    //     `dart-analyzer` binary located via [`locate_dart_analyzer_binary`].
+    //     If the binary cannot be located, the artefact set is empty —
+    //     same posture as the Python branch.
+    if entry_is_dart(entry) {
+        if let Some(artefacts) = dart_surface_artefacts(db, entry, &roots, &record) {
             return artefacts;
         }
         return Arc::new(SurfaceArtefacts {
@@ -962,6 +989,247 @@ fn decode_csharp_surface_payload(
                 .get("language")
                 .and_then(Value::as_str)
                 .unwrap_or("csharp")
+                .to_string();
+            let fingerprint = api
+                .get("fingerprint")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let pub_items: Vec<PubItem> = api
+                .get("pub_items")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|p| {
+                            let p = p.as_object()?;
+                            let name = p.get("name").and_then(Value::as_str)?.to_string();
+                            let file = p.get("file").and_then(Value::as_str).map(PathBuf::from)?;
+                            let kind_str = p.get("kind").and_then(Value::as_str)?;
+                            let kind = match kind_str {
+                                "struct" => PubItemKind::Struct,
+                                "enum" => PubItemKind::Enum,
+                                "fn" => PubItemKind::Fn,
+                                "trait" => PubItemKind::Trait,
+                                "mod" => PubItemKind::Mod,
+                                "type-alias" => PubItemKind::TypeAlias,
+                                "const" => PubItemKind::Const,
+                                "static" => PubItemKind::Static,
+                                "union" => PubItemKind::Union,
+                                "macro" => PubItemKind::Macro,
+                                _ => return None,
+                            };
+                            Some(PubItem { name, file, kind })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            library_apis.push(LibraryApi {
+                id,
+                kind: ContractKind::LibraryApi,
+                language,
+                fingerprint,
+                pub_items,
+            });
+        }
+    }
+
+    (bindings, library_apis)
+}
+
+/// True when the component looks like a Dart/Flutter component.
+fn entry_is_dart(entry: &ComponentEntry) -> bool {
+    entry.languages.contains("dart")
+        || entry.kind == "dart-package"
+        || entry.kind == "flutter-package"
+        || entry.kind == "dart-library"
+        || entry.kind == "dart-app"
+        || entry.kind == "flutter-app"
+}
+
+/// Drive a Dart component's surface extraction through PR-2's subprocess
+/// transport. Mirrors [`python_surface_artefacts`] structurally.
+///
+/// Returns `None` when the `dart-analyzer` binary cannot be located.
+fn dart_surface_artefacts(
+    db: &AtlasDatabase,
+    entry: &ComponentEntry,
+    roots: &[PathBuf],
+    record: &SurfaceRecord,
+) -> Option<Arc<SurfaceArtefacts>> {
+    let binary = locate_dart_analyzer_binary()?;
+
+    let absolute_dir = resolve_dart_component_dir(entry, roots)?;
+
+    let mut manifests: Vec<atlas_analyzers::TargetFile> = Vec::new();
+    let pubspec_path = absolute_dir.join("pubspec.yaml");
+    if let Some(bytes) = file_content(db, &pubspec_path) {
+        let bytes_vec = (*bytes).clone();
+        let content_sha = sha256_hex_bytes(&bytes_vec);
+        manifests.push(atlas_analyzers::TargetFile {
+            name: "pubspec.yaml".into(),
+            relpath: PathBuf::from("pubspec.yaml"),
+            bytes: bytes_vec,
+            content_sha,
+        });
+    }
+    let mut languages = std::collections::BTreeSet::new();
+    languages.insert("dart".to_string());
+    let target = atlas_analyzers::Target {
+        dir: absolute_dir,
+        languages,
+        manifests,
+        top_level_files: Vec::new(),
+    };
+
+    let spec = dart_subprocess_spec(binary);
+    let proxy = cached_dart_subprocess_proxy(spec).ok()?;
+    let ctx = atlas_analyzers::AnalysisContext::deterministic_only();
+    let result = proxy.analyse(&ctx, &target);
+
+    let payload = match result {
+        AnalyzerResult::Confident(output) => output
+            .as_any()
+            .downcast_ref::<SubprocessOutput>()?
+            .payload
+            .clone(),
+        _ => {
+            return Some(Arc::new(SurfaceArtefacts {
+                record: record.clone(),
+                ..Default::default()
+            }));
+        }
+    };
+
+    let (bindings, library_apis) = decode_dart_surface_payload(&payload, entry.id.as_str());
+    Some(Arc::new(SurfaceArtefacts {
+        record: record.clone(),
+        contracts: Vec::new(),
+        bindings,
+        library_apis,
+    }))
+}
+
+/// Resolve a Dart component's first path segment against the workspace roots.
+fn resolve_dart_component_dir(entry: &ComponentEntry, roots: &[PathBuf]) -> Option<PathBuf> {
+    let segment = entry.path_segments.first()?;
+    if segment.path.is_absolute() {
+        return Some(segment.path.clone());
+    }
+    if let Some(owning_root) = best_root_for(roots, &segment.path) {
+        return Some(owning_root.join(&segment.path));
+    }
+    for root in roots {
+        let absolute = root.join(&segment.path);
+        if absolute.is_dir() {
+            return Some(absolute);
+        }
+    }
+    Some(roots.first()?.join(&segment.path))
+}
+
+/// Decode the JSON payload returned by the dart-analyzer subprocess.
+/// Mirrors [`decode_python_surface_payload`] with `"dart"` as the default
+/// language tag.
+fn decode_dart_surface_payload(
+    payload: &Value,
+    component_id: &str,
+) -> (Vec<Binding>, Vec<LibraryApi>) {
+    use atlas_index::{ContractKind, PubItem, PubItemKind, Visibility};
+    use std::collections::BTreeMap as StdBTreeMap;
+
+    let Some(obj) = payload.as_object() else {
+        return (Vec::new(), Vec::new());
+    };
+
+    let mut bindings: Vec<Binding> = Vec::new();
+    if let Some(arr) = obj.get("bindings").and_then(Value::as_array) {
+        for v in arr {
+            let Some(b) = v.as_object() else { continue };
+            let language = b
+                .get("language")
+                .and_then(Value::as_str)
+                .unwrap_or("dart")
+                .to_string();
+            let symbol = b
+                .get("symbol")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let file = b
+                .get("file")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .unwrap_or_default();
+            let span = b
+                .get("span")
+                .and_then(Value::as_array)
+                .and_then(|a| {
+                    let s = a.first().and_then(Value::as_u64)? as usize;
+                    let e = a.get(1).and_then(Value::as_u64)? as usize;
+                    Some((s, e))
+                })
+                .unwrap_or((0, 0));
+            let content_sha = b
+                .get("content_sha")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let visibility = b
+                .get("visibility")
+                .map(|v| {
+                    serde_json::from_value::<Visibility>(v.clone())
+                        .unwrap_or(Visibility::Conventional)
+                })
+                .unwrap_or(Visibility::Conventional);
+            let module_path = b
+                .get("module_path")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let attributes: StdBTreeMap<String, serde_yaml::Value> = b
+                .get("attributes")
+                .and_then(Value::as_object)
+                .map(|m| {
+                    m.iter()
+                        .filter_map(|(k, v)| {
+                            // JSON → YAML via serde_json::from_value (PR-3 F-CQ-3
+                            // fix — avoids YAML-special-character corruption).
+                            let yaml: serde_yaml::Value = serde_json::from_value(v.clone()).ok()?;
+                            Some((k.clone(), yaml))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            bindings.push(Binding {
+                language,
+                symbol,
+                file,
+                span,
+                content_sha,
+                visibility,
+                module_path,
+                attributes,
+            });
+        }
+    }
+
+    let mut library_apis: Vec<LibraryApi> = Vec::new();
+    if let Some(arr) = obj.get("library_apis").and_then(Value::as_array) {
+        for v in arr {
+            let Some(api) = v.as_object() else { continue };
+            let id = api
+                .get("id")
+                .and_then(Value::as_str)
+                .map(String::from)
+                .unwrap_or_else(|| format!("{component_id}/public-api"));
+            let language = api
+                .get("language")
+                .and_then(Value::as_str)
+                .unwrap_or("dart")
                 .to_string();
             let fingerprint = api
                 .get("fingerprint")

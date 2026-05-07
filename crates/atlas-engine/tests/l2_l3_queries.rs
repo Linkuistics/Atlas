@@ -481,6 +481,77 @@ fn l3_setup_py_classifies_as_python_package() {
     assert_eq!(c.analyser_id, "python-classifier");
 }
 
+// ---------------------------------------------------------------------
+// L3 — Dart / Flutter classification (Phase 2 PR-7)
+//
+// F1 regression: ComponentKind::parse must recognise "dart-package" and
+// "flutter-package" so dart_to_classification doesn't silently coerce
+// every Dart-classified component to ComponentKind::NonComponent.
+// ---------------------------------------------------------------------
+
+#[test]
+fn pubspec_classifies_through_classification_dart_package() {
+    // Phase 2 PR-7 acceptance: a `pubspec.yaml` with no `flutter:` block
+    // is classified as `ComponentKind::DartPackage` at L3 deterministically
+    // by the `dart-classifier`, with no LLM dispatch. Mirrors the Python
+    // PR-3 test `l3_pyproject_toml_classifies_as_python_package_without_llm_call`.
+    let td = TempDir::new().unwrap();
+    let root = td.path().to_path_buf();
+    std::fs::write(
+        root.join("pubspec.yaml"),
+        "name: dart_pkg\nversion: 0.1.0\n\ndependencies:\n  meta: any\n",
+    )
+    .unwrap();
+
+    let db = db_without_llm(&root);
+    let ws = db.workspace();
+    let c = is_component(&db, ws, root.clone());
+    assert_eq!(
+        c.kind,
+        ComponentKind::DartPackage,
+        "pubspec.yaml without flutter: block must produce DartPackage, got {:?}",
+        c.kind
+    );
+    assert_eq!(c.analyser_id, "dart-classifier");
+    assert_eq!(c.evidence_grade, EvidenceGrade::Strong);
+    assert!(
+        c.languages.contains("dart"),
+        "language must be dart; got {:?}",
+        c.languages
+    );
+    assert_eq!(c.build_system.as_deref(), Some("pub"));
+    assert!(c.is_boundary);
+}
+
+#[test]
+fn pubspec_with_flutter_block_classifies_as_flutter_package() {
+    // Phase 2 PR-7 acceptance: a `pubspec.yaml` with a top-level `flutter:`
+    // block is classified as `ComponentKind::FlutterPackage` at L3
+    // deterministically, with no LLM dispatch.
+    let td = TempDir::new().unwrap();
+    let root = td.path().to_path_buf();
+    std::fs::write(
+        root.join("pubspec.yaml"),
+        "name: flutter_app\nversion: 1.0.0\n\nflutter:\n  uses-material-design: true\n\ndependencies:\n  flutter:\n    sdk: flutter\n",
+    )
+    .unwrap();
+
+    let db = db_without_llm(&root);
+    let ws = db.workspace();
+    let c = is_component(&db, ws, root.clone());
+    assert_eq!(
+        c.kind,
+        ComponentKind::FlutterPackage,
+        "pubspec.yaml with flutter: block must produce FlutterPackage, got {:?}",
+        c.kind
+    );
+    assert_eq!(c.analyser_id, "dart-classifier");
+    assert_eq!(c.evidence_grade, EvidenceGrade::Strong);
+    assert!(c.languages.contains("dart"));
+    assert_eq!(c.build_system.as_deref(), Some("pub"));
+    assert!(c.is_boundary);
+}
+
 #[test]
 fn l3_bare_git_without_readme_classifies_as_non_component() {
     let td = TempDir::new().unwrap();

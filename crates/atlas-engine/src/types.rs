@@ -43,7 +43,15 @@ pub enum ComponentKind {
     PythonPackage,
     DartLibrary,
     DartApp,
+    /// A Dart package — `pubspec.yaml` present with no `flutter:` top-level
+    /// block. Recognised deterministically at L3 by the `dart-classifier`.
+    /// Phase 2 PR-7.
+    DartPackage,
     FlutterApp,
+    /// A Flutter package — `pubspec.yaml` with a `flutter:` top-level block.
+    /// Recognised deterministically at L3 by the `dart-classifier`.
+    /// Phase 2 PR-7.
+    FlutterPackage,
     CsharpProject,
     CsharpSolution,
     DotnetLibrary,
@@ -82,7 +90,9 @@ impl ComponentKind {
             ComponentKind::PythonPackage => "python-package",
             ComponentKind::DartLibrary => "dart-library",
             ComponentKind::DartApp => "dart-app",
+            ComponentKind::DartPackage => "dart-package",
             ComponentKind::FlutterApp => "flutter-app",
+            ComponentKind::FlutterPackage => "flutter-package",
             ComponentKind::CsharpProject => "csharp-project",
             ComponentKind::CsharpSolution => "csharp-solution",
             ComponentKind::DotnetLibrary => "dotnet-library",
@@ -121,7 +131,9 @@ impl ComponentKind {
             "python-package" => ComponentKind::PythonPackage,
             "dart-library" => ComponentKind::DartLibrary,
             "dart-app" => ComponentKind::DartApp,
+            "dart-package" => ComponentKind::DartPackage,
             "flutter-app" => ComponentKind::FlutterApp,
+            "flutter-package" => ComponentKind::FlutterPackage,
             "csharp-project" => ComponentKind::CsharpProject,
             "csharp-solution" => ComponentKind::CsharpSolution,
             "dotnet-library" => ComponentKind::DotnetLibrary,
@@ -161,7 +173,9 @@ impl ComponentKind {
             ComponentKind::PythonPackage,
             ComponentKind::DartLibrary,
             ComponentKind::DartApp,
+            ComponentKind::DartPackage,
             ComponentKind::FlutterApp,
+            ComponentKind::FlutterPackage,
             ComponentKind::CsharpProject,
             ComponentKind::CsharpSolution,
             ComponentKind::DotnetLibrary,

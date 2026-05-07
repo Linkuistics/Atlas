@@ -15,6 +15,11 @@ const EXACT_MANIFEST_BASENAMES: &[&str] = &[
     // `typescript-package`.
     "tsconfig.json",
     "pyproject.toml",
+    // pubspec.yaml is the Dart/Flutter manifest. Recognised so the
+    // Phase 2 PR-7 `dart-classifier` can inspect it via
+    // `Target.manifests`. The root-expansion walker also reads it
+    // for path-dep discovery (see `root_expansion.rs`).
+    "pubspec.yaml",
     "go.mod",
     "setup.py",
     "Gemfile",

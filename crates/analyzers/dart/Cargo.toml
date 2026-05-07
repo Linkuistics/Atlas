@@ -1,0 +1,36 @@
+[package]
+name = "atlas-dart-analyzer"
+version.workspace = true
+description = "Atlas vNext Phase 2 PR-7 — out-of-process Dart/Flutter surface analyser. Emits library bindings, conventional-vs-explicit visibility, and dart_annotations attributes from `pubspec.yaml`-shaped components."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "atlas_dart_analyzer"
+path = "src/lib.rs"
+
+# The subprocess entry point. Cargo emits CARGO_BIN_EXE_dart-analyzer
+# at test time; the in-process wrapper in atlas-analyzers picks it up
+# via env! the same way the python-analyzer is wired.
+[[bin]]
+name = "dart-analyzer"
+path = "src/main.rs"
+test = false
+doc = false
+
+[dependencies]
+anyhow = { workspace = true }
+atlas-analyzers = { path = "../../atlas-analyzers" }
+atlas-index = { workspace = true }
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

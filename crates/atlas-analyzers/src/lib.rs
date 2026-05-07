@@ -38,6 +38,8 @@ pub mod cargo_classifier;
 pub mod compose_classifier;
 pub mod csharp_classifier;
 pub mod csharp_surface_analyzer;
+pub mod dart_classifier;
+pub mod dart_surface_analyzer;
 pub mod dispatcher;
 pub mod dockerfile_classifier;
 pub mod llm_classify;
@@ -62,6 +64,11 @@ pub use csharp_classifier::{CsharpClassificationOutput, CsharpClassifier};
 pub use csharp_surface_analyzer::{
     cached_csharp_subprocess_proxy, csharp_subprocess_spec, locate_csharp_analyzer_binary,
     CSHARP_ANALYZER_DEFAULT_TIMEOUT_SECS, CSHARP_ANALYZER_ID, CSHARP_ANALYZER_VERSION,
+};
+pub use dart_classifier::{DartClassificationOutput, DartClassifier};
+pub use dart_surface_analyzer::{
+    cached_dart_subprocess_proxy, dart_subprocess_spec, locate_dart_analyzer_binary,
+    DART_ANALYZER_DEFAULT_TIMEOUT_SECS, DART_ANALYZER_ID, DART_ANALYZER_VERSION,
 };
 pub use dispatcher::{DispatchOutcome, NONE_ANALYZER_ID, NONE_ANALYZER_VERSION};
 pub use dockerfile_classifier::DockerfileClassifier;
@@ -367,6 +374,7 @@ impl_stage_output!(
     cargo_classifier::CargoClassificationOutput,
     compose_classifier::ComposeClassificationOutput,
     csharp_classifier::CsharpClassificationOutput,
+    dart_classifier::DartClassificationOutput,
     dockerfile_classifier::DockerfileClassificationOutput,
     llm_classify::LlmClassifyOutput,
     python_classifier::PythonClassificationOutput,

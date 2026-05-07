@@ -164,6 +164,55 @@ pub fn extract_csproj_path_deps(contents: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Returns every path-dep target declared in a `pubspec.yaml` manifest,
+/// as paths relative to the manifest's parent directory (callers
+/// canonicalise). Recognised form:
+///
+/// ```yaml
+/// dependencies:
+///   lib_a:
+///     path: ../lib_a
+///   http: ^0.13.0
+/// ```
+///
+/// Both `dependencies:` and `dev_dependencies:` tables are walked.
+/// Version-string, SDK, and git forms are skipped.
+///
+/// Phase 2 PR-7 introduces this for the cross-tree fixed-point walk
+/// (mirroring the Cargo and Python path-dep patterns).
+///
+/// On a malformed manifest the function returns an empty Vec rather
+/// than erroring — the same degrade-to-default policy `parse_cargo_toml`
+/// uses.
+pub fn extract_pubspec_path_deps(contents: &str) -> Vec<PathBuf> {
+    let Ok(value): Result<serde_yaml::Value, _> = serde_yaml::from_str(contents) else {
+        return Vec::new();
+    };
+    let Some(mapping) = value.as_mapping() else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = Vec::new();
+    for key in ["dependencies", "dev_dependencies"] {
+        let Some(deps) = mapping.get(key) else {
+            continue;
+        };
+        let Some(deps_map) = deps.as_mapping() else {
+            continue;
+        };
+        for (_dep_name, dep_spec) in deps_map {
+            let Some(spec_map) = dep_spec.as_mapping() else {
+                continue;
+            };
+            if let Some(path_val) = spec_map.get("path") {
+                if let Some(path_str) = path_val.as_str() {
+                    out.push(PathBuf::from(path_str));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Facts lifted from a `package.json` by serde_json. Missing fields
 /// degrade to `false`; malformed JSON degrades to an all-false shape,
 /// which sends the classifier down the LLM fallback path.
