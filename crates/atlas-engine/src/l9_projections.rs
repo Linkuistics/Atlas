@@ -33,7 +33,7 @@ use sha2::{Digest, Sha256};
 use crate::contract_canonicalisation::compute_surfaces_fingerprint;
 use crate::db::{AtlasDatabase, Workspace};
 use crate::l1_queries::manifests_in;
-use crate::l4_tree::all_components;
+use crate::l4_tree::{all_component_analyser_identities, all_components};
 use crate::l5_surface::surface_artefacts_of;
 use crate::l6_edges::all_proposed_edges;
 use crate::roots::best_root_for;
@@ -106,14 +106,14 @@ pub fn components_yaml_snapshot_with_prompt_shas(
 ///   surface contribution in L6.
 /// - `analyser_id` / `analyser_version` (PR-4): the dispatching L3
 ///   analyser's `id()` / `version()` (e.g. `cargo-toml-classifier`,
-///   `dockerfile-l3`). The values are captured during classification
-///   and read back here by re-invoking [`crate::l3_classify::is_component`]
-///   for the component's directory — Salsa memoises the call, so the
-///   second invocation is free. Pin / `overrides.additions` provenance
-///   is recorded as `"override"` / `"0.0.0"`; an unclassified fall-
-///   through (which should not normally reach this projection because
-///   non-boundary classifications are filtered out earlier) records
-///   `"none"` / `"0.0.0"`.
+///   `dockerfile-l3`). The values are captured during L4 assembly and
+///   read back here via [`all_component_analyser_identities`].
+///   `overrides.additions` provenance is correctly recorded as
+///   `"override"` / `"0.0.0"` because the identity map is populated
+///   by [`crate::l4_tree::addition_to_classification`] during the L4
+///   pass — before `Classification` is discarded. An unclassified
+///   fall-through (which should not normally reach this projection)
+///   records `"none"` / `"0.0.0"`.
 /// - `surfaces_path` and `overrides_path` are the relative
 ///   filenames `surfaces.yaml` / `overrides.yaml` — pointers within
 ///   the component's own `.atlas/` directory.
@@ -163,23 +163,39 @@ pub fn per_component_yaml_snapshot(
     }))
 }
 
-/// Resolve the dispatching analyser's id/version for a single
-/// component entry. Walks the workspace roots to absolutise the
-/// component's first path segment, then re-runs
-/// [`crate::l3_classify::is_component`] (Salsa-memoised) and reads
-/// the captured analyser identity off the [`crate::types::Classification`].
+/// Resolve the dispatching analyser's id/version for a single component
+/// entry.
 ///
-/// Falls back to the `("none", "0.0.0")` sentinel when the component
-/// cannot be located under any root — in practice that means the
-/// component was authored entirely from `overrides.additions` with a
-/// path that resolved before this point, in which case `is_component`
-/// is not the canonical source of identity. The fallback keeps the
-/// per-component YAML well-formed (non-empty strings) without
-/// pretending an analyser ran.
+/// **Implementation note (PR-4 fix):** The previous implementation re-invoked
+/// [`crate::l3_classify::is_component`] for every component and relied on
+/// Salsa memoisation for the deterministic-analyser path. That worked for
+/// signal-derived components but silently produced `analyser_id: "none"` for
+/// `overrides.additions` entries, because those entries bypassed
+/// `is_component` entirely (they are stamped with `OVERRIDE_ANALYSER_ID` by
+/// [`crate::l4_tree::addition_to_classification`], not via the analyser
+/// registry).
+///
+/// The fix consults [`all_component_analyser_identities`] first, which reads
+/// the identity that was already computed and stored during L4 assembly.
+/// `is_component` is invoked only as a fallback for components that are not
+/// found in the identity map (e.g. a component id passed in before the live
+/// tree is finalised, or a future caller that pre-dates the identity map).
 fn lookup_analyser_identity(
     db: &AtlasDatabase,
     entry: &atlas_index::ComponentEntry,
 ) -> (String, String) {
+    // Primary path: read the identity captured during L4 assembly. This
+    // correctly returns `"override"` / `"0.0.0"` for `overrides.additions`
+    // entries and the real analyser id/version for signal-derived components.
+    let identities = all_component_analyser_identities(db);
+    if let Some((id, version)) = identities.get(&entry.id) {
+        return (id.clone(), version.clone());
+    }
+
+    // Fallback: re-invoke `is_component` (Salsa-memoised for deterministic
+    // analysers) for the component's directory. Reached only when the
+    // component id is not in the identity map, which should not happen in
+    // normal operation but is kept for defensive correctness.
     let workspace = db.workspace();
     let roots = workspace.roots(db as &dyn salsa::Database).clone();
     let Some(seg) = entry.path_segments.first() else {

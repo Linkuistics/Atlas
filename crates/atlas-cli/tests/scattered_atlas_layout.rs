@@ -280,6 +280,77 @@ fn dockerfile_classified_component_records_dockerfile_analyser_identity() {
     assert_eq!(parsed.analyser_version, "1.0.0");
 }
 
+/// PR-4 regression: an `overrides.additions` entry without a corresponding
+/// pin must record `analyser_id: "override"` (not `"none"`) in its
+/// per-component `component.yaml`. Previously `lookup_analyser_identity`
+/// re-invoked `is_component`, which returned `"none"` for a directory that
+/// no analyser recognised; the fix reads the identity from the L4 identity
+/// map captured during assembly.
+#[test]
+fn overrides_addition_records_override_analyser_id() {
+    let tmp = TempDir::new().unwrap();
+
+    // Create a directory that no analyser would classify on its own
+    // (no Cargo.toml, no Dockerfile, no package.json).
+    let hand_dir = tmp.path().join("hand-authored-svc");
+    std::fs::create_dir_all(&hand_dir).unwrap();
+    std::fs::write(hand_dir.join("README.md"), "# hand-authored service\n").unwrap();
+
+    // Write the overrides file to <root>/.atlas/components.overrides.yaml
+    // (the location the CLI loads from).
+    let atlas_dir = tmp.path().join(".atlas");
+    std::fs::create_dir_all(&atlas_dir).unwrap();
+    std::fs::write(
+        atlas_dir.join("components.overrides.yaml"),
+        concat!(
+            "schema_version: 1\n",
+            "additions:\n",
+            "  - id: hand-authored-svc\n",
+            "    kind: service\n",
+            "    evidence_grade: strong\n",
+            "    rationale: hand-authored override\n",
+            "    path_segments:\n",
+            "      - path: hand-authored-svc\n",
+            "        content_sha: \"\"\n",
+        ),
+    )
+    .unwrap();
+
+    let mut config = IndexConfig::new(tmp.path().to_path_buf());
+    config.respect_gitignore = false;
+    config.fingerprint_override = Some(fingerprint());
+    let backend = LenientBackend::new();
+
+    let summary = run_index(
+        &config,
+        backend,
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .expect("run_index succeeds");
+    assert!(summary.outputs_written);
+
+    let per_component_path = hand_dir.join(".atlas").join("component.yaml");
+    let bytes = std::fs::read(&per_component_path).unwrap_or_else(|e| {
+        panic!(
+            "per-component file must exist at {}: {e}",
+            per_component_path.display()
+        )
+    });
+    let parsed: PerComponentFile = serde_yaml::from_slice(&bytes)
+        .unwrap_or_else(|e| panic!("failed to parse {}: {e}", per_component_path.display()));
+    assert_eq!(
+        parsed.analyser_id, "override",
+        "overrides.additions entry must record analyser_id: \"override\", got `{}`",
+        parsed.analyser_id
+    );
+    assert_eq!(
+        parsed.analyser_version, "0.0.0",
+        "overrides.additions entry must record analyser_version: \"0.0.0\", got `{}`",
+        parsed.analyser_version
+    );
+}
+
 #[test]
 fn dry_run_skips_per_component_writes() {
     let tmp = TempDir::new().unwrap();

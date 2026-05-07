@@ -29,11 +29,15 @@ use crate::{AnalysisContext, AnalyzerError, AnalyzerResult, Stage, Target};
 pub enum DispatchOutcome {
     /// One analyser produced a `Confident` verdict.
     Confident {
+        /// TODO(post-PR-4): redundant with the &str returned by `dispatch`;
+        /// remove once all callers use the tuple form.
         analyzer_id: String,
         output: Box<dyn crate::StageOutput>,
     },
     /// One analyser produced a `Graded` verdict.
     Graded {
+        /// TODO(post-PR-4): redundant with the &str returned by `dispatch`;
+        /// remove once all callers use the tuple form.
         analyzer_id: String,
         output: Box<dyn crate::StageOutput>,
         confidence: f32,

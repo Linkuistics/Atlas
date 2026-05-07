@@ -83,12 +83,33 @@ pub enum TreeAssemblyError {
     PerComponentParseError { file: String, message: String },
 }
 
+/// Map from [`ComponentId`] to `(analyser_id, analyser_version)` as captured
+/// during L4 assembly. Used by [`all_component_analyser_identities`] and its
+/// internal callers to avoid the verbosity of the nested generic in
+/// function signatures.
+type AnalyserIdentityMap = BTreeMap<ComponentId, (String, String)>;
+
 /// Build the full component tree. The returned vector is sorted by id
 /// for deterministic YAML output. Panics on a cycle, matching the
 /// design-doc position that acyclicity is a hard invariant (§4.2).
 pub fn all_components(db: &AtlasDatabase) -> Arc<Vec<ComponentEntry>> {
     match try_assemble(db) {
         Ok(v) => v,
+        Err(e) => panic!("{e}"),
+    }
+}
+
+/// Return the dispatching analyser's `(analyser_id, analyser_version)` for
+/// every live component in the tree, keyed by component id. Identities are
+/// captured during L4 assembly — before the `Classification` is discarded
+/// — so this is the only place that accurately reflects the `"override"`
+/// sentinel for `overrides.additions` entries (which bypass `is_component`
+/// entirely and are therefore invisible to callers that re-invoke it post-
+/// assembly). Tombstoned components are excluded. Panics on a cycle,
+/// matching the invariant in [`all_components`].
+pub fn all_component_analyser_identities(db: &AtlasDatabase) -> Arc<AnalyserIdentityMap> {
+    match try_assemble_inner(db, &mut io::stderr()) {
+        Ok((_, identities)) => identities,
         Err(e) => panic!("{e}"),
     }
 }
@@ -107,6 +128,18 @@ pub fn try_assemble_with_warnings(
     db: &AtlasDatabase,
     warnings: &mut dyn Write,
 ) -> Result<Arc<Vec<ComponentEntry>>, TreeAssemblyError> {
+    let (components, _identities) = try_assemble_inner(db, warnings)?;
+    Ok(components)
+}
+
+/// Core assembly implementation used by [`try_assemble_with_warnings`] and
+/// [`all_component_analyser_identities`]. Returns the sorted component
+/// entries AND the per-component analyser identity map in one pass so
+/// callers that need both do not run the assembly twice.
+fn try_assemble_inner(
+    db: &AtlasDatabase,
+    warnings: &mut dyn Write,
+) -> Result<(Arc<Vec<ComponentEntry>>, Arc<AnalyserIdentityMap>), TreeAssemblyError> {
     let workspace = db.workspace();
     let roots = workspace.roots(db as &dyn salsa::Database).clone();
     let primary_overrides = workspace
@@ -146,12 +179,13 @@ pub fn try_assemble_with_warnings(
             &merged_overrides,
         ));
     }
-    let finalised = resolve_ids_and_tombstones(&prior, &merged_overrides, &roots, live);
+    let (finalised, identities) =
+        resolve_ids_and_tombstones(&prior, &merged_overrides, &roots, live);
     enforce_acyclicity(&finalised)?;
 
     let mut out: Vec<ComponentEntry> = finalised;
     out.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok(Arc::new(out))
+    Ok((Arc::new(out), Arc::new(identities)))
 }
 
 /// Parent component id of `id` per the assembled tree, or `None` when
@@ -356,7 +390,7 @@ fn resolve_ids_and_tombstones(
     overrides: &OverridesFile,
     roots: &[PathBuf],
     live: Vec<LiveComponent>,
-) -> Vec<ComponentEntry> {
+) -> (Vec<ComponentEntry>, AnalyserIdentityMap) {
     // Filter prior to live (non-deleted) entries — tombstones must not
     // feed back into rename-match, or they'd re-emit indefinitely.
     let prior_live: Vec<ComponentEntry> = prior
@@ -437,6 +471,13 @@ fn resolve_ids_and_tombstones(
 
     // Now build the final ComponentEntry list.
     let mut out: Vec<ComponentEntry> = Vec::new();
+    // Identity map: component-id → (analyser_id, analyser_version). Captured
+    // here while `live[i].classification` is still in scope; once
+    // `LiveComponent` is dropped the identity information is gone. The map is
+    // the authoritative source for `lookup_analyser_identity` in L9 — it
+    // correctly records `"override"` for `overrides.additions` entries that
+    // bypassed `is_component` entirely.
+    let mut identities: AnalyserIdentityMap = BTreeMap::new();
     let mut id_by_dir: BTreeMap<PathBuf, ComponentId> = BTreeMap::new();
     for i in 0..live.len() {
         id_by_dir.insert(
@@ -456,6 +497,13 @@ fn resolve_ids_and_tombstones(
                 .as_ref()
                 .and_then(|p| id_by_dir.get(p).cloned())
         });
+        identities.insert(
+            id.clone(),
+            (
+                lc.classification.analyser_id.clone(),
+                lc.classification.analyser_version.clone(),
+            ),
+        );
         out.push(ComponentEntry {
             id,
             parent,
@@ -480,16 +528,21 @@ fn resolve_ids_and_tombstones(
     let suppressed = collect_suppressed_children(&out, overrides);
     if !suppressed.is_empty() {
         out.retain(|c| !suppressed.contains(&c.id));
+        for id in &suppressed {
+            identities.remove(id);
+        }
     }
 
-    // Orphan tombstones.
+    // Orphan tombstones. Tombstones are not live components, so they have no
+    // identity entry in the map — `lookup_analyser_identity` already handles
+    // the not-found case with a graceful fallback.
     for prior_idx in &match_out.orphans {
         let mut tomb = prior_live[*prior_idx].clone();
         tomb.deleted = true;
         out.push(tomb);
     }
 
-    out
+    (out, identities)
 }
 
 fn dir_to_live_index(dir: &Path, live: &[LiveComponent]) -> Option<usize> {
