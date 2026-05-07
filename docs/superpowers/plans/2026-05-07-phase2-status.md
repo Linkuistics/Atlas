@@ -6,7 +6,7 @@ prompt at `docs/superpowers/prompts/2026-05-07-vnext-continue.md` reads
 this file (via the `*phase2-plan*` wildcard match) to find the next PR
 to dispatch.
 
-**Last updated:** 2026-05-08 (Wave 3 in flight: PR-6/7/8 landed; PR-9/10/12 worktrees pending merge).
+**Last updated:** 2026-05-08 (Wave 3 in flight: PR-6/7/8/9 landed; PR-10/12 worktrees pending merge).
 
 ## PR status
 
@@ -23,7 +23,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-6  — C# surface analyser (subprocess)
 - [x] PR-7  — Dart / Flutter surface analyser (subprocess)
 - [x] PR-8  — Elixir surface analyser (subprocess)
-- [ ] PR-9  — Racket surface analyser (subprocess)
+- [x] PR-9  — Racket surface analyser (subprocess)
 - [ ] PR-10 — LispKit surface analyser (subprocess)
 - [x] PR-11 — Compose composition-edge analyser (deterministic, in-process)
 - [ ] PR-12 — Shell-script LLM-fallback analyser (in-process)
@@ -871,7 +871,95 @@ tests + integration tests in
   deferral from PR-3 / PR-6 / PR-7 / PR-8; Wave 4 cleanup PR).
 
 ### PR-9
-(awaiting subagent dispatch)
+2026-05-08 — Landed as Atlas commit `cd2ee24` (squashed integration of
+`phase2-pr9-impl`: scaffold → wiring → tests → spec fix F1
+binary_sha contribution → quality fixes F-RKT-1/2/4 → cargo fmt);
+atlas-contracts commit `86b5a28` (kind docstring gains racket-package
+paragraph). Per-stage commits preserved on the branch ref
+`phase2-pr9-impl`.
+
+**Schema-mutation contribution:** atlas-contracts
+`crates/atlas-index/src/schema.rs` `kind` docstring extended with a
+PR-9 paragraph (`racket-package`). No type-level schema changes.
+
+**Parser library:** hand-rolled S-expression tokeniser shipped in
+`atlas-racket-analyzer::lib`. The Phase 2 plan named no specific
+library for Racket; the subagent chose a minimal byte-scan reader
+because Racket's `provide`/`require` surface is regular enough that
+a full parser is overkill. F-RKT-1 quality fix corrects the
+tokeniser's handling of `#t`/`#f`/`#:keyword`/`#'` reader macros
+(previously misparsed).
+
+**Implementation map:**
+- New workspace member `crates/analyzers/racket` (lib + `racket-analyzer`
+  subprocess binary), speaking PR-2's wire protocol verbatim.
+- `atlas_analyzers::racket_classifier` (in-process L3 deterministic):
+  recognises `info.rkt` → `racket-package`.
+- `atlas_analyzers::racket_surface_analyzer` —
+  `racket_subprocess_spec(binary_path)` builds the
+  `SubprocessAnalyzerSpec`. F-RKT-2 quality fix swapped the
+  racket-specific cached-proxy helper for the shared
+  `cached_subprocess_proxy` PR-3 introduced (eliminates per-language
+  duplication).
+- `crates/atlas-engine/src/l5_surface.rs` extended with a Racket
+  branch in `surface_artefacts_of` that pre-loads `info.rkt`, drives
+  the subprocess, and decodes the JSON response into typed `Binding`
+  / `LibraryApi` values via `decode_racket_surface_payload`.
+- `crates/atlas-engine/src/manifest_parse.rs` gains
+  `extract_info_rkt_path_deps`: byte-scan finds the `(define deps
+  ...)` form and extracts string literals starting with `.` or `/`
+  (registry package names without separators are excluded).
+- `crates/atlas-engine/src/root_expansion.rs` walks `info.rkt`
+  alongside the other path-dep-bearing manifests;
+  `enclosing_manifest_root` recognises an `info.rkt` ancestor as a
+  project root via the new `racket_root` candidate.
+- F-RKT-4 quality fix renamed `resolve_python_component_dir` to the
+  language-agnostic `resolve_component_dir_first_segment` (re-used
+  by both Python and Racket); the racket-specific
+  `resolve_racket_component_dir` mirrors the csharp/dart/elixir
+  pattern.
+- `ComponentKind::RacketPackage` variant + `racket-package` entry
+  in `defaults/component-kinds.yaml`. `subcarve_policy` adds
+  `RacketPackage` to the library-shaped kinds.
+
+**Binding extraction shape:**
+- Top-level `(provide ...)` clauses → `Binding`s with
+  `Visibility::Explicit { keyword: "provide" }`.
+- `(define name ...)` → `Binding` with the symbol name; visibility
+  derived from whether the symbol is in any `provide` form.
+- `(struct name ...)` → recorded as `PubItemKind::Struct`.
+
+**F1 spec fix (`19104b8`):** L5 fingerprint now contributes the
+racket-analyzer binary's content sha via tag 0x06 — a rebuilt
+binary therefore invalidates Racket-component cached
+`SurfaceRecord`s, mirroring the Python / C# / Dart / Elixir
+patterns.
+
+**Tests:** §4 PR-9 acceptance criteria covered + classifier unit
+tests + integration tests in
+`crates/atlas-engine/tests/l5_racket_surface.rs`. F-RKT-1 added
+regression tests for `#t`/`#f`/`#:keyword`/`#'` tokeniser correctness.
+
+**Decisions / deviations:**
+- **Hand-rolled reader** preferred over a tree-sitter-racket
+  dependency. Within per-PR §4 latitude.
+- **`provide` / `require` are the surface boundary.** Internal
+  `define` forms not exported via `provide` are treated as
+  conventional-private (Racket has no language-level private keyword;
+  `provide` is the export gate).
+- **No `raco` invocation.** The analyser does not shell out to the
+  Racket toolchain; everything is pure-Rust byte-scanning. Phase 3
+  may add raco-driven dependency resolution if the surface accuracy
+  warrants it.
+
+**Cleanups deferred:**
+- Tree-sitter-racket migration (Phase 3+) if surface shape needs
+  full grammar coverage.
+- `(struct-out)` / `rename-out` / contract-out forms in `provide`
+  blocks are currently treated as plain symbol exports; Phase 3 may
+  capture the modifier semantics.
+- `LenientBackend` test-helper extraction (still warranted; cumulative
+  deferral; Wave 4 cleanup PR).
 
 ### PR-10
 (awaiting subagent dispatch)
