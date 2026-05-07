@@ -204,6 +204,16 @@ pub struct Classification {
     pub evidence_fields: Vec<String>,
     pub rationale: String,
     pub is_boundary: bool,
+    /// Stable id of the L3 analyser whose verdict produced this
+    /// classification (e.g. `cargo-toml-classifier`, `dockerfile-l3`).
+    /// `"none"` when no analyser took the candidate (the fall-through
+    /// classification path) and `"override"` for hand-authored pins
+    /// or `overrides.additions` entries that bypass the registry.
+    pub analyser_id: String,
+    /// Free-form analyser version reported by the dispatching
+    /// analyser's [`atlas_analyzers::Analyzer::version`]. Pairs with
+    /// `analyser_id`; `"0.0.0"` on the all-declined / override paths.
+    pub analyser_version: String,
 }
 
 #[cfg(test)]

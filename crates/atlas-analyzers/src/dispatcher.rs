@@ -72,16 +72,36 @@ impl std::fmt::Debug for DispatchOutcome {
     }
 }
 
+/// Sentinel id reported when every applicable analyser declines.
+/// Carried through `dispatch` / `dispatch_with_filter` so the L3
+/// adapter (and the per-component projection downstream of it) can
+/// emit a non-empty analyser identity even on the all-declined path.
+pub const NONE_ANALYZER_ID: &str = "none";
+
+/// Sentinel version reported alongside [`NONE_ANALYZER_ID`].
+pub const NONE_ANALYZER_VERSION: &str = "0.0.0";
+
 impl AnalyzerRegistry {
     /// Dispatch a single target through the registry. The `stage`
     /// filter restricts iteration to analysers that opted into the
     /// given stage; analysers from other stages are ignored.
-    pub fn dispatch(
-        &self,
+    ///
+    /// Returns `(outcome, analyser_id, analyser_version)`. On a
+    /// winning verdict (`Confident` / `Graded`) the id and version
+    /// are the dispatching analyser's `id()` and `version()` reports.
+    /// On `AllDeclined` they are the [`NONE_ANALYZER_ID`] /
+    /// [`NONE_ANALYZER_VERSION`] sentinels — non-empty so downstream
+    /// consumers (per-component YAML, fingerprints) never have to
+    /// special-case the empty-string case.
+    ///
+    /// The id/version slices borrow from the registry's analyser
+    /// instances, so they live as long as `&self`.
+    pub fn dispatch<'a>(
+        &'a self,
         ctx: &AnalysisContext,
         target: &Target,
         stage: Stage,
-    ) -> DispatchOutcome {
+    ) -> (DispatchOutcome, &'a str, &'a str) {
         self.dispatch_with_filter(ctx, target, stage, |_| true)
     }
 
@@ -94,13 +114,15 @@ impl AnalyzerRegistry {
     /// analyser. The brief mandates the LLM analyser sit in the
     /// registry; this method gives the L3 adapter the seam it needs
     /// to interleave the legacy non-Cargo deterministic rules.
-    pub fn dispatch_with_filter<F>(
-        &self,
+    ///
+    /// Same return contract as [`AnalyzerRegistry::dispatch`].
+    pub fn dispatch_with_filter<'a, F>(
+        &'a self,
         ctx: &AnalysisContext,
         target: &Target,
         stage: Stage,
         cost_filter: F,
-    ) -> DispatchOutcome
+    ) -> (DispatchOutcome, &'a str, &'a str)
     where
         F: Fn(atlas_index::CostClass) -> bool,
     {
@@ -117,17 +139,25 @@ impl AnalyzerRegistry {
             }
             match analyzer.analyse(ctx, target) {
                 AnalyzerResult::Confident(output) => {
-                    return DispatchOutcome::Confident {
-                        analyzer_id: analyzer.id().to_string(),
-                        output,
-                    };
+                    return (
+                        DispatchOutcome::Confident {
+                            analyzer_id: analyzer.id().to_string(),
+                            output,
+                        },
+                        analyzer.id(),
+                        analyzer.version(),
+                    );
                 }
                 AnalyzerResult::Graded { output, confidence } => {
-                    return DispatchOutcome::Graded {
-                        analyzer_id: analyzer.id().to_string(),
-                        output,
-                        confidence,
-                    };
+                    return (
+                        DispatchOutcome::Graded {
+                            analyzer_id: analyzer.id().to_string(),
+                            output,
+                            confidence,
+                        },
+                        analyzer.id(),
+                        analyzer.version(),
+                    );
                 }
                 AnalyzerResult::Declines => continue,
                 AnalyzerResult::Error(e) => {
@@ -136,7 +166,11 @@ impl AnalyzerRegistry {
                 }
             }
         }
-        DispatchOutcome::AllDeclined { errors }
+        (
+            DispatchOutcome::AllDeclined { errors },
+            NONE_ANALYZER_ID,
+            NONE_ANALYZER_VERSION,
+        )
     }
 }
 
@@ -266,7 +300,7 @@ mod tests {
 
         let registry = AnalyzerRegistry::builtin();
         let target = cargo_target_with_lib();
-        let outcome = registry.dispatch(&ctx, &target, Stage::L3);
+        let (outcome, _id, _version) = registry.dispatch(&ctx, &target, Stage::L3);
         match outcome {
             DispatchOutcome::Confident { analyzer_id, .. } => {
                 assert_eq!(analyzer_id, CargoClassifier.id());
@@ -306,7 +340,7 @@ mod tests {
             manifests: Vec::new(),
             top_level_files: Vec::new(),
         };
-        let outcome = registry.dispatch(&ctx, &target, Stage::L3);
+        let (outcome, _id, _version) = registry.dispatch(&ctx, &target, Stage::L3);
         match outcome {
             DispatchOutcome::Confident {
                 analyzer_id,
@@ -360,7 +394,7 @@ mod tests {
             manifests: Vec::new(),
             top_level_files: Vec::new(),
         };
-        let outcome = registry.dispatch(&ctx, &target, Stage::L3);
+        let (outcome, _id, _version) = registry.dispatch(&ctx, &target, Stage::L3);
         assert_eq!(inapplicable.call_count(), 0);
         assert_eq!(applicable.call_count(), 1);
         match outcome {
@@ -403,7 +437,7 @@ mod tests {
             manifests: Vec::new(),
             top_level_files: Vec::new(),
         };
-        let outcome = registry.dispatch(&ctx, &target, Stage::L3);
+        let (outcome, _id, _version) = registry.dispatch(&ctx, &target, Stage::L3);
         // Confident wins; the erroring analyser's error is dropped on
         // success per the semantics — only `AllDeclined` carries the
         // accumulated error list.
@@ -420,7 +454,7 @@ mod tests {
             manifests: Vec::new(),
             top_level_files: Vec::new(),
         };
-        let outcome = registry.dispatch(&ctx, &target, Stage::L3);
+        let (outcome, _id, _version) = registry.dispatch(&ctx, &target, Stage::L3);
         match outcome {
             DispatchOutcome::AllDeclined { errors } => assert!(errors.is_empty()),
             other => panic!("expected AllDeclined, got {other:?}"),
@@ -447,7 +481,7 @@ mod tests {
             manifests: Vec::new(),
             top_level_files: Vec::new(),
         };
-        let outcome = registry.dispatch(&ctx, &target, Stage::L3);
+        let (outcome, _id, _version) = registry.dispatch(&ctx, &target, Stage::L3);
         assert_eq!(l5.call_count(), 0);
         assert!(matches!(outcome, DispatchOutcome::AllDeclined { .. }));
     }
@@ -464,11 +498,64 @@ mod tests {
             manifests: Vec::new(),
             top_level_files: Vec::new(),
         };
-        let outcome = registry.dispatch(&ctx, &target, Stage::L3);
+        let (outcome, _id, _version) = registry.dispatch(&ctx, &target, Stage::L3);
         match outcome {
             DispatchOutcome::AllDeclined { errors } => assert!(errors.is_empty()),
             other => panic!("expected AllDeclined, got {other:?}"),
         }
         let _ = LlmClassifyAnalyzer; // proves symbol presence
+    }
+
+    #[test]
+    fn dispatch_returns_winning_analyser_identity() {
+        // Built-in registry: Cargo + LLM both apply at L3. The Cargo
+        // analyser wins on cost; the dispatcher must return its
+        // (id, version) tuple alongside the outcome.
+        let llm_calls = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+        let _llm_hook = {
+            let count = llm_calls.clone();
+            struct CountHook(std::sync::Arc<std::sync::Mutex<u32>>);
+            impl crate::llm_classify::LlmHook for CountHook {
+                fn classify(
+                    &self,
+                    _inputs: &serde_json::Value,
+                ) -> Result<Arc<serde_json::Value>, crate::llm_classify::LlmHookError>
+                {
+                    *self.0.lock().unwrap() += 1;
+                    Ok(Arc::new(serde_json::json!({"kind": "rust-library"})))
+                }
+            }
+            std::sync::Arc::new(CountHook(count))
+                as std::sync::Arc<dyn crate::llm_classify::LlmHook>
+        };
+        let ctx = AnalysisContext::with_llm(_llm_hook);
+
+        let registry = AnalyzerRegistry::builtin();
+        let target = cargo_target_with_lib();
+        let (outcome, id, version) = registry.dispatch(&ctx, &target, Stage::L3);
+        assert!(matches!(outcome, DispatchOutcome::Confident { .. }));
+        assert_eq!(id, crate::cargo_classifier::ANALYZER_ID);
+        assert_eq!(version, crate::cargo_classifier::ANALYZER_VERSION);
+        assert_eq!(*llm_calls.lock().unwrap(), 0, "LLM must not be consulted");
+    }
+
+    #[test]
+    fn dispatch_all_declined_returns_none_identity() {
+        // No analyser applies → the dispatcher returns the
+        // ("none", "0.0.0") sentinel rather than an empty string,
+        // so downstream consumers (per-component YAML, fingerprints)
+        // do not have to special-case empty identities.
+        let registry = AnalyzerRegistry::empty();
+        let ctx = AnalysisContext::deterministic_only();
+        let target = Target {
+            dir: PathBuf::from("/x"),
+            languages: BTreeSet::new(),
+            manifests: Vec::new(),
+            top_level_files: Vec::new(),
+        };
+        let (outcome, id, version) = registry.dispatch(&ctx, &target, Stage::L3);
+        assert!(matches!(outcome, DispatchOutcome::AllDeclined { .. }));
+        assert_eq!(id, NONE_ANALYZER_ID);
+        assert_eq!(version, NONE_ANALYZER_VERSION);
     }
 }

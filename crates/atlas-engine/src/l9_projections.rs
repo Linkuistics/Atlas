@@ -96,7 +96,7 @@ pub fn components_yaml_snapshot_with_prompt_shas(
 /// identity, fingerprint, and pointers to the co-located
 /// `surfaces.yaml` / `overrides.yaml` files.
 ///
-/// **Envelope fields (PR-7 wiring):**
+/// **Envelope fields:**
 ///
 /// - `fingerprint` is the surfaces fingerprint computed by
 ///   [`surfaces_yaml_snapshot`] (which uses the schema-derived
@@ -104,18 +104,16 @@ pub fn components_yaml_snapshot_with_prompt_shas(
 ///   Per the design §6.2 invariant, this is the value other
 ///   components' L6 cache keys cite. PR-11 wires the participant-
 ///   surface contribution in L6.
-/// - `analyser_id` / `analyser_version`: PR-6 used the static
-///   `"l3-driver"` / [`L3_DRIVER_VERSION`] placeholders. PR-7's
-///   plan note allows keeping these placeholders if per-analyser
-///   identity cannot be plumbed without disproportionate refactoring
-///   of `l3_classify.rs`. We keep the placeholders here because the
-///   L3 dispatcher returns a single `Classification` not labelled
-///   with the originating analyser; threading that through the L3
-///   adapter would require either tagging the dispatch outcome
-///   (changes to the analyser crate's API) or a per-analyser shim
-///   in the engine. Both approaches are larger than the PR's scope;
-///   the placeholder is preserved with a `DONE_WITH_CONCERNS`
-///   notation in the PR-7 final report.
+/// - `analyser_id` / `analyser_version` (PR-4): the dispatching L3
+///   analyser's `id()` / `version()` (e.g. `cargo-toml-classifier`,
+///   `dockerfile-l3`). The values are captured during classification
+///   and read back here by re-invoking [`crate::l3_classify::is_component`]
+///   for the component's directory — Salsa memoises the call, so the
+///   second invocation is free. Pin / `overrides.additions` provenance
+///   is recorded as `"override"` / `"0.0.0"`; an unclassified fall-
+///   through (which should not normally reach this projection because
+///   non-boundary classifications are filtered out earlier) records
+///   `"none"` / `"0.0.0"`.
 /// - `surfaces_path` and `overrides_path` are the relative
 ///   filenames `surfaces.yaml` / `overrides.yaml` — pointers within
 ///   the component's own `.atlas/` directory.
@@ -145,15 +143,81 @@ pub fn per_component_yaml_snapshot(
     let surfaces = surfaces_yaml_snapshot(db, component_id)?;
     let fingerprint = surfaces.fingerprint.clone();
 
+    // PR-4: replace the `l3-driver` placeholder with the real
+    // analyser identity. `entry.path_segments[0]` is the canonical
+    // directory for the component (relative to the owning workspace
+    // root); resolving it back to an absolute path lets us call
+    // `is_component` and read the analyser id/version off the
+    // resulting `Classification`. Salsa memoises the underlying
+    // tracked queries, so this is a cheap re-read.
+    let (analyser_id, analyser_version) = lookup_analyser_identity(db, &entry);
+
     Ok(Arc::new(PerComponentFile {
         schema_version: PER_COMPONENT_SCHEMA_VERSION,
         component: entry,
         surfaces_path: PathBuf::from("surfaces.yaml"),
         overrides_path: Some(PathBuf::from("overrides.yaml")),
-        analyser_id: "l3-driver".to_string(),
-        analyser_version: L3_DRIVER_VERSION.to_string(),
+        analyser_id,
+        analyser_version,
         fingerprint,
     }))
+}
+
+/// Resolve the dispatching analyser's id/version for a single
+/// component entry. Walks the workspace roots to absolutise the
+/// component's first path segment, then re-runs
+/// [`crate::l3_classify::is_component`] (Salsa-memoised) and reads
+/// the captured analyser identity off the [`crate::types::Classification`].
+///
+/// Falls back to the `("none", "0.0.0")` sentinel when the component
+/// cannot be located under any root — in practice that means the
+/// component was authored entirely from `overrides.additions` with a
+/// path that resolved before this point, in which case `is_component`
+/// is not the canonical source of identity. The fallback keeps the
+/// per-component YAML well-formed (non-empty strings) without
+/// pretending an analyser ran.
+fn lookup_analyser_identity(
+    db: &AtlasDatabase,
+    entry: &atlas_index::ComponentEntry,
+) -> (String, String) {
+    let workspace = db.workspace();
+    let roots = workspace.roots(db as &dyn salsa::Database).clone();
+    let Some(seg) = entry.path_segments.first() else {
+        return (
+            atlas_analyzers::NONE_ANALYZER_ID.to_string(),
+            atlas_analyzers::NONE_ANALYZER_VERSION.to_string(),
+        );
+    };
+
+    // The path segment is stored relative to the owning workspace
+    // root. Resolve against each root in turn and pick the first
+    // existing absolute path; if none exist we still try the joined
+    // path against root[0] to keep the call reachable on synthetic
+    // test setups.
+    let candidate_dir = if seg.path.is_absolute() {
+        seg.path.clone()
+    } else {
+        let mut chosen: Option<PathBuf> = None;
+        for root in &roots {
+            let abs = root.join(&seg.path);
+            if abs.exists() {
+                chosen = Some(abs);
+                break;
+            }
+        }
+        chosen.unwrap_or_else(|| {
+            roots
+                .first()
+                .map(|r| r.join(&seg.path))
+                .unwrap_or_else(|| seg.path.clone())
+        })
+    };
+
+    let classification = crate::l3_classify::is_component(db, workspace, candidate_dir);
+    (
+        classification.analyser_id.clone(),
+        classification.analyser_version.clone(),
+    )
 }
 
 /// Build the per-component `<component-path>/.atlas/surfaces.yaml`
@@ -235,13 +299,6 @@ pub fn surfaces_yaml_snapshot(
     file.fingerprint = compute_surfaces_fingerprint(&file);
     Ok(Arc::new(file))
 }
-
-/// Stable analyser version string recorded in per-component records
-/// produced before per-analyser identity is plumbed through L3
-/// (PR-7). The string is independent of `crate::version()` so a Cargo
-/// publish bump does not invalidate every PR-6 era per-component
-/// fingerprint.
-pub const L3_DRIVER_VERSION: &str = "1.0.0";
 
 /// Build the `external-components.yaml` projection by walking every
 /// manifest under the workspace root and lifting out external package

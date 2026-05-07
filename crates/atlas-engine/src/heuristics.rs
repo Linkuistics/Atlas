@@ -34,6 +34,16 @@ fn one_lang(lang: &str) -> BTreeSet<String> {
     set
 }
 
+/// Stable id used for the legacy non-Cargo deterministic rule table.
+/// These rules are not yet first-class analysers (PR-9+ will migrate
+/// them); the id makes the per-component projection's
+/// `analyser_id` field non-empty for components classified by this
+/// path.
+pub const LEGACY_ANALYSER_ID: &str = "legacy-deterministic-rules";
+
+/// Version paired with [`LEGACY_ANALYSER_ID`].
+pub const LEGACY_ANALYSER_VERSION: &str = "1.0.0";
+
 /// Contents of any manifest the classifier may want to inspect. The
 /// L3 query loads these before consulting the rule table so rule
 /// predicates work on pre-read strings rather than file handles.
@@ -117,6 +127,8 @@ fn rule_package_json_bin(
         evidence_fields: vec!["package.json:bin".into()],
         rationale: "package.json declares a `bin` field.".into(),
         is_boundary: true,
+        analyser_id: LEGACY_ANALYSER_ID.to_string(),
+        analyser_version: LEGACY_ANALYSER_VERSION.to_string(),
     })
 }
 
@@ -139,6 +151,8 @@ fn rule_package_json_library(
         evidence_fields: vec!["package.json:main|exports".into()],
         rationale: "package.json declares `main` or `exports` with no `bin`.".into(),
         is_boundary: true,
+        analyser_id: LEGACY_ANALYSER_ID.to_string(),
+        analyser_version: LEGACY_ANALYSER_VERSION.to_string(),
     })
 }
 
@@ -158,6 +172,8 @@ fn rule_pyproject_toml(
         evidence_fields: vec!["pyproject.toml".into()],
         rationale: "pyproject.toml present.".into(),
         is_boundary: true,
+        analyser_id: LEGACY_ANALYSER_ID.to_string(),
+        analyser_version: LEGACY_ANALYSER_VERSION.to_string(),
     })
 }
 
@@ -194,6 +210,8 @@ fn rule_bare_git_no_manifests(
         rationale: "Directory has a .git marker but no manifests and no README declaring purpose."
             .into(),
         is_boundary: false,
+        analyser_id: LEGACY_ANALYSER_ID.to_string(),
+        analyser_version: LEGACY_ANALYSER_VERSION.to_string(),
     })
 }
 

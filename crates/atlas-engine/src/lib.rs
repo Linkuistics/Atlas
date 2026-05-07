@@ -89,7 +89,7 @@ pub use l9_projections::{
     components_yaml_snapshot, components_yaml_snapshot_with_prompt_shas,
     external_components_yaml_snapshot, externals_from_manifests, known_component_ids,
     per_component_yaml_snapshot, related_components_yaml_snapshot, sha256_hex,
-    surfaces_yaml_snapshot, L3_DRIVER_VERSION, PROMPT_ID_STRINGS,
+    surfaces_yaml_snapshot, PROMPT_ID_STRINGS,
 };
 pub use l9_subsystems::{
     check_subsystem_id_members, check_subsystem_namespace, subsystems_yaml_snapshot,

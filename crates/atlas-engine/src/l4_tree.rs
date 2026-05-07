@@ -539,6 +539,12 @@ fn addition_to_classification(addition: &ComponentEntry) -> Classification {
         evidence_fields: addition.evidence_fields.clone(),
         rationale: addition.rationale.clone(),
         is_boundary: true,
+        // `overrides.additions` entries bypass the analyser registry
+        // entirely; the override sentinel records that provenance so
+        // the per-component projection can distinguish hand-authored
+        // entries from analyser verdicts.
+        analyser_id: crate::l3_classify::OVERRIDE_ANALYSER_ID.to_string(),
+        analyser_version: crate::l3_classify::OVERRIDE_ANALYSER_VERSION.to_string(),
     }
 }
 

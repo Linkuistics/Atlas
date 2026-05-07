@@ -49,7 +49,7 @@ use std::sync::Arc;
 use atlas_index::{CostClass, Stage};
 
 pub use cargo_classifier::CargoClassifier;
-pub use dispatcher::DispatchOutcome;
+pub use dispatcher::{DispatchOutcome, NONE_ANALYZER_ID, NONE_ANALYZER_VERSION};
 pub use dockerfile_classifier::DockerfileClassifier;
 pub use llm_classify::{LlmClassifyAnalyzer, LlmHook, LlmHookError};
 pub use registry::{AnalyzerRegistry, REGISTRY_HASH_NAMESPACE};

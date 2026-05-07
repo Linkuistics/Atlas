@@ -153,9 +153,21 @@ pub fn is_component(
             .unwrap_or_default()
             .as_bytes(),
     );
+    // The L3 stage cache fingerprint only gates the LLM-classify
+    // branch (the deterministic registry pass short-circuits before
+    // it). The (analyser_id, analyser_version) pair seeds the
+    // fingerprint with the LLM analyser's identity so a future LLM
+    // analyser bump invalidates entries cleanly. PR-4 deletes the
+    // legacy `l3-driver` placeholder; the analyser-registry-sha
+    // contribution below remains the canonical drift signal across
+    // the whole L3 dispatch.
     let l3_fingerprint = {
         let llm_fp = workspace.llm_fingerprint(dyn_db);
-        let mut fb = crate::FingerprintBuilder::new(Stage::L3, "l3-driver", "1.0.0");
+        let mut fb = crate::FingerprintBuilder::new(
+            Stage::L3,
+            atlas_analyzers::llm_classify::ANALYZER_ID,
+            atlas_analyzers::llm_classify::ANALYZER_VERSION,
+        );
         fb.add_analyzer_registry_sha(&registry.registry_sha());
         fb.add_llm_fingerprint(llm_fp.as_ref());
         fb.add_prompt_sha(&rendered_prompt_sha);
@@ -166,13 +178,14 @@ pub fn is_component(
     };
 
     let det_ctx = AnalysisContext::deterministic_only();
-    let det_outcome = registry.dispatch_with_filter(&det_ctx, &target, Stage::L3, |c| {
-        matches!(
-            c,
-            CostClass::DeterministicCheap | CostClass::DeterministicExpensive
-        )
-    });
-    if let Some(classification) = adapt_dispatch_outcome(det_outcome) {
+    let (det_outcome, det_id, det_version) =
+        registry.dispatch_with_filter(&det_ctx, &target, Stage::L3, |c| {
+            matches!(
+                c,
+                CostClass::DeterministicCheap | CostClass::DeterministicExpensive
+            )
+        });
+    if let Some(classification) = adapt_dispatch_outcome(det_outcome, det_id, det_version) {
         return Arc::new(classification);
     }
 
@@ -212,10 +225,11 @@ pub fn is_component(
         stage_fingerprint: l3_fingerprint.clone(),
     });
     let llm_ctx = AnalysisContext::with_llm(hook);
-    let llm_outcome = registry.dispatch_with_filter(&llm_ctx, &target, Stage::L3, |c| {
-        matches!(c, CostClass::LlmCheap | CostClass::LlmExpensive)
-    });
-    if let Some(classification) = adapt_dispatch_outcome(llm_outcome) {
+    let (llm_outcome, llm_id, llm_version) =
+        registry.dispatch_with_filter(&llm_ctx, &target, Stage::L3, |c| {
+            matches!(c, CostClass::LlmCheap | CostClass::LlmExpensive)
+        });
+    if let Some(classification) = adapt_dispatch_outcome(llm_outcome, llm_id, llm_version) {
         return Arc::new(classification);
     }
 
@@ -312,10 +326,17 @@ fn sha256_hex_bytes(bytes: &[u8]) -> String {
     hex
 }
 
-/// Translate a [`DispatchOutcome`] from the registry into a
-/// `Classification`. Returns `None` for `AllDeclined` so the caller
-/// can fall through to the next pass.
-fn adapt_dispatch_outcome(outcome: DispatchOutcome) -> Option<Classification> {
+/// Translate a `(DispatchOutcome, analyser_id, analyser_version)`
+/// triple from the registry into a `Classification`. Returns `None`
+/// for `AllDeclined` so the caller can fall through to the next pass.
+/// The `analyser_id` / `analyser_version` strings are stamped onto
+/// the resulting [`Classification`] so the per-component projection
+/// downstream can record which analyser produced the verdict.
+fn adapt_dispatch_outcome(
+    outcome: DispatchOutcome,
+    analyser_id: &str,
+    analyser_version: &str,
+) -> Option<Classification> {
     match outcome {
         DispatchOutcome::AllDeclined { errors } => {
             for err in errors {
@@ -323,8 +344,16 @@ fn adapt_dispatch_outcome(outcome: DispatchOutcome) -> Option<Classification> {
             }
             None
         }
-        DispatchOutcome::Confident { output, .. } => Some(classification_from_output(output)),
-        DispatchOutcome::Graded { output, .. } => Some(classification_from_output(output)),
+        DispatchOutcome::Confident { output, .. } => Some(classification_from_output(
+            output,
+            analyser_id,
+            analyser_version,
+        )),
+        DispatchOutcome::Graded { output, .. } => Some(classification_from_output(
+            output,
+            analyser_id,
+            analyser_version,
+        )),
     }
 }
 
@@ -332,31 +361,43 @@ fn adapt_dispatch_outcome(outcome: DispatchOutcome) -> Option<Classification> {
 /// output types this PR knows about, then translate to
 /// [`Classification`]. Returns the weak-unknown classification on a
 /// downcast miss (which would indicate an analyser registered with
-/// an unexpected output type — a Phase 2 plugin).
-fn classification_from_output(output: Box<dyn atlas_analyzers::StageOutput>) -> Classification {
+/// an unexpected output type — a Phase 2 plugin). The `analyser_id`
+/// / `analyser_version` strings flow into every produced
+/// classification so the per-component YAML records who classified
+/// the component.
+fn classification_from_output(
+    output: Box<dyn atlas_analyzers::StageOutput>,
+    analyser_id: &str,
+    analyser_version: &str,
+) -> Classification {
     if let Some(cargo) = (*output)
         .as_any()
         .downcast_ref::<CargoClassificationOutput>()
     {
-        return cargo_to_classification(cargo);
+        return cargo_to_classification(cargo, analyser_id, analyser_version);
     }
     if let Some(docker) = (*output)
         .as_any()
         .downcast_ref::<DockerfileClassificationOutput>()
     {
-        return docker_to_classification(docker);
+        return docker_to_classification(docker, analyser_id, analyser_version);
     }
     if let Some(llm) = (*output).as_any().downcast_ref::<LlmClassifyOutput>() {
-        return parse_llm_response(llm.response.clone()).unwrap_or_else(|reason| {
-            unknown_classification(format!("LLM response parse failed: {reason}"))
-        });
+        return parse_llm_response(llm.response.clone(), analyser_id, analyser_version)
+            .unwrap_or_else(|reason| {
+                unknown_classification(format!("LLM response parse failed: {reason}"))
+            });
     }
     unknown_classification(
         "analyser produced an output type the L3 adapter does not recognise".into(),
     )
 }
 
-fn cargo_to_classification(out: &CargoClassificationOutput) -> Classification {
+fn cargo_to_classification(
+    out: &CargoClassificationOutput,
+    analyser_id: &str,
+    analyser_version: &str,
+) -> Classification {
     let kind = ComponentKind::parse(&out.kind).unwrap_or(ComponentKind::NonComponent);
     let lifecycle_roles = out
         .lifecycle_roles
@@ -375,10 +416,16 @@ fn cargo_to_classification(out: &CargoClassificationOutput) -> Classification {
         evidence_fields: out.evidence_fields.clone(),
         rationale: out.rationale.clone(),
         is_boundary: out.is_boundary,
+        analyser_id: analyser_id.to_string(),
+        analyser_version: analyser_version.to_string(),
     }
 }
 
-fn docker_to_classification(out: &DockerfileClassificationOutput) -> Classification {
+fn docker_to_classification(
+    out: &DockerfileClassificationOutput,
+    analyser_id: &str,
+    analyser_version: &str,
+) -> Classification {
     let kind = ComponentKind::parse(&out.kind).unwrap_or(ComponentKind::NonComponent);
     let lifecycle_roles = out
         .lifecycle_roles
@@ -395,6 +442,8 @@ fn docker_to_classification(out: &DockerfileClassificationOutput) -> Classificat
         evidence_fields: out.evidence_fields.clone(),
         rationale: out.rationale.clone(),
         is_boundary: out.is_boundary,
+        analyser_id: analyser_id.to_string(),
+        analyser_version: analyser_version.to_string(),
     }
 }
 
@@ -599,6 +648,11 @@ fn pins_to_classification(pins: &BTreeMap<String, PinValue>) -> Classification {
         evidence_fields: pins.keys().map(|k| format!("pin:{k}")).collect(),
         rationale: "human pin".to_string(),
         is_boundary: !matches!(pins.get("suppress"), Some(PinValue::Suppress { .. })),
+        // Hand-authored pins bypass the analyser registry, so the
+        // sentinel `"override"` records the provenance without
+        // pretending an analyser was consulted.
+        analyser_id: OVERRIDE_ANALYSER_ID.to_string(),
+        analyser_version: OVERRIDE_ANALYSER_VERSION.to_string(),
     }
 }
 
@@ -718,7 +772,11 @@ pub(crate) fn build_llm_inputs_for_tests() -> Value {
     )
 }
 
-fn parse_llm_response(value: Value) -> Result<Classification, String> {
+fn parse_llm_response(
+    value: Value,
+    analyser_id: &str,
+    analyser_version: &str,
+) -> Result<Classification, String> {
     // Accept a Classification shape plus a handful of minor
     // deviations the LLM may introduce (missing optional fields,
     // integer-typed levels, etc.).
@@ -800,8 +858,20 @@ fn parse_llm_response(value: Value) -> Result<Classification, String> {
         evidence_fields,
         rationale,
         is_boundary,
+        analyser_id: analyser_id.to_string(),
+        analyser_version: analyser_version.to_string(),
     })
 }
+
+/// Sentinel id used when a hand-authored override (a pin or an
+/// `overrides.additions` entry) supplies the classification rather
+/// than an analyser. Distinct from
+/// [`atlas_analyzers::NONE_ANALYZER_ID`] so the per-component YAML
+/// can distinguish "user-authored" from "no analyser ran".
+pub const OVERRIDE_ANALYSER_ID: &str = "override";
+
+/// Sentinel version paired with [`OVERRIDE_ANALYSER_ID`].
+pub const OVERRIDE_ANALYSER_VERSION: &str = "0.0.0";
 
 /// Weakest possible "unknown" verdict — non-component, weak evidence,
 /// `is_boundary: false`. Used as the L3 fallback when the LLM call or
@@ -818,6 +888,12 @@ pub(crate) fn unknown_classification(reason: String) -> Classification {
         evidence_fields: Vec::new(),
         rationale: reason,
         is_boundary: false,
+        // The unknown verdict is the "no analyser produced a
+        // verdict" fall-through; the dispatcher's
+        // [`atlas_analyzers::NONE_ANALYZER_ID`] sentinel is the
+        // matching identity for that path.
+        analyser_id: atlas_analyzers::NONE_ANALYZER_ID.to_string(),
+        analyser_version: atlas_analyzers::NONE_ANALYZER_VERSION.to_string(),
     }
 }
 
@@ -968,9 +1044,11 @@ mod tests {
             "rationale": "some reason",
             "is_boundary": true,
         });
-        let got = parse_llm_response(value).unwrap();
+        let got = parse_llm_response(value, "llm-classify-fallback", "1.0.0").unwrap();
         assert_eq!(got.kind, ComponentKind::RustLibrary);
         assert!(got.is_boundary);
+        assert_eq!(got.analyser_id, "llm-classify-fallback");
+        assert_eq!(got.analyser_version, "1.0.0");
     }
 
     #[test]
@@ -979,7 +1057,7 @@ mod tests {
             "kind": "nonsense",
             "rationale": "x",
         });
-        assert!(parse_llm_response(value).is_err());
+        assert!(parse_llm_response(value, "llm-classify-fallback", "1.0.0").is_err());
     }
 
     #[test]
@@ -1030,11 +1108,19 @@ mod tests {
             "kind": "rust-library",
             "rationale": "r",
         });
-        assert!(parse_llm_response(lib_value).unwrap().is_boundary);
+        assert!(
+            parse_llm_response(lib_value, "llm-classify-fallback", "1.0.0")
+                .unwrap()
+                .is_boundary
+        );
         let nc_value = serde_json::json!({
             "kind": "non-component",
             "rationale": "r",
         });
-        assert!(!parse_llm_response(nc_value).unwrap().is_boundary);
+        assert!(
+            !parse_llm_response(nc_value, "llm-classify-fallback", "1.0.0")
+                .unwrap()
+                .is_boundary
+        );
     }
 }

@@ -197,6 +197,90 @@ fn every_component_has_a_per_component_atlas_file_matching_the_top_level_project
 }
 
 #[test]
+fn cargo_classified_component_records_cargo_analyser_identity() {
+    // PR-4 acceptance: a Cargo crate's
+    // `<component>/.atlas/component.yaml` carries
+    // `analyser_id: cargo-toml-classifier`, not the legacy
+    // `l3-driver` placeholder. The dispatcher's per-analyser identity
+    // plumbing must thread through to the projection.
+    let tmp = TempDir::new().unwrap();
+    write_lib(tmp.path(), "cargo-lib");
+
+    let mut config = IndexConfig::new(tmp.path().to_path_buf());
+    config.respect_gitignore = false;
+    config.fingerprint_override = Some(fingerprint());
+    let backend = LenientBackend::new();
+
+    let summary = run_index(
+        &config,
+        backend,
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .expect("run_index succeeds");
+    assert!(summary.outputs_written);
+
+    let per_component_path = tmp
+        .path()
+        .join("cargo-lib")
+        .join(".atlas")
+        .join("component.yaml");
+    let bytes = std::fs::read(&per_component_path).expect("per-component file written");
+    let parsed: PerComponentFile = serde_yaml::from_slice(&bytes).unwrap();
+    assert_eq!(
+        parsed.analyser_id, "cargo-toml-classifier",
+        "cargo crate must record cargo-toml-classifier as its analyser_id"
+    );
+    assert_eq!(
+        parsed.analyser_version, "1.0.0",
+        "cargo classifier version pins to 1.0.0 in the built-in registry"
+    );
+    assert_ne!(
+        parsed.analyser_id, "l3-driver",
+        "PR-4 deletes the l3-driver placeholder; per-component files must not still record it"
+    );
+}
+
+#[test]
+fn dockerfile_classified_component_records_dockerfile_analyser_identity() {
+    // PR-4 acceptance: a Dockerfile-classified component records
+    // `analyser_id: dockerfile-l3` — covering the second built-in
+    // L3 deterministic analyser path.
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("docker-svc");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Dockerfile"),
+        "FROM rust:1.84-alpine\nWORKDIR /app\nCOPY . .\nCMD [\"/app/run\"]\n",
+    )
+    .unwrap();
+
+    let mut config = IndexConfig::new(tmp.path().to_path_buf());
+    config.respect_gitignore = false;
+    config.fingerprint_override = Some(fingerprint());
+    let backend = LenientBackend::new();
+
+    let summary = run_index(
+        &config,
+        backend,
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .expect("run_index succeeds");
+    assert!(summary.outputs_written);
+
+    let per_component_path = dir.join(".atlas").join("component.yaml");
+    let bytes = std::fs::read(&per_component_path).expect("per-component file written");
+    let parsed: PerComponentFile = serde_yaml::from_slice(&bytes).unwrap();
+    assert_eq!(
+        parsed.analyser_id, "dockerfile-l3",
+        "Dockerfile component must record dockerfile-l3 as its analyser_id, got `{}`",
+        parsed.analyser_id
+    );
+    assert_eq!(parsed.analyser_version, "1.0.0");
+}
+
+#[test]
 fn dry_run_skips_per_component_writes() {
     let tmp = TempDir::new().unwrap();
     write_lib(tmp.path(), "dry-lib");
