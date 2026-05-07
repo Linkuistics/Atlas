@@ -558,12 +558,18 @@ pub fn run_index(
         save_related_components_atomic(&prior_related_path, &related_file)
             .map_err(IndexError::Other)?;
 
+        save_subsystems_atomic(&subsystems_path, &subsystems_file).map_err(IndexError::Other)?;
+
         // PR-8: validate that every contract participant in the
         // emitted `related-components.yaml` resolves to a contract
-        // defined in some live component's `surfaces.yaml`. The
-        // file is written first (so the user has it for inspection
-        // when diagnosing the failure). `outputs_written` is `true`
-        // for this error path — the write already landed.
+        // defined in some live component's `surfaces.yaml`. Runs after
+        // every top-level YAML is committed (components, externals,
+        // related-components, subsystems), so the user has the full
+        // canonical set on disk for inspection when diagnosing the
+        // failure. Per-component projections (next step) are skipped on
+        // failure since the canonical files already carry the diagnostic
+        // info. `outputs_written` is `true` for this error path — the
+        // writes already landed.
         {
             let live_ids: Vec<component_ontology::ComponentId> = all_components(&db)
                 .iter()
@@ -608,8 +614,6 @@ pub fn run_index(
                 )));
             }
         }
-
-        save_subsystems_atomic(&subsystems_path, &subsystems_file).map_err(IndexError::Other)?;
 
         // PR-6: walk every component and write its per-component
         // `<component-path>/.atlas/component.yaml` projection. The
