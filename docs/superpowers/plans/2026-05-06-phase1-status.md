@@ -5,7 +5,7 @@ This file tracks per-PR completion state across sessions. The session
 prompt at `docs/superpowers/plans/2026-05-06-phase1-session-prompt.md`
 reads this file to find the next PR to dispatch.
 
-**Last updated:** 2026-05-07 (PR-5 + PR-6 + PR-10 landed).
+**Last updated:** 2026-05-07 (PR-5 + PR-6 + PR-7 + PR-10 landed).
 
 ## PR status
 
@@ -20,7 +20,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-4  — Path-dep root expansion to fixed point
 - [x] PR-5  — Plugin protocol + three reference analysers
 - [x] PR-6  — Scattered per-component `.atlas/` writers
-- [ ] PR-7  — `surfaces.yaml` emission (Rust binding shape)
+- [x] PR-7  — `surfaces.yaml` emission (Rust binding shape)
 - [ ] PR-8  — Contract participants in `related-components.yaml`
 - [ ] PR-9  — Composition edges from Dockerfiles
 - [x] PR-10 — Wire persistent cache into L3 / L5 / L6
@@ -538,7 +538,129 @@ Carry-over for downstream PRs:
   path because they live inside the universally-excluded `.atlas/`.
 
 ### PR-7
-(none yet)
+2026-05-07 — Landed on Atlas main as `6705e1c`.
+
+**New public API (atlas-engine):**
+- `surfaces_yaml_snapshot(db, &ComponentId) -> anyhow::Result<Arc<SurfacesFile>>`
+  — projects onto PR-1's `SurfacesFile` schema. Aggregate
+  `SurfacesFile.fingerprint` is computed via the schema-derived
+  canonicaliser (spec §2.2) over the file with `fingerprint=""` zeroed.
+  Errors when the component id does not resolve. Re-exported from
+  `lib.rs`.
+- `surface_artefacts_of(db, ComponentId) -> Arc<SurfaceArtefacts>` —
+  outer wrapper around `SurfaceRecord` (kept unchanged) carrying the
+  three new top-level fields `contracts`, `bindings`, `library_apis`.
+  Reads `src/lib.rs` and `src/main.rs` per path-segment and runs the
+  deterministic `extract_rust_surface` extractor. The original
+  `surface_of` and `SurfaceRecord` shapes are untouched, so PR-10's
+  Salsa-tracked L5 caching still works without re-keying.
+- New module `crates/atlas-engine/src/contract_canonicalisation.rs`:
+  - `code_derived_content_sha(bytes, span) -> String` (spec §2.1).
+  - `canonicalise_yaml(input) -> Result<String>` (spec §2.2).
+  - `schema_derived_content_sha(yaml) -> Result<String>` — `sha256(canonicalise_yaml(yaml))`.
+  - `compute_surfaces_fingerprint(&SurfacesFile) -> String` —
+    PR-11's single-call-site for the surfaces fingerprint algorithm.
+
+**New public API (atlas-analyzers):**
+- `RustSurfaceAnalyzer` (registered by `AnalyzerRegistry::builtin()`;
+  the registry now ships four reference analysers).
+- `RustSurfaceOutput { contracts, bindings, library_apis }` — opted
+  into `StageOutput` via `impl_stage_output!` (no blanket impl, per
+  PR-5 status note).
+- `extract_rust_surface(component_id, lib_rs_bytes, main_rs_bytes,
+  lib_rs_relpath, main_rs_relpath) -> RustSurfaceOutput` — the L5
+  driver calls this directly per the brief's option (b); the analyser's
+  `Analyzer::analyse` returns `Declines` and is reserved for a future
+  Phase 2 dispatcher path.
+- `ANALYZER_ID = "rust-surface-analyzer"`, `ANALYZER_VERSION = "1.0.0"`.
+
+**Per-component fingerprint placeholder swap (paid off PR-6 hand-off):**
+- `per_component_yaml_snapshot.fingerprint` now equals
+  `surfaces_yaml_snapshot(...).fingerprint`. PR-6's
+  sha256(serde_yaml::to_string(&entry)) placeholder is replaced.
+  Other components' L6 cache keys cite this value (design §6.2);
+  PR-11 makes the participant-surface contribution load-bearing.
+
+**Pipeline integration (`pipeline.rs`):**
+- New `write_yaml_atomic<T: Serialize>(target_dir, target_file, file)`
+  helper used by both PR-6's `component.yaml` writer and PR-7's
+  `surfaces.yaml` writer. Atomic write (tempfile-then-rename); failure
+  is non-fatal warning on stderr matching PR-4 / PR-6 policy.
+- The `write_per_component_files` walk now emits both files in the same
+  pass. `--dry-run` skips both.
+
+**Span convention (spec §2.1):**
+- Block items (`pub struct/enum/mod/union/trait/fn { … }`): span starts
+  at the first byte of `pub`, ends at the byte immediately after the
+  matching `}`.
+- Statement items (`pub type X = Y;`, `pub const X: T = …;`,
+  `pub static X: T = …;`): span ends at the byte immediately after the
+  terminating `;`.
+- The scanner is a deliberate stateful byte-by-byte walker handling
+  string literals, char literals, line/block comments, raw-string
+  prefixes, and brace nesting so quoted braces inside strings don't
+  derail it. Documented as `nested_pub_inside_pub_mod_is_phase1_known_limitation`
+  — Phase 2's rust-analyzer wire-up is the canonical fix.
+
+**Hand-off for PR-8 / PR-11 reviewers:**
+- `contracts_consumed` is emitted as always-empty in PR-7. PR-8 (LLM
+  Stage 2) populates it from cross-component code references. The
+  schema shape is complete; PR-8 only adds entries.
+- `compute_surfaces_fingerprint` is the single citation point for
+  PR-11. The function is documented as such on its docstring.
+- The two `TODO(PR-11)` markers in `l6_edges.rs` are untouched.
+- Library-api validation (`LibraryApi::validate()` per PR-1 status
+  note) runs inside `surfaces_yaml_snapshot` before the fingerprint
+  is computed; an invalid library-api fails the snapshot rather than
+  emitting a corrupt file.
+
+**Deviations from the brief (reviewers please note):**
+- `SurfaceRecord` was NOT extended in place; instead a new outer
+  `SurfaceArtefacts` carries the three new fields alongside the
+  unchanged `SurfaceRecord`. Plan §4 PR-7 said "extend `SurfaceRecord`",
+  but the wrapper preserves the existing Salsa cache key and the
+  separation of LLM-derived (Stage 1: `purpose`, `consumes_files`) vs
+  deterministic (binding extraction) concerns. Functionally identical
+  for downstream consumers — `SurfacesFile` is what they read.
+- The `RustSurfaceAnalyzer::analyse` method returns `Declines`. The
+  L5 driver calls `extract_rust_surface` directly (option (b) in the
+  brief), so the dispatcher path is reserved for future Phase 2 use.
+  Calling `analyse` through `AnalyzerRegistry::dispatch` today is a
+  no-op — the analyser is registered for `analyzer_registry_sha`
+  contribution, not for runtime dispatch.
+
+**Debt deferred (DONE_WITH_CONCERNS):**
+- Per-analyser `analyser_id` / `analyser_version` plumbing through L3
+  dispatch — the `PerComponentFile.analyser_id="l3-driver"` /
+  `analyser_version=L3_DRIVER_VERSION` placeholders from PR-6 are
+  preserved. Threading per-analyser identity (`cargo-toml-classifier`,
+  `dockerfile-l3`, `llm-classify-l3`) requires either tagging
+  `DispatchOutcome` in the analyser crate (public-API change) or a
+  per-cost-class shim in the engine. Both larger than PR-7's scope;
+  unaffected downstream because PR-11 keys on
+  `surfaces.yaml.fingerprint`, not on the per-component-file's analyser
+  identity. Documented on `per_component_yaml_snapshot`'s docstring.
+
+**Files created:**
+- `crates/atlas-analyzers/src/rust_surface_analyzer.rs` (1266 lines incl. 23 tests).
+- `crates/atlas-engine/src/contract_canonicalisation.rs` (380 lines incl. 12 tests).
+- `crates/atlas-cli/tests/surfaces_emission_rust.rs` (434 lines, 6 tests).
+
+**Files modified (Atlas):**
+- `crates/atlas-analyzers/src/lib.rs` — `RustSurfaceAnalyzer`/
+  `RustSurfaceOutput` re-exports + `extract_rust_surface` re-export.
+- `crates/atlas-analyzers/src/registry.rs` — `builtin()` registers the
+  fourth analyser; tests updated.
+- `crates/atlas-engine/src/l5_surface.rs` — new `SurfaceArtefacts` +
+  `surface_artefacts_of`; existing `surface_of` / `SurfaceRecord` left
+  untouched.
+- `crates/atlas-engine/src/l9_projections.rs` — new
+  `surfaces_yaml_snapshot`; `per_component_yaml_snapshot` swapped to
+  consume the surfaces fingerprint.
+- `crates/atlas-engine/src/lib.rs` — re-exports for the new public API
+  + `contract_canonicalisation` module.
+- `crates/atlas-cli/src/pipeline.rs` — `write_yaml_atomic` helper +
+  surfaces.yaml emission inside `write_per_component_files`.
 
 ### PR-8
 (none yet)
