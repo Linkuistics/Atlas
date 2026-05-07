@@ -5,7 +5,7 @@ This file tracks per-PR completion state across sessions. The session
 prompt at `docs/superpowers/plans/2026-05-06-phase1-session-prompt.md`
 reads this file to find the next PR to dispatch.
 
-**Last updated:** 2026-05-07 (PR-5 + PR-6 + PR-7 + PR-8 + PR-9 + PR-10 + PR-11 landed; PR-12 is the only remaining PR).
+**Last updated:** 2026-05-07 (PR-12 landed; **Phase 1 complete**).
 
 ## PR status
 
@@ -25,7 +25,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-9  — Composition edges from Dockerfiles
 - [x] PR-10 — Wire persistent cache into L3 / L5 / L6
 - [x] PR-11 — L6 cache key includes participant surface shas
-- [ ] PR-12 — Acceptance: atlas-contracts visible in Ravel-Lite
+- [x] PR-12 — Acceptance: atlas-contracts visible in Ravel-Lite
 
 When every box is `[x]`, Phase 1 is complete and the session prompt
 should report success and stop.
@@ -1172,4 +1172,101 @@ breadth):**
   3 tests).
 
 ### PR-12
-(none yet)
+2026-05-07 — Landed on Atlas main as `57075e44`. atlas-contracts not
+modified (most recent there remains `525ccef` from PR-8).
+
+**Files created:**
+- `crates/atlas-cli/tests/atlas_contracts_in_ravel_lite.rs` (574 lines,
+  2 tests):
+  - `fixture_produces_expected_components_edges_and_surfaces` covers
+    AC #1 (`components.yaml` lists components from both roots),
+    AC #2 (`related-components.yaml` carries the `consumes-contract`
+    edge from `consumer-crate` to `atlas-contracts/foo`), and AC #3
+    (the atlas-contracts component's `surfaces.yaml` lists the same id
+    in `contracts_defined`).
+  - `cache_hit_on_no_op_rerun_and_invalidates_on_defining_binding_edit`
+    covers AC #4 (no-op re-run with a fresh backend → 0 LLM calls
+    across all four PromptIds) and AC #5 (post-edit run: Stage2Edges
+    ≥ 1, atlas-contracts L5 misses, consumer L5 = 0 calls,
+    Classify = 0 for both, total < cold-run total).
+
+**Production fixes folded into PR-12 (multi-root cross-tree path):**
+PR-12's end-to-end exercise surfaced two latent bugs in the cross-tree
+multi-root path that prior tests' single-root fixtures and PR-11's
+fingerprint-only assertions had not caught. Both are minimal patches
+intrinsically tied to the path PR-12 exercises; the orchestrator
+accepted the scope deviation rather than splitting them out.
+
+- `crates/atlas-engine/src/l5_surface.rs::surface_artefacts_of` —
+  `best_root_for(roots, &segment.path)` only matches absolute prefixes
+  but `path_segments[*].path` is *relative* to the owning root. The
+  prior `unwrap_or_else(|| roots.first())` always selected the primary
+  root, so peer-root components' Rust source bytes were read from
+  `<primary>/<segment>/src/lib.rs` (which doesn't exist), leaving
+  `contracts_defined` silently empty. Fix probes each root in turn for
+  `<root>/<segment>/src/{lib,main}.rs` and accepts the first that
+  resolves, breaking on first hit per filename. Single-root behaviour
+  is unchanged because `best_root_for` still returns `Some(...)` for
+  absolute segments and the candidate-roots vec collapses to one.
+- `crates/atlas-cli/src/pipeline.rs::write_per_component_files` —
+  for peer-root components whose `segment.path == ""`, both
+  `roots[0].join("")` and `roots[1].join("")` exist trivially (each
+  is the root itself), so the prior "first existing" pick always
+  routed `surfaces.yaml` to the primary root's `.atlas/`. Fix
+  disambiguates via manifest existence: only accept a root if the
+  entry has zero manifests OR at least one manifest exists under that
+  root. The fallback to `roots[0]` still triggers if no root passes
+  the manifest check, which is defensive-only — every live component
+  has manifests today; flagged below.
+
+**Backend mock shape:**
+- `PR12Backend` carries per-PromptId counters + a call-log (the
+  `inputs_canonical` JSON string) and exposes `count(PromptId)`,
+  `total()`, and `surface_calls_for(component_id)`. The last is a
+  *substring* match on `"COMPONENT_ID":"<id>"` against the canonical
+  JSON inputs — sound today but brittle if Stage 1's input
+  canonicaliser ever changes key ordering / whitespace; a future PR
+  can swap it for a `serde_json::from_str` lookup.
+
+**L8 phantom subcomponents (observation only — not addressed):**
+- The L8 fixedpoint was observed producing phantom subcomponents
+  (e.g. `atlas-contracts/consumer-crate`) when the peer root and
+  primary share parent-directory layout. The PR-12 tests assert on
+  specific ids and tolerate extras, so it doesn't fail the
+  acceptance, but the subcarve enumeration cleanliness is worth
+  follow-up. Pre-exists PR-12; flagged here for the next session.
+
+**Manual verification:** Deferred. The committed hermetic test is the
+load-bearing acceptance per §5 ("this *is* the smoke test"). Running
+against `~/Development/Ravel-Lite` and `~/Development/atlas-contracts`
+was not done because the binary requires `--budget`/`--no-budget` for
+live runs and Ravel-Lite has not yet been ported to the vNext shape.
+A future session can do the manual verification once Ravel-Lite is
+on vNext; record the result in this note and in the PR description.
+
+**Polish items deferred (code-quality reviewer minor items):**
+- `l5_surface.rs:253-262` — the `vec![PathBuf::new()]` sentinel for
+  the absolute-segment branch is cryptic; lifting it to an early
+  return would clarify the loop.
+- `atlas_contracts_in_ravel_lite.rs:108-120` — `surface_calls_for`
+  uses substring matching on canonical JSON; a `serde_json::from_str`
+  lookup is more robust.
+- `pipeline.rs:776-812` — the `roots[0]` fallback when no manifest
+  resolves should `eprintln!` a warning (defensive-only today).
+- All other reviewer items were observational, not actionable.
+
+**Files modified (Atlas):**
+- `crates/atlas-engine/src/l5_surface.rs` —
+  `surface_artefacts_of` candidate-roots loop.
+- `crates/atlas-cli/src/pipeline.rs` —
+  `write_per_component_files` `pick_root` closure.
+
+## Phase 1 — complete
+
+Every PR in the §4 sequence has landed and every acceptance criterion
+in §5 is green. The §3 v1 starting-points have been extended/refactored
+into the new shape; the v1 `llm-cache.json` and `cache_io.rs` are
+deleted (greenfield treatment per §7). The acceptance smoke test
+(PR-12) passes from a clean checkout in CI. Phase 2 work picks up from
+this base — the `out of scope for Phase 1` list in §7 is the canonical
+backlog.
