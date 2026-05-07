@@ -32,8 +32,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::manifest_parse::{
-    extract_csproj_path_deps, extract_mix_exs_path_deps, extract_path_deps,
-    extract_pubspec_path_deps, extract_pyproject_path_deps,
+    extract_csproj_path_deps, extract_info_rkt_path_deps, extract_mix_exs_path_deps,
+    extract_path_deps, extract_pubspec_path_deps, extract_pyproject_path_deps,
 };
 
 /// Expand `primary` into the full set of roots reachable via Cargo
@@ -113,6 +113,8 @@ pub fn expand_roots_with_warnings(
                 extract_pubspec_path_deps(&contents)
             } else if basename == "mix.exs" {
                 extract_mix_exs_path_deps(&contents)
+            } else if basename == "info.rkt" {
+                extract_info_rkt_path_deps(&contents)
             } else if basename.ends_with(".csproj") {
                 extract_csproj_path_deps(&contents)
             } else {
@@ -246,6 +248,9 @@ fn enclosing_manifest_root(start: &Path) -> PathBuf {
     // Phase 2 PR-8: an Elixir path-dep target may resolve to a directory
     // containing a `mix.exs`. Treat it the same as a pyproject root.
     let mut elixir_root: Option<PathBuf> = None;
+    // Phase 2 PR-9: a Racket path-dep target may resolve to a directory
+    // containing an `info.rkt`. Treat it the same as a pyproject root.
+    let mut racket_root: Option<PathBuf> = None;
 
     loop {
         let manifest = cursor.join("Cargo.toml");
@@ -289,6 +294,10 @@ fn enclosing_manifest_root(start: &Path) -> PathBuf {
         if mix_exs.is_file() && elixir_root.is_none() {
             elixir_root = Some(cursor.clone());
         }
+        let info_rkt = cursor.join("info.rkt");
+        if info_rkt.is_file() && racket_root.is_none() {
+            racket_root = Some(cursor.clone());
+        }
         match cursor.parent() {
             Some(parent) if parent != cursor => cursor = parent.to_path_buf(),
             _ => break,
@@ -301,6 +310,7 @@ fn enclosing_manifest_root(start: &Path) -> PathBuf {
         .or(csharp_root)
         .or(dart_root)
         .or(elixir_root)
+        .or(racket_root)
         .unwrap_or_else(|| start.to_path_buf())
 }
 
@@ -319,8 +329,9 @@ fn is_inside_any(path: &Path, roots: &[PathBuf]) -> bool {
 /// Phase 2 PR-3 broadened this to include `pyproject.toml` alongside
 /// `Cargo.toml` so Python path-deps participate in the cross-tree
 /// fixed-point walk. Phase 2 PR-7 adds `pubspec.yaml` for Dart;
-/// Phase 2 PR-8 adds `mix.exs` for Elixir. Future PRs may extend
-/// with `package.json` (npm `file:` deps), etc.
+/// Phase 2 PR-8 adds `mix.exs` for Elixir; Phase 2 PR-9 adds
+/// `info.rkt` for Racket. Future PRs may extend with `package.json`
+/// (npm `file:` deps), etc.
 ///
 /// This is a fresh filesystem walk rather than a Salsa-tracked query
 /// because [`expand_roots`] runs once before the database is seeded —
@@ -369,7 +380,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
             if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
                 if matches!(
                     name,
-                    "Cargo.toml" | "pyproject.toml" | "pubspec.yaml" | "mix.exs"
+                    "Cargo.toml" | "pyproject.toml" | "pubspec.yaml" | "mix.exs" | "info.rkt"
                 ) || name.ends_with(".csproj")
                 {
                     out.push(path);

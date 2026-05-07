@@ -115,6 +115,9 @@ pub fn decide_kind_only(kind: ComponentKind) -> Option<PolicyDecision> {
         | ComponentKind::PythonLibrary
         | ComponentKind::PythonPackage
         | ComponentKind::ElixirProject
+        // Racket packages may contain sub-modules; treat them as
+        // library-shaped (depth cap from modularity_hint) for now.
+        | ComponentKind::RacketPackage
         | ComponentKind::DartLibrary
         | ComponentKind::DartPackage
         | ComponentKind::DotnetLibrary

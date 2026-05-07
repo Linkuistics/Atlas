@@ -20,6 +20,9 @@ const EXACT_MANIFEST_BASENAMES: &[&str] = &[
     // `Target.manifests`. The root-expansion walker also reads it
     // for path-dep discovery (see `root_expansion.rs`).
     "pubspec.yaml",
+    // info.rkt is Racket's package manifest; the `racket-classifier`
+    // and `racket-surface-analyzer` key on its presence (Phase 2 PR-9).
+    "info.rkt",
     "go.mod",
     "setup.py",
     "Gemfile",

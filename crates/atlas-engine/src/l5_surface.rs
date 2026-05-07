@@ -21,10 +21,11 @@ use std::sync::Arc;
 
 use atlas_analyzers::{
     cached_csharp_subprocess_proxy, cached_dart_subprocess_proxy, cached_elixir_subprocess_proxy,
-    cached_subprocess_proxy, csharp_subprocess_spec, dart_subprocess_spec, elixir_subprocess_spec,
-    extract_rust_surface, extract_ts_js_surface, locate_csharp_analyzer_binary,
-    locate_dart_analyzer_binary, locate_elixir_analyzer_binary, locate_python_analyzer_binary,
-    python_subprocess_spec, Analyzer, AnalyzerResult, RustSourceInputs, SubprocessOutput,
+    cached_racket_subprocess_proxy, cached_subprocess_proxy, csharp_subprocess_spec,
+    dart_subprocess_spec, elixir_subprocess_spec, extract_rust_surface, extract_ts_js_surface,
+    locate_csharp_analyzer_binary, locate_dart_analyzer_binary, locate_elixir_analyzer_binary,
+    locate_python_analyzer_binary, locate_racket_analyzer_binary, python_subprocess_spec,
+    racket_subprocess_spec, Analyzer, AnalyzerResult, RustSourceInputs, SubprocessOutput,
     TsJsSourceInputs,
 };
 use atlas_index::{Binding, ComponentEntry, Contract, LibraryApi, OverridesFile, PinValue, Stage};
@@ -161,6 +162,13 @@ pub fn surface_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceRecord> {
     } else {
         None
     };
+    // Phase 2 PR-9: Racket components contribute the racket-analyzer
+    // binary's content sha to the L5 fingerprint via tag 0x06.
+    let racket_binary_sha = if entry_is_racket(entry) {
+        locate_racket_analyzer_binary().and_then(|p| atlas_analyzers::hash_binary(&p).ok())
+    } else {
+        None
+    };
     let l5_fingerprint = {
         let mut fb = crate::FingerprintBuilder::new(Stage::L5, "l5-driver", L5_DRIVER_VERSION);
         fb.add_analyzer_registry_sha(&registry_sha);
@@ -179,6 +187,9 @@ pub fn surface_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceRecord> {
             fb.add_analyzer_binary_sha(sha);
         }
         if let Some(sha) = &elixir_binary_sha {
+            fb.add_analyzer_binary_sha(sha);
+        }
+        if let Some(sha) = &racket_binary_sha {
             fb.add_analyzer_binary_sha(sha);
         }
         fb.finalise()
@@ -340,6 +351,24 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
     //     component.
     if entry_is_elixir(entry) {
         if let Some(artefacts) = elixir_surface_artefacts(db, entry, &roots, &record) {
+            return artefacts;
+        }
+        return Arc::new(SurfaceArtefacts {
+            record,
+            ..Default::default()
+        });
+    }
+
+    // 3a-racket. Racket branch — Phase 2 PR-9's subprocess analyser.
+    //     A component is handled here when it carries `racket` in its
+    //     language set or its kind is `racket-package`. The L5 driver
+    //     constructs a [`SubprocessAnalyzerProxy`] on demand against the
+    //     `racket-analyzer` binary located via
+    //     [`locate_racket_analyzer_binary`] and invokes the proxy
+    //     directly. If the binary cannot be located, the artefact set is
+    //     empty — same posture as the Python branch.
+    if entry_is_racket(entry) {
+        if let Some(artefacts) = racket_surface_artefacts(db, entry, &roots, &record) {
             return artefacts;
         }
         return Arc::new(SurfaceArtefacts {
@@ -518,6 +547,12 @@ fn entry_is_python(entry: &ComponentEntry) -> bool {
         || entry.kind == "python-package"
 }
 
+/// True when the component looks like a Racket component to the L5
+/// branch logic.
+fn entry_is_racket(entry: &ComponentEntry) -> bool {
+    entry.languages.contains("racket") || entry.kind == "racket-package"
+}
+
 /// Drive a Python-component's surface extraction through PR-2's
 /// subprocess transport.
 ///
@@ -545,7 +580,7 @@ fn python_surface_artefacts(
 
     // Resolve the candidate dir — first segment that resolves
     // against any root wins.
-    let absolute_dir = resolve_python_component_dir(entry, roots)?;
+    let absolute_dir = resolve_component_dir_first_segment(entry, roots)?;
 
     // Build a minimal `Target` for the proxy. We pre-load
     // `pyproject.toml` (the manifest the analyser cares about) so
@@ -606,12 +641,16 @@ fn python_surface_artefacts(
     }))
 }
 
-/// Resolve a Python component's first path segment against the
-/// workspace roots, returning the absolute on-disk dir for the
-/// candidate. Mirrors the per-segment walk used by the TS/JS branch
-/// but stops at the first match (Python components canonically span
-/// one path segment).
-fn resolve_python_component_dir(entry: &ComponentEntry, roots: &[PathBuf]) -> Option<PathBuf> {
+/// Resolve a component's first path segment against the workspace
+/// roots, returning the absolute on-disk dir for the candidate.
+/// Language-agnostic: used by both the Python and Racket surface
+/// extraction paths. Mirrors the per-segment walk used by the TS/JS
+/// branch but stops at the first match (single-segment component paths
+/// are the canonical form for Python and Racket).
+fn resolve_component_dir_first_segment(
+    entry: &ComponentEntry,
+    roots: &[PathBuf],
+) -> Option<PathBuf> {
     let segment = entry.path_segments.first()?;
     if segment.path.is_absolute() {
         return Some(segment.path.clone());
@@ -626,6 +665,216 @@ fn resolve_python_component_dir(entry: &ComponentEntry, roots: &[PathBuf]) -> Op
         }
     }
     Some(roots.first()?.join(&segment.path))
+}
+
+/// Drive a Racket-component's surface extraction through PR-2's
+/// subprocess transport. Mirrors [`python_surface_artefacts`] exactly
+/// but uses the `racket-analyzer` binary.
+fn racket_surface_artefacts(
+    db: &AtlasDatabase,
+    entry: &ComponentEntry,
+    roots: &[PathBuf],
+    record: &SurfaceRecord,
+) -> Option<Arc<SurfaceArtefacts>> {
+    let binary = locate_racket_analyzer_binary()?;
+
+    let absolute_dir = resolve_component_dir_first_segment(entry, roots)?;
+
+    let mut manifests: Vec<atlas_analyzers::TargetFile> = Vec::new();
+    let info_rkt_path = absolute_dir.join("info.rkt");
+    if let Some(bytes) = file_content(db, &info_rkt_path) {
+        let bytes_vec = (*bytes).clone();
+        let content_sha = sha256_hex_bytes(&bytes_vec);
+        manifests.push(atlas_analyzers::TargetFile {
+            name: "info.rkt".into(),
+            relpath: PathBuf::from("info.rkt"),
+            bytes: bytes_vec,
+            content_sha,
+        });
+    }
+    let mut languages = std::collections::BTreeSet::new();
+    languages.insert("racket".to_string());
+    let target = atlas_analyzers::Target {
+        dir: absolute_dir,
+        languages,
+        manifests,
+        top_level_files: Vec::new(),
+    };
+
+    let spec = racket_subprocess_spec(binary);
+    let proxy = cached_racket_subprocess_proxy(spec).ok()?;
+    let ctx = atlas_analyzers::AnalysisContext::deterministic_only();
+    let result = proxy.analyse(&ctx, &target);
+
+    let payload = match result {
+        AnalyzerResult::Confident(output) => output
+            .as_any()
+            .downcast_ref::<SubprocessOutput>()?
+            .payload
+            .clone(),
+        _ => {
+            return Some(Arc::new(SurfaceArtefacts {
+                record: record.clone(),
+                ..Default::default()
+            }));
+        }
+    };
+
+    let (bindings, library_apis) = decode_racket_surface_payload(&payload, entry.id.as_str());
+    Some(Arc::new(SurfaceArtefacts {
+        record: record.clone(),
+        contracts: Vec::new(),
+        bindings,
+        library_apis,
+    }))
+}
+
+/// Decode the JSON payload returned by the racket-analyzer subprocess.
+/// The wire shape is identical to the python-analyzer's shape; the
+/// same decoder logic applies with `language: "racket"` substituted.
+fn decode_racket_surface_payload(
+    payload: &Value,
+    component_id: &str,
+) -> (Vec<Binding>, Vec<LibraryApi>) {
+    use atlas_index::{ContractKind, PubItem, PubItemKind, Visibility};
+    use std::collections::BTreeMap as StdBTreeMap;
+
+    let Some(obj) = payload.as_object() else {
+        return (Vec::new(), Vec::new());
+    };
+
+    let mut bindings: Vec<Binding> = Vec::new();
+    if let Some(arr) = obj.get("bindings").and_then(Value::as_array) {
+        for v in arr {
+            let Some(b) = v.as_object() else { continue };
+            let language = b
+                .get("language")
+                .and_then(Value::as_str)
+                .unwrap_or("racket")
+                .to_string();
+            let symbol = b
+                .get("symbol")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let file = b
+                .get("file")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .unwrap_or_default();
+            let span = b
+                .get("span")
+                .and_then(Value::as_array)
+                .and_then(|a| {
+                    let s = a.first().and_then(Value::as_u64)? as usize;
+                    let e = a.get(1).and_then(Value::as_u64)? as usize;
+                    Some((s, e))
+                })
+                .unwrap_or((0, 0));
+            let content_sha = b
+                .get("content_sha")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let visibility = b
+                .get("visibility")
+                .map(|v| {
+                    serde_json::from_value::<Visibility>(v.clone())
+                        .unwrap_or(Visibility::Conventional)
+                })
+                .unwrap_or(Visibility::Conventional);
+            let module_path = b
+                .get("module_path")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let attributes: StdBTreeMap<String, serde_yaml::Value> = b
+                .get("attributes")
+                .and_then(Value::as_object)
+                .map(|m| {
+                    m.iter()
+                        .filter_map(|(k, v)| {
+                            let yaml: serde_yaml::Value = serde_json::from_value(v.clone()).ok()?;
+                            Some((k.clone(), yaml))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            bindings.push(Binding {
+                language,
+                symbol,
+                file,
+                span,
+                content_sha,
+                visibility,
+                module_path,
+                attributes,
+            });
+        }
+    }
+
+    let mut library_apis: Vec<LibraryApi> = Vec::new();
+    if let Some(arr) = obj.get("library_apis").and_then(Value::as_array) {
+        for v in arr {
+            let Some(api) = v.as_object() else { continue };
+            let id = api
+                .get("id")
+                .and_then(Value::as_str)
+                .map(String::from)
+                .unwrap_or_else(|| format!("{component_id}/public-api"));
+            let language = api
+                .get("language")
+                .and_then(Value::as_str)
+                .unwrap_or("racket")
+                .to_string();
+            let fingerprint = api
+                .get("fingerprint")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let pub_items: Vec<PubItem> = api
+                .get("pub_items")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|p| {
+                            let p = p.as_object()?;
+                            let name = p.get("name").and_then(Value::as_str)?.to_string();
+                            let file = p.get("file").and_then(Value::as_str).map(PathBuf::from)?;
+                            let kind_str = p.get("kind").and_then(Value::as_str)?;
+                            let kind = match kind_str {
+                                "struct" => PubItemKind::Struct,
+                                "enum" => PubItemKind::Enum,
+                                "fn" => PubItemKind::Fn,
+                                "trait" => PubItemKind::Trait,
+                                "mod" => PubItemKind::Mod,
+                                "type-alias" => PubItemKind::TypeAlias,
+                                "const" => PubItemKind::Const,
+                                "static" => PubItemKind::Static,
+                                "union" => PubItemKind::Union,
+                                "macro" => PubItemKind::Macro,
+                                _ => return None,
+                            };
+                            Some(PubItem { name, file, kind })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            library_apis.push(LibraryApi {
+                id,
+                kind: ContractKind::LibraryApi,
+                language,
+                fingerprint,
+                pub_items,
+            });
+        }
+    }
+
+    (bindings, library_apis)
 }
 
 /// Decode the JSON payload returned by the python-analyzer subprocess

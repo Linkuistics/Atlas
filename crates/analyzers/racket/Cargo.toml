@@ -1,0 +1,36 @@
+[package]
+name = "atlas-racket-analyzer"
+version.workspace = true
+description = "Atlas vNext Phase 2 PR-9 — out-of-process Racket surface analyser. Emits library bindings from `provide`/`define` declarations and path-dep edges from `info.rkt` manifests."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "atlas_racket_analyzer"
+path = "src/lib.rs"
+
+# The subprocess entry point. Cargo emits CARGO_BIN_EXE_racket-analyzer
+# at test time; the in-process wrapper in atlas-analyzers picks it up
+# via env! the same way the PR-3 python-analyzer is wired.
+[[bin]]
+name = "racket-analyzer"
+path = "src/main.rs"
+test = false
+doc = false
+
+[dependencies]
+anyhow = { workspace = true }
+atlas-analyzers = { path = "../../atlas-analyzers" }
+atlas-index = { workspace = true }
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -47,6 +47,8 @@ pub mod elixir_surface_analyzer;
 pub mod llm_classify;
 pub mod python_classifier;
 pub mod python_surface_analyzer;
+pub mod racket_classifier;
+pub mod racket_surface_analyzer;
 pub mod registry;
 pub mod rust_surface_analyzer;
 pub mod subprocess;
@@ -84,6 +86,11 @@ pub use python_classifier::{PythonClassificationOutput, PythonClassifier};
 pub use python_surface_analyzer::{
     cached_subprocess_proxy, locate_python_analyzer_binary, python_subprocess_spec,
     PYTHON_ANALYZER_DEFAULT_TIMEOUT_SECS, PYTHON_ANALYZER_ID, PYTHON_ANALYZER_VERSION,
+};
+pub use racket_classifier::{RacketClassificationOutput, RacketClassifier};
+pub use racket_surface_analyzer::{
+    cached_racket_subprocess_proxy, locate_racket_analyzer_binary, racket_subprocess_spec,
+    RACKET_ANALYZER_DEFAULT_TIMEOUT_SECS, RACKET_ANALYZER_ID, RACKET_ANALYZER_VERSION,
 };
 pub use registry::{AnalyzerRegistry, REGISTRY_HASH_NAMESPACE};
 pub use rust_surface_analyzer::{
@@ -386,6 +393,7 @@ impl_stage_output!(
     elixir_classifier::ElixirClassificationOutput,
     llm_classify::LlmClassifyOutput,
     python_classifier::PythonClassificationOutput,
+    racket_classifier::RacketClassificationOutput,
     ts_js_classifier::TsJsClassificationOutput,
 );
 

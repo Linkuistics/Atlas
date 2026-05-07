@@ -9,6 +9,7 @@ members = [
   "crates/analyzers/csharp",
   "crates/analyzers/dart",
   "crates/analyzers/elixir",
+  "crates/analyzers/racket",
   "evaluation/harness",
 ]
 

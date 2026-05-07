@@ -128,6 +128,14 @@ kinds:
       are Phase 3+. Phase 2 PR-8 introduces this kind, keyed on
       `mix.exs` presence.
 
+  - name: racket-package
+    description: |
+      A Racket package — `info.rkt` present. Recognised deterministically
+      at L3 by the `racket-classifier`; the language is Racket and the
+      build system is `raco` (Racket's standard tool for compiling and
+      distributing packages). The `provide`/`require` surface is extracted
+      at L5 by the `racket-surface-analyzer` subprocess. Phase 2 PR-9.
+
   - name: dart-library
     description: |
       A Dart package exposing a library interface. Recognised by a

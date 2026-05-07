@@ -33,6 +33,7 @@ use atlas_analyzers::{
     elixir_classifier::ElixirClassificationOutput,
     llm_classify::{LlmClassifyOutput, LlmHook, LlmHookError},
     python_classifier::PythonClassificationOutput,
+    racket_classifier::RacketClassificationOutput,
     ts_js_classifier::TsJsClassificationOutput,
     AnalysisContext, Target, TargetFile,
 };
@@ -457,6 +458,12 @@ fn classification_from_output(
     {
         return elixir_to_classification(el, analyser_id, analyser_version);
     }
+    if let Some(rkt) = (*output)
+        .as_any()
+        .downcast_ref::<RacketClassificationOutput>()
+    {
+        return racket_to_classification(rkt, analyser_id, analyser_version);
+    }
     if let Some(llm) = (*output).as_any().downcast_ref::<LlmClassifyOutput>() {
         return parse_llm_response(llm.response.clone(), analyser_id, analyser_version)
             .unwrap_or_else(|reason| {
@@ -677,6 +684,36 @@ fn dart_to_classification(
 /// lands here; the analyser identity flows through via PR-4's plumbing.
 fn elixir_to_classification(
     out: &ElixirClassificationOutput,
+    analyser_id: &str,
+    analyser_version: &str,
+) -> Classification {
+    let kind = ComponentKind::parse(&out.kind).unwrap_or(ComponentKind::NonComponent);
+    let lifecycle_roles = out
+        .lifecycle_roles
+        .iter()
+        .filter_map(|s| LifecycleScope::parse(s))
+        .collect();
+    let mut languages = BTreeSet::new();
+    languages.insert(out.language.clone());
+    Classification {
+        kind,
+        languages,
+        build_system: out.build_system.clone(),
+        lifecycle_roles,
+        role: out.role.clone(),
+        evidence_grade: EvidenceGrade::Strong,
+        evidence_fields: out.evidence_fields.clone(),
+        rationale: out.rationale.clone(),
+        is_boundary: out.is_boundary,
+        analyser_id: analyser_id.to_string(),
+        analyser_version: analyser_version.to_string(),
+    }
+}
+
+/// Translate a [`RacketClassificationOutput`] into a [`Classification`].
+/// PR-9 of Phase 2: the new `racket-package` kind lands here.
+fn racket_to_classification(
+    out: &RacketClassificationOutput,
     analyser_id: &str,
     analyser_version: &str,
 ) -> Classification {

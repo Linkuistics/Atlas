@@ -216,6 +216,122 @@ pub fn extract_pubspec_path_deps(contents: &str) -> Vec<PathBuf> {
     out
 }
 
+/// Returns every path-dep target declared in an `info.rkt` manifest,
+/// as paths relative to the manifest's parent directory (callers
+/// canonicalise). Extracts string literals from the `deps` list that
+/// look like paths (start with `.` or `/`). Registry package names
+/// (bare strings without path separators) are excluded.
+///
+/// The Racket `info.rkt` s-expression syntax is parsed with the same
+/// minimal reader shipped in `atlas-racket-analyzer::lib`. This
+/// engine-side copy avoids taking a dep on the analyser crate (dep
+/// arrows go from analyser → engine-types, not the other way). The
+/// approach is a simple byte scan: find the `(define deps ...)` form
+/// and collect string literal content.
+///
+/// On a malformed manifest the function returns an empty Vec.
+pub fn extract_info_rkt_path_deps(contents: &str) -> Vec<PathBuf> {
+    let bytes = contents.as_bytes();
+    let len = bytes.len();
+    let mut out: Vec<PathBuf> = Vec::new();
+
+    // Scan for the `define deps` token sequence (preceded by `(`).
+    // We look for the literal bytes `(define deps` in the file, then
+    // extract string literals until the matching close paren.
+    let mut i = 0;
+    while i < len {
+        // Skip line comment.
+        if bytes[i] == b';' {
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // Skip block comment `#| ... |#`.
+        if i + 1 < len && bytes[i] == b'#' && bytes[i + 1] == b'|' {
+            i += 2;
+            while i + 1 < len {
+                if bytes[i] == b'|' && bytes[i + 1] == b'#' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        // Skip `#lang ...` lines.
+        if bytes[i] == b'#' {
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // Look for `(define deps`.
+        if bytes[i] == b'(' {
+            let rest = &contents[i..];
+            // Quick substring test before paying for a full parse.
+            if rest.starts_with("(define deps") {
+                // Verify the char after `deps` is a delimiter.
+                let after = rest.get("(define deps".len()..=("(define deps".len()));
+                let is_delim = after.is_some_and(|s| {
+                    s.chars()
+                        .next()
+                        .is_some_and(|c| c.is_whitespace() || c == ')')
+                });
+                if is_delim {
+                    // Collect all string literals inside this form.
+                    let mut depth: i32 = 0;
+                    let mut j = i;
+                    while j < len {
+                        match bytes[j] {
+                            b'(' | b'[' | b'{' => {
+                                depth += 1;
+                                j += 1;
+                            }
+                            b')' | b']' | b'}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    j += 1;
+                                    break;
+                                }
+                                j += 1;
+                            }
+                            b'"' => {
+                                j += 1;
+                                let str_start = j;
+                                while j < len {
+                                    match bytes[j] {
+                                        b'\\' => j += 2,
+                                        b'"' => {
+                                            let s = &contents[str_start..j];
+                                            if s.starts_with('.') || s.starts_with('/') {
+                                                out.push(PathBuf::from(s));
+                                            }
+                                            j += 1;
+                                            break;
+                                        }
+                                        _ => j += 1,
+                                    }
+                                }
+                            }
+                            b';' => {
+                                while j < len && bytes[j] != b'\n' {
+                                    j += 1;
+                                }
+                            }
+                            _ => j += 1,
+                        }
+                    }
+                    i = j;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Facts lifted from a `package.json` by serde_json. Missing fields
 /// degrade to `false`; malformed JSON degrades to an all-false shape,
 /// which sends the classifier down the LLM fallback path.
@@ -425,6 +541,34 @@ path = "src/lib.rs"
     #[test]
     fn extract_path_deps_malformed_input_degrades_to_empty() {
         let deps = extract_path_deps("this is not valid toml at all ][");
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn extract_info_rkt_path_deps_picks_up_relative_path() {
+        let info = "#lang info\n(define deps '(\"base\" \"../sibling-pkg\"))\n";
+        let deps = extract_info_rkt_path_deps(info);
+        assert_eq!(deps, vec![PathBuf::from("../sibling-pkg")]);
+    }
+
+    #[test]
+    fn extract_info_rkt_path_deps_excludes_registry_packages() {
+        let info = "#lang info\n(define deps '(\"base\" \"rackunit-lib\"))\n";
+        let deps = extract_info_rkt_path_deps(info);
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn extract_info_rkt_path_deps_multiple_paths() {
+        let info = "#lang info\n(define deps '(\"base\" \"../a\" \"../b\"))\n";
+        let deps = extract_info_rkt_path_deps(info);
+        assert_eq!(deps, vec![PathBuf::from("../a"), PathBuf::from("../b")]);
+    }
+
+    #[test]
+    fn extract_info_rkt_path_deps_no_deps_field() {
+        let info = "#lang info\n(define name \"my-pkg\")\n";
+        let deps = extract_info_rkt_path_deps(info);
         assert!(deps.is_empty());
     }
 }
