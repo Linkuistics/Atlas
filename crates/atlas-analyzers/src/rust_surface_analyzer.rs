@@ -38,10 +38,13 @@
 //! reformatting *inside* the span does (per spec §2.1).
 //!
 //! `proc_macro2::Span::byte_range` (with the `span-locations` feature)
-//! supplies the absolute byte range for each item directly; we do not
-//! re-derive the range from line/column. The `pub` keyword starts the
-//! item's span in `syn`'s representation, so the spec semantics fall
-//! out without per-item adjustment.
+//! supplies absolute byte ranges; we do not re-derive the range from
+//! line/column. Note that `syn::Item::span()` starts at the leading
+//! attributes (`#[derive(...)]`, doc comments), *not* at `pub`. We
+//! therefore explicitly take `vis.span().byte_range().start` (the `pub`
+//! keyword position) for the span start, and `item.span().byte_range().end`
+//! (one past `}` or `;`) for the span end. This satisfies the spec §2.1
+//! PR-7 semantics: span starts at `pub`, ends at the closing delimiter.
 //!
 //! ## Why this lives in `atlas-analyzers`
 //!
