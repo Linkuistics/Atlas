@@ -118,6 +118,7 @@ pub fn decide_kind_only(kind: ComponentKind) -> Option<PolicyDecision> {
         // Racket packages may contain sub-modules; treat them as
         // library-shaped (depth cap from modularity_hint) for now.
         | ComponentKind::RacketPackage
+        | ComponentKind::LispkitPackage
         | ComponentKind::DartLibrary
         | ComponentKind::DartPackage
         | ComponentKind::DotnetLibrary

@@ -44,6 +44,8 @@ pub mod dispatcher;
 pub mod dockerfile_classifier;
 pub mod elixir_classifier;
 pub mod elixir_surface_analyzer;
+pub mod lispkit_classifier;
+pub mod lispkit_surface_analyzer;
 pub mod llm_classify;
 pub mod python_classifier;
 pub mod python_surface_analyzer;
@@ -80,6 +82,11 @@ pub use elixir_classifier::{ElixirClassificationOutput, ElixirClassifier};
 pub use elixir_surface_analyzer::{
     cached_elixir_subprocess_proxy, elixir_subprocess_spec, locate_elixir_analyzer_binary,
     ELIXIR_ANALYZER_DEFAULT_TIMEOUT_SECS, ELIXIR_ANALYZER_ID, ELIXIR_ANALYZER_VERSION,
+};
+pub use lispkit_classifier::{LispKitClassificationOutput, LispKitClassifier};
+pub use lispkit_surface_analyzer::{
+    cached_lispkit_subprocess_proxy, lispkit_subprocess_spec, locate_lispkit_analyzer_binary,
+    LISPKIT_ANALYZER_DEFAULT_TIMEOUT_SECS, LISPKIT_ANALYZER_ID, LISPKIT_ANALYZER_VERSION,
 };
 pub use llm_classify::{LlmClassifyAnalyzer, LlmHook, LlmHookError};
 pub use python_classifier::{PythonClassificationOutput, PythonClassifier};
@@ -391,6 +398,7 @@ impl_stage_output!(
     dart_classifier::DartClassificationOutput,
     dockerfile_classifier::DockerfileClassificationOutput,
     elixir_classifier::ElixirClassificationOutput,
+    lispkit_classifier::LispKitClassificationOutput,
     llm_classify::LlmClassifyOutput,
     python_classifier::PythonClassificationOutput,
     racket_classifier::RacketClassificationOutput,

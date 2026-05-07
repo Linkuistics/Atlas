@@ -1,0 +1,36 @@
+[package]
+name = "atlas-lispkit-analyzer"
+version.workspace = true
+description = "Atlas vNext Phase 2 PR-10 — out-of-process LispKit surface analyser. Emits library bindings and export visibility from R7RS-ish `define-library` / `*.sld` components."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "atlas_lispkit_analyzer"
+path = "src/lib.rs"
+
+# The subprocess entry point. Cargo emits CARGO_BIN_EXE_lispkit-analyzer
+# at test time; the in-process wrapper in atlas-analyzers picks it up
+# via env! the same way the PR-2 echo fixture is wired.
+[[bin]]
+name = "lispkit-analyzer"
+path = "src/main.rs"
+test = false
+doc = false
+
+[dependencies]
+anyhow = { workspace = true }
+atlas-analyzers = { path = "../../atlas-analyzers" }
+atlas-index = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+atlas-analyzers = { path = "../../atlas-analyzers" }
+
+[lints]
+workspace = true

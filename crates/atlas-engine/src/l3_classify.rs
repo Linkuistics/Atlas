@@ -31,6 +31,7 @@ use atlas_analyzers::{
     dispatcher::DispatchOutcome,
     dockerfile_classifier::DockerfileClassificationOutput,
     elixir_classifier::ElixirClassificationOutput,
+    lispkit_classifier::LispKitClassificationOutput,
     llm_classify::{LlmClassifyOutput, LlmHook, LlmHookError},
     python_classifier::PythonClassificationOutput,
     racket_classifier::RacketClassificationOutput,
@@ -464,6 +465,12 @@ fn classification_from_output(
     {
         return racket_to_classification(rkt, analyser_id, analyser_version);
     }
+    if let Some(lk) = (*output)
+        .as_any()
+        .downcast_ref::<LispKitClassificationOutput>()
+    {
+        return lispkit_to_classification(lk, analyser_id, analyser_version);
+    }
     if let Some(llm) = (*output).as_any().downcast_ref::<LlmClassifyOutput>() {
         return parse_llm_response(llm.response.clone(), analyser_id, analyser_version)
             .unwrap_or_else(|reason| {
@@ -714,6 +721,37 @@ fn elixir_to_classification(
 /// PR-9 of Phase 2: the new `racket-package` kind lands here.
 fn racket_to_classification(
     out: &RacketClassificationOutput,
+    analyser_id: &str,
+    analyser_version: &str,
+) -> Classification {
+    let kind = ComponentKind::parse(&out.kind).unwrap_or(ComponentKind::NonComponent);
+    let lifecycle_roles = out
+        .lifecycle_roles
+        .iter()
+        .filter_map(|s| LifecycleScope::parse(s))
+        .collect();
+    let mut languages = BTreeSet::new();
+    languages.insert(out.language.clone());
+    Classification {
+        kind,
+        languages,
+        build_system: out.build_system.clone(),
+        lifecycle_roles,
+        role: out.role.clone(),
+        evidence_grade: EvidenceGrade::Strong,
+        evidence_fields: out.evidence_fields.clone(),
+        rationale: out.rationale.clone(),
+        is_boundary: out.is_boundary,
+        analyser_id: analyser_id.to_string(),
+        analyser_version: analyser_version.to_string(),
+    }
+}
+
+/// Translate a [`LispKitClassificationOutput`] into a [`Classification`].
+/// Phase 2 PR-10: the new `lispkit-package` kind lands here, and
+/// the analyser identity flows through unchanged via PR-4's plumbing.
+fn lispkit_to_classification(
+    out: &LispKitClassificationOutput,
     analyser_id: &str,
     analyser_version: &str,
 ) -> Classification {

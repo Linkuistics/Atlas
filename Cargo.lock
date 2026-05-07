@@ -271,6 +271,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-lispkit-analyzer"
+version = "1.3.0"
+dependencies = [
+ "anyhow",
+ "atlas-analyzers",
+ "atlas-index",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "atlas-llm"
 version = "1.3.0"
 dependencies = [

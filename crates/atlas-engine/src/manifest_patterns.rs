@@ -51,6 +51,8 @@ const EXACT_MANIFEST_BASENAMES: &[&str] = &[
 ///   `compose.*.yml`, `compose.*.yaml`. Recognised here so the engine's
 ///   L1 manifest walk pre-loads them into the candidate's
 ///   `Target.manifests` for the `compose-classifier` (PR-11).
+/// - `*.sld` — R7RS Scheme Library Definition files used by LispKit
+///   and other R7RS Scheme implementations (Phase 2 PR-10).
 pub fn is_manifest_file(path: &Path) -> bool {
     let Some(basename) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
@@ -67,6 +69,10 @@ pub fn is_manifest_file(path: &Path) -> bool {
     // files). Both are recognised as component boundaries by the
     // `csharp-classifier` (PR-6).
     if basename.ends_with(".csproj") || basename.ends_with(".sln") {
+        return true;
+    }
+    // R7RS Scheme Library Definition files (LispKit, Phase 2 PR-10).
+    if basename.ends_with(".sld") {
         return true;
     }
     is_compose_manifest_basename(basename)
@@ -182,5 +188,11 @@ mod tests {
     fn recognises_csharp_solution_file() {
         assert!(is_manifest_file(&PathBuf::from("MySolution.sln")));
         assert!(is_manifest_file(&PathBuf::from("workspace/MySolution.sln")));
+    }
+
+    #[test]
+    fn recognises_sld_files_by_suffix() {
+        assert!(is_manifest_file(&PathBuf::from("core.sld")));
+        assert!(is_manifest_file(&PathBuf::from("libs/mylib/core.sld")));
     }
 }

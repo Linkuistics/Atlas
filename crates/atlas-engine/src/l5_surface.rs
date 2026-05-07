@@ -21,9 +21,10 @@ use std::sync::Arc;
 
 use atlas_analyzers::{
     cached_csharp_subprocess_proxy, cached_dart_subprocess_proxy, cached_elixir_subprocess_proxy,
-    cached_racket_subprocess_proxy, cached_subprocess_proxy, csharp_subprocess_spec,
-    dart_subprocess_spec, elixir_subprocess_spec, extract_rust_surface, extract_ts_js_surface,
-    locate_csharp_analyzer_binary, locate_dart_analyzer_binary, locate_elixir_analyzer_binary,
+    cached_lispkit_subprocess_proxy, cached_racket_subprocess_proxy, cached_subprocess_proxy,
+    csharp_subprocess_spec, dart_subprocess_spec, elixir_subprocess_spec, extract_rust_surface,
+    extract_ts_js_surface, lispkit_subprocess_spec, locate_csharp_analyzer_binary,
+    locate_dart_analyzer_binary, locate_elixir_analyzer_binary, locate_lispkit_analyzer_binary,
     locate_python_analyzer_binary, locate_racket_analyzer_binary, python_subprocess_spec,
     racket_subprocess_spec, Analyzer, AnalyzerResult, RustSourceInputs, SubprocessOutput,
     TsJsSourceInputs,
@@ -169,6 +170,13 @@ pub fn surface_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceRecord> {
     } else {
         None
     };
+    // Phase 2 PR-10: LispKit components contribute the lispkit-analyzer
+    // binary's content sha to the L5 fingerprint via tag 0x06.
+    let lispkit_binary_sha = if entry_is_lispkit(entry) {
+        locate_lispkit_analyzer_binary().and_then(|p| atlas_analyzers::hash_binary(&p).ok())
+    } else {
+        None
+    };
     let l5_fingerprint = {
         let mut fb = crate::FingerprintBuilder::new(Stage::L5, "l5-driver", L5_DRIVER_VERSION);
         fb.add_analyzer_registry_sha(&registry_sha);
@@ -190,6 +198,9 @@ pub fn surface_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceRecord> {
             fb.add_analyzer_binary_sha(sha);
         }
         if let Some(sha) = &racket_binary_sha {
+            fb.add_analyzer_binary_sha(sha);
+        }
+        if let Some(sha) = &lispkit_binary_sha {
             fb.add_analyzer_binary_sha(sha);
         }
         fb.finalise()
@@ -377,6 +388,19 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
         });
     }
 
+    // 3a-lispkit. LispKit branch — Phase 2 PR-10's subprocess analyser.
+    //     A component is handled here when its kind is `lispkit-package`
+    //     or it carries `scheme` / `lispkit` in its language set.
+    if entry_is_lispkit(entry) {
+        if let Some(artefacts) = lispkit_surface_artefacts(db, entry, &roots, &record) {
+            return artefacts;
+        }
+        return Arc::new(SurfaceArtefacts {
+            record,
+            ..Default::default()
+        });
+    }
+
     // 3a. TypeScript / JavaScript branch — drive the TS/JS-surface
     //     extractor in-process. A component is handled here when it
     //     carries "typescript" or "javascript" in its language set, or
@@ -553,6 +577,14 @@ fn entry_is_racket(entry: &ComponentEntry) -> bool {
     entry.languages.contains("racket") || entry.kind == "racket-package"
 }
 
+/// True when the component looks like a LispKit component to the L5
+/// branch logic (Phase 2 PR-10).
+fn entry_is_lispkit(entry: &ComponentEntry) -> bool {
+    entry.kind == "lispkit-package"
+        || entry.languages.contains("scheme")
+        || entry.languages.contains("lispkit")
+}
+
 /// Drive a Python-component's surface extraction through PR-2's
 /// subprocess transport.
 ///
@@ -632,7 +664,8 @@ fn python_surface_artefacts(
         }
     };
 
-    let (bindings, library_apis) = decode_python_surface_payload(&payload, entry.id.as_str());
+    let (bindings, library_apis) =
+        decode_subprocess_surface_payload(&payload, entry.id.as_str(), "python");
     Some(Arc::new(SurfaceArtefacts {
         record: record.clone(),
         contracts: Vec::new(),
@@ -877,14 +910,19 @@ fn decode_racket_surface_payload(
     (bindings, library_apis)
 }
 
-/// Decode the JSON payload returned by the python-analyzer subprocess
+/// Decode the JSON payload returned by a subprocess analyser
 /// into typed `Binding` / `LibraryApi` values. The wire shape is
-/// defined inside the python-analyzer binary (`AnalysePayload`,
+/// defined inside each analyser binary (`AnalysePayload`,
 /// `WireBinding`, `WireLibraryApi`); we re-derive the same types
 /// here as they're load-bearing for the engine-side projection.
-fn decode_python_surface_payload(
+///
+/// `default_language` is used when the wire payload omits the
+/// `language` field on a binding or library-api object.  Pass
+/// `"python"` for the Python analyser and `"scheme"` for LispKit.
+fn decode_subprocess_surface_payload(
     payload: &Value,
     component_id: &str,
+    default_language: &str,
 ) -> (Vec<Binding>, Vec<LibraryApi>) {
     use atlas_index::{ContractKind, PubItem, PubItemKind, Visibility};
     use std::collections::BTreeMap as StdBTreeMap;
@@ -901,7 +939,7 @@ fn decode_python_surface_payload(
             let language = b
                 .get("language")
                 .and_then(Value::as_str)
-                .unwrap_or("python")
+                .unwrap_or(default_language)
                 .to_string();
             let symbol = b
                 .get("symbol")
@@ -997,7 +1035,7 @@ fn decode_python_surface_payload(
             let language = api
                 .get("language")
                 .and_then(Value::as_str)
-                .unwrap_or("python")
+                .unwrap_or(default_language)
                 .to_string();
             let fingerprint = api
                 .get("fingerprint")
@@ -1880,6 +1918,136 @@ fn decode_elixir_surface_payload(
     (bindings, library_apis, contracts)
 }
 
+/// Drive a LispKit component's surface extraction through the
+/// subprocess transport (Phase 2 PR-10).
+///
+/// Mirrors [`python_surface_artefacts`]: walks path segments, locates
+/// the `lispkit-analyzer` binary, constructs a
+/// [`SubprocessAnalyzerProxy`] against it, and invokes the proxy.
+/// Returns `None` when the binary cannot be located.
+fn lispkit_surface_artefacts(
+    _db: &AtlasDatabase,
+    entry: &ComponentEntry,
+    roots: &[PathBuf],
+    record: &SurfaceRecord,
+) -> Option<Arc<SurfaceArtefacts>> {
+    let binary = locate_lispkit_analyzer_binary()?;
+
+    let absolute_dir = resolve_lispkit_component_dir(entry, roots)?;
+
+    // Build a minimal Target for the proxy. Pre-load any `*.sld`
+    // manifests the engine has read (if the engine pre-loaded them
+    // via `manifest_patterns`).
+    let mut manifests: Vec<atlas_analyzers::TargetFile> = Vec::new();
+    // Try to pre-load any .sld file already known by the engine
+    // (the manifest scan may have surfaced one).
+    for segment in &entry.path_segments {
+        let candidate_dir = if segment.path.is_absolute() {
+            segment.path.clone()
+        } else if let Some(owning_root) = best_root_for(roots, &segment.path) {
+            owning_root.join(&segment.path)
+        } else if let Some(root) = roots.first() {
+            root.join(&segment.path)
+        } else {
+            segment.path.clone()
+        };
+        if let Ok(entries) = std::fs::read_dir(&candidate_dir) {
+            for e in entries.flatten() {
+                let path = e.path();
+                if path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s == "sld")
+                {
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        let name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("lib.sld")
+                            .to_string();
+                        let content_sha = sha256_hex_bytes(&bytes);
+                        let relpath = PathBuf::from(&name);
+                        manifests.push(atlas_analyzers::TargetFile {
+                            name,
+                            relpath,
+                            bytes,
+                            content_sha,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    let mut languages = std::collections::BTreeSet::new();
+    languages.insert("scheme".to_string());
+    let target = atlas_analyzers::Target {
+        dir: absolute_dir,
+        languages,
+        manifests,
+        top_level_files: Vec::new(),
+    };
+
+    let spec = lispkit_subprocess_spec(binary);
+    let proxy = cached_lispkit_subprocess_proxy(spec).ok()?;
+    let ctx = atlas_analyzers::AnalysisContext::deterministic_only();
+    let result = proxy.analyse(&ctx, &target);
+
+    let payload = match result {
+        AnalyzerResult::Confident(output) => output
+            .as_any()
+            .downcast_ref::<SubprocessOutput>()?
+            .payload
+            .clone(),
+        _ => {
+            return Some(Arc::new(SurfaceArtefacts {
+                record: record.clone(),
+                ..Default::default()
+            }));
+        }
+    };
+
+    let (bindings, library_apis) = decode_lispkit_surface_payload(&payload, entry.id.as_str());
+    Some(Arc::new(SurfaceArtefacts {
+        record: record.clone(),
+        contracts: Vec::new(),
+        bindings,
+        library_apis,
+    }))
+}
+
+/// Resolve a LispKit component's first path segment against the
+/// workspace roots, returning the absolute on-disk dir.
+fn resolve_lispkit_component_dir(entry: &ComponentEntry, roots: &[PathBuf]) -> Option<PathBuf> {
+    let segment = entry.path_segments.first()?;
+    if segment.path.is_absolute() {
+        return Some(segment.path.clone());
+    }
+    if let Some(owning_root) = best_root_for(roots, &segment.path) {
+        return Some(owning_root.join(&segment.path));
+    }
+    for root in roots {
+        let absolute = root.join(&segment.path);
+        if absolute.is_dir() {
+            return Some(absolute);
+        }
+    }
+    Some(roots.first()?.join(&segment.path))
+}
+
+/// Decode the JSON payload returned by the lispkit-analyzer subprocess.
+/// Wire shape is identical to the python-analyzer's `AnalysePayload`.
+fn decode_lispkit_surface_payload(
+    payload: &Value,
+    component_id: &str,
+) -> (Vec<Binding>, Vec<LibraryApi>) {
+    // Re-use the shared decode logic — the wire shapes are identical
+    // (both carry `bindings` + `library_apis` with the same field
+    // names). Pass `"scheme"` as the default language so that any
+    // binding/api that omits the `language` field on the wire is
+    // correctly labelled rather than inheriting the Python default.
+    decode_subprocess_surface_payload(payload, component_id, "scheme")
+}
+
 /// JSON input document for the Stage 1 prompt. The key set is stable
 /// across the live code so cache-key equality is a proxy for
 /// "inputs unchanged".
@@ -2350,7 +2518,7 @@ mod tests {
     /// This test pins the pathological `"key: value"` case so a
     /// future refactor can't regress it.
     #[test]
-    fn decode_python_surface_payload_preserves_yaml_special_chars_in_string_values() {
+    fn decode_subprocess_surface_payload_preserves_yaml_special_chars_in_string_values() {
         // Wave 3 C# attribute values may carry `:` / `#` / etc.; the
         // fix-up's regression pin uses `:` (the most pernicious) plus
         // a `#` for good measure.
@@ -2383,7 +2551,7 @@ mod tests {
             ],
             "library_apis": [],
         });
-        let (bindings, _apis) = decode_python_surface_payload(&payload, "comp");
+        let (bindings, _apis) = decode_subprocess_surface_payload(&payload, "comp", "python");
         assert_eq!(bindings.len(), 1);
         let attrs = &bindings[0].attributes;
         assert_eq!(

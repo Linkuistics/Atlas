@@ -136,6 +136,16 @@ kinds:
       distributing packages). The `provide`/`require` surface is extracted
       at L5 by the `racket-surface-analyzer` subprocess. Phase 2 PR-9.
 
+  - name: lispkit-package
+    description: |
+      A LispKit / R7RS Scheme library package — recognised by the
+      presence of one or more `*.sld` (Scheme Library Definition)
+      files containing `(define-library ...)` forms. LispKit is a
+      Swift-implemented Scheme interpreter used by the Linkuistics
+      project. The `*.sld` extension is the R7RS-standard convention
+      for library declaration files. Recognised deterministically at
+      L3 by the `lispkit-classifier` (Phase 2 PR-10).
+
   - name: dart-library
     description: |
       A Dart package exposing a library interface. Recognised by a
