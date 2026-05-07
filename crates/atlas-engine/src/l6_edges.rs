@@ -462,6 +462,19 @@ fn parse_one_edge(value: &Value) -> Option<Edge> {
 /// the first wins so an earlier, typically more-confident proposal
 /// is preferred over a later restatement.
 fn canonicalise_edges(edges: Vec<Edge>) -> Vec<Edge> {
+    // §4 PR-11: Dockerfile-derived and Compose-derived composition edges
+    // must be interleaved in lexicographic order.  A stable sort on the
+    // canonical key (kind, lifecycle, participants) achieves this while
+    // preserving the relative order of edges that share the same key —
+    // so deterministic edges that were inserted before LLM edges continue
+    // to win the "first insertion wins" dedup below.
+    let mut edges = edges;
+    edges.sort_by(|a, b| {
+        let ka = a.canonical_key();
+        let kb = b.canonical_key();
+        (ka.0.as_str(), ka.1.as_str(), ka.2).cmp(&(kb.0.as_str(), kb.1.as_str(), kb.2))
+    });
+
     let mut out: Vec<Edge> = Vec::with_capacity(edges.len());
     let mut seen: std::collections::HashSet<(EdgeKind, LifecycleScope, Vec<String>)> =
         std::collections::HashSet::new();
