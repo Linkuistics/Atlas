@@ -5,7 +5,7 @@ This file tracks per-PR completion state across sessions. The session
 prompt at `docs/superpowers/plans/2026-05-06-phase1-session-prompt.md`
 reads this file to find the next PR to dispatch.
 
-**Last updated:** 2026-05-07 (PR-5 + PR-6 + PR-7 + PR-8 + PR-9 + PR-10 landed).
+**Last updated:** 2026-05-07 (PR-5 + PR-6 + PR-7 + PR-8 + PR-9 + PR-10 + PR-11 landed; PR-12 is the only remaining PR).
 
 ## PR status
 
@@ -24,7 +24,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-8  — Contract participants in `related-components.yaml`
 - [x] PR-9  — Composition edges from Dockerfiles
 - [x] PR-10 — Wire persistent cache into L3 / L5 / L6
-- [ ] PR-11 — L6 cache key includes participant surface shas
+- [x] PR-11 — L6 cache key includes participant surface shas
 - [ ] PR-12 — Acceptance: atlas-contracts visible in Ravel-Lite
 
 When every box is `[x]`, Phase 1 is complete and the session prompt
@@ -1067,7 +1067,109 @@ report.
 - `crates/atlas-cli/src/cache_io.rs` (281 lines).
 
 ### PR-11
-(none yet)
+2026-05-07 — Landed on Atlas main as `e5c0f19`. atlas-contracts not
+modified.
+
+**New public API (atlas-engine):**
+- `compute_l6_batch_fingerprint(db: &AtlasDatabase, live: &[&ComponentEntry],
+  prompt_sha: &str, registry_sha: &str, llm_fp: &LlmFingerprint) ->
+  Sha256Hex` — pure helper extracted from the inline fingerprint block
+  in `all_proposed_edges`. Owns the full L6 batch fingerprint
+  construction including the new participant_surface_sha contribution
+  loop. Re-exported from `atlas_engine::lib`.
+- `surface_has_contract_content(sf: &SurfacesFile) -> bool` is
+  module-private (not re-exported); guards the participant-sha loop.
+
+**L6 wiring (`l6_edges.rs::all_proposed_edges`):**
+- The `// TODO(PR-11)` marker is gone. The inline fingerprint block is
+  replaced by a call to `compute_l6_batch_fingerprint`.
+- The new helper iterates `live` twice: first for the per-segment
+  `file_content_sha` contributions (preserving PR-10 behaviour); then
+  for `add_participant_surface_sha` per component whose surfaces.yaml
+  carries contract content.
+- "Has contract content" predicate: ANY of `contracts_defined`,
+  `contracts_implemented`, `contracts_consumed`, `library_apis` non-
+  empty. The disjunction matters — even a single `pub fn` produces a
+  populated `library_apis.pub_items`, so a fixture intended to
+  exercise the empty-surface path must use private items only (see
+  `tests/l6_participant_surface_sha.rs::write_private_crate`).
+
+**Module cycle baked in (PR-12 reviewers please note):**
+- `l6_edges.rs` now `use crate::l9_projections::surfaces_yaml_snapshot;`.
+  `l9_projections.rs` already `use crate::l6_edges::all_proposed_edges;`
+  via `related_components_yaml_snapshot`. Rust permits cyclic `use`
+  paths between modules in the same crate; this compiled without issue
+  and there is no runtime recursion (the two imported functions don't
+  call each other). The cycle is a topological-only one. PR-8's status
+  note flagged this as an option PR-11 might take; PR-11 took it. If
+  PR-12 needs to extend the L6 fingerprint or add another cross-stage
+  contributor, the precedent is now established — going through l9 is
+  fine as long as the imported function doesn't transitively depend on
+  the importing module's public API at runtime.
+
+**Surfaces fingerprint already populated (l9_projections.rs unchanged):**
+- The plan's "modify l9_projections.rs to emit a top-level fingerprint"
+  is stale. PR-7 already lands the fingerprint via
+  `compute_surfaces_fingerprint(&file)` at line 235. PR-11 just consumes
+  it. No diff in `l9_projections.rs`.
+
+**Tests added (`crates/atlas-cli/tests/l6_participant_surface_sha.rs`,
+3 tests, ~430 lines):**
+- `same_root_cache_invalidates_on_serde_struct_edit` (AC #1) — three
+  runs (cold / after-edit / no-op); asserts `stage2_calls >= 1` after
+  the edit and `stage2_calls == 0` on the no-op.
+- `cross_tree_cache_invalidates_on_peer_root_serde_struct_edit` (AC
+  #2) — same pattern with crate-A in `parent/peer/crate-a` and crate-B
+  in `parent/primary` linked via `path = "../../peer/crate-a"`. PR-4's
+  `expand_roots` is the discovery path (no manual `--additional-root`).
+- `no_contract_workspace_has_stable_l6_fingerprint` (AC #3) — option
+  (b) from the brief: builds the PR-11 fingerprint via the helper, then
+  builds a parallel baseline `FingerprintBuilder` by hand WITHOUT the
+  participant calls, asserts byte-identity.
+
+**Spec-review carry-over for PR-12 reviewers (acceptance #1 / #2
+breadth):**
+- AC #1 / AC #2 edit a serde struct (add a `pub y: u64` field). That
+  edit changes BOTH the rendered surface bytes (so `prompt_sha` shifts)
+  AND `SurfacesFile.fingerprint` (so `participant_surface_sha` shifts).
+  Either contributor alone would force the L6 batch fingerprint to
+  change, so the tests would technically pass without PR-11's
+  contribution. The mechanism IS correct — surfaces fingerprints are
+  now in the L6 cache key — but the tests are not surgically isolated
+  to the participant-sha pathway. A future PR could tighten by
+  constructing an edit that changes the surface fingerprint without
+  changing the rendered surface bytes (e.g. an edit to a field whose
+  name appears in `pub_items` but not in the LLM-returned `purpose` /
+  `consumes_files`). Not done in PR-11 because it's not load-bearing
+  for the acceptance row; flagged here.
+
+**Deviations from the brief:**
+- The brief targets `candidate_edges_for(component_id)` for the
+  fingerprint contribution. `candidate_edges_for` is a thin filter over
+  `all_proposed_edges`'s batch result; the actual L6 fingerprint lives
+  in the batch (one fingerprint per workspace). PR-11 wires the
+  contribution into the batch fingerprint, which is the only place that
+  affects cache keys. The plan's per-component framing reflects an
+  earlier multi-key cache design; the single-batch design has been the
+  shape since PR-10.
+- `l9_projections.rs` not modified (see above — PR-7 landed it).
+- The implementer did NOT wrap `surface_artefacts_of` in
+  `#[salsa::tracked]` (the perf opportunity flagged in PR-8's status
+  note). Out of scope for PR-11; remains future work. With PR-11's
+  per-participant `surfaces_yaml_snapshot` call (which transitively
+  calls `surface_artefacts_of`), the overhead is now O(live × per-
+  component re-walk) per `all_proposed_edges` invocation. Acceptable
+  for Phase 1 workspaces; profile if needed.
+
+**Files modified (Atlas):**
+- `crates/atlas-engine/src/l6_edges.rs` — `compute_l6_batch_fingerprint`
+  + `surface_has_contract_content` + wiring; comment block updated.
+- `crates/atlas-engine/src/lib.rs` — re-export
+  `compute_l6_batch_fingerprint`.
+
+**Files created (Atlas):**
+- `crates/atlas-cli/tests/l6_participant_surface_sha.rs` (~430 lines,
+  3 tests).
 
 ### PR-12
 (none yet)
