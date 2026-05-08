@@ -7,9 +7,9 @@ continuation prompt at
 reads this file (via the `*phase3-plan*` wildcard match) to find the
 next PR to dispatch.
 
-**Last updated:** 2026-05-08 (PR-0a landed: plan + status). PR-0b
-(design-doc touch-ups in canonical system-model spec) is the first
-task of the next execution session.
+**Last updated:** 2026-05-08 (PR-0b landed: design-doc touch-ups in
+canonical system-model spec). Wave 2 (PR-1 + PR-7) is now dispatchable
+concurrently — independent surfaces, no shared files.
 
 ## PR status
 
@@ -18,7 +18,7 @@ when the PR is reviewed and committed. Append a one-line note (date +
 commit sha + anything load-bearing the next session needs to know).
 
 - [x] PR-0a — Plan + status (docs only)
-- [ ] PR-0b — Design-doc touch-ups in canonical system-model spec (docs only)
+- [x] PR-0b — Design-doc touch-ups in canonical system-model spec (docs only)
 - [ ] PR-1  — Gitignore mechanism for `<scope>/.atlas/cache/` + atomic_write helper
 - [ ] PR-2  — Phase 1 retrofit: per-component `surfaces.yaml` → cache
 - [ ] PR-3  — Phase 1 retrofit: per-component `component.yaml` → cache
@@ -154,3 +154,50 @@ Load-bearing context for Wave 2 reviewers (after PR-0b lands):
   Any subagent attempting to make this configurable must surface
   the question — "modularity history depth >5" is a deferred-
   indefinitely scope item per plan §7.3.
+
+### PR-0b
+2026-05-08 — Landed: nine design-doc touch-ups to
+`docs/superpowers/specs/2026-05-06-atlas-system-model-design.md`.
+Commit `986b63e` (+70 / −8 lines, single file). Spec-reviewed against
+plan §4 PR-0b enumeration; all nine touch-ups verbatim, all five
+acceptance criteria satisfied, byte-stability outside touched
+sections confirmed.
+
+Two interpretive calls, both sound and consistent with existing spec
+conventions:
+
+- §11.2.9 was added as item `9.` in the existing Markdown ordered
+  list rather than as a `### 11.2.9` heading. §11.2 has always used
+  ordered-list items (1.–8.); the implementer correctly matched the
+  convention. Inbound `§11.2.9` cross-references in §6 stanzas
+  resolve positionally.
+- §6 sub-sections (§6.1–§6.4) did not previously have per-file
+  tables, so the Git-status touch-up landed as a one-line
+  `**Path:** … **Git status:** …` stanza per the touch-up's explicit
+  fallback guidance. Each stanza records the post-retrofit cache
+  path (e.g. `<scope>/.atlas/cache/components.yaml`).
+
+Out-of-scope coherence drift surfaced by the spec reviewer (NOT
+fixed in PR-0b — outside the nine-touch-up enumeration): four prose
+references where "Phase 4" still implicitly means "server mode"
+remain in the canonical spec at:
+
+- §5.6 "Server mode (eventual)" header — references "Phase 4".
+- §9 introduction — "Server mode is the Phase 4 target".
+- §11.4 "Once Phase 4 ships and the server has concrete polyglot
+  consumers".
+- Glossary line ~1436 — "deferred to Phase 4 and beyond".
+
+These are prose, not §10.X cross-references, so they don't break the
+PR-0b acceptance criterion "no broken cross-references." But they're
+semantically stale post-renumbering (server mode is now Phase 5 per
+new §10.5). **Follow-up: a small docs-only retext PR could land
+these later — not blocking on Phase 3, since none of the Phase 3
+code reads §5.6 / §9 / §11.4 prose.** Recording here so the next
+phase's continuation prompt can decide whether to bundle the retext.
+
+Wave 2 ready: PR-1 (gitignore + atomic_write helper) and PR-7
+(`atlas-reports` crate scaffold + CLI subcommand framework) are
+independent surfaces and dispatchable concurrently. Use
+`superpowers:dispatching-parallel-agents` (one Agent tool call per
+PR, both in a single message).
