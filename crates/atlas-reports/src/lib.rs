@@ -48,8 +48,8 @@ pub use drift::{
     drift, ContractAdded, ContractChange, ContractRemoved, DriftReport, DriftSummary, PinnedBinding,
 };
 pub use impact::{
-    impact, ImpactNode, ImpactNodeKind, ImpactPartitions, ImpactReport, ImpactSummary,
-    ImpactTargetView,
+    impact, ImpactPartitions, ImpactReport, ImpactReportTarget, ImpactReportTargetKind,
+    ImpactSummary,
 };
 pub use modularity::{
     modularity, ComponentModularity, ModularityHistory, ModularityHistoryEntry,

@@ -22,6 +22,13 @@ pub fn impact(_inputs: ReportInputs, _target: ImpactTarget) -> Result<ImpactRepo
 }
 
 /// Top-level impact report (Phase 3 design spec §4.2).
+///
+/// Wire format mirrors the design-spec YAML byte-for-byte:
+/// [`Self::direct_consumers`] and [`Self::transitive_consumers`] are
+/// bare component-id strings (not records), and [`Self::partitions`]
+/// carries three independent axes that each map every transitive
+/// consumer to its value on that axis ("three independent partitions,
+/// not a 3D grid").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImpactReport {
     /// Schema version (always `1` for Phase 3).
@@ -29,53 +36,44 @@ pub struct ImpactReport {
     /// Wall-clock time the report was generated.
     pub generated_at: DateTime<Utc>,
     /// The query target, echoed in the report.
-    pub target: ImpactTargetView,
-    /// Direct consumers of the target (one hop on `consumes` edges).
-    pub direct: Vec<ImpactNode>,
-    /// Transitive closure (includes direct).
-    pub transitive: Vec<ImpactNode>,
-    /// Three independent partitions over `transitive`.
+    pub target: ImpactReportTarget,
+    /// Direct consumers of the target (one hop on `consumes` edges),
+    /// as bare component-id strings.
+    pub direct_consumers: Vec<String>,
+    /// Transitive closure of consumers (includes direct), as bare
+    /// component-id strings.
+    pub transitive_consumers: Vec<String>,
+    /// Three independent partitions over `transitive_consumers`.
     pub partitions: ImpactPartitions,
     /// Aggregate counts.
     pub summary: ImpactSummary,
 }
 
-/// Echoed view of the query target. Kept distinct from [`ImpactTarget`]
-/// so the on-disk schema can grow without touching the CLI's input
-/// type.
+/// Echoed view of the query target. Distinct from
+/// [`crate::types::ImpactTarget`] (the function input is an enum;
+/// the rendered output is a `{kind, id}` struct per design §4.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImpactTargetView {
+pub struct ImpactReportTarget {
     /// `"contract"` or `"component"`.
-    pub kind: ImpactNodeKind,
+    pub kind: ImpactReportTargetKind,
     /// The id the user passed (verbatim).
     pub id: String,
 }
 
-/// Node in the consumer set: a component plus the metadata needed to
-/// render it inside `human` output.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImpactNode {
-    /// Stable id (component id, since impact walks downstream to
-    /// consumers).
-    pub id: String,
-    /// `"contract"` or `"component"`.
-    pub kind: ImpactNodeKind,
-    /// Filesystem path of the consumer (engine-relative).
-    pub path: String,
-}
-
-/// Tag for whether a node is a contract or a component.
+/// Tag for whether the target of an impact query is a contract or a
+/// component. Serialises lowercase to match design §4.2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ImpactNodeKind {
+#[serde(rename_all = "lowercase")]
+pub enum ImpactReportTargetKind {
     /// A contract (a versioned data-format / API surface).
     Contract,
     /// A component (a unit of code that consumes/provides contracts).
     Component,
 }
 
-/// Three independent partitions over `transitive`. Each partition maps
-/// every transitive consumer to its value on that axis.
+/// Three independent partitions over `transitive_consumers`. Each
+/// partition maps every transitive consumer to its value on that axis.
+/// `BTreeMap` preserves a stable serialisation order across runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImpactPartitions {
     /// Component ids grouped by implementation language.
@@ -88,107 +86,146 @@ pub struct ImpactPartitions {
 }
 
 /// Aggregate counts at the bottom of the impact report.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImpactSummary {
-    /// `direct.len()`.
+    /// `direct_consumers.len()`.
     pub direct_count: u32,
-    /// `transitive.len()`.
+    /// `transitive_consumers.len()`.
     pub transitive_count: u32,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
     fn fixture() -> ImpactReport {
-        let mut by_language = BTreeMap::new();
-        by_language.insert(
-            "typescript".to_string(),
-            vec![
-                "ravel-lite/api".to_string(),
-                "ravel-lite/dashboard".to_string(),
-            ],
-        );
-        by_language.insert("rust".to_string(), vec!["ravel-lite/worker".to_string()]);
-
-        let mut by_deploy_graph = BTreeMap::new();
-        by_deploy_graph.insert(
-            "compose:dev".to_string(),
-            vec![
-                "ravel-lite/api".to_string(),
-                "ravel-lite/worker".to_string(),
-                "ravel-lite/dashboard".to_string(),
-            ],
-        );
-
-        let mut by_lifecycle = BTreeMap::new();
-        by_lifecycle.insert(
-            "runtime".to_string(),
-            vec![
-                "ravel-lite/api".to_string(),
-                "ravel-lite/worker".to_string(),
-                "ravel-lite/dashboard".to_string(),
-            ],
-        );
-
         ImpactReport {
             schema_version: 1,
-            generated_at: Utc.with_ymd_and_hms(2026, 5, 8, 14, 30, 11).unwrap(),
-            target: ImpactTargetView {
-                kind: ImpactNodeKind::Contract,
-                id: "atlas-contracts/index-schema/v1".to_string(),
+            generated_at: DateTime::parse_from_rfc3339("2026-05-08T14:30:11Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            target: ImpactReportTarget {
+                kind: ImpactReportTargetKind::Contract,
+                id: "atlas-contracts/index-schema/v1".into(),
             },
-            direct: vec![ImpactNode {
-                id: "ravel-lite/api".to_string(),
-                kind: ImpactNodeKind::Component,
-                path: "ravel-lite/api".to_string(),
-            }],
-            transitive: vec![
-                ImpactNode {
-                    id: "ravel-lite/api".to_string(),
-                    kind: ImpactNodeKind::Component,
-                    path: "ravel-lite/api".to_string(),
-                },
-                ImpactNode {
-                    id: "ravel-lite/worker".to_string(),
-                    kind: ImpactNodeKind::Component,
-                    path: "ravel-lite/worker".to_string(),
-                },
+            direct_consumers: vec!["ravel-lite/api".into(), "ravel-lite/worker".into()],
+            transitive_consumers: vec![
+                "ravel-lite/api".into(),
+                "ravel-lite/worker".into(),
+                "ravel-lite/dashboard".into(),
+                "ops/observability-shipper".into(),
             ],
             partitions: ImpactPartitions {
-                by_language,
-                by_deploy_graph,
-                by_lifecycle,
+                by_language: [
+                    (
+                        "typescript".into(),
+                        vec!["ravel-lite/api".into(), "ravel-lite/dashboard".into()],
+                    ),
+                    ("rust".into(), vec!["ravel-lite/worker".into()]),
+                    ("elixir".into(), vec!["ops/observability-shipper".into()]),
+                ]
+                .into_iter()
+                .collect(),
+                by_deploy_graph: [
+                    (
+                        "compose:dev".into(),
+                        vec![
+                            "ravel-lite/api".into(),
+                            "ravel-lite/worker".into(),
+                            "ravel-lite/dashboard".into(),
+                        ],
+                    ),
+                    (
+                        "compose:ops".into(),
+                        vec!["ops/observability-shipper".into()],
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+                by_lifecycle: [
+                    (
+                        "runtime".into(),
+                        vec![
+                            "ravel-lite/api".into(),
+                            "ravel-lite/worker".into(),
+                            "ravel-lite/dashboard".into(),
+                            "ops/observability-shipper".into(),
+                        ],
+                    ),
+                    ("build-time".into(), vec![]),
+                    ("test-only".into(), vec![]),
+                ]
+                .into_iter()
+                .collect(),
             },
             summary: ImpactSummary {
-                direct_count: 1,
-                transitive_count: 2,
+                direct_count: 2,
+                transitive_count: 4,
             },
         }
     }
 
     #[test]
     fn impact_report_round_trips_yaml() {
-        let original = fixture();
-        let yaml = serde_yaml::to_string(&original).unwrap();
-        let round_tripped: ImpactReport = serde_yaml::from_str(&yaml).unwrap();
-        assert_eq!(original, round_tripped);
+        let report = fixture();
+        let yaml = serde_yaml::to_string(&report).expect("serialise");
+        let parsed: ImpactReport = serde_yaml::from_str(&yaml).expect("parse");
+        assert_eq!(report, parsed);
     }
 
     #[test]
     fn impact_report_round_trips_json() {
-        let original = fixture();
-        let json = serde_json::to_string(&original).unwrap();
-        let round_tripped: ImpactReport = serde_json::from_str(&json).unwrap();
-        assert_eq!(original, round_tripped);
+        let report = fixture();
+        let json = serde_json::to_string(&report).expect("serialise");
+        let parsed: ImpactReport = serde_json::from_str(&json).expect("parse");
+        assert_eq!(report, parsed);
     }
 
     #[test]
-    fn impact_node_kind_serialises_snake_case() {
-        let yaml = serde_yaml::to_string(&ImpactNodeKind::Contract).unwrap();
+    fn impact_report_target_kind_serialises_lowercase() {
+        let yaml = serde_yaml::to_string(&ImpactReportTargetKind::Contract).unwrap();
         assert!(yaml.contains("contract"));
-        let yaml = serde_yaml::to_string(&ImpactNodeKind::Component).unwrap();
+        let yaml = serde_yaml::to_string(&ImpactReportTargetKind::Component).unwrap();
         assert!(yaml.contains("component"));
+    }
+
+    /// Parse the design §4.2 YAML exemplar verbatim and confirm it
+    /// deserialises into the in-memory shape the rest of the crate
+    /// expects. This pins the wire format against drift in either
+    /// direction (struct rename or spec rewrite).
+    #[test]
+    fn impact_report_matches_design_spec_exemplar() {
+        let yaml = r#"schema_version: 1
+generated_at: 2026-05-08T14:30:11Z
+target:
+  kind: contract
+  id: "atlas-contracts/index-schema/v1"
+direct_consumers:
+  - "ravel-lite/api"
+  - "ravel-lite/worker"
+transitive_consumers:
+  - "ravel-lite/api"
+  - "ravel-lite/worker"
+  - "ravel-lite/dashboard"
+  - "ops/observability-shipper"
+partitions:
+  by_language:
+    typescript: ["ravel-lite/api", "ravel-lite/dashboard"]
+    rust: ["ravel-lite/worker"]
+    elixir: ["ops/observability-shipper"]
+  by_deploy_graph:
+    "compose:dev": ["ravel-lite/api", "ravel-lite/worker", "ravel-lite/dashboard"]
+    "compose:ops": ["ops/observability-shipper"]
+  by_lifecycle:
+    runtime: ["ravel-lite/api", "ravel-lite/worker", "ravel-lite/dashboard", "ops/observability-shipper"]
+    build-time: []
+    test-only: []
+summary:
+  direct_count: 2
+  transitive_count: 4
+"#;
+
+        let parsed: ImpactReport = serde_yaml::from_str(yaml).expect("parse design exemplar");
+        assert_eq!(parsed, fixture());
     }
 }
