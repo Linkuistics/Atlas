@@ -86,7 +86,19 @@ fn write_then_rename(temp_path: &Path, dest_path: &Path, bytes: &[u8]) -> io::Re
     #[cfg(feature = "atomic_write_panic_after_temp")]
     self::test_hooks_pub::maybe_panic_before_rename();
 
-    fs::rename(temp_path, dest_path)
+    fs::rename(temp_path, dest_path)?;
+
+    // Symmetric test-only hook: between rename and return,
+    // optionally panic to simulate a kill *after* the rename has
+    // landed. This pairs with the before-rename hook so PR-12's
+    // fixture suite can prove both branches of the atomic-write
+    // semantic: a kill before-rename leaves the destination
+    // fully-old, a kill after-rename leaves it fully-new. Same
+    // feature gate; same one-shot, thread-local discipline.
+    #[cfg(feature = "atomic_write_panic_after_temp")]
+    self::test_hooks_pub::maybe_panic_after_rename();
+
+    Ok(())
 }
 
 /// Compose the temp-file path: `<dest>.tmp.<pid>.<rand-u64>`. The temp
@@ -125,8 +137,23 @@ fn nonce_u64() -> u64 {
 
 /// Cross-crate test hooks for the atomic-write panic-injection
 /// fixture. Gated behind the `atomic_write_panic_after_temp` cargo
-/// feature so the hook compiles out of every build that does not
-/// explicitly opt in (Phase 3 plan §4 PR-8 acceptance criteria).
+/// feature so the hooks compile out of every build that does not
+/// explicitly opt in (Phase 3 plan §4 PR-8 + PR-12 acceptance
+/// criteria).
+///
+/// Two symmetric one-shot hooks are exposed:
+///
+/// - [`arm_panic_before_rename`] / [`disarm_panic_before_rename`] —
+///   panics between the temp-file write and the rename, so the
+///   destination remains fully-old (PR-8).
+/// - [`arm_panic_after_rename`] / [`disarm_panic_after_rename`] —
+///   panics after the rename has landed, so the destination is
+///   fully-new (PR-12).
+///
+/// Both arm flags are thread-local and one-shot: each hook
+/// auto-disarms the moment it fires, so a single armed bit cannot
+/// trip a subsequent atomic_write (e.g. a follow-on assertion
+/// path or a sibling write in the same test).
 ///
 /// Usage from a consumer crate's integration test:
 /// ```ignore
@@ -140,6 +167,7 @@ pub mod test_hooks_pub {
 
     thread_local! {
         static PANIC_BEFORE_RENAME: Cell<bool> = const { Cell::new(false) };
+        static PANIC_AFTER_RENAME: Cell<bool> = const { Cell::new(false) };
     }
 
     /// Arm the hook so the next call to [`super::atomic_write`] on
@@ -168,6 +196,36 @@ pub mod test_hooks_pub {
         });
         if armed {
             panic!("atomic_write test hook: simulated kill before rename");
+        }
+    }
+
+    /// Arm the hook so the next call to [`super::atomic_write`] on
+    /// this thread panics *after* the rename has landed (the
+    /// destination is already fully-new at this point). One-shot:
+    /// the hook auto-disarms when it fires, mirroring the
+    /// before-rename hook's discipline. PR-12's fixture suite uses
+    /// this to prove the "kill after rename" branch of the
+    /// atomic-write semantic — the destination must be fully-new.
+    pub fn arm_panic_after_rename() {
+        PANIC_AFTER_RENAME.with(|c| c.set(true));
+    }
+
+    /// Defensive disarm — call from a panic-safe guard if a test
+    /// might bail before the auto-disarm in
+    /// [`maybe_panic_after_rename`] fires.
+    pub fn disarm_panic_after_rename() {
+        PANIC_AFTER_RENAME.with(|c| c.set(false));
+    }
+
+    pub(super) fn maybe_panic_after_rename() {
+        let armed = PANIC_AFTER_RENAME.with(|c| {
+            let v = c.get();
+            // One-shot, matching the before-rename hook.
+            c.set(false);
+            v
+        });
+        if armed {
+            panic!("atomic_write test hook: simulated kill after rename");
         }
     }
 }

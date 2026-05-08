@@ -22,5 +22,16 @@ serde_yaml = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+# Re-export atlas-engine with the panic-injection feature so
+# `tests/atomic_writes.rs` (PR-12) can arm the kill-during-write
+# hooks. The feature is dev-dep only — release builds of the
+# atlas-reports library never see it (Phase 3 plan §4 PR-12
+# non-negotiable: the panic-injection hooks must NOT exist in
+# release builds).
+atlas-engine = { path = "../atlas-engine", features = ["atomic_write_panic_after_temp"] }
+rand = "0.8"
+tempfile = { workspace = true }
+
 [lints]
 workspace = true
