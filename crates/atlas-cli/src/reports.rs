@@ -5,7 +5,7 @@
 //! replace each handler body with the real load-database →
 //! call-`atlas_reports::*` → render-or-persist flow.
 //!
-//! PR-8 (`atlas drift`) reads the on-disk
+//! PR-8 (`atlas drift`) reads on-disk
 //! `<root>/.atlas/cache/components.yaml` and each component's
 //! `surfaces.yaml`, lifts contract+binding shas into
 //! `atlas_reports::drift_pure`, then atomically writes the report and
@@ -16,7 +16,19 @@
 //! PR-9 (`atlas impact`) reads from
 //! `Workspace::prior_components` / `Workspace::prior_related_components`
 //! via a hard-error `ReportsBackend` to enforce the same no-engine-
-//! recomputation invariant; PR-10/PR-11 will follow either pattern.
+//! recomputation invariant.
+//!
+//! PR-11 (`atlas divergence`) takes a different approach: it builds a
+//! full `AtlasDatabase` and runs the fixedpoint, relying on the
+//! persistent LLM cache to make recomputation near-free post-`atlas
+//! index`. The drift snapshot is read read-only from
+//! `<output>/.atlas/cache/contract-shas-snapshot.yaml`; the divergence
+//! report is atomically written to
+//! `<output>/.atlas/cache/reports/composition-divergence.yaml`. The
+//! mechanism difference vs PR-8/PR-9 is acknowledged as load-bearing
+//! for future converge-or-keep-divergent cleanup; PR-13's polyglot
+//! smoke test is the ground-truth verifier (cold = Phase 2 baseline,
+//! warm = 0, report-runs = 0 LLM calls).
 
 use std::fs;
 use std::io::Write;
@@ -25,21 +37,28 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use atlas_engine::{atomic_write, AtlasDatabase};
+use atlas_engine::{
+    all_components, atomic_write, expand_roots, run_fixedpoint, seed_filesystem_excluding,
+    surface_of, AtlasDatabase, FixedpointConfig, LlmResponseCache, PersistentCache,
+};
 use atlas_index::{
-    load_or_default_components, load_or_default_related_components, ComponentEntry,
-    ComponentsFile, ContractKind, SurfacesFile,
+    load_or_default_components, load_or_default_externals, load_or_default_overrides,
+    load_or_default_related_components, load_or_default_subsystems_overrides, ComponentEntry,
+    ComponentsFile, ContractKind, OverridesFile, SubsystemsOverridesFile, SurfacesFile,
 };
 use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest};
 use atlas_reports::{
-    drift_pure, impact as run_impact_report, ContractShaSnapshot, CurrentBinding, CurrentContract,
-    DriftReport, ImpactReport, ImpactReportTargetKind, ImpactTarget, ReportError, ReportInputs,
-    DERIVED_FROM_CONTRACT_SHA_ATTR,
+    divergence, drift_pure, impact as run_impact_report, ContractShaSnapshot, CurrentBinding,
+    CurrentContract, DivergenceReport, DriftReport, ImpactReport, ImpactReportTargetKind,
+    ImpactTarget, ReportError, ReportInputs, DERIVED_FROM_CONTRACT_SHA_ATTR,
 };
 use chrono::Utc;
 use clap::ValueEnum;
 use component_ontology::ComponentId;
 use serde_json::Value;
+
+use crate::backend;
+use crate::pipeline::DEFAULT_OUTPUT_SUBDIR;
 
 /// Output format selected by `--json | --yaml | --human`. Default is
 /// `Yaml`. Routing into per-format renderers is wired in PR-8..PR-11;
@@ -107,6 +126,17 @@ pub struct ModularityArgs {
 /// `atlas divergence` — pair-wise build-vs-deploy coupling check.
 #[derive(Debug, clap::Args)]
 pub struct DivergenceArgs {
+    /// Root of the workspace to analyse. Defaults to `.`. Must point
+    /// at a directory previously indexed by `atlas index` — the
+    /// engine's persistent cache makes the divergence run near-free
+    /// when so.
+    #[arg(default_value = ".")]
+    pub root: PathBuf,
+
+    /// Where the four Atlas YAMLs live. Defaults to `<root>/.atlas/`.
+    #[arg(long)]
+    pub output_dir: Option<PathBuf>,
+
     /// Output format. Defaults to `yaml`.
     #[arg(long, value_enum, default_value_t = OutputFormat::Yaml)]
     pub format: OutputFormat,
@@ -116,11 +146,6 @@ pub struct DivergenceArgs {
     #[arg(long)]
     pub no_write: bool,
 }
-
-/// Default name for the workspace `.atlas/` directory. Matches
-/// `atlas_cli::DEFAULT_OUTPUT_SUBDIR`; copied here as a `&'static
-/// str` so the reports module does not pull in pipeline state.
-const DEFAULT_OUTPUT_SUBDIR: &str = ".atlas";
 
 /// Filename of the drift snapshot baseline under
 /// `<root>/.atlas/cache/`.
@@ -729,11 +754,291 @@ pub fn run_modularity_cmd(_args: ModularityArgs) -> Result<ExitCode> {
     Ok(ExitCode::from(1))
 }
 
-/// PR-7 stub for `atlas divergence`. PR-11 will replace this with the
-/// real flow: read the drift snapshot if any, call
-/// [`atlas_reports::divergence`], and (unless `--no-write`) atomically
-/// persist the report.
-pub fn run_divergence_cmd(_args: DivergenceArgs) -> Result<ExitCode> {
-    eprintln!("divergence is not yet implemented");
-    Ok(ExitCode::from(1))
+/// `atlas divergence` entry-point. Resolves the production backend,
+/// then forwards to [`run_divergence`]. The two-layer split lets
+/// integration tests call [`run_divergence`] with a non-production
+/// backend (e.g. [`atlas_llm::TestBackend`]) without requiring the
+/// `claude` CLI to be on PATH.
+pub fn run_divergence_cmd(args: DivergenceArgs) -> Result<ExitCode> {
+    let root = args
+        .root
+        .canonicalize()
+        .with_context(|| format!("failed to resolve root path {}", args.root.display()))?;
+    let output_dir = args
+        .output_dir
+        .clone()
+        .unwrap_or_else(|| root.join(DEFAULT_OUTPUT_SUBDIR));
+
+    let config_path = output_dir.join("config.yaml");
+    let atlas_config = atlas_llm::AtlasConfig::load(&config_path)
+        .with_context(|| format!("failed to load {}", config_path.display()))?;
+    let handles = backend::build_production_backend_with_counter(&atlas_config, &root, None, None)
+        .context("failed to build LLM backend")?;
+
+    let opts = DivergenceOptions {
+        root,
+        output_dir,
+        no_write: args.no_write,
+        format: args.format,
+        fingerprint_override: None,
+    };
+    let report = run_divergence(&opts, handles.backend.clone())?;
+    drop(handles);
+    print_divergence_summary(&report);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Knobs for [`run_divergence`]. Carved out from [`DivergenceArgs`] so
+/// integration tests can construct the option set without going
+/// through clap, and so the CLI handler can fold in computed paths
+/// (canonicalised root, defaulted output dir) before the library call.
+#[derive(Debug, Clone)]
+pub struct DivergenceOptions {
+    /// Canonicalised workspace root.
+    pub root: PathBuf,
+    /// Resolved `<root>/.atlas/` directory.
+    pub output_dir: PathBuf,
+    /// Skip the on-disk write of `composition-divergence.yaml`.
+    pub no_write: bool,
+    /// Output format for the rendered report (stdout).
+    pub format: OutputFormat,
+    /// Optional fingerprint override matching `atlas index`'s
+    /// `IndexConfig::fingerprint_override`. When `None`, the backend's
+    /// `fingerprint()` is installed verbatim.
+    pub fingerprint_override: Option<LlmFingerprint>,
+}
+
+/// Build the engine, compute the divergence report, render it to
+/// stdout, and (unless `no_write`) persist it to
+/// `<output>/.atlas/cache/reports/composition-divergence.yaml`.
+///
+/// The engine setup mirrors `atlas index`'s prologue but skips the
+/// LLM-budget gate, the writers for the four Atlas YAMLs, the
+/// per-component cache projections, and the analyser-overrides walk
+/// — the divergence report is read-only over the engine's outputs
+/// and never advances any on-disk state besides
+/// `composition-divergence.yaml` itself.
+pub fn run_divergence(
+    opts: &DivergenceOptions,
+    backend: Arc<dyn LlmBackend>,
+) -> Result<DivergenceReport> {
+    let db = build_database_for_reports(
+        &opts.root,
+        &opts.output_dir,
+        opts.fingerprint_override.clone(),
+        backend,
+    )?;
+
+    // Read the drift snapshot read-only. The file may be absent (no
+    // prior `atlas drift` run); a parse failure surfaces as a hard
+    // error so users notice corruption rather than silently emitting
+    // null-severity output.
+    let snapshot_path = opts.output_dir.join("cache/contract-shas-snapshot.yaml");
+    let drift_baseline = read_drift_snapshot_if_present(&snapshot_path)?;
+
+    let workspace = db.workspace();
+    let inputs = ReportInputs {
+        db: &db,
+        workspace: &workspace,
+    };
+
+    let report = divergence(inputs, drift_baseline.as_ref())
+        .map_err(|e| anyhow::anyhow!("divergence report failed: {e}"))?;
+
+    render_divergence(&report, opts.format)?;
+
+    if !opts.no_write {
+        let report_path = opts
+            .output_dir
+            .join("cache/reports/composition-divergence.yaml");
+        let yaml = serde_yaml::to_string(&report)
+            .context("failed to serialise composition-divergence.yaml")?;
+        atomic_write(&report_path, yaml.as_bytes()).with_context(|| {
+            format!(
+                "failed to write composition-divergence.yaml to {}",
+                report_path.display()
+            )
+        })?;
+    }
+
+    Ok(report)
+}
+
+/// Read `<output>/.atlas/cache/contract-shas-snapshot.yaml` (PR-8's
+/// drift baseline). Absent file → `Ok(None)`. Present-but-corrupt →
+/// `Err`. The function is intentionally read-only: divergence must
+/// never advance the snapshot (regression guard:
+/// `atlas_divergence_does_not_modify_drift_snapshot`).
+fn read_drift_snapshot_if_present(path: &Path) -> Result<Option<ContractShaSnapshot>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("failed to read drift snapshot {}", path.display()))?;
+    let parsed: ContractShaSnapshot = serde_yaml::from_slice(&bytes)
+        .with_context(|| format!("failed to parse drift snapshot {}", path.display()))?;
+    Ok(Some(parsed))
+}
+
+/// Construct an [`AtlasDatabase`] over `<root>`, seed the filesystem,
+/// install the prior YAMLs (so the engine's rename-match and edge-
+/// canonicalisation steps see the same baseline `atlas index` sees),
+/// and run the fixedpoint. After the call the database's Salsa graph
+/// is fully populated for reports to demand surfaces and edges
+/// against.
+fn build_database_for_reports(
+    root: &Path,
+    output_dir: &Path,
+    fingerprint_override: Option<LlmFingerprint>,
+    backend: Arc<dyn LlmBackend>,
+) -> Result<AtlasDatabase> {
+    // Mirror `run_index`'s prior-load + seed phases. The sub-paths
+    // are the canonical Phase 3 cache locations (PR-4 / PR-5).
+    let prior_components_path = output_dir.join("cache/components.yaml");
+    let prior_externals_path = output_dir.join("external-components.yaml");
+    let prior_related_path = output_dir.join("cache/related-components.yaml");
+    let overrides_path = output_dir.join("components.overrides.yaml");
+    let subsystems_overrides_path = output_dir.join("subsystems.overrides.yaml");
+
+    let prior_components = load_or_default_components(&prior_components_path)?;
+    let prior_externals = load_or_default_externals(&prior_externals_path)?;
+    let prior_related = load_or_default_related_components(&prior_related_path)?;
+    let overrides: OverridesFile = load_or_default_overrides(&overrides_path)?;
+    let subsystems_overrides: SubsystemsOverridesFile =
+        load_or_default_subsystems_overrides(&subsystems_overrides_path)?;
+
+    let fingerprint = fingerprint_override.unwrap_or_else(|| backend.fingerprint());
+
+    // Path-dep root expansion — same call `atlas index` makes so that
+    // multi-root workspaces flow through identically.
+    let auto_expanded = expand_roots(root).context("failed to expand path-dep roots")?;
+    let roots: Vec<PathBuf> = if auto_expanded.is_empty() {
+        vec![root.to_path_buf()]
+    } else {
+        auto_expanded
+    };
+
+    let mut db = AtlasDatabase::new(backend, roots.clone(), fingerprint);
+
+    // Open the persistent on-disk cache. A failure here is non-fatal —
+    // we degrade to in-memory cache. The CLI test pattern is "run
+    // `atlas index` first, then `atlas divergence`" — the persistent
+    // cache makes the divergence run a no-op LLM-call-wise.
+    let persistent_cache_root = output_dir.join("cache");
+    let llm_cache = match PersistentCache::open(&persistent_cache_root) {
+        Ok(cache) => LlmResponseCache::new_with_persistent(cache),
+        Err(_) => LlmResponseCache::new(),
+    };
+    db.set_llm_cache(llm_cache);
+
+    // Match `run_index`'s exclusion shape: the primary root excludes
+    // the output dir; peer roots get an empty exclusion.
+    let mut excluded_dirs: Vec<PathBuf> = Vec::with_capacity(roots.len());
+    excluded_dirs.push(output_dir.to_path_buf());
+    for _ in 1..roots.len() {
+        excluded_dirs.push(PathBuf::new());
+    }
+    seed_filesystem_excluding(&mut db, &roots, &excluded_dirs, true)
+        .context("failed to seed filesystem")?;
+
+    db.set_prior_components(prior_components);
+    db.set_prior_externals(prior_externals);
+    db.set_prior_related_components(prior_related);
+    db.set_components_overrides(overrides);
+    db.set_subsystems_overrides(subsystems_overrides);
+
+    let fp_config = FixedpointConfig::default();
+    let _fp_result = run_fixedpoint(&mut db, fp_config);
+
+    // Pre-warm surfaces so the divergence report's `surface_artefacts_of`
+    // calls land Salsa cache hits rather than restarting fixedpoint
+    // dependencies. Without the pre-warm, the report's first contract-
+    // sha lookup would block on a cold L5 surface query.
+    let live: Vec<_> = all_components(&db)
+        .iter()
+        .filter(|c| !c.deleted)
+        .cloned()
+        .collect();
+    for comp in &live {
+        let _ = surface_of(&db, comp.id.clone());
+    }
+
+    Ok(db)
+}
+
+/// Render the report to stdout in the requested format. Errors are
+/// surfaced verbatim — divergence's render path is the same shape PR-
+/// 8/9/10 use for their own reports.
+fn render_divergence(report: &DivergenceReport, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Yaml => {
+            let yaml = serde_yaml::to_string(report)
+                .context("failed to render divergence report as YAML")?;
+            print!("{yaml}");
+        }
+        OutputFormat::Json => {
+            let json = serde_json::to_string_pretty(report)
+                .context("failed to render divergence report as JSON")?;
+            println!("{json}");
+        }
+        OutputFormat::Human => {
+            print_divergence_human(report);
+        }
+    }
+    Ok(())
+}
+
+/// Pretty-print the report for `--format human`. The format mirrors
+/// the design §4.4 example layout.
+fn print_divergence_human(report: &DivergenceReport) {
+    println!("composition divergence report");
+    println!("  generated_at: {}", report.generated_at);
+    match report.drift_baseline_at {
+        Some(t) => println!("  drift_baseline_at: {}", t),
+        None => println!("  drift_baseline_at: <absent — severity is null for all pairs>"),
+    }
+    if report.divergent_pairs.is_empty() {
+        println!("  no divergent pairs");
+    } else {
+        println!("  divergent pairs:");
+        for pair in &report.divergent_pairs {
+            let coupling = match pair.coupling {
+                atlas_reports::DivergenceCoupling::BuildOnly => "build_only",
+                atlas_reports::DivergenceCoupling::DeployOnly => "deploy_only",
+            };
+            let severity = match pair.severity {
+                Some(s) => s.to_string(),
+                None => "null".into(),
+            };
+            println!(
+                "    {} <-> {}  ({}, severity {})",
+                pair.components[0], pair.components[1], coupling, severity,
+            );
+            for c in &pair.drifting_contracts {
+                println!("      drift: {c}");
+            }
+        }
+    }
+}
+
+/// Print the run summary on stdout (the trailing single-line summary
+/// the design spec §4.4 mandates: total pairs examined, divergent
+/// count, by-severity histogram). Called after rendering so the
+/// summary appears at the bottom of the output.
+fn print_divergence_summary(report: &DivergenceReport) {
+    let s = &report.summary;
+    let mut hist_parts: Vec<String> = s
+        .by_severity
+        .iter()
+        .map(|(k, v)| format!("{k}: {v}"))
+        .collect();
+    if hist_parts.is_empty() {
+        hist_parts.push("(empty — no baseline)".into());
+    }
+    eprintln!(
+        "atlas divergence: {} pairs examined; {} divergent; severity histogram: {{ {} }}",
+        s.total_pairs_examined,
+        s.divergent_count,
+        hist_parts.join(", "),
+    );
 }
