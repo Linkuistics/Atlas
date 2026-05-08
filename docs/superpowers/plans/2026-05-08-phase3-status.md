@@ -7,10 +7,14 @@ continuation prompt at
 reads this file (via the `*phase3-plan*` wildcard match) to find the
 next PR to dispatch.
 
-**Last updated:** 2026-05-08 (PR-8 landed: drift report + `atlas
-drift` CLI subcommand). Wave 5 in progress: PR-9 / PR-10 / PR-11
-agents running in pre-staged worktrees off main HEAD `6b83425` (the
-PR-6 status commit). PR-8's commit on main is `1060edb`.
+**Last updated:** 2026-05-08 (Wave 5 complete: PR-8 drift, PR-9
+impact, PR-10 modularity, PR-11 divergence all landed on main).
+Wave 6 (PR-12 atomic-write fixture suite) and Wave 7 (PR-13 polyglot
+smoke test) are now dispatchable. Wave 5 commits on main:
+- PR-8 drift: `1060edb`
+- PR-9 impact: `0ec65c5`
+- PR-11 divergence: `8ddd3c5`
+- PR-10 modularity: `4ce7245`
 
 ## PR status
 
@@ -28,9 +32,9 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-6  — Overrides schema extension: `edges_add` / `edges_suppress` + per-component field overrides
 - [x] PR-7  — `atlas-reports` crate scaffold + CLI subcommand framework
 - [x] PR-8  — Drift report + `atlas drift` CLI subcommand
-- [ ] PR-9  — Impact query + `atlas impact <id>` CLI subcommand
-- [ ] PR-10 — Modularity report + `atlas modularity` CLI subcommand
-- [ ] PR-11 — Composition divergence + `atlas divergence` CLI subcommand
+- [x] PR-9  — Impact query + `atlas impact <id>` CLI subcommand
+- [x] PR-10 — Modularity report + `atlas modularity` CLI subcommand
+- [x] PR-11 — Composition divergence + `atlas divergence` CLI subcommand
 - [ ] PR-12 — Atomic-write fixture suite for stateful files
 - [ ] PR-13 — Acceptance: Phase 3 polyglot smoke test
 
@@ -872,4 +876,268 @@ committing on the branch. The orchestrator (this session) handled
 the commit + cherry-pick + verification cycle. Work product is
 sound; the orchestration overhead is a fact of life with multi-PR
 parallel agent dispatch and large per-PR LOC budgets.
+
+### PR-9
+2026-05-08 — Landed: impact query + `atlas impact <id>` CLI
+subcommand. Cherry-picked onto main as `0ec65c5` from worktree
+branch `phase3-pr9` commit `d6484a8` (6 files, +1283 / −39). The
+implementing agent generated a clean DONE report; orchestrator
+made one fix-up during the cherry-pick (see below).
+
+**Code surface:**
+- `crates/atlas-reports/src/impact.rs` — `pub fn impact(inputs,
+  target)` returns `Result<ImpactReport, ReportError>`. Resolves
+  contract-id-vs-component-id via two-pass lookup, walks
+  `consumes-contract` edges with a seen-set (cycle-safe), unions
+  impact across contracts when target is a component, builds three
+  independent partitions (language / deploy_graph / lifecycle), and
+  returns Levenshtein-1 candidates on TargetNotFound. Includes an
+  inline `levenshtein_distance_1_candidates` helper (no external
+  crate).
+- `crates/atlas-reports/Cargo.toml` — adds `salsa` workspace dep.
+- `crates/atlas-cli/src/reports.rs` — `atlas impact` handler reads
+  from `Workspace::prior_components` / `Workspace::prior_related_components`
+  (the YAMLs `atlas index` already wrote) via a hard-error
+  `ReportsBackend` that fails loudly on any LLM call attempt. Renders
+  to stdout in YAML/JSON/human format. Exit 0 on success; exit 2 +
+  "did you mean: ..." on TargetNotFound.
+- `crates/atlas-cli/Cargo.toml` — adds `salsa` workspace dep.
+- `crates/atlas-cli/tests/atlas_impact_cli.rs` — 4 CLI integration
+  tests.
+
+**Orchestrator fix-up during cherry-pick:**
+- Replaced `atlas_cli::DEFAULT_OUTPUT_SUBDIR` with
+  `crate::DEFAULT_OUTPUT_SUBDIR` at `reports.rs:570`. The original
+  symbol path works from `main.rs` (binary referencing the lib
+  externally) and from `tests/`, but not from inside the lib's own
+  `src/`.
+- Header docstring + imports union-merged with PR-8 (drift) which
+  landed on main earlier as `1060edb`.
+
+**Architectural deviation (significant):** PR-9 reads from on-disk
+YAMLs rather than calling `all_components(db)` / `all_proposed_edges(db)`
+on a live engine database. Plan §4 PR-9 prescribed `ReportInputs {
+db, workspace }`; PR-9 instead populates `Workspace::prior_*` slots
+from `<output>/cache/*.yaml` and uses a hard-error backend. Per
+design §3.1 / §3.3 ("reports observe what the engine has already
+produced"), this is a sound interpretation, but it differs from
+PR-10 / PR-11's choice (which build a full database and run the
+fixedpoint, relying on the persistent LLM cache). PR-13's polyglot
+smoke test is the ground-truth verifier (cold = Phase 2 baseline,
+warm = 0, report-runs = 0 LLM calls).
+
+**Other deviations:**
+- Deploy-graph partition keys: design exemplar shows
+  `compose:dev` / `compose:ops` synthetic labels; PR-9 uses the
+  orchestration component's id (e.g. `ravel-lite/compose-dev`)
+  derived from `bundled-into` edges. Wire format
+  (`BTreeMap<String, Vec<String>>`) accepts any string key.
+- Lifecycle partition keys: design exemplar shows
+  `runtime` / `build-time` / `test-only`; PR-9 uses the canonical
+  `LifecycleScope::as_str()` values (`runtime` / `build` / `test` /
+  `deploy` / etc.).
+
+**Acceptance criteria:** 9 unit tests in impact.rs +
+4 CLI integration tests in atlas_impact_cli.rs.
+
+### PR-11
+2026-05-08 — Landed: composition divergence report + `atlas
+divergence` CLI subcommand. Cherry-picked onto main as `8ddd3c5`
+from worktree branch `phase3-pr11` commit `4c0d927` (4 files,
++1268 / −35). The implementing agent generated a clean DONE
+report; orchestrator made three fix-ups during the cherry-pick
+(see below).
+
+**Code surface:**
+- `crates/atlas-reports/src/divergence.rs` — `pub fn divergence(
+  inputs, drift_baseline)` returns `Result<DivergenceReport,
+  ReportError>`. Builds build-graph (direct `depends-on`) and
+  deploy-graph (any composition edge), iterates unordered
+  component pairs, classifies each as `build_coupled XOR
+  deploy_coupled`, computes severity from drift baseline. Sorts
+  divergent pairs lexicographically by `(min, max)` for
+  determinism.
+- `crates/atlas-cli/src/reports.rs` — `run_divergence_cmd` builds a
+  full `AtlasDatabase`, runs the fixedpoint (relying on the
+  persistent LLM cache for warm-no-cost), reads the optional drift
+  snapshot read-only from
+  `<output>/.atlas/cache/contract-shas-snapshot.yaml`, calls
+  `atlas_reports::divergence`, atomically writes
+  `<output>/.atlas/cache/reports/composition-divergence.yaml` via
+  `atlas_engine::atomic_write` unless `--no-write`.
+- `crates/atlas-cli/src/lib.rs` — promoted `pub mod reports` so
+  integration tests can call `run_divergence` directly. PR-9
+  already had this on its branch; main reflects it from PR-9's
+  cherry-pick.
+- `crates/atlas-cli/Cargo.toml` — adds `chrono` dev-dep.
+- `crates/atlas-cli/tests/divergence_cli.rs` — 4 CLI integration
+  tests including the `does_not_modify_drift_snapshot` regression
+  guard (asserts both bytes-equality and mtime-equality of the
+  snapshot before/after the divergence run).
+
+**Orchestrator fix-ups during cherry-pick:**
+- Header docstring + imports union-merged with PR-8 (drift) +
+  PR-9 (impact).
+- `print_human(&DivergenceReport)` renamed to
+  `print_divergence_human` to avoid collision with PR-9's
+  `print_human(&ImpactReport)` (Rust does not have function
+  overloading).
+- Removed duplicate local `const DEFAULT_OUTPUT_SUBDIR: &str =
+  ".atlas";` (the import from `crate::pipeline` is canonical).
+
+**Architectural call (acknowledged):** PR-11 builds a full
+`AtlasDatabase` and runs the fixedpoint, mirroring PR-10's
+approach. This is a different mechanism than PR-8/PR-9's
+read-from-YAMLs. Both satisfy the no-new-LLM-calls invariant; the
+mechanism difference is load-bearing for future
+converge-or-keep-divergent cleanup.
+
+**PR-8 dependency handling:** divergence's CLI tests hand-craft the
+drift snapshot via `serde_yaml::to_string` of an in-memory
+`ContractShaSnapshot`, decoupling PR-11 verification from PR-8's
+landing order.
+
+**Code-duplication tracking item:** PR-11 introduces a private
+`build_database_for_reports` helper in `reports.rs`. PR-10 added a
+parallel `build_engine_database` in `pipeline.rs` (better location).
+Future cleanup PR should converge the two through a shared inner
+helper. Track as Phase 3 / 4 cleanup; not blocking.
+
+**Acceptance criteria:** 9 unit tests in divergence.rs +
+4 CLI integration tests in divergence_cli.rs.
+
+### PR-10
+2026-05-08 — Landed: modularity report + `atlas modularity` CLI
+subcommand. Cherry-picked onto main as `4ce7245` from worktree
+branch `phase3-pr10` commit `36e7242` (6 files, +2078 / −42 — the
+largest single PR in Phase 3). The implementing agent generated a
+clean DONE report; orchestrator made three fix-ups during the
+cherry-pick (see below).
+
+**Code surface:**
+- `crates/atlas-reports/src/modularity.rs` — six metric formulas
+  (Ca / Ce / Instability / Cohesion / Surface stability / Surface
+  complexity), history rotation (FIFO, hard cap 5 entries),
+  subsystem aggregates with `>2σ` outlier flagging. Pure-function
+  over `ReportInputs` + `prior_per_component: HashMap<ComponentId,
+  ModularityHistory>`. The `HISTORY_CAP` is a private `const usize
+  = 5`, **not configurable** — its docstring cites plan §7.3's
+  deferred-indefinitely list.
+- `crates/atlas-cli/src/reports.rs` — `run_modularity_cmd`
+  (production entry) + `run_modularity` (library entry,
+  integration-testable) + `ModularityRunOptions` +
+  `render_modularity_human`. The handler walks every component,
+  reads each prior `<component>/.atlas/cache/modularity.yaml` if
+  present, calls `atlas_reports::modularity`, then unless
+  `--no-write` writes per-component files atomically AND the top-
+  level `<root>/.atlas/cache/reports/modularity-rollup.yaml`
+  atomically.
+- `crates/atlas-cli/src/pipeline.rs` — new `pub fn
+  build_engine_database` (the L4–L6 fixedpoint + L5 pre-warm
+  without writes) and `pub fn resolve_component_dir`. Parallel to
+  `run_index`; convergence deferred. The CLI handler carries its
+  own `--budget` / `--no-budget` posture (mirrors `atlas index`).
+- `crates/atlas-cli/src/lib.rs` — exposes the new module + helpers.
+- `crates/atlas-cli/Cargo.toml` — adds `atlas-reports`,
+  `chrono`, `serde_yaml` dev-deps.
+- `crates/atlas-cli/tests/atlas_modularity.rs` — 5 CLI integration
+  tests.
+
+**Orchestrator fix-ups during cherry-pick:**
+- Header docstring + imports union-merged with PR-8 / PR-9 / PR-11.
+- Removed PR-10's duplicate `use atlas_cli::reports;` (PR-9 already
+  added it on main as `main.rs:157`).
+- Auto-merged Cargo.toml's atlas-reports dev-dep addition.
+
+**Deviations:**
+- `subsystem_outlier_flagged_at_2_sigma` fixture: plan called for
+  "one member at 2.5σ from mean → flagged" but with three
+  sample-stddev members the maximum achievable z-score is √2 ≈
+  1.414σ, structurally below 2σ. The test uses 8 members (seven at
+  0.0, one at 1.0) which produces ≈2.475σ — still satisfies
+  ">2σ flagged" semantics. Inline comment walks through the
+  arithmetic.
+- Subsystem aggregates use `surfaces.contracts_defined.len()` for
+  `total_bindings` (one defining binding per contract today). If
+  Phase 4+ adds multi-binding contracts, this becomes a
+  sum-of-bindings; the helper signature
+  `compute_surface_complexity(provided, total_bindings)` already
+  accommodates both shapes.
+- Test name typography: plan listed `ce_counts_distinct_provided-by`
+  with a hyphen; renamed to `ce_counts_distinct_provided_by`
+  (Rust identifiers do not allow hyphens).
+
+**Architectural call:** PR-10 follows PR-11's pattern (full engine
+database + fixedpoint with cached LLM responses) rather than
+PR-8/PR-9's read-from-YAMLs. PR-13's smoke test is the
+ground-truth verifier.
+
+**Acceptance criteria:** 9 metric tests + 2 history-rotation tests
++ 5 subsystem tests + 5 CLI integration tests = 21 of 21.
+
+## Wave 5 closeout — 2026-05-08
+
+**Wave 5 is complete.** All four reports (PR-8 drift / PR-9 impact /
+PR-10 modularity / PR-11 divergence) are on main with passing tests.
+Verification on main with all four landed:
+- `cargo test --workspace --no-fail-fast` — all green.
+- `cargo clippy --all-targets -- -D warnings` — clean.
+- `cargo fmt --check` — clean.
+- `cargo build --release` — clean (panic-injection hook absent).
+
+**Cumulative session learnings** captured for future sessions:
+
+- **Parallel agent dispatch with large per-PR LOC budgets is high
+  variance.** PR-8's agent did the work but didn't generate a DONE
+  report or commit (likely token-budget exhaustion at 240k tokens /
+  130 tool uses). Other three agents reported cleanly. The
+  orchestrator (this session) ran cargo verification on the
+  worktree, committed on the branch, and cherry-picked onto main
+  for all four PRs. Rule of thumb: don't trust agents to commit
+  cleanly across multi-thousand-LOC PRs; always verify the worktree
+  state independently.
+
+- **Status file is orchestrator-owned.** Two of four Wave 5 agents
+  (PR-9 + PR-11) included status-file edits in their commits despite
+  the prompt instructing otherwise. Cherry-pick conflicts on the
+  status file are easy to resolve (`git checkout HEAD -- ...`) but
+  the cleaner fix is a stronger upfront prompt: explicit "DO NOT
+  MODIFY docs/superpowers/plans/*.md" line.
+
+- **Architectural divergence between report PRs.** PR-8/PR-9 read
+  from on-disk YAMLs (no engine recomputation); PR-10/PR-11 build a
+  full database and rely on the persistent LLM cache for warm-no-
+  cost. Both satisfy the no-new-LLM-calls invariant but the
+  mechanism difference is real. Convergence to a single approach
+  is a Phase 3 / 4 cleanup; PR-13's smoke test verifies the
+  invariant holds across both.
+
+- **`reports.rs` cherry-pick conflict pattern.** All four Wave 5
+  PRs modified `crates/atlas-cli/src/reports.rs` to fill in
+  different stub bodies left by PR-7. Cherry-picking onto main with
+  prior PRs landed required:
+  1. Header docstring union-merge (each PR adds its description).
+  2. Imports union-merge (each PR adds disjoint import sets).
+  3. Function-name collision fix (`print_human` was used by both
+     PR-9 and PR-11 with different parameter types — Rust has no
+     overloading; one had to be renamed).
+  4. `DEFAULT_OUTPUT_SUBDIR` const dedup (PR-9 added a local const;
+     PR-11 imported the canonical one from `crate::pipeline`).
+  None of these is hard, but they accumulate. Sequential
+  cherry-pick with cargo check after each is the right cadence.
+
+- **Phantom polyglot failures recurred.** As in Wave 3, the
+  worktree-local `target/` artifacts caused
+  `phase2_polyglot_fixture` to fail on the worktree but pass 3/3
+  on main with the diff cherry-picked. Cherry-pick-then-verify is
+  the canonical resolution; do not trust worktree test output
+  alone for the polyglot suite.
+
+Wave 6 (PR-12 atomic-write fixture suite) is now dispatchable. PR-8
+already brought forward the panic-injection hook
+(`atlas_engine::atomic_write::test_hooks_pub`, gated behind the
+`atomic_write_panic_after_temp` cargo feature), so PR-12's scope
+narrows to "exercise the hook with the broader fixture suite across
+both stateful files (drift snapshot + modularity history)" rather
+than "add the hook AND the fixtures."
 
