@@ -222,7 +222,11 @@ pub fn run_index(
     reporter.on_event(ProgressEvent::Phase(Phase::Seed));
 
     // ---- load prior outputs ---------------------------------------
-    let prior_components_path = config.output_dir.join("components.yaml");
+    // PR-4 (Phase 3): top-level `components.yaml` moved to
+    // `<output>/.atlas/cache/components.yaml`. The reader here and the
+    // writer below both point at the cache sub-path so prior-run
+    // rename-match continues to work.
+    let prior_components_path = config.output_dir.join("cache/components.yaml");
     let prior_externals_path = config.output_dir.join("external-components.yaml");
     let prior_related_path = config.output_dir.join("related-components.yaml");
     let overrides_path = config.output_dir.join("components.overrides.yaml");
@@ -651,6 +655,21 @@ pub fn run_index(
     if !config.dry_run {
         std::fs::create_dir_all(&config.output_dir)
             .with_context(|| format!("failed to create {}", config.output_dir.display()))
+            .map_err(IndexError::Other)?;
+
+        // PR-4 (Phase 3): ensure the cache sub-directory exists before
+        // writing `cache/components.yaml`. The persistent LLM cache
+        // (PR-10) also lives here; `PersistentCache::open` creates this
+        // directory on success, but we may have fallen back to in-memory
+        // if open failed. An explicit mkdir-p makes the write
+        // unconditional.
+        std::fs::create_dir_all(config.output_dir.join("cache"))
+            .with_context(|| {
+                format!(
+                    "failed to create cache directory {}",
+                    config.output_dir.join("cache").display()
+                )
+            })
             .map_err(IndexError::Other)?;
 
         // PR-1 (Phase 3): make sure the workspace-scope `.gitignore`

@@ -385,7 +385,8 @@ fn polyglot_fixture_classifies_all_components_and_emits_expected_edges() {
     let backend = PR14Backend::new();
     run_with(&config, backend);
 
-    let components_path = config.output_dir.join("components.yaml");
+    // PR-4 (Phase 3): top-level components.yaml moved to cache/.
+    let components_path = config.output_dir.join("cache/components.yaml");
     let bytes = std::fs::read(&components_path).unwrap();
     let parsed: ComponentsFile = serde_yaml::from_slice(&bytes).unwrap_or_else(|e| {
         panic!(

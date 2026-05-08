@@ -292,7 +292,8 @@ fn fixture_produces_expected_components_edges_and_surfaces() {
     run_with(&config, backend);
 
     // ---- AC#1 — components.yaml lists components from both roots ----
-    let components_path = primary.join(".atlas/components.yaml");
+    // PR-4 (Phase 3): top-level components.yaml moved to cache/.
+    let components_path = primary.join(".atlas/cache/components.yaml");
     assert!(
         components_path.exists(),
         "components.yaml must exist at {}",

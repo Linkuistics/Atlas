@@ -124,7 +124,8 @@ fn pipeline_run_twice_produces_identical_components_yaml() {
     let backend1 = CountingBackend::new(inner1);
     let backend1_dyn: Arc<dyn LlmBackend> = backend1.clone();
     let _ = run_index(&config, backend1_dyn, None, Arc::clone(&reporter)).unwrap();
-    let first = std::fs::read(config.output_dir.join("components.yaml")).unwrap();
+    // PR-4 (Phase 3): components.yaml moved to cache/.
+    let first = std::fs::read(config.output_dir.join("cache/components.yaml")).unwrap();
 
     // The per-component demand loop (commit af02e35) must have issued
     // at least one Stage1Surface call. Filtering by `PromptId` is what
@@ -148,7 +149,7 @@ fn pipeline_run_twice_produces_identical_components_yaml() {
     let backend2 = CountingBackend::new(inner2);
     let backend2_dyn: Arc<dyn LlmBackend> = backend2.clone();
     let _ = run_index(&config, backend2_dyn, None, Arc::clone(&reporter2)).unwrap();
-    let second = std::fs::read(config.output_dir.join("components.yaml")).unwrap();
+    let second = std::fs::read(config.output_dir.join("cache/components.yaml")).unwrap();
 
     assert_eq!(
         first, second,

@@ -55,11 +55,12 @@ edition = "2021"
         .stderr(contains("↳"));
 
     let atlas_dir = root.join(".atlas");
-    for f in [
-        "components.yaml",
-        "external-components.yaml",
-        "related-components.yaml",
-    ] {
+    // PR-4 (Phase 3): components.yaml moved to cache/ sub-directory.
+    assert!(
+        atlas_dir.join("cache/components.yaml").exists(),
+        "cache/components.yaml should exist after index"
+    );
+    for f in ["external-components.yaml", "related-components.yaml"] {
         assert!(atlas_dir.join(f).exists(), "{f} should exist after index");
     }
     // PR-10: the persistent content-addressed cache replaces the v1

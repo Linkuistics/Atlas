@@ -163,7 +163,8 @@ fn first_run_produces_the_three_generated_yamls() {
         summary.component_count >= 2,
         "expected lib + cli, got {summary:?}"
     );
-    assert!(config.output_dir.join("components.yaml").exists());
+    // PR-4 (Phase 3): components.yaml moved to cache/.
+    assert!(config.output_dir.join("cache/components.yaml").exists());
     assert!(config.output_dir.join("external-components.yaml").exists());
     assert!(config.output_dir.join("related-components.yaml").exists());
     assert!(
@@ -185,7 +186,8 @@ fn second_run_on_unchanged_fixture_is_byte_identical() {
         make_stderr_reporter(ProgressMode::Never, None),
     )
     .unwrap();
-    let first = std::fs::read(config.output_dir.join("components.yaml")).unwrap();
+    // PR-4 (Phase 3): components.yaml now lives in cache/.
+    let first = std::fs::read(config.output_dir.join("cache/components.yaml")).unwrap();
     let first_edges = std::fs::read(config.output_dir.join("related-components.yaml")).unwrap();
     let first_externals =
         std::fs::read(config.output_dir.join("external-components.yaml")).unwrap();
@@ -201,7 +203,7 @@ fn second_run_on_unchanged_fixture_is_byte_identical() {
         make_stderr_reporter(ProgressMode::Never, None),
     )
     .unwrap();
-    let second = std::fs::read(config.output_dir.join("components.yaml")).unwrap();
+    let second = std::fs::read(config.output_dir.join("cache/components.yaml")).unwrap();
     let second_edges = std::fs::read(config.output_dir.join("related-components.yaml")).unwrap();
     let second_externals =
         std::fs::read(config.output_dir.join("external-components.yaml")).unwrap();
@@ -295,7 +297,8 @@ fn dry_run_produces_summary_but_writes_no_files() {
 
     assert!(!summary.outputs_written);
     assert!(summary.component_count >= 2);
-    assert!(!config.output_dir.join("components.yaml").exists());
+    // PR-4 (Phase 3): components.yaml moved to cache/.
+    assert!(!config.output_dir.join("cache/components.yaml").exists());
     assert!(!config.output_dir.join("external-components.yaml").exists());
     assert!(!config.output_dir.join("related-components.yaml").exists());
 }
@@ -331,7 +334,8 @@ fn tiny_budget_triggers_budget_exhausted_and_no_writes() {
         "expected BudgetExhausted, got {err:?}"
     );
     assert!(
-        !config.output_dir.join("components.yaml").exists(),
+        // PR-4 (Phase 3): components.yaml moved to cache/.
+        !config.output_dir.join("cache/components.yaml").exists(),
         "budget-exhausted run must not have written outputs"
     );
 }
@@ -436,7 +440,8 @@ fn no_overrides_skips_loading_pins_so_suppress_does_not_apply() {
 
     // Wipe outputs so the second run starts fresh; the LLM cache also
     // has to clear so we observe behaviour, not a cached re-projection.
-    std::fs::remove_file(config.output_dir.join("components.yaml")).unwrap();
+    // PR-4 (Phase 3): components.yaml is now at cache/components.yaml;
+    // remove_dir_all("cache") removes it along with the LLM cache blobs.
     std::fs::remove_dir_all(config.output_dir.join("cache")).ok();
 
     let mut config_no_overrides = config.clone();
@@ -879,7 +884,8 @@ fn setup_error_aborts_pipeline_and_writes_no_outputs() {
         "backend must have been invoked at least once for the sentinel to trip"
     );
     assert!(
-        !config.output_dir.join("components.yaml").exists(),
+        // PR-4 (Phase 3): components.yaml moved to cache/.
+        !config.output_dir.join("cache/components.yaml").exists(),
         "setup-failed run must not write components.yaml"
     );
     assert!(

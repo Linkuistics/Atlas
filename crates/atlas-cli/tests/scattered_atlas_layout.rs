@@ -1,6 +1,6 @@
 //! PR-6 acceptance test: `atlas index` emits a per-component
 //! `<component-path>/.atlas/component.yaml` for every live component
-//! in addition to the top-level `<output>/.atlas/components.yaml`.
+//! in addition to the top-level `<output>/.atlas/cache/components.yaml`.
 //!
 //! ## What this test asserts
 //!
@@ -128,8 +128,9 @@ fn every_component_has_a_per_component_atlas_file_matching_the_top_level_project
     .expect("run_index succeeds");
     assert!(summary.outputs_written, "outputs must be written");
 
+    // PR-4 (Phase 3): top-level components.yaml moved to cache/.
     let top_level: ComponentsFile =
-        load_or_default_components(&config.output_dir.join("components.yaml")).unwrap();
+        load_or_default_components(&config.output_dir.join("cache/components.yaml")).unwrap();
     assert!(
         top_level.components.iter().any(|c| !c.deleted),
         "fixture must produce at least one live component, got {top_level:#?}"
