@@ -4,8 +4,8 @@
 //!
 //! (a) After `run_index`, every component directory contains a non-empty
 //!     `<component>/.atlas/cache/surfaces.yaml` (parseable as `SurfacesFile`).
-//! (b) No `<component>/.atlas/surfaces.yaml` exists at the old pre-PR-2 location
-//!     (i.e. directly in `.atlas/` without the `cache/` sub-directory).
+//! (b) No pre-PR-2 `surfaces.yaml` exists directly under `<component>/.atlas/`
+//!     (i.e. without the `cache/` sub-directory).
 //! (c) Cache-hit re-run: two consecutive runs with identical inputs produce
 //!     byte-identical `cache/surfaces.yaml` files (fingerprint-equality, not
 //!     mtime). This verifies the path move did not break Phase 1's L5 cache
