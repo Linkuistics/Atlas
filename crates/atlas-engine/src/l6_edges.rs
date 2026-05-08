@@ -23,6 +23,8 @@
 use std::sync::Arc;
 
 use atlas_index::{ComponentEntry, Stage, SurfacesFile};
+#[cfg(test)]
+use atlas_index::{EdgeAdd, EdgeSuppress};
 use atlas_llm::{LlmRequest, PromptId, ResponseSchema};
 use component_ontology::{Edge, EdgeKind, EvidenceGrade, LifecycleScope};
 use serde::Serialize;
@@ -30,7 +32,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::db::AtlasDatabase;
-use crate::l4_tree::all_components;
+use crate::l4_tree::{all_components, merged_overrides};
 use crate::l5_surface::{surface_artefacts_of, surface_of};
 use crate::l6_compose_edges::composition_edges_from_compose;
 use crate::l6_composition::composition_edges_from_dockerfiles;
@@ -108,7 +110,8 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
         combined.extend(contract_edges);
         combined.extend(composition_edges);
         combined.extend(compose_edges);
-        return Arc::new(canonicalise_edges(combined));
+        let canonicalised = canonicalise_edges(combined);
+        return Arc::new(apply_user_edge_overrides(db, canonicalised));
     }
 
     let surfaces: Vec<SurfaceWithId> = live
@@ -164,7 +167,8 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
             combined.extend(contract_edges);
             combined.extend(composition_edges);
             combined.extend(compose_edges);
-            return Arc::new(canonicalise_edges(combined));
+            let canonicalised = canonicalise_edges(combined);
+            return Arc::new(apply_user_edge_overrides(db, canonicalised));
         }
     };
 
@@ -184,7 +188,190 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
     combined.extend(compose_edges);
     combined.append(&mut parsed);
     let canonicalised = canonicalise_edges(combined);
-    Arc::new(canonicalised)
+    Arc::new(apply_user_edge_overrides(db, canonicalised))
+}
+
+/// Apply hand-authored `edges_add` / `edges_suppress` from the
+/// merged `OverridesFile` (Phase 3 PR-6 / design §5.5) to the
+/// analyser-discovered edge set.
+///
+/// Order of operations:
+///
+/// 1. **Union with `edges_add`.** Each entry is materialised as an
+///    [`Edge`] and pushed to the working set. Lifecycle defaults to
+///    [`LifecycleScope::Design`] (the open vocabulary's neutral
+///    scope); evidence grade is `Strong` because the source is a
+///    deliberate human authoring; the rationale carries the
+///    user-supplied `reason` so the audit trail survives.
+/// 2. **Subtract `edges_suppress`.** Each entry matches by exact
+///    `(kind, from, to)` triple — kind is parsed through
+///    [`EdgeKind::parse`], participants are matched as-strings.
+///    Match is over the *post-add* set (so a suppress that names a
+///    user-added edge drops both the analyser-discovered AND
+///    user-added edge for that triple, consistent with "subtract
+///    after union").
+/// 3. **No-match warnings.** A suppress entry that matches no
+///    analyser-or-add edge logs a single warning to stderr — the
+///    operation is otherwise a no-op (the spec is explicit that
+///    suppress is forgiving, not strict).
+/// 4. **Suppress-after-add forensics.** When the same `(kind, from,
+///    to)` appears in both add and suppress, the suppress wins (the
+///    edge is dropped) AND an `info:` line records both reasons so
+///    a later reader can reconstruct the intent.
+///
+/// `db` is passed because the merged-overrides walk re-reads the
+/// per-component files from disk (see
+/// [`crate::l4_tree::merged_overrides`]). The walk is cheap
+/// (filesystem read + parse); a future PR can wrap it in
+/// `#[salsa::tracked]` if profiling demands it.
+///
+/// The returned vector is re-canonicalised after suppress so that
+/// user-added edges with un-sorted participants for symmetric kinds
+/// land in canonical form.
+fn apply_user_edge_overrides(db: &AtlasDatabase, mut edges: Vec<Edge>) -> Vec<Edge> {
+    let overrides = merged_overrides(db);
+    let edges_add = &overrides.edges_add;
+    let edges_suppress = &overrides.edges_suppress;
+    if edges_add.is_empty() && edges_suppress.is_empty() {
+        return edges;
+    }
+
+    // Step 1: union with edges_add. Skip entries with an unknown
+    // EdgeKind so a typo in the user's overrides surfaces as a
+    // missing edge rather than a silent corruption of the edge set.
+    for add in edges_add {
+        let Some(kind) = EdgeKind::parse(&add.kind) else {
+            eprintln!(
+                "warning: edges_add entry has unknown kind `{}` for [{} -> {}]; entry dropped",
+                add.kind, add.from, add.to,
+            );
+            continue;
+        };
+        let mut participants = vec![add.from.clone(), add.to.clone()];
+        if !kind.is_directed() {
+            participants.sort();
+        }
+        edges.push(Edge {
+            kind,
+            lifecycle: LifecycleScope::Design,
+            participants,
+            evidence_grade: EvidenceGrade::Strong,
+            evidence_fields: vec!["overrides.yaml:edges_add".to_string()],
+            rationale: format!(
+                "user-authored edges_add entry: {} (reason: {})",
+                add.kind, add.reason
+            ),
+        });
+    }
+
+    // Step 2: subtract edges_suppress. Match is exact on the
+    // (kind, from, to) triple. Symmetric kinds canonicalise their
+    // participants lex-asc; we apply the same rule to the suppress
+    // input so a user who wrote `from: B, to: A` for a symmetric
+    // kind still matches the analyser-emitted `[A, B]` participants.
+    for suppress in edges_suppress {
+        let Some(kind) = EdgeKind::parse(&suppress.kind) else {
+            eprintln!(
+                "warning: edges_suppress entry has unknown kind `{}` for [{} -> {}]; entry dropped",
+                suppress.kind, suppress.from, suppress.to,
+            );
+            continue;
+        };
+        let mut want_participants = vec![suppress.from.clone(), suppress.to.clone()];
+        if !kind.is_directed() {
+            want_participants.sort();
+        }
+        let initial_len = edges.len();
+        // Find any matching analyser/add-derived entries before
+        // removal so the forensics log can cite their reasons.
+        let mut matching_add_reasons: Vec<String> = Vec::new();
+        for e in &edges {
+            if e.kind == kind && e.participants == want_participants {
+                // Heuristic: an add-sourced edge has the
+                // `overrides.yaml:edges_add` evidence field. Use
+                // that to recover the add's reason text from the
+                // rationale.
+                if e.evidence_fields
+                    .iter()
+                    .any(|f| f == "overrides.yaml:edges_add")
+                {
+                    matching_add_reasons.push(e.rationale.clone());
+                }
+            }
+        }
+        edges.retain(|e| !(e.kind == kind && e.participants == want_participants));
+        let removed = initial_len - edges.len();
+        if removed == 0 {
+            eprintln!(
+                "warning: edges_suppress entry [{} {} -> {}] matched no analyser-discovered edge",
+                suppress.kind, suppress.from, suppress.to,
+            );
+        } else if !matching_add_reasons.is_empty() {
+            // Suppress-after-add: log both reasons for the audit
+            // trail. The matching add(s) carry their own reason in
+            // the rationale; attach the suppress reason explicitly.
+            for add_rationale in &matching_add_reasons {
+                eprintln!(
+                    "info: edges_add overridden by edges_suppress for [{} {} -> {}] \
+                     (add: {}; suppress reason: {})",
+                    suppress.kind, suppress.from, suppress.to, add_rationale, suppress.reason,
+                );
+            }
+        }
+    }
+
+    // Re-canonicalise so any user-added edges that fail validation
+    // get dropped and any duplicate-key entries collapse — the
+    // surrounding pipeline already does this once on the analyser
+    // batch, but the override pass added new edges below the
+    // canonicalisation seam.
+    canonicalise_edges(edges)
+}
+
+/// Test-only pure form of [`apply_user_edge_overrides`] — takes
+/// the merged overrides directly so tests can exercise the
+/// union/subtract semantics without a database. Kept under
+/// `cfg(test)` so it never compiles into the shipped library.
+#[cfg(test)]
+pub(crate) fn apply_user_edge_overrides_for_tests(
+    mut edges: Vec<Edge>,
+    edges_add: &[EdgeAdd],
+    edges_suppress: &[EdgeSuppress],
+) -> Vec<Edge> {
+    if edges_add.is_empty() && edges_suppress.is_empty() {
+        return edges;
+    }
+    for add in edges_add {
+        let Some(kind) = EdgeKind::parse(&add.kind) else {
+            continue;
+        };
+        let mut participants = vec![add.from.clone(), add.to.clone()];
+        if !kind.is_directed() {
+            participants.sort();
+        }
+        edges.push(Edge {
+            kind,
+            lifecycle: LifecycleScope::Design,
+            participants,
+            evidence_grade: EvidenceGrade::Strong,
+            evidence_fields: vec!["overrides.yaml:edges_add".to_string()],
+            rationale: format!(
+                "user-authored edges_add entry: {} (reason: {})",
+                add.kind, add.reason
+            ),
+        });
+    }
+    for suppress in edges_suppress {
+        let Some(kind) = EdgeKind::parse(&suppress.kind) else {
+            continue;
+        };
+        let mut want_participants = vec![suppress.from.clone(), suppress.to.clone()];
+        if !kind.is_directed() {
+            want_participants.sort();
+        }
+        edges.retain(|e| !(e.kind == kind && e.participants == want_participants));
+    }
+    canonicalise_edges(edges)
 }
 
 /// Build every deterministic contract edge implied by each live
@@ -841,5 +1028,148 @@ mod tests {
         let out = canonicalise_edges(twice);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rationale, "once", "first wins on duplicate key");
+    }
+
+    // ---------------------------------------------------------------
+    // PR-6: edges_add / edges_suppress unit tests on the pure helper.
+    // The db-driven entry point is exercised by the engine
+    // integration tests under `crates/atlas-engine/tests/`.
+    // ---------------------------------------------------------------
+
+    fn add(kind: &str, from: &str, to: &str, reason: &str) -> EdgeAdd {
+        EdgeAdd {
+            kind: kind.into(),
+            from: from.into(),
+            to: to.into(),
+            reason: reason.into(),
+        }
+    }
+
+    fn suppress(kind: &str, from: &str, to: &str, reason: &str) -> EdgeSuppress {
+        EdgeSuppress {
+            kind: kind.into(),
+            from: from.into(),
+            to: to.into(),
+            reason: reason.into(),
+        }
+    }
+
+    fn analyser_edge(kind: EdgeKind, from: &str, to: &str) -> Edge {
+        let mut participants = vec![from.to_string(), to.to_string()];
+        if !kind.is_directed() {
+            participants.sort();
+        }
+        Edge {
+            kind,
+            lifecycle: LifecycleScope::Design,
+            participants,
+            evidence_grade: EvidenceGrade::Medium,
+            evidence_fields: vec!["analyser.x".into()],
+            rationale: "analyser-derived".into(),
+        }
+    }
+
+    #[test]
+    fn edges_add_inserts_a_new_edge() {
+        let analyser = vec![analyser_edge(EdgeKind::DependsOn, "alpha", "beta")];
+        let out = apply_user_edge_overrides_for_tests(
+            analyser,
+            &[add("bundled-into", "alpha", "gamma", "manual")],
+            &[],
+        );
+        // analyser depends-on + user-added bundled-into = 2 edges.
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().any(|e| e.kind == EdgeKind::BundledInto
+            && e.participants == vec!["alpha".to_string(), "gamma".to_string()]));
+    }
+
+    #[test]
+    fn edges_suppress_removes_analyser_edge() {
+        let analyser = vec![
+            analyser_edge(EdgeKind::DependsOn, "alpha", "beta"),
+            analyser_edge(EdgeKind::DependsOn, "alpha", "gamma"),
+        ];
+        let out = apply_user_edge_overrides_for_tests(
+            analyser,
+            &[],
+            &[suppress("depends-on", "alpha", "beta", "false-positive")],
+        );
+        // beta edge dropped; gamma edge survives.
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].participants,
+            vec!["alpha".to_string(), "gamma".into()]
+        );
+    }
+
+    #[test]
+    fn edges_suppress_after_add_drops_both_user_and_analyser_edges() {
+        let analyser = vec![analyser_edge(EdgeKind::DependsOn, "alpha", "beta")];
+        let out = apply_user_edge_overrides_for_tests(
+            analyser,
+            &[add("depends-on", "alpha", "beta", "ensure")],
+            &[suppress("depends-on", "alpha", "beta", "actually no")],
+        );
+        // Subtract-after-union: the suppress drops every (kind,
+        // from, to)-matching edge regardless of source.
+        assert!(
+            out.is_empty(),
+            "suppress-after-add must drop both user-added and analyser edges, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn edges_suppress_no_match_leaves_set_unchanged() {
+        let analyser = vec![analyser_edge(EdgeKind::DependsOn, "alpha", "beta")];
+        let out = apply_user_edge_overrides_for_tests(
+            analyser.clone(),
+            &[],
+            &[suppress("depends-on", "no-such-from", "no-such-to", "x")],
+        );
+        // The non-matching suppress is a no-op — the analyser edge
+        // survives. (The pure helper does not emit warnings; the
+        // db-driven entry point logs to stderr instead.)
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].participants, analyser[0].participants);
+    }
+
+    #[test]
+    fn edges_add_with_unknown_kind_is_dropped_silently() {
+        let analyser = vec![analyser_edge(EdgeKind::DependsOn, "alpha", "beta")];
+        let out = apply_user_edge_overrides_for_tests(
+            analyser,
+            &[add("not-a-real-kind", "alpha", "gamma", "x")],
+            &[],
+        );
+        // Unknown kind dropped; analyser set untouched.
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn symmetric_edge_add_canonicalises_participants() {
+        // `co-implements` is a symmetric kind. The user authored
+        // `from: B, to: A`; the canonicalised form sorts to `[A, B]`.
+        let out = apply_user_edge_overrides_for_tests(
+            vec![],
+            &[add("co-implements", "beta", "alpha", "x")],
+            &[],
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].kind, EdgeKind::CoImplements);
+        assert_eq!(
+            out[0].participants,
+            vec!["alpha".to_string(), "beta".to_string()],
+            "symmetric kind must have sorted participants after the override pass"
+        );
+    }
+
+    #[test]
+    fn empty_overrides_return_input_unchanged() {
+        let analyser = vec![
+            analyser_edge(EdgeKind::DependsOn, "alpha", "beta"),
+            analyser_edge(EdgeKind::DependsOn, "gamma", "delta"),
+        ];
+        let out = apply_user_edge_overrides_for_tests(analyser.clone(), &[], &[]);
+        assert_eq!(out, analyser);
     }
 }

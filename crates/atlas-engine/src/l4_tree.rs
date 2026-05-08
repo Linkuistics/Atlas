@@ -35,9 +35,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use atlas_index::{
-    ComponentEntry, ComponentsFile, DocAnchor, OverridesFile, PathSegment, PinValue,
+    ComponentEntry, ComponentFieldOverrides, ComponentsFile, DocAnchor, OverridesFile, PathSegment,
+    PinValue,
 };
-use component_ontology::ComponentId;
+use component_ontology::{ComponentId, LifecycleScope};
 
 use crate::db::{AtlasDatabase, Workspace};
 use crate::identifiers::allocate_id;
@@ -114,6 +115,40 @@ pub fn all_component_analyser_identities(db: &AtlasDatabase) -> Arc<AnalyserIden
     }
 }
 
+/// Return the merged `OverridesFile` (Phase 3 PR-6) — pins,
+/// additions, edges_add, and edges_suppress unioned across the
+/// primary + peer + per-component override files discovered by the
+/// L4 walk. The returned file's `field_overrides` is left at default
+/// (per-component field overrides are applied directly to the
+/// component tree at L4 and are not re-projected onto the merged
+/// file). Used by L6 to apply `edges_add` / `edges_suppress` to the
+/// analyser-discovered edge set.
+///
+/// Panics on a discovery error or scope violation, matching the
+/// invariant in [`all_components`]. Callers that want to recover
+/// from those errors should use [`try_assemble`] directly and walk
+/// the override files themselves.
+pub fn merged_overrides(db: &AtlasDatabase) -> Arc<OverridesFile> {
+    let workspace = db.workspace();
+    let roots = workspace.roots(db as &dyn salsa::Database).clone();
+    let primary_overrides = workspace
+        .components_overrides(db as &dyn salsa::Database)
+        .clone();
+    let primary_path = roots
+        .first()
+        .cloned()
+        .expect("Workspace.roots is non-empty (enforced by AtlasDatabase::new)");
+    match merge_overrides_in_discovery_order(
+        &roots,
+        &primary_path,
+        &primary_overrides,
+        &mut io::stderr(),
+    ) {
+        Ok(merged) => Arc::new(merged.file),
+        Err(e) => panic!("{e}"),
+    }
+}
+
 /// Fallible form of [`all_components`] for tests that want to assert
 /// the acyclicity error is reachable without asking the harness to
 /// catch a panic.
@@ -162,8 +197,9 @@ fn try_assemble_inner(
         .first()
         .cloned()
         .expect("Workspace.roots is non-empty (enforced by AtlasDatabase::new)");
-    let merged_overrides =
+    let merged =
         merge_overrides_in_discovery_order(&roots, &primary_path, &primary_overrides, warnings)?;
+    let merged_overrides = &merged.file;
 
     // Multi-root: gather live components per root, then union.
     // Per-root walks are independent under the L4 prior-filter
@@ -176,16 +212,108 @@ fn try_assemble_inner(
             db,
             workspace,
             root,
-            &merged_overrides,
+            merged_overrides,
         ));
     }
-    let (finalised, identities) =
-        resolve_ids_and_tombstones(&prior, &merged_overrides, &roots, live);
+    let (mut finalised, identities) =
+        resolve_ids_and_tombstones(&prior, merged_overrides, &roots, live);
+
+    // PR-6: apply per-component field overrides on top of the
+    // finalised entries. The merge collected `(owning_dir,
+    // ComponentFieldOverrides)` pairs at discovery time; we resolve
+    // each owning_dir to the allocated `ComponentId` here. Field
+    // overrides supersede analyser-emitted values per design §5.5;
+    // they are also strictly more specific than primary/peer pins on
+    // the same component, so they take effect regardless of pin
+    // settings (closest-source-wins, consistent with the existing
+    // pin precedence rule).
+    apply_per_component_field_overrides(
+        &mut finalised,
+        &merged.per_component_field_overrides,
+        &roots,
+    );
+
     enforce_acyclicity(&finalised)?;
 
     let mut out: Vec<ComponentEntry> = finalised;
     out.sort_by(|a, b| a.id.cmp(&b.id));
     Ok((Arc::new(out), Arc::new(identities)))
+}
+
+/// Apply per-component field overrides (PR-6) to the finalised
+/// component entries. For each `(owning_dir, ComponentFieldOverrides)`
+/// pair collected during the discovery walk, find the entry whose
+/// first path segment resolves to `owning_dir` (relative to its
+/// owning workspace root), and overwrite the four supported fields:
+///
+/// - `language` widens to a single-element `BTreeSet<String>` on
+///   `ComponentEntry.languages`.
+/// - `kind` overwrites `ComponentEntry.kind` directly.
+/// - `lifecycle` parses through [`LifecycleScope`] and replaces the
+///   analyser-emitted `lifecycle_roles` with the single authored
+///   scope. An unparseable lifecycle string is silently dropped to
+///   avoid surfacing schema-vocabulary errors as engine-internal
+///   panics; the design spec leaves the lifecycle vocabulary open
+///   and future analysers may add scopes the engine binary has not
+///   yet learned about.
+/// - `subsystem` is captured in the schema for forward
+///   compatibility but has no destination field on
+///   `ComponentEntry`; future PRs will wire it.
+///
+/// Applied unconditionally: if the analyser already emitted the same
+/// value, the overwrite is a no-op. If no entry matches `owning_dir`
+/// (the directory has no allocated component, e.g. the per-component
+/// overrides file is in a not-yet-recognised directory), the entry
+/// is silently skipped — the existing scoping check rejected it at
+/// discovery time if it was ill-formed.
+fn apply_per_component_field_overrides(
+    entries: &mut [ComponentEntry],
+    by_dir: &BTreeMap<PathBuf, ComponentFieldOverrides>,
+    roots: &[PathBuf],
+) {
+    for (dir, fo) in by_dir {
+        // Resolve the directory to its allocated id by matching the
+        // first path segment of each finalised entry. The path
+        // segment is stored relative to the owning workspace root,
+        // so we relativise `dir` against the same root.
+        let owning_root = match crate::roots::best_root_for(roots, dir) {
+            Some(r) => r,
+            None => continue,
+        };
+        let rel = dir.strip_prefix(owning_root).unwrap_or(dir);
+        let entry = entries
+            .iter_mut()
+            .find(|e| e.path_segments.first().map(|s| s.path.as_path()) == Some(rel));
+        let Some(entry) = entry else { continue };
+
+        if let Some(language) = &fo.language {
+            entry.languages.clear();
+            entry.languages.insert(language.clone());
+        }
+        if let Some(kind) = &fo.kind {
+            entry.kind = kind.clone();
+        }
+        if let Some(lifecycle) = &fo.lifecycle {
+            // The lifecycle vocabulary is open (per-analyser
+            // contributions land in `LifecycleScope`). An
+            // unparseable value indicates either a typo in the
+            // user's overrides file or an analyser-shipped scope
+            // the engine binary has not yet learned about; the
+            // failure mode is "no override applied, analyser value
+            // sticks". Surface it as a stderr-style note via the
+            // existing warnings channel would tangle this helper
+            // with `&mut dyn Write`; for the current PR's scope we
+            // accept the silent skip and document it on the
+            // function's contract above.
+            if let Some(scope) = LifecycleScope::parse(lifecycle) {
+                entry.lifecycle_roles = vec![scope];
+            }
+        }
+        // `subsystem` has no destination field on `ComponentEntry`
+        // yet — see the type-level docstring on
+        // `ComponentFieldOverrides::subsystem`.
+        let _ = fo.subsystem.as_ref();
+    }
 }
 
 /// Parent component id of `id` per the assembled tree, or `None` when
@@ -605,6 +733,26 @@ fn addition_to_classification(addition: &ComponentEntry) -> Classification {
 // Override-merge discovery walk (PR-6 / spec §3-§5).
 // ---------------------------------------------------------------------
 
+/// Result of the merged-discovery walk (Phase 3 PR-6).
+///
+/// Carries both the merged `OverridesFile` (pins, additions,
+/// edges_add, edges_suppress unioned across every discovered file)
+/// AND the per-component `field_overrides` keyed by the owning
+/// component directory. The directory→id mapping is finalised after
+/// L4 id allocation, so the merge cannot pre-resolve ids itself.
+#[derive(Debug, Clone)]
+pub(crate) struct MergedOverrides {
+    /// Pins, additions, edges_add, edges_suppress merged across
+    /// every discovered overrides file.
+    pub(crate) file: OverridesFile,
+    /// Per-component field overrides, keyed by the directory that
+    /// owns the per-component override file (i.e. the parent of
+    /// `<dir>/.atlas/overrides.yaml`). Resolved to a `ComponentId`
+    /// post-id-allocation by the caller. The map preserves
+    /// insertion order via `BTreeMap` (path-sorted).
+    pub(crate) per_component_field_overrides: BTreeMap<PathBuf, ComponentFieldOverrides>,
+}
+
 /// Source category of an override file, used by the conflict-warning
 /// emitter to label the lines per spec §6.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -644,6 +792,11 @@ struct DiscoveredOverride {
     /// is known).
     #[allow(dead_code)]
     scoping_prefixes: Option<Vec<String>>,
+    /// Owning component directory, set only for per-component files
+    /// (`Some(<parent of .atlas/>)`). `None` for primary/peer
+    /// top-level files. PR-6 uses this to resolve `field_overrides`
+    /// onto the post-allocation id of the directory.
+    owning_dir: Option<PathBuf>,
     /// Parsed contents.
     file: OverridesFile,
 }
@@ -665,7 +818,7 @@ fn merge_overrides_in_discovery_order(
     primary_root: &Path,
     primary_overrides: &OverridesFile,
     warnings: &mut dyn Write,
-) -> Result<OverridesFile, TreeAssemblyError> {
+) -> Result<MergedOverrides, TreeAssemblyError> {
     let mut discovered: Vec<DiscoveredOverride> = Vec::new();
 
     // Tier 1: primary-root top-level. The CLI populates this from
@@ -683,6 +836,7 @@ fn merge_overrides_in_discovery_order(
         display_path: primary_display,
         source: OverrideSource::Primary,
         scoping_prefixes: None,
+        owning_dir: None,
         file: primary_overrides.clone(),
     });
 
@@ -703,6 +857,7 @@ fn merge_overrides_in_discovery_order(
             display_path: path.display().to_string(),
             source: OverrideSource::Peer,
             scoping_prefixes: None,
+            owning_dir: None,
             file: parsed,
         });
     }
@@ -745,10 +900,19 @@ fn merge_overrides_in_discovery_order(
         // file the moment we see the violation (rather than after
         // every other override is merged).
         validate_per_component_scope(&path, &parsed, &prefixes)?;
+        // The owning component directory is the parent of `.atlas/`,
+        // i.e. two ancestors up from `overrides.yaml`. Used post-merge
+        // to apply `field_overrides` onto the directory's allocated
+        // id.
+        let owning_dir = path
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf());
         discovered.push(DiscoveredOverride {
             display_path: path.display().to_string(),
             source: OverrideSource::PerComponent,
             scoping_prefixes: Some(prefixes),
+            owning_dir,
             file: parsed,
         });
     }
@@ -950,7 +1114,7 @@ fn read_overrides_file(path: &Path) -> Result<OverridesFile, TreeAssemblyError> 
 fn merge_discovered_overrides(
     discovered: &[DiscoveredOverride],
     warnings: &mut dyn Write,
-) -> OverridesFile {
+) -> MergedOverrides {
     // Pin merge: track the *winning* source for each (id, key) tuple
     // and the chain of prior sources for warning emission.
     type PinKey = (ComponentId, String);
@@ -1033,7 +1197,48 @@ fn merge_discovered_overrides(
         addition_winner.into_values().map(|(e, _)| e).collect();
     additions.sort_by(|a, b| a.id.cmp(&b.id));
     merged.additions = additions;
-    merged
+
+    // PR-6: union `edges_add` / `edges_suppress` across every
+    // discovered file. Discovery order (primary → peer → per-
+    // component) controls insertion order; the engine's L6 stage
+    // applies edges_add first then subtracts edges_suppress, so two
+    // entries with the same `(kind, from, to)` triple — one in `add`
+    // and one in `suppress` — semantically resolve to "edge dropped"
+    // regardless of the per-file order.
+    for d in discovered {
+        merged.edges_add.extend(d.file.edges_add.iter().cloned());
+        merged
+            .edges_suppress
+            .extend(d.file.edges_suppress.iter().cloned());
+    }
+
+    // PR-6: collect per-component field overrides keyed by the
+    // owning directory. Top-level (primary/peer) files cannot
+    // contribute field overrides because their YAML targets the
+    // workspace as a whole, not a single component — those
+    // contributions are silently ignored here. Per-component files
+    // contribute one entry per file; if two per-component files
+    // somehow point at the same dir (vendored peer + canonical
+    // copy), the later file wins (path-sorted discovery order
+    // determines "later").
+    let mut per_component_field_overrides: BTreeMap<PathBuf, ComponentFieldOverrides> =
+        BTreeMap::new();
+    for d in discovered {
+        if d.source != OverrideSource::PerComponent {
+            continue;
+        }
+        if d.file.field_overrides.is_empty() {
+            continue;
+        }
+        if let Some(dir) = &d.owning_dir {
+            per_component_field_overrides.insert(dir.clone(), d.file.field_overrides.clone());
+        }
+    }
+
+    MergedOverrides {
+        file: merged,
+        per_component_field_overrides,
+    }
 }
 
 fn pin_value_short_form(v: &PinValue) -> String {
@@ -1189,7 +1394,7 @@ mod tests {
         OverridesFile {
             schema_version: OVERRIDES_SCHEMA_VERSION,
             pins,
-            additions: Vec::new(),
+            ..OverridesFile::default()
         }
     }
 
@@ -1221,6 +1426,7 @@ mod tests {
         .expect("merge succeeds");
 
         let pin = merged
+            .file
             .pins
             .get(&ComponentId::parse("billing-core").unwrap())
             .and_then(|m| m.get("kind"))
@@ -1294,6 +1500,7 @@ mod tests {
                 .expect("merge succeeds");
 
         let pin = merged
+            .file
             .pins
             .get(&ComponentId::parse("shared-id").unwrap())
             .and_then(|m| m.get("kind"))

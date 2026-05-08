@@ -341,6 +341,7 @@ fn overrides_addition_appears_in_tree_even_without_signals() {
             rationale: "hand-authored".into(),
             deleted: false,
         }],
+        ..OverridesFile::default()
     };
     db.set_components_overrides(overrides);
 
@@ -378,6 +379,7 @@ fn suppress_pin_removes_component_from_tree() {
         schema_version: OVERRIDES_SCHEMA_VERSION,
         pins,
         additions: vec![],
+        ..OverridesFile::default()
     };
 
     let mut db = db_without_llm(&root);
@@ -442,6 +444,7 @@ fn suppress_children_pin_removes_specific_child_ids() {
         schema_version: OVERRIDES_SCHEMA_VERSION,
         pins,
         additions: vec![],
+        ..OverridesFile::default()
     };
     let mut db = db_without_llm(&root);
     db.set_components_overrides(overrides);
@@ -535,6 +538,7 @@ fn cycle_in_additions_triggers_hard_error_not_infinite_loop() {
         schema_version: OVERRIDES_SCHEMA_VERSION,
         pins: BTreeMap::new(),
         additions: vec![comp_a, comp_b],
+        ..OverridesFile::default()
     };
 
     let mut db = db_without_llm(&root);

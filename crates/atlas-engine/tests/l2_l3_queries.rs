@@ -208,6 +208,7 @@ fn l2_emits_candidate_for_overrides_addition_at_empty_dir() {
             rationale: "spec".into(),
             deleted: false,
         }],
+        ..OverridesFile::default()
     };
     db.set_components_overrides(overrides);
 
@@ -588,6 +589,7 @@ fn overrides_with_kind_pin(id: &str, kind: &str) -> OverridesFile {
         schema_version: OVERRIDES_SCHEMA_VERSION,
         pins,
         additions: Vec::new(),
+        ..OverridesFile::default()
     }
 }
 
@@ -663,6 +665,7 @@ fn l3_suppress_pin_sets_is_boundary_false() {
         schema_version: OVERRIDES_SCHEMA_VERSION,
         pins: BTreeMap::new(),
         additions: Vec::new(),
+        ..OverridesFile::default()
     };
     let mut field_pins = BTreeMap::new();
     field_pins.insert(

@@ -21,3 +21,4 @@ Keep this index ≤200 lines (the harness truncates beyond that).
 
 - [Atlas long-term monorepo consolidation](project_monorepo_consolidation.md) — user wants to fold atlas-contracts + Ravel + Ravel-Lite into Atlas and delete multi-root support.
 - [Verify worktree base before parallel dispatch](feedback_worktree_base_verification.md) — `isolation:"worktree"` may create worktrees off a stale ref; verify each base matches current main before subagents proceed.
+- [Phase 3 PR-6 overrides edges + field overrides](project_phase3_overrides_edges.md) — `edges_add`/`edges_suppress` (top-level) and per-component `overrides:` block (language/kind/lifecycle/subsystem) are canonical user-authoring seams; Phase 4 LLM analysers should emit candidate edges as `edges_add` suggestions.
