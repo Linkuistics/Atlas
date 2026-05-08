@@ -6,7 +6,14 @@
 
 # Editor / scratch
 work
-.claude/
+
+# Claude Code state — directory itself is mostly machine-local (settings,
+# scheduled-tasks lock, transient worktrees), but .claude/memory/ is the
+# project's persistent memory and is tracked so it travels via git across
+# machines. See scripts/setup-claude-memory.sh and .claude/memory/MEMORY.md.
+.claude/*
+!.claude/memory/
+!.claude/memory/**
 
 # atlas-cli default output (components.yaml et al.)
 .atlas/
