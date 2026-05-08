@@ -364,7 +364,8 @@ fn fixture_produces_expected_components_edges_and_surfaces() {
     assert!(!contracts_component.deleted, "atlas-contracts must be live");
 
     // ---- AC#2 — related-components.yaml carries the consumes-contract edge ---
-    let related_path = primary.join(".atlas/related-components.yaml");
+    // PR-5 (Phase 3): related-components.yaml is now under cache/.
+    let related_path = primary.join(".atlas/cache/related-components.yaml");
     assert!(
         related_path.exists(),
         "related-components.yaml must exist at {}",

@@ -494,7 +494,8 @@ fn polyglot_fixture_classifies_all_components_and_emits_expected_edges() {
     }
 
     // ── AC#3: related-components.yaml edge counts ──
-    let related_path = config.output_dir.join("related-components.yaml");
+    // PR-5 (Phase 3): related-components.yaml is now under cache/.
+    let related_path = config.output_dir.join("cache/related-components.yaml");
     let related: RelatedComponentsFile =
         serde_yaml::from_slice(&std::fs::read(&related_path).unwrap()).unwrap();
 

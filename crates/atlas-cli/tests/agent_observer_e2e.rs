@@ -55,14 +55,16 @@ edition = "2021"
         .stderr(contains("↳"));
 
     let atlas_dir = root.join(".atlas");
-    // PR-4 (Phase 3): components.yaml moved to cache/ sub-directory.
+    // PR-4 + PR-5 (Phase 3): components.yaml and related-components.yaml
+    // moved to cache/. external-components.yaml stays at the editorial tier.
     assert!(
         atlas_dir.join("cache/components.yaml").exists(),
         "cache/components.yaml should exist after index"
     );
-    for f in ["external-components.yaml", "related-components.yaml"] {
-        assert!(atlas_dir.join(f).exists(), "{f} should exist after index");
-    }
+    assert!(
+        atlas_dir.join("external-components.yaml").exists(),
+        "external-components.yaml should exist after index"
+    );
     // PR-10: the persistent content-addressed cache replaces the v1
     // `llm-cache.json` flat file. The cache root materialises lazily
     // on the first `put`, so its presence here also asserts at least
@@ -71,5 +73,10 @@ edition = "2021"
         atlas_dir.join("cache").exists(),
         "persistent cache root {} should exist after index",
         atlas_dir.join("cache").display()
+    );
+    // PR-5 (Phase 3): related-components.yaml is now under cache/.
+    assert!(
+        atlas_dir.join("cache/related-components.yaml").exists(),
+        "cache/related-components.yaml should exist after index"
     );
 }

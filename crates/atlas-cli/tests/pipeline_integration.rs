@@ -166,7 +166,11 @@ fn first_run_produces_the_three_generated_yamls() {
     // PR-4 (Phase 3): components.yaml moved to cache/.
     assert!(config.output_dir.join("cache/components.yaml").exists());
     assert!(config.output_dir.join("external-components.yaml").exists());
-    assert!(config.output_dir.join("related-components.yaml").exists());
+    // PR-5 (Phase 3): related-components.yaml moved to cache/ subdir.
+    assert!(config
+        .output_dir
+        .join("cache/related-components.yaml")
+        .exists());
     assert!(
         backend.call_count() > 0,
         "first run must exercise the backend"
@@ -186,9 +190,10 @@ fn second_run_on_unchanged_fixture_is_byte_identical() {
         make_stderr_reporter(ProgressMode::Never, None),
     )
     .unwrap();
-    // PR-4 (Phase 3): components.yaml now lives in cache/.
+    // PR-4 + PR-5 (Phase 3): components.yaml and related-components.yaml now live in cache/.
     let first = std::fs::read(config.output_dir.join("cache/components.yaml")).unwrap();
-    let first_edges = std::fs::read(config.output_dir.join("related-components.yaml")).unwrap();
+    let first_edges =
+        std::fs::read(config.output_dir.join("cache/related-components.yaml")).unwrap();
     let first_externals =
         std::fs::read(config.output_dir.join("external-components.yaml")).unwrap();
 
@@ -204,7 +209,8 @@ fn second_run_on_unchanged_fixture_is_byte_identical() {
     )
     .unwrap();
     let second = std::fs::read(config.output_dir.join("cache/components.yaml")).unwrap();
-    let second_edges = std::fs::read(config.output_dir.join("related-components.yaml")).unwrap();
+    let second_edges =
+        std::fs::read(config.output_dir.join("cache/related-components.yaml")).unwrap();
     let second_externals =
         std::fs::read(config.output_dir.join("external-components.yaml")).unwrap();
 
@@ -300,7 +306,11 @@ fn dry_run_produces_summary_but_writes_no_files() {
     // PR-4 (Phase 3): components.yaml moved to cache/.
     assert!(!config.output_dir.join("cache/components.yaml").exists());
     assert!(!config.output_dir.join("external-components.yaml").exists());
-    assert!(!config.output_dir.join("related-components.yaml").exists());
+    // PR-5 (Phase 3): related-components.yaml is now under cache/.
+    assert!(!config
+        .output_dir
+        .join("cache/related-components.yaml")
+        .exists());
 }
 
 // ---------------------------------------------------------------
@@ -892,8 +902,12 @@ fn setup_error_aborts_pipeline_and_writes_no_outputs() {
         !config.output_dir.join("external-components.yaml").exists(),
         "setup-failed run must not write external-components.yaml"
     );
+    // PR-5 (Phase 3): related-components.yaml is now under cache/.
     assert!(
-        !config.output_dir.join("related-components.yaml").exists(),
+        !config
+            .output_dir
+            .join("cache/related-components.yaml")
+            .exists(),
         "setup-failed run must not write related-components.yaml"
     );
 }

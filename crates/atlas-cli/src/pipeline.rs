@@ -32,18 +32,18 @@ use std::time::{Instant, SystemTime};
 use anyhow::{Context, Result};
 use atlas_analyzers::AnalyzerRegistry;
 use atlas_engine::{
-    all_components, components_yaml_snapshot_with_prompt_shas, ensure_atlas_gitignore,
-    expand_roots, external_components_yaml_snapshot, per_component_yaml_snapshot,
-    related_components_yaml_snapshot, run_fixedpoint, seed_filesystem_excluding,
-    surfaces_yaml_snapshot, AtlasDatabase, FixedpointConfig, LlmResponseCache, PersistentCache,
-    Phase, ProgressEvent, ProgressSink,
+    all_components, atomic_write, components_yaml_snapshot_with_prompt_shas,
+    ensure_atlas_gitignore, expand_roots, external_components_yaml_snapshot,
+    per_component_yaml_snapshot, related_components_yaml_snapshot, run_fixedpoint,
+    seed_filesystem_excluding, surfaces_yaml_snapshot, AtlasDatabase, FixedpointConfig,
+    LlmResponseCache, PersistentCache, Phase, ProgressEvent, ProgressSink,
 };
 use atlas_index::{
     load_or_default_components, load_or_default_externals, load_or_default_overrides,
     load_or_default_related_components, load_or_default_subsystems,
     load_or_default_subsystems_overrides, save_components_atomic, save_externals_atomic,
-    save_related_components_atomic, save_subsystems_atomic, AtlasConfigFile, ComponentsFile,
-    OverridesFile, SubsystemsFile, SubsystemsOverridesFile,
+    save_subsystems_atomic, AtlasConfigFile, ComponentsFile, OverridesFile, SubsystemsFile,
+    SubsystemsOverridesFile,
 };
 use atlas_llm::{LlmBackend, LlmFingerprint, TokenCounter};
 use component_ontology::validate_contract_participants_resolve;
@@ -228,7 +228,9 @@ pub fn run_index(
     // rename-match continues to work.
     let prior_components_path = config.output_dir.join("cache/components.yaml");
     let prior_externals_path = config.output_dir.join("external-components.yaml");
-    let prior_related_path = config.output_dir.join("related-components.yaml");
+    // PR-5 (Phase 3): related-components.yaml is a derived/cache file;
+    // its canonical location is now <output>/.atlas/cache/related-components.yaml.
+    let prior_related_path = config.output_dir.join("cache/related-components.yaml");
     let overrides_path = config.output_dir.join("components.overrides.yaml");
     let subsystems_overrides_path = config.output_dir.join("subsystems.overrides.yaml");
     let subsystems_path = config.output_dir.join("subsystems.yaml");
@@ -682,8 +684,17 @@ pub fn run_index(
         save_components_atomic(&prior_components_path, &components_file)
             .map_err(IndexError::Other)?;
         save_externals_atomic(&prior_externals_path, &externals_file).map_err(IndexError::Other)?;
-        save_related_components_atomic(&prior_related_path, &related_file)
-            .map_err(IndexError::Other)?;
+        // PR-5 (Phase 3): write to cache/ subdir via atomic_write (design §6.3).
+        // `atomic_write` creates the parent directory chain so the cache/
+        // subdirectory is guaranteed to exist before the rename lands.
+        {
+            let related_yaml = serde_yaml::to_string(&related_file)
+                .context("failed to serialise related-components to YAML")
+                .map_err(IndexError::Other)?;
+            atomic_write(&prior_related_path, related_yaml.as_bytes())
+                .context("failed to write cache/related-components.yaml")
+                .map_err(IndexError::Other)?;
+        }
 
         save_subsystems_atomic(&subsystems_path, &subsystems_file).map_err(IndexError::Other)?;
 
