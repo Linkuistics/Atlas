@@ -7,11 +7,12 @@ continuation prompt at
 reads this file (via the `*phase3-plan*` wildcard match) to find the
 next PR to dispatch.
 
-**Last updated:** 2026-05-08 (PR-2 landed: per-component
-`surfaces.yaml` retrofit to `<component>/.atlas/cache/surfaces.yaml`).
-**Wave 3 (PR-2..PR-5) is COMPLETE** — all four retrofits on main.
-Wave 4 (PR-6 overrides schema extension) and Wave 5 (PR-8..PR-11
-reports) are now dispatchable.
+**Last updated:** 2026-05-08 (PR-6 landed: overrides schema gains
+`edges_add` / `edges_suppress` (top-level only) and per-component
+field overrides (`overrides:` block with `language` / `kind` /
+`lifecycle` / `subsystem`)).
+**Wave 4 (PR-6) is COMPLETE.** Wave 5 (PR-8..PR-11 reports) is now
+dispatchable in parallel.
 
 ## PR status
 
@@ -26,7 +27,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-3  — Phase 1 retrofit: per-component `component.yaml` → cache
 - [x] PR-4  — Phase 1 retrofit: top-level `components.yaml` → cache
 - [x] PR-5  — Phase 1 retrofit: top-level `related-components.yaml` → cache
-- [ ] PR-6  — Overrides schema extension: `edges_add` / `edges_suppress` + per-component field overrides
+- [x] PR-6  — Overrides schema extension: `edges_add` / `edges_suppress` + per-component field overrides
 - [x] PR-7  — `atlas-reports` crate scaffold + CLI subcommand framework
 - [ ] PR-8  — Drift report + `atlas drift` CLI subcommand
 - [ ] PR-9  — Impact query + `atlas impact <id>` CLI subcommand
@@ -658,3 +659,127 @@ editorial tier as: top-level `overrides`, `external-components`,
   re-export has zero callers in either repo after PR-5. Rust does
   NOT warn on orphan public re-exports. Track for sibling-repo
   cleanup PR; not blocking.
+
+### PR-6
+2026-05-08 — Landed: overrides schema gains `edges_add` /
+`edges_suppress` (top-level only) and per-component `overrides:`
+block (`language` / `kind` / `lifecycle` / `subsystem` fields). Three
+commits across two repos:
+
+- atlas-contracts `a0a9a8c` — `phase3: PR-6 atlas-contracts —
+  overrides schema gains edges_add/edges_suppress + per-component
+  field overrides`. 4 files (+~210 / −1).
+- Atlas `1b27827` — `phase3: PR-6 engine — l4 field-override merge
+  + l6 edges_add/edges_suppress + l9 post-override projection`.
+  8 files (+~580 / −13). The atlas-contracts schema commit must land
+  first because atlas-index is path-dep.
+- Atlas `27794d6` — `phase3: PR-6 fix-up — reject edges_overrides
+  at per-component scope; pub(crate) merged_overrides; warn on bad
+  lifecycle; symmetric suppress test`. 3 files (+228 / −13).
+  Closes four Important issues from the code-quality review (see
+  below).
+
+**Spec compliance ✅** (8/8 acceptance criteria after fix-up; one
+narrow deviation on AC-5 documented below). **Code quality ✅** post
+fix-up (no Critical issues; four Important issues were closed by
+commit `27794d6`).
+
+**Schema-ambiguity resolution.** Plan §4 PR-6 prescribed flat fields
+on `OverridesFile`; design §5.5's per-component YAML example showed
+them grouped under `overrides:`. Per "design spec wins on schemas",
+adopted the design's nested form: a new `ComponentFieldOverrides`
+struct with serde rename `#[serde(rename = "overrides", default,
+skip_serializing_if = ...)]`. `OverridesFile.field_overrides:
+ComponentFieldOverrides` is the in-memory name; the YAML key is
+`overrides:`. Empty blocks omit the YAML key entirely (keeps existing
+fixtures byte-stable).
+
+**Code surface (commit `1b27827` + `27794d6`):**
+- `atlas-contracts/crates/atlas-index/src/schema.rs` — added
+  `EdgeAdd`, `EdgeSuppress`, `ComponentFieldOverrides`. Extended
+  `OverridesFile` with three new fields (`edges_add`,
+  `edges_suppress`, `field_overrides`). `reason` is non-optional
+  on EdgeAdd / EdgeSuppress, so missing-reason rejects with a clear
+  serde error.
+- `atlas-contracts/crates/atlas-index/src/lib.rs` — re-exported the
+  three new types.
+- `atlas-contracts/crates/atlas-index/src/yaml_io.rs` — extended
+  `sample_overrides_file()` and added 7 round-trip / rejection /
+  default-shape tests.
+- `atlas-engine/src/l4_tree.rs` — `MergedOverrides` aggregating
+  pins + additions + edges + per-component field overrides;
+  `apply_per_component_field_overrides` post-id-allocation;
+  `pub(crate) fn merged_overrides(db)` exposed intra-crate; new
+  `validate_per_component_scope` early-rejects edges_add /
+  edges_suppress at per-component scope (design §5.5 says these
+  are top-level only); warning emission when
+  `LifecycleScope::parse` returns `None` for an authored
+  lifecycle override (the user's intent surfaces as a stderr-style
+  warning, not a silent skip).
+- `atlas-engine/src/l6_edges.rs` — `apply_user_edge_overrides`
+  unions `edges_add` then subtracts `edges_suppress` (suppress wins
+  on same triple). Symmetric edge participants canonicalised
+  (sorted) before matching for non-directed kinds. Eight new unit
+  tests including the symmetric-suppress regression test.
+- `atlas-engine/src/lib.rs` — `merged_overrides` is **not**
+  re-exported from the public crate API (Phase 4 LLM analysers must
+  emit candidate edges via the sanctioned `edges_add` channel, not
+  inspect the override set directly).
+- `atlas-cli/tests/phase3_overrides_edges.rs` — 8 file-system
+  integration tests covering edges_add insertion, edges_suppress
+  no-match (no-op), suppress-after-add (suppress wins), four
+  field-override paths (language / kind / lifecycle / subsystem),
+  and the per-component scope-violation rejection.
+- `.claude/memory/project_phase3_overrides_edges.md` — new
+  project-scoped memory recording that `edges_add` / `edges_suppress`
+  are canonical user-authoring seams; useful for Phase 4 LLM
+  analysers (which should emit candidate edges as `edges_add`
+  suggestions, not via a side channel).
+
+**Documented narrow deviation (AC-5):** the no-match suppress
+warning text is emitted in production via `eprintln!` at
+`l6_edges.rs:304-308`, but the existing CLI integration test
+(`edges_suppress_no_match_leaves_set_unchanged`) does not capture
+stderr to assert on the warning text. The in-process `run()`
+harness used by the test doesn't currently plumb stderr capture;
+adding it is broader than PR-6 scope. The behaviour is verified by
+the unit test at the helper layer plus the acceptance test that
+the edge set is unchanged. Recording here so a future Phase 3 / 4
+test-infra cleanup PR can close the gap.
+
+**Documented forward-compatibility no-op:** the `subsystem` field
+on `ComponentFieldOverrides` has no destination on `ComponentEntry`
+(subsystem membership is tracked via `SubsystemsFile` /
+`SubsystemsOverridesFile` schemas with their own pipeline). The
+field is captured in the schema for Phase 4 / 5 wiring. Test
+`field_override_subsystem_is_captured_but_does_not_panic` confirms
+the engine accepts the field without crashing.
+
+**Load-bearing details for downstream PRs (PR-8..PR-11, PR-12):**
+- `merged_overrides` is `pub(crate)` — reports / CLI handlers must
+  read overrides through the existing engine projection paths
+  (`per_component_yaml_snapshot`, `all_components`, etc.), not via
+  this internal helper. Phase 5's Salsa conversion will replace
+  this with `#[salsa::tracked]` queries.
+- `edges_add` / `edges_suppress` are top-level-only. Per-component
+  files declaring them are hard-rejected at validation with the
+  new `TreeAssemblyError::EdgesOverridesAtPerComponentScope`
+  variant. Reports that read the post-override edge set get the
+  unioned-then-subtracted result.
+- The post-override `language` / `kind` / `lifecycle` values flow
+  through `l9_projections::per_component_yaml_snapshot` to the
+  cached `<component>/.atlas/cache/component.yaml`. Modularity
+  (PR-10) and Divergence (PR-11) reports that read these fields
+  will see the post-override values.
+
+**Verification:** `cargo test --workspace --no-fail-fast` 1129
+passing in Atlas, 186 in atlas-contracts. `cargo clippy
+--all-targets -- -D warnings` clean in both. `cargo fmt --check`
+clean in both. `cargo build --release` clean (the PR-1
+panic-injection invariant is preserved — PR-6 doesn't touch
+atomic_write).
+
+Wave 5 (PR-8 drift / PR-9 impact / PR-10 modularity / PR-11
+divergence) is now dispatchable in parallel. PR-6 was helpful but
+not strictly required for the reports to function; they observe
+whatever edges the engine produces.
