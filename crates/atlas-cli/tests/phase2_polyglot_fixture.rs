@@ -687,12 +687,13 @@ fn polyglot_targeted_edit_invalidates_only_affected_entries() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Locate a component's per-component `surfaces.yaml` path.
+/// Locate a component's per-component surfaces.yaml path (PR-2 cache layout).
 ///
-/// The output dir layout (PR-7 of Phase 1) puts each component's
-/// surfaces.yaml under `<component-dir>/.atlas/surfaces.yaml` for
-/// scattered layout, falling back to
-/// `<output_dir>/<component-id>/surfaces.yaml` when the scattered
+/// Phase 3 PR-2 moved the per-component file into the `cache/` sub-directory
+/// under the component's own `.atlas/` scope. This helper returns the
+/// `<component-dir>/.atlas/cache/surfaces.yaml` path for scattered layout,
+/// falling back to a synthetic path under
+/// `<output_dir>/<component-id>/cache/surfaces.yaml` when the scattered
 /// destination is not under any root (e.g. additions whose
 /// path_segments[0] points at a non-existent dir).
 ///
@@ -707,11 +708,12 @@ fn surfaces_path_for(primary_root: &Path, comp: &ComponentEntry) -> PathBuf {
             primary_root.join(&seg.path)
         };
         if abs.exists() {
-            return abs.join(".atlas").join("surfaces.yaml");
+            return abs.join(".atlas").join("cache").join("surfaces.yaml");
         }
     }
     primary_root
         .join(".atlas")
         .join(comp.id.as_str())
+        .join("cache")
         .join("surfaces.yaml")
 }

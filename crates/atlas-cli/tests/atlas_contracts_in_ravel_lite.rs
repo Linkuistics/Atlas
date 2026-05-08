@@ -416,11 +416,13 @@ fn fixture_produces_expected_components_edges_and_surfaces() {
         "the consumes-contract edge's contract participant must be `{CONTRACT_ID}`"
     );
 
-    // ---- AC#3 — atlas-contracts/.atlas/surfaces.yaml lists the contract ----
-    let surfaces_path = parent.path().join("atlas-contracts/.atlas/surfaces.yaml");
+    // ---- AC#3 — atlas-contracts/.atlas/cache/surfaces.yaml lists the contract ----
+    let surfaces_path = parent
+        .path()
+        .join("atlas-contracts/.atlas/cache/surfaces.yaml");
     assert!(
         surfaces_path.exists(),
-        "atlas-contracts must have a per-component surfaces.yaml at {}",
+        "atlas-contracts must have a per-component cache/surfaces.yaml at {}",
         surfaces_path.display()
     );
     let surfaces_bytes = std::fs::read(&surfaces_path).unwrap();

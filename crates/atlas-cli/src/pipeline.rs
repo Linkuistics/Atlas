@@ -891,7 +891,7 @@ where
 
 /// Walk every (non-deleted) component in `components_file` and emit
 /// per-component `<component-path>/.atlas/cache/component.yaml` (PR-6 / PR-3) and
-/// `<component-path>/.atlas/surfaces.yaml` (PR-7) files. The
+/// `<component-path>/.atlas/cache/surfaces.yaml` (PR-7 / PR-2) files. The
 /// component's on-disk path is resolved by joining its
 /// first-`path_segments[0].path` against the matching root (longest
 /// path-prefix among `roots`, via `best_root_for`). One `mkdir -p`
@@ -997,35 +997,49 @@ fn write_per_component_files(
             );
         }
 
-        // -- surfaces.yaml (PR-7) ------------------------------------
+        // -- cache/surfaces.yaml (PR-2 retrofit of PR-7) ----------------
         // Surfaces are projections too: a failed write is a non-fatal
         // warning. The top-level components.yaml does not (yet) carry
-        // surface fingerprints, so a missing surfaces.yaml degrades
+        // surface fingerprints, so a missing cache/surfaces.yaml degrades
         // L6 cache invalidation across components but does not break
         // the canonical output.
+        //
+        // PR-2 (Phase 3): path moved from the old per-component location
+        // (directly in `.atlas/`) to `.atlas/cache/surfaces.yaml`.
+        // Use `atomic_write` which creates parent directories (including
+        // `cache/`) automatically.
         let surfaces_snapshot = match surfaces_yaml_snapshot(db, &entry.id) {
             Ok(arc) => arc,
             Err(err) => {
                 eprintln!(
-                    "warning: failed to project surfaces for `{}`: {err:#}; skipping per-component surfaces.yaml write",
+                    "warning: failed to project surfaces for `{}`: {err:#}; skipping per-component cache/surfaces.yaml write",
                     entry.id.as_str()
                 );
                 continue;
             }
         };
 
-        let surfaces_file_path = target_dir.join("surfaces.yaml");
-        if let Err(err) = write_yaml_atomic(&target_dir, &surfaces_file_path, &*surfaces_snapshot) {
-            // Note: `&*surfaces_snapshot` (deref of the Arc) is
-            // required here because `write_yaml_atomic` is generic on
-            // `T: Serialize`; auto-deref does not select the inner
-            // `SurfacesFile` impl through `Arc<T>` for generic
-            // monomorphisation. The component-side equivalent above
-            // works without it because that helper is non-generic.
-            eprintln!(
-                "warning: failed to write {}: {err:#}; the top-level components.yaml is unaffected",
-                surfaces_file_path.display()
-            );
+        let surfaces_file_path = target_dir.join("cache/surfaces.yaml");
+        {
+            // `atomic_write` requires serialised bytes; we serialise
+            // explicitly here. `&*surfaces_snapshot` dereferences the Arc
+            // so serde sees the concrete `SurfacesFile` impl.
+            let yaml = match serde_yaml::to_string(&*surfaces_snapshot) {
+                Ok(s) => s,
+                Err(err) => {
+                    eprintln!(
+                        "warning: failed to serialise surfaces for `{}`: {err:#}; skipping write",
+                        entry.id.as_str()
+                    );
+                    continue;
+                }
+            };
+            if let Err(err) = atomic_write(&surfaces_file_path, yaml.as_bytes()) {
+                eprintln!(
+                    "warning: failed to write {}: {err:#}; the top-level components.yaml is unaffected",
+                    surfaces_file_path.display()
+                );
+            }
         }
     }
 }

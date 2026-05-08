@@ -155,7 +155,7 @@ pub fn per_component_yaml_snapshot(
     Ok(Arc::new(PerComponentFile {
         schema_version: PER_COMPONENT_SCHEMA_VERSION,
         component: entry,
-        surfaces_path: PathBuf::from("surfaces.yaml"),
+        surfaces_path: PathBuf::from("cache/surfaces.yaml"),
         overrides_path: Some(PathBuf::from("overrides.yaml")),
         analyser_id,
         analyser_version,
@@ -236,8 +236,9 @@ fn lookup_analyser_identity(
     )
 }
 
-/// Build the per-component `<component-path>/.atlas/surfaces.yaml`
-/// projection. The output is an [`atlas_index::SurfacesFile`] (PR-1)
+/// Build the per-component `<component-path>/.atlas/cache/surfaces.yaml`
+/// projection (Phase 3 PR-2 path; pre-PR-2 it lived directly in `.atlas/`).
+/// The output is an [`atlas_index::SurfacesFile`] (PR-1)
 /// populated from the deterministic Rust-surface analyser
 /// (`atlas-analyzers::extract_rust_surface`, PR-7) over the
 /// component's `src/lib.rs` and `src/main.rs`.

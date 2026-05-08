@@ -165,7 +165,10 @@ fn every_component_has_a_per_component_atlas_file_matching_the_top_level_project
             )
         });
         assert_eq!(parsed.schema_version, PER_COMPONENT_SCHEMA_VERSION);
-        assert_eq!(parsed.surfaces_path.to_string_lossy(), "surfaces.yaml");
+        assert_eq!(
+            parsed.surfaces_path.to_string_lossy(),
+            "cache/surfaces.yaml"
+        );
         assert_eq!(
             parsed.overrides_path.as_ref().unwrap().to_string_lossy(),
             "overrides.yaml"

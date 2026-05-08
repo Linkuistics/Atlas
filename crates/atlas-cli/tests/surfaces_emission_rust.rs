@@ -122,11 +122,11 @@ fn rust_component_surfaces_yaml_carries_data_format_contract_with_correct_span()
     .expect("run_index succeeds");
     assert!(summary.outputs_written, "outputs must be written");
 
-    // -- The component-side surfaces.yaml ------------------------------
-    let surfaces_path = tmp.path().join("alpha/.atlas/surfaces.yaml");
+    // -- The component-side cache/surfaces.yaml (PR-2) -----------------
+    let surfaces_path = tmp.path().join("alpha/.atlas/cache/surfaces.yaml");
     assert!(
         surfaces_path.exists(),
-        "expected surfaces.yaml at {}",
+        "expected cache/surfaces.yaml at {}",
         surfaces_path.display()
     );
 
@@ -241,7 +241,7 @@ fn whitespace_outside_span_does_not_change_binding_content_sha() {
         .expect("run_index succeeds");
 
         let surfaces: SurfacesFile = serde_yaml::from_slice(
-            &std::fs::read(tmp.path().join("alpha/.atlas/surfaces.yaml")).unwrap(),
+            &std::fs::read(tmp.path().join("alpha/.atlas/cache/surfaces.yaml")).unwrap(),
         )
         .unwrap();
         let foo = surfaces
@@ -287,7 +287,7 @@ fn whitespace_inside_span_changes_binding_content_sha() {
         )
         .expect("run_index succeeds");
         let surfaces: SurfacesFile = serde_yaml::from_slice(
-            &std::fs::read(tmp.path().join("alpha/.atlas/surfaces.yaml")).unwrap(),
+            &std::fs::read(tmp.path().join("alpha/.atlas/cache/surfaces.yaml")).unwrap(),
         )
         .unwrap();
         surfaces
@@ -336,8 +336,10 @@ fn surfaces_yaml_aggregate_fingerprint_is_stable_across_no_op_reruns() {
             make_stderr_reporter(ProgressMode::Never, None),
         )
         .expect("run_index succeeds");
-        serde_yaml::from_slice(&std::fs::read(root.join("alpha/.atlas/surfaces.yaml")).unwrap())
-            .unwrap()
+        serde_yaml::from_slice(
+            &std::fs::read(root.join("alpha/.atlas/cache/surfaces.yaml")).unwrap(),
+        )
+        .unwrap()
     }
 
     let first = run_and_read(tmp.path());
@@ -374,10 +376,10 @@ fn surfaces_yaml_emitted_for_every_live_component_in_multi_crate_fixture() {
     .expect("run_index succeeds");
 
     for name in ["alpha", "beta", "gamma"] {
-        let path = tmp.path().join(name).join(".atlas/surfaces.yaml");
+        let path = tmp.path().join(name).join(".atlas/cache/surfaces.yaml");
         assert!(
             path.exists(),
-            "expected surfaces.yaml for `{name}` at {}",
+            "expected cache/surfaces.yaml for `{name}` at {}",
             path.display()
         );
         let parsed: SurfacesFile = serde_yaml::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -385,9 +387,9 @@ fn surfaces_yaml_emitted_for_every_live_component_in_multi_crate_fixture() {
     }
 
     // Only `gamma` declared a serde-derived struct — only its
-    // surfaces.yaml carries a contract.
+    // cache/surfaces.yaml carries a contract.
     let gamma: SurfacesFile = serde_yaml::from_slice(
-        &std::fs::read(tmp.path().join("gamma/.atlas/surfaces.yaml")).unwrap(),
+        &std::fs::read(tmp.path().join("gamma/.atlas/cache/surfaces.yaml")).unwrap(),
     )
     .unwrap();
     assert!(
@@ -398,7 +400,7 @@ fn surfaces_yaml_emitted_for_every_live_component_in_multi_crate_fixture() {
         "gamma must define a Gamma contract"
     );
     let alpha: SurfacesFile = serde_yaml::from_slice(
-        &std::fs::read(tmp.path().join("alpha/.atlas/surfaces.yaml")).unwrap(),
+        &std::fs::read(tmp.path().join("alpha/.atlas/cache/surfaces.yaml")).unwrap(),
     )
     .unwrap();
     assert!(
@@ -425,10 +427,10 @@ fn dry_run_skips_surfaces_yaml_writes() {
     )
     .expect("dry-run run_index succeeds");
     assert!(!summary.outputs_written);
-    let path = tmp.path().join("dry/.atlas/surfaces.yaml");
+    let path = tmp.path().join("dry/.atlas/cache/surfaces.yaml");
     assert!(
         !path.exists(),
-        "dry-run must not write surfaces.yaml; found {}",
+        "dry-run must not write cache/surfaces.yaml; found {}",
         path.display()
     );
 }
