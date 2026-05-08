@@ -7,13 +7,12 @@ continuation prompt at
 reads this file (via the `*phase3-plan*` wildcard match) to find the
 next PR to dispatch.
 
-**Last updated:** 2026-05-08 (PR-4 + PR-5 landed: top-level
-`components.yaml` and `related-components.yaml` retrofitted to
-`<root>/.atlas/cache/`). Wave 3 (PR-2..PR-5) half complete:
-PR-4 + PR-5 on main; PR-2 + PR-3 awaiting sequential redispatch
-(initial parallel-dispatch agents hit a session-state worktree-base
-bug — see `.claude/memory/feedback_worktree_base_verification.md`).
-Wave 2 closed.
+**Last updated:** 2026-05-08 (PR-3 landed: per-component
+`component.yaml` retrofit to `<component>/.atlas/cache/component.yaml`).
+Wave 3 (PR-2..PR-5) is 3/4 complete: PR-3 + PR-4 + PR-5 all on main.
+PR-2 (surfaces.yaml) is currently in progress — implementer agent
+running in the manually-pre-created worktree at
+`/Users/antony/Development/Atlas-phase3-pr2-impl`. Wave 2 closed.
 
 ## PR status
 
@@ -25,7 +24,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-0b — Design-doc touch-ups in canonical system-model spec (docs only)
 - [x] PR-1  — Gitignore mechanism for `<scope>/.atlas/cache/` + atomic_write helper
 - [ ] PR-2  — Phase 1 retrofit: per-component `surfaces.yaml` → cache
-- [ ] PR-3  — Phase 1 retrofit: per-component `component.yaml` → cache
+- [x] PR-3  — Phase 1 retrofit: per-component `component.yaml` → cache
 - [x] PR-4  — Phase 1 retrofit: top-level `components.yaml` → cache
 - [x] PR-5  — Phase 1 retrofit: top-level `related-components.yaml` → cache
 - [ ] PR-6  — Overrides schema extension: `edges_add` / `edges_suppress` + per-component field overrides
@@ -490,3 +489,63 @@ PR-2 (surfaces.yaml) and PR-3 (component.yaml) remain the only
 Wave 3 PRs outstanding. Wave 4 (PR-6 overrides extension) and
 Wave 5 (PR-8..PR-11 reports) become dispatchable once Wave 3
 completes.
+
+### PR-3
+2026-05-08 — Landed: per-component `component.yaml` retrofit to
+`<component>/.atlas/cache/component.yaml`. Two commits on main:
+`5b2ec1a` (cherry-pick from worktree commit `6c74049`) + `e158114`
+(orchestrator fix-up — rephrased two doc-comment lines in the
+PR-3 grep-audit script that referenced the literal plural-form
+path, tripping PR-4's grep-audit). Spec compliance ✅ (4/4
+acceptance criteria met; polyglot 3/3 still passing on main + PR-3);
+code quality review verdict "Ready to merge: Yes" (no Critical /
+Important issues; three Minor nice-to-haves on sweep-test
+boilerplate consolidation, comment density, comment redundancy).
+
+**Code surface (6 files changed, +403 / −28):**
+- `crates/atlas-cli/src/pipeline.rs`: writer path → `target_dir.join("cache").join("component.yaml")`
+  via existing `write_per_component_atomic` helper (which delegates
+  to `write_yaml_atomic` and `create_dir_all`s the target dir).
+  Mirrors PR-4's idiom (existing save-helper + explicit cache-dir
+  argument) rather than PR-5's idiom (direct `atomic_write` which
+  mkdirs internally).
+- `crates/atlas-cli/tests/scattered_atlas_layout.rs`: 5 path
+  references + 4 doc-comment touch-ups.
+- `crates/atlas-engine/src/ingest.rs`: comment update (the
+  `.atlas/` prune logic's inline comment).
+- `crates/atlas-engine/src/l9_projections.rs`: doc comment on
+  `per_component_yaml_snapshot` updated to reference new cache path.
+- New: `crates/atlas-cli/tests/grep_no_old_component_path.sh`
+  (chmod +x) — Perl negative-lookahead regex
+  `\.atlas/(?!cache/)component\.yaml(?!s)`; the `(?!s)` distinguishes
+  singular from plural form. Excludes self, `docs/`, `LLM_STATE/`,
+  `evaluation/results/`.
+- New: `crates/atlas-cli/tests/phase3_retrofit_component.rs` —
+  2 tests calling `run_index` end-to-end against the `tiny` fixture;
+  asserts `analyser_id` + `analyser_version` populated (Phase 2 PR-4
+  invariant) and zero `component.yaml` files outside `cache/`
+  (recursive-walk guard).
+
+**Load-bearing details for downstream PRs:**
+- **The session worktree-base bug is a real reproducible issue.**
+  After PR-3's first redispatch produced another stale-base
+  worktree (BLOCKED in 16s by the prompt's STEP-0 base-verification
+  guard), the orchestrator pre-created the worktree manually via
+  `git worktree add -b phase3-pr3-impl /Users/antony/Development/Atlas-phase3-pr3-impl main`
+  and dispatched the agent without `isolation: "worktree"`, with
+  the absolute worktree path embedded in every Bash/Edit/Read
+  instruction. This mitigation worked. PR-2 was redispatched the
+  same way and is currently running.
+- **Plural vs singular grep-audit collision.** PR-3's grep-audit
+  doc-comment trip-wire on PR-4's grep-audit is a small footgun
+  worth knowing: any new grep-audit script in this codebase that
+  references *another* grep-audit's forbidden path literally
+  (even in comments) will trip the other audit. Use rephrased
+  doc-comments (e.g. "plural-form components.yaml" rather than
+  ".atlas/components.yaml") to avoid this.
+- **Sweep-test boilerplate is now duplicated 3× (PR-3 / PR-4 /
+  PR-5).** ~100 LoC of `materialise_fixture` + `base_config` +
+  `LenientBackend`/`SweepBackend` + `tiny_fixture_root` + `copy_dir_all`
+  + `run_with` per file. Code reviewer recommends consolidation
+  after PR-2 lands so the refactor folds all four files in one
+  pass. Track as Phase 3 cleanup; not blocking.
