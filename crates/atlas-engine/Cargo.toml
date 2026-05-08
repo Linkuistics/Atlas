@@ -30,5 +30,14 @@ toml = { workspace = true }
 atlas-csharp-analyzer = { path = "../analyzers/csharp" }
 proptest = { workspace = true }
 
+[features]
+# Test-only hook: arms a one-shot panic between `atomic_write`'s
+# temp-file write and the rename, so cross-crate integration tests can
+# simulate a kill mid-write. Disabled by default; enabled by tests
+# (e.g. `atlas-cli`'s `atlas_drift_kill_during_snapshot_write...`)
+# that need to exercise the atomic-write contract end-to-end. See
+# Phase 3 plan §4 PR-8 acceptance criteria + design §6.3.
+atomic_write_panic_after_temp = []
+
 [lints]
 workspace = true

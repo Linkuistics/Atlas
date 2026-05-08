@@ -154,8 +154,9 @@ struct InitArgs {
     root: std::path::PathBuf,
 }
 
+use atlas_cli::reports;
+
 mod init;
-mod reports;
 
 fn main() -> ExitCode {
     match run() {

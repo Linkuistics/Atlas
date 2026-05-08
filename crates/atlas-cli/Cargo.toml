@@ -21,6 +21,7 @@ atlas-engine = { path = "../atlas-engine" }
 atlas-index = { workspace = true }
 atlas-llm = { path = "../atlas-llm" }
 atlas-reports = { path = "../atlas-reports" }
+chrono = { workspace = true }
 clap = { workspace = true }
 component-ontology = { workspace = true }
 indicatif = { workspace = true }
@@ -34,6 +35,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
+atlas-engine = { path = "../atlas-engine", features = ["atomic_write_panic_after_temp"] }
 atlas-llm = { path = "../atlas-llm" }
 predicates = { workspace = true }
 serde_json = { workspace = true }

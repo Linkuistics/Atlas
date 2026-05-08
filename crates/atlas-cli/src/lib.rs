@@ -11,6 +11,7 @@ pub mod backend;
 pub mod pipeline;
 pub mod progress;
 pub mod prompts;
+pub mod reports;
 pub mod timestamp;
 pub mod validate;
 

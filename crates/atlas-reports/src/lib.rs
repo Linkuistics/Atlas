@@ -45,7 +45,8 @@ pub use divergence::{
     divergence, DivergenceCoupling, DivergencePair, DivergenceReport, DivergenceSummary,
 };
 pub use drift::{
-    drift, ContractAdded, ContractChange, ContractRemoved, DriftReport, DriftSummary, PinnedBinding,
+    drift, drift_pure, ContractAdded, ContractChange, ContractRemoved, CurrentBinding,
+    CurrentContract, DriftReport, DriftSummary, PinnedBinding, DERIVED_FROM_CONTRACT_SHA_ATTR,
 };
 pub use impact::{
     impact, ImpactPartitions, ImpactReport, ImpactReportTarget, ImpactReportTargetKind,

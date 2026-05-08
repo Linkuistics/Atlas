@@ -166,6 +166,7 @@ dependencies = [
  "atlas-index",
  "atlas-llm",
  "atlas-reports",
+ "chrono",
  "clap",
  "component-ontology",
  "indicatif",

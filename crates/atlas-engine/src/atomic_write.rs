@@ -75,11 +75,16 @@ fn write_then_rename(temp_path: &Path, dest_path: &Path, bytes: &[u8]) -> io::Re
     }
 
     // Test-only hook: between temp-write and rename, optionally
-    // panic to simulate a kill mid-write. Gated `#[cfg(test)]` so the
-    // hook does not exist in release builds (continuation-prompt PR-12
-    // non-negotiable).
+    // panic to simulate a kill mid-write. Gated behind the
+    // `atomic_write_panic_after_temp` feature so the hook is
+    // compiled out of release builds AND of any in-tree consumer
+    // that does not opt in (continuation-prompt PR-12
+    // non-negotiable). The internal `cfg(test)` form is preserved
+    // for the unit test in this module.
     #[cfg(test)]
     self::test_hooks::maybe_panic_before_rename();
+    #[cfg(feature = "atomic_write_panic_after_temp")]
+    self::test_hooks_pub::maybe_panic_before_rename();
 
     fs::rename(temp_path, dest_path)
 }
@@ -116,6 +121,55 @@ fn nonce_u64() -> u64 {
     counter.hash(&mut hasher);
     std::process::id().hash(&mut hasher);
     hasher.finish()
+}
+
+/// Cross-crate test hooks for the atomic-write panic-injection
+/// fixture. Gated behind the `atomic_write_panic_after_temp` cargo
+/// feature so the hook compiles out of every build that does not
+/// explicitly opt in (Phase 3 plan §4 PR-8 acceptance criteria).
+///
+/// Usage from a consumer crate's integration test:
+/// ```ignore
+/// atlas_engine::atomic_write::test_hooks_pub::arm_panic_before_rename();
+/// let _ = std::panic::catch_unwind(|| my_atomic_write_caller());
+/// // assert the destination file is intact
+/// ```
+#[cfg(feature = "atomic_write_panic_after_temp")]
+pub mod test_hooks_pub {
+    use std::cell::Cell;
+
+    thread_local! {
+        static PANIC_BEFORE_RENAME: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Arm the hook so the next call to [`super::atomic_write`] on
+    /// this thread panics between the temp-file write and the
+    /// rename. One-shot: the hook auto-disarms when it fires (or
+    /// when [`disarm_panic_before_rename`] is called).
+    pub fn arm_panic_before_rename() {
+        PANIC_BEFORE_RENAME.with(|c| c.set(true));
+    }
+
+    /// Defensive disarm — call from a panic-safe guard if a test
+    /// might bail before the auto-disarm in
+    /// [`maybe_panic_before_rename`] fires.
+    pub fn disarm_panic_before_rename() {
+        PANIC_BEFORE_RENAME.with(|c| c.set(false));
+    }
+
+    pub(super) fn maybe_panic_before_rename() {
+        let armed = PANIC_BEFORE_RENAME.with(|c| {
+            let v = c.get();
+            // One-shot: disarm so the very next atomic_write in the
+            // same test thread (e.g. a cleanup or a subsequent
+            // assertion path) does not re-trip.
+            c.set(false);
+            v
+        });
+        if armed {
+            panic!("atomic_write test hook: simulated kill before rename");
+        }
+    }
 }
 
 #[cfg(test)]
