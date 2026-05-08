@@ -1,0 +1,25 @@
+[package]
+name = "atlas-reports"
+version.workspace = true
+description = "Pure-function projections of the Atlas engine's L4–L8 outputs into Phase 3's four reports: drift, impact, modularity, composition divergence."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "atlas_reports"
+path = "src/lib.rs"
+
+[dependencies]
+atlas-engine = { path = "../atlas-engine" }
+atlas-index = { workspace = true }
+chrono = { workspace = true }
+component-ontology = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

@@ -20,6 +20,7 @@ atlas-analyzers = { path = "../atlas-analyzers" }
 atlas-engine = { path = "../atlas-engine" }
 atlas-index = { workspace = true }
 atlas-llm = { path = "../atlas-llm" }
+atlas-reports = { path = "../atlas-reports" }
 clap = { workspace = true }
 component-ontology = { workspace = true }
 indicatif = { workspace = true }

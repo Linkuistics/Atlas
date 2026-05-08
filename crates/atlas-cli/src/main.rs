@@ -46,6 +46,21 @@ enum Command {
     ValidateOverrides(ValidateOverridesArgs),
     /// Scaffold .atlas/ with commented template files before first run.
     Init(InitArgs),
+    /// Diff current contract shas against the prior snapshot, listing
+    /// changed contracts and any bindings still pinned to the prior
+    /// sha. Phase 3, PR-8.
+    Drift(reports::DriftArgs),
+    /// Walk downstream consumers of a contract or component. Phase 3,
+    /// PR-9.
+    Impact(reports::ImpactArgs),
+    /// Compute per-component modularity metrics (afferent/efferent
+    /// coupling, instability, cohesion, surface stability, surface
+    /// complexity) plus a subsystem rollup. Phase 3, PR-10.
+    Modularity(reports::ModularityArgs),
+    /// Flag pairs of components whose build coupling diverges from
+    /// their deploy coupling, scored by drift severity against the
+    /// snapshot baseline. Phase 3, PR-11.
+    Divergence(reports::DivergenceArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -140,6 +155,7 @@ struct InitArgs {
 }
 
 mod init;
+mod reports;
 
 fn main() -> ExitCode {
     match run() {
@@ -163,6 +179,10 @@ fn run() -> Result<ExitCode> {
                 .with_context(|| format!("failed to resolve root path {}", args.root.display()))?;
             init::run_init_cmd(&root)
         }
+        Command::Drift(args) => reports::run_drift_cmd(args),
+        Command::Impact(args) => reports::run_impact_cmd(args),
+        Command::Modularity(args) => reports::run_modularity_cmd(args),
+        Command::Divergence(args) => reports::run_divergence_cmd(args),
     }
 }
 

@@ -7,10 +7,11 @@ continuation prompt at
 reads this file (via the `*phase3-plan*` wildcard match) to find the
 next PR to dispatch.
 
-**Last updated:** 2026-05-08 (PR-1 landed: gitignore mechanism +
-atomic_write helper). PR-7 is the remaining Wave 2 PR; once PR-7
-lands, Wave 3 (PR-2..PR-5 retrofits) becomes dispatchable in
-parallel.
+**Last updated:** 2026-05-08 (PR-7 landed: `atlas-reports` crate
+scaffold + CLI subcommand framework). Wave 2 is complete; Wave 3
+(PR-2..PR-5 retrofits) is now dispatchable in parallel, and PR-8..
+PR-11 (report bodies) become dispatchable as soon as the retrofits
+they need have landed.
 
 ## PR status
 
@@ -26,7 +27,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [ ] PR-4  — Phase 1 retrofit: top-level `components.yaml` → cache
 - [ ] PR-5  — Phase 1 retrofit: top-level `related-components.yaml` → cache
 - [ ] PR-6  — Overrides schema extension: `edges_add` / `edges_suppress` + per-component field overrides
-- [ ] PR-7  — `atlas-reports` crate scaffold + CLI subcommand framework
+- [x] PR-7  — `atlas-reports` crate scaffold + CLI subcommand framework
 - [ ] PR-8  — Drift report + `atlas drift` CLI subcommand
 - [ ] PR-9  — Impact query + `atlas impact <id>` CLI subcommand
 - [ ] PR-10 — Modularity report + `atlas modularity` CLI subcommand
@@ -226,3 +227,88 @@ returns `Err(NotImplemented)`, no `atomic_write` use yet — that
 lands in PR-8/PR-10/PR-11). Once PR-7 lands, Wave 3 (PR-2..PR-5
 retrofits) becomes dispatchable in parallel; each retrofit calls
 `ensure_atlas_gitignore` from PR-1 via the `GitignoreSession`.
+
+### PR-7
+2026-05-08 — Landed: `atlas-reports` crate scaffold + CLI subcommand
+framework. New crate `crates/atlas-reports/` (workspace member) with
+seven modules (`lib`, `types`, `snapshot`, `drift`, `impact`,
+`modularity`, `divergence`); four CLI subcommands (`atlas drift`,
+`atlas impact`, `atlas modularity`, `atlas divergence`) wired
+through a new `crates/atlas-cli/src/reports.rs`; new workspace dep
+`chrono = "0.4"` (with `serde` feature) added to top-level
+`[workspace.dependencies]`.
+
+**Code surface:**
+- All four `pub fn` entry-points in `atlas-reports` return
+  `Err(ReportError::NotImplemented)`. PR-8..PR-11 land the actual
+  bodies. The crate is intentionally I/O-free; reviewers should
+  reject any `fs::*` introduced inside `crates/atlas-reports/src/*`.
+- Type shapes for the four reports + the snapshot follow design spec
+  §4.1–§4.4 verbatim. Every report struct ships with
+  `schema_version: u32` defaulting to `1`. All structs derive
+  `Serialize`, `Deserialize`, `Debug`, `Clone`, `PartialEq` (`Eq`
+  added where every nested field supports it; `ModularityMetrics`
+  and friends only get `PartialEq` because they hold `f64`).
+- 19 unit tests (round-trip serde for snapshot, drift report,
+  impact report, modularity report + per-component payload + rollup
+  + history, divergence report; plus the canonical exemplar test
+  for `contract-shas-snapshot.yaml` from design §4.1).
+- CLI: `OutputFormat` is a `clap::ValueEnum` (`yaml | json | human`,
+  default `yaml`). `--no-write` flag on `drift`, `modularity`,
+  `divergence`. `impact` deliberately omits `--no-write` so
+  `atlas impact --no-write foo` produces clap's own
+  `error: unexpected argument '--no-write'` message; no custom
+  rejection code needed.
+- Phase 5 conversion path documented in `crates/atlas-reports/src/lib.rs`'s
+  module-level doc comment per design §3.5.
+
+**Spec interpretive calls (recorded for PR-8..PR-11):**
+
+1. **`ContractShaSnapshot.contract_shas` is `Vec<ContractShaEntry>`,
+   not `BTreeMap<ContractId, Sha256Hex>`.** The plan §4 PR-7 prompt
+   prescribed a `BTreeMap`, but the design spec §4.1 wire format is
+   a sequence of `{id, content_sha}` records. The continuation
+   prompt instructs "design spec wins on type shapes", so the
+   in-memory form mirrors the YAML (sorted-by-id sequence).
+   `ContractShaSnapshot::as_map()` provides a `BTreeMap<&ContractId,
+   &Sha256Hex>` lookup view for drift's diff loop in PR-8.
+
+2. **Modularity history-entry field set follows design §4.3, not the
+   plan prompt's `{contracts_emitted, contracts_consumed, fan_in,
+   fan_out, churn}`.** Design §4.3 names the metrics
+   `afferent_coupling`, `efferent_coupling`, `instability`,
+   `cohesion`, `surface_complexity` (history entries omit
+   `surface_stability` because that metric is computed *from*
+   history rather than stored per-entry). The plan's metric names
+   were placeholders; "design spec wins on type shapes" disposes of
+   the conflict.
+
+3. **`ContractId` is a `pub type ContractId = String;` alias (per the
+   continuation prompt).** PR-9 (impact) is free to upgrade this to
+   a newtype if traversal needs richer behaviour. Existing
+   `atlas-index` `surfaces.yaml` records `contract_id: String`, so
+   the alias matches usage everywhere else.
+
+4. **`AtlasDatabase` is borrowed by `ReportInputs<'a>` but never
+   accessed by PR-7's stubs.** Each handler short-circuits before
+   the engine load — no `IndexConfig` construction, no
+   `run_index_cmd`-style backend wiring. PR-8..PR-11 will replace
+   the stub bodies with the real load-database flow; the design
+   §3.3 sequence diagram is the canonical wiring.
+
+5. **`DivergencePair.components` is `[String; 2]`, not `[ComponentId;
+   2]`.** Design §4.4 wire format has the pair as a list-of-strings
+   for YAML readability; the in-memory type follows the wire format
+   verbatim. PR-11 can convert to `ComponentId` internally during
+   the pair-classification loop.
+
+**Verification:** `cargo build --workspace`, `cargo test --workspace`,
+`cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` all
+clean. Manual smoke checked all four `--help` outputs include the
+`--format` flag (and `--no-write` where applicable), all four stubs
+print `"<subcommand> is not yet implemented"` to stderr and exit 1,
+and `atlas impact --no-write foo` rejects the flag with clap's
+unexpected-argument error.
+
+PR-2..PR-5 (retrofits) and PR-8..PR-11 (report bodies) are now
+unblocked.
