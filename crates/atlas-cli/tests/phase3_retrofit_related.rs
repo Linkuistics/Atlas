@@ -4,8 +4,9 @@
 //!
 //! (a) After `run_index` completes, `<root>/.atlas/cache/related-components.yaml`
 //!     exists and is non-empty (parseable as `RelatedComponentsFile`).
-//! (b) `<root>/.atlas/related-components.yaml` does **not** exist.
-//!     I.e. nothing writes to the old pre-PR-5 top-level location.
+//! (b) The pre-PR-5 top-level `related-components.yaml` (sibling of
+//!     `components.yaml` at the editorial tier) does **not** exist.
+//!     I.e. nothing writes to the old non-cache location.
 //!
 //! The test uses the `tiny` fixture (two-crate Rust workspace) and the
 //! `LenientBackend` canned-response helper from the sibling
@@ -159,7 +160,7 @@ fn related_components_written_to_cache_subdir_not_top_level() {
     let old_path = config.output_dir.join("related-components.yaml");
     assert!(
         !old_path.exists(),
-        "PR-5: old top-level .atlas/related-components.yaml must not exist after PR-5 retrofit; \
+        "PR-5: old top-level related-components.yaml must not exist after PR-5 retrofit; \
          found at {}",
         old_path.display()
     );
