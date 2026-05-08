@@ -7,12 +7,10 @@ continuation prompt at
 reads this file (via the `*phase3-plan*` wildcard match) to find the
 next PR to dispatch.
 
-**Last updated:** 2026-05-08 (PR-6 landed: overrides schema gains
-`edges_add` / `edges_suppress` (top-level only) and per-component
-field overrides (`overrides:` block with `language` / `kind` /
-`lifecycle` / `subsystem`)).
-**Wave 4 (PR-6) is COMPLETE.** Wave 5 (PR-8..PR-11 reports) is now
-dispatchable in parallel.
+**Last updated:** 2026-05-08 (PR-8 landed: drift report + `atlas
+drift` CLI subcommand). Wave 5 in progress: PR-9 / PR-10 / PR-11
+agents running in pre-staged worktrees off main HEAD `6b83425` (the
+PR-6 status commit). PR-8's commit on main is `1060edb`.
 
 ## PR status
 
@@ -29,7 +27,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-5  — Phase 1 retrofit: top-level `related-components.yaml` → cache
 - [x] PR-6  — Overrides schema extension: `edges_add` / `edges_suppress` + per-component field overrides
 - [x] PR-7  — `atlas-reports` crate scaffold + CLI subcommand framework
-- [ ] PR-8  — Drift report + `atlas drift` CLI subcommand
+- [x] PR-8  — Drift report + `atlas drift` CLI subcommand
 - [ ] PR-9  — Impact query + `atlas impact <id>` CLI subcommand
 - [ ] PR-10 — Modularity report + `atlas modularity` CLI subcommand
 - [ ] PR-11 — Composition divergence + `atlas divergence` CLI subcommand
@@ -783,3 +781,95 @@ Wave 5 (PR-8 drift / PR-9 impact / PR-10 modularity / PR-11
 divergence) is now dispatchable in parallel. PR-6 was helpful but
 not strictly required for the reports to function; they observe
 whatever edges the engine produces.
+
+### PR-8
+2026-05-08 — Landed: drift report + `atlas drift` CLI subcommand.
+Cherry-picked onto main as `1060edb` from worktree branch
+`phase3-pr8` commit `e5f1524` (10 files, +1457 / −33). The
+implementing agent did the work but did not generate a DONE report
+or commit — the orchestrator inspected the worktree, ran cargo
+verification, committed on the branch, and cherry-picked.
+
+**Code surface:**
+- `crates/atlas-reports/src/drift.rs` — `pub fn drift(inputs,
+  prev_snapshot)` returns `(DriftReport, ContractShaSnapshot)`.
+  Pure-function: iterates contracts and bindings via a
+  `DriftEngineView` trait abstraction (over `&AtlasDatabase` in
+  production, over a hand-built fixture trait impl in unit tests).
+  First-run case returns empty change arrays + fresh snapshot.
+  `pinned_bindings` are sorted by `(component, contract_id)` for
+  determinism.
+- `crates/atlas-reports/src/lib.rs` — re-exports.
+- `crates/atlas-cli/src/reports.rs` — `atlas drift` handler:
+  reads `<root>/.atlas/cache/contract-shas-snapshot.yaml` if
+  present, calls `atlas_reports::drift`, renders to stdout, then
+  unless `--no-write` writes both `.atlas/cache/reports/drift.yaml`
+  and `.atlas/cache/contract-shas-snapshot.yaml` atomically via
+  PR-1's `atlas_engine::atomic_write`. First-run UX prints
+  `"No prior baseline found. Captured baseline of N contracts.
+  Run \`atlas drift\` again after changes to see drift."`.
+- `crates/atlas-cli/src/{lib,main}.rs` — wiring for the new
+  handler (drift was previously stubbed by PR-7).
+- `crates/atlas-cli/Cargo.toml` — adds atlas-reports dep with the
+  `atomic_write_panic_after_temp` cargo feature on atlas-engine
+  (gated to test runs only).
+- `crates/atlas-cli/tests/atlas_drift.rs` — 4 CLI integration
+  tests including the kill-during-write fixture that exercises
+  the panic-injection hook.
+
+**PR-12 scope-creep (acknowledged, not blocking):** PR-8's AC
+required a `kill-during-snapshot-write` integration test. The
+agent satisfied the AC by introducing a feature-gated
+panic-injection hook in `crates/atlas-engine/src/atomic_write.rs`
+and a public `test_hooks_pub::arm_panic_before_rename()` helper
+gated behind the `atomic_write_panic_after_temp` cargo feature.
+The hook is one-shot, thread-local, and absent from release
+builds — verified via `cargo build --release` (clean). This is
+infrastructure that PR-12 was nominally going to add; PR-12's
+remaining scope is therefore narrowed to "exercise the hook with
+the broader fixture suite across both stateful files (drift +
+modularity history)" rather than "add the hook AND the
+fixtures."
+
+**Acceptance criteria:**
+- 7 unit tests in drift.rs (drift_first_run_no_baseline,
+  drift_baseline_unchanged, drift_baseline_changed,
+  drift_contract_added, drift_contract_removed,
+  drift_pinned_binding_detected, drift_pinned_binding_up_to_date)
+  plus 4 bonus tests (sorting, null-derived-from, summary
+  aggregation across changed contracts, round-trip yaml/json).
+- 4 CLI integration tests
+  (atlas_drift_first_run_writes_snapshot_and_empty_report,
+  atlas_drift_second_run_after_contract_change_reports_drift,
+  atlas_drift_no_write_flag_skips_writes,
+  atlas_drift_kill_during_snapshot_write_leaves_file_intact).
+
+**Verification on main (post-cherry-pick):**
+- `cargo test --workspace --no-fail-fast`: clean (the worktree-
+  local `phase2_polyglot_fixture` failures were the documented
+  Wave-3 worktree-target/ artifact pattern; passing 3/3 on main).
+- `cargo clippy --all-targets -- -D warnings`: clean.
+- `cargo fmt --check`: clean.
+- `cargo build --release`: clean (panic-injection hook absent
+  from release binary symbols).
+
+**Load-bearing details for downstream PRs (PR-11, PR-12):**
+- The drift snapshot file path is
+  `<root>/.atlas/cache/contract-shas-snapshot.yaml`. PR-11
+  (divergence) reads this file read-only to compute severity. The
+  schema is `ContractShaSnapshot` from `atlas-reports::snapshot`.
+- The atomic-write panic-injection hook lives at
+  `atlas_engine::atomic_write::test_hooks_pub` (gated behind the
+  `atomic_write_panic_after_temp` cargo feature on atlas-engine).
+  PR-12's broader fixture suite reuses this surface; it should NOT
+  re-introduce the hook.
+
+**Worktree-base bug observation:** PR-8 (and the other Wave 5
+agents) did not generate DONE reports — the implementing agent
+did substantive work in the pre-created worktree but appears to
+have hit a token / time budget before issuing a final summary or
+committing on the branch. The orchestrator (this session) handled
+the commit + cherry-pick + verification cycle. Work product is
+sound; the orchestration overhead is a fact of life with multi-PR
+parallel agent dispatch and large per-PR LOC budgets.
+
