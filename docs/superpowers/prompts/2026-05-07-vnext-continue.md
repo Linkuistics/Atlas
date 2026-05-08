@@ -1,4 +1,12 @@
-# Atlas vNext — Continuation Prompt
+# Atlas vNext — Continuation Prompt (Phase 2-shaped — DEPRECATED 2026-05-08)
+
+> **Deprecated.** Phase 2 is complete; this prompt is retained for
+> forensic value only. For continuing the Phase 3 arc, use
+> `docs/superpowers/prompts/2026-05-08-vnext-continue.md` instead.
+
+---
+
+# Atlas vNext — Continuation Prompt (original Phase-2-shaped wrapper text below)
 
 **Paste the fenced block below into a fresh Claude Code session.** The
 prompt is idempotent across the entire vNext arc: re-paste it across
