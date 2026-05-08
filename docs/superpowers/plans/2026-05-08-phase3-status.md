@@ -310,5 +310,38 @@ print `"<subcommand> is not yet implemented"` to stderr and exit 1,
 and `atlas impact --no-write foo` rejects the flag with clap's
 unexpected-argument error.
 
+**Schema fix (commit `e0aa5e5`, follow-up to `871d75b`):** the
+initial PR-7 `ImpactReport` had a richer in-memory shape (`direct:
+Vec<ImpactNode>`, `transitive: Vec<ImpactNode>`) that disagreed with
+design §4.2's documented wire format. The spec reviewer caught this
+as a substantive type-shape deviation. Refactored `impact.rs` to
+match the design spec verbatim:
+
+- `direct: Vec<ImpactNode>` → `direct_consumers: Vec<String>`.
+- `transitive: Vec<ImpactNode>` → `transitive_consumers: Vec<String>`.
+- New `target: ImpactReportTarget { kind: ImpactReportTargetKind, id: String }`.
+- New `partitions: ImpactPartitions { by_language, by_deploy_graph,
+  by_lifecycle: BTreeMap<String, Vec<String>> }` — three independent
+  axes per design §4.2's "three independent partitions, not a 3D
+  grid" mandate.
+- `summary: ImpactSummary { direct_count: u32, transitive_count: u32 }`
+  — verified against design spec field names.
+- Obsolete `ImpactNode` / `ImpactNodeKind` / `ImpactTargetView` types
+  removed entirely (zero refs anywhere in the workspace).
+- Two new tests added: `impact_report_matches_design_spec_exemplar`
+  (parses the verbatim §4.2 YAML exemplar) and
+  `impact_report_target_kind_serialises_lowercase`. Total
+  atlas-reports test count is now 20 (was 19).
+
+**Lesson for downstream PRs:** when a plan-prompt sub-section
+references "shape from design §X" but doesn't quote the wire format
+inline, the implementer (and reviewer) must read §X verbatim — the
+plan-prompt is intentionally less detailed than the design spec on
+type-shape minutiae and is not a substitute for reading the design
+spec. The "design spec wins on type shapes" rule applies whether or
+not the implementer recognised the conflict.
+
 PR-2..PR-5 (retrofits) and PR-8..PR-11 (report bodies) are now
-unblocked.
+unblocked. PR-9 (impact body) inherits the corrected wire-format-
+matching `ImpactReport` shape; no follow-up renderer projection
+needed.
