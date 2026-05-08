@@ -698,9 +698,9 @@ pub fn run_index(
 
         save_subsystems_atomic(&subsystems_path, &subsystems_file).map_err(IndexError::Other)?;
 
-        // PR-6: walk every component and write its per-component
-        // `<component-path>/.atlas/component.yaml` projection. The
-        // top-level `components.yaml` remains the canonical source;
+        // PR-6 / PR-3: walk every component and write its per-component
+        // `<component-path>/.atlas/cache/component.yaml` projection.
+        // The top-level `components.yaml` remains the canonical source;
         // per-component files are projections, so a failed write is
         // a degraded-but-correct state (warning on stderr, run
         // continues) rather than a hard error.
@@ -890,7 +890,7 @@ where
 }
 
 /// Walk every (non-deleted) component in `components_file` and emit
-/// per-component `<component-path>/.atlas/component.yaml` (PR-6) and
+/// per-component `<component-path>/.atlas/cache/component.yaml` (PR-6 / PR-3) and
 /// `<component-path>/.atlas/surfaces.yaml` (PR-7) files. The
 /// component's on-disk path is resolved by joining its
 /// first-`path_segments[0].path` against the matching root (longest
@@ -961,12 +961,18 @@ fn write_per_component_files(
 
         let target_dir = candidate_abs.join(".atlas");
 
-        // -- component.yaml (PR-6) -----------------------------------
+        // -- cache/component.yaml (PR-6 / PR-3) ----------------------
         // Note: per_component_yaml_snapshot now consults
         // surfaces_yaml_snapshot for its fingerprint (PR-7), so
         // calling it transitively produces the surface artefacts
         // already. That call is cheap to repeat below thanks to
         // Salsa's memoisation of the underlying surface_of inputs.
+        //
+        // PR-3: the file now lives in the `cache/` sub-directory
+        // (`<component>/.atlas/cache/component.yaml`). The
+        // `write_yaml_atomic` helper performs `create_dir_all` on the
+        // directory it receives, so we pass `target_dir.join("cache")`
+        // rather than `target_dir`.
         let component_snapshot = match per_component_yaml_snapshot(db, &entry.id) {
             Ok(arc) => arc,
             Err(err) => {
@@ -978,10 +984,13 @@ fn write_per_component_files(
             }
         };
 
-        let component_file_path = target_dir.join("component.yaml");
-        if let Err(err) =
-            write_per_component_atomic(&target_dir, &component_file_path, &component_snapshot)
-        {
+        let component_cache_dir = target_dir.join("cache");
+        let component_file_path = component_cache_dir.join("component.yaml");
+        if let Err(err) = write_per_component_atomic(
+            &component_cache_dir,
+            &component_file_path,
+            &component_snapshot,
+        ) {
             eprintln!(
                 "warning: failed to write {}: {err:#}; the top-level components.yaml is unaffected",
                 component_file_path.display()
@@ -1030,7 +1039,7 @@ fn write_per_component_atomic(
 }
 
 /// Generic atomic-write helper for any serde-serialisable value.
-/// Used by both the component.yaml (PR-6) and surfaces.yaml (PR-7)
+/// Used by both the cache/component.yaml (PR-6 / PR-3) and surfaces.yaml (PR-7)
 /// writers so the temp-file naming, mkdir-p, rename pattern is
 /// consistent.
 fn write_yaml_atomic<T: serde::Serialize>(

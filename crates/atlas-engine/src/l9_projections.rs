@@ -89,7 +89,7 @@ pub fn components_yaml_snapshot_with_prompt_shas(
     Arc::new(file)
 }
 
-/// Build a per-component `<component-path>/.atlas/component.yaml`
+/// Build a per-component `<component-path>/.atlas/cache/component.yaml`
 /// projection for a single component. The output carries the
 /// component's `ComponentEntry` (identical to its slot in the
 /// top-level `components.yaml`) plus an envelope of analyser

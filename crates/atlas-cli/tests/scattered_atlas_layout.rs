@@ -1,12 +1,12 @@
-//! PR-6 acceptance test: `atlas index` emits a per-component
-//! `<component-path>/.atlas/component.yaml` for every live component
+//! PR-6 / PR-3 acceptance test: `atlas index` emits a per-component
+//! `<component-path>/.atlas/cache/component.yaml` for every live component
 //! in addition to the top-level `<output>/.atlas/cache/components.yaml`.
 //!
 //! ## What this test asserts
 //!
 //! 1. Every non-deleted component in the top-level `components.yaml`
-//!    has a corresponding `.atlas/component.yaml` on disk under its
-//!    source path.
+//!    has a corresponding `cache/component.yaml` on disk under its
+//!    source `.atlas/` directory (PR-3 retrofit path).
 //! 2. The per-component file's `component` field equals the
 //!    component's slot in the top-level `components.yaml` byte-for-
 //!    byte (modulo serialisation). This is the §4.6 "data co-locates
@@ -146,7 +146,10 @@ fn every_component_has_a_per_component_atlas_file_matching_the_top_level_project
             .first()
             .expect("every live component carries at least one path segment");
         let component_dir = tmp.path().join(&segment.path);
-        let per_component_path = component_dir.join(".atlas").join("component.yaml");
+        let per_component_path = component_dir
+            .join(".atlas")
+            .join("cache")
+            .join("component.yaml");
         assert!(
             per_component_path.exists(),
             "expected per-component file at {} for component `{}`",
@@ -199,11 +202,10 @@ fn every_component_has_a_per_component_atlas_file_matching_the_top_level_project
 
 #[test]
 fn cargo_classified_component_records_cargo_analyser_identity() {
-    // PR-4 acceptance: a Cargo crate's
-    // `<component>/.atlas/component.yaml` carries
-    // `analyser_id: cargo-toml-classifier`, not the legacy
-    // `l3-driver` placeholder. The dispatcher's per-analyser identity
-    // plumbing must thread through to the projection.
+    // PR-4 / PR-3 acceptance: a Cargo crate's per-component
+    // cache/component.yaml carries `analyser_id: cargo-toml-classifier`,
+    // not the legacy `l3-driver` placeholder. The dispatcher's
+    // per-analyser identity plumbing must thread through to the projection.
     let tmp = TempDir::new().unwrap();
     write_lib(tmp.path(), "cargo-lib");
 
@@ -225,6 +227,7 @@ fn cargo_classified_component_records_cargo_analyser_identity() {
         .path()
         .join("cargo-lib")
         .join(".atlas")
+        .join("cache")
         .join("component.yaml");
     let bytes = std::fs::read(&per_component_path).expect("per-component file written");
     let parsed: PerComponentFile = serde_yaml::from_slice(&bytes).unwrap();
@@ -270,7 +273,7 @@ fn dockerfile_classified_component_records_dockerfile_analyser_identity() {
     .expect("run_index succeeds");
     assert!(summary.outputs_written);
 
-    let per_component_path = dir.join(".atlas").join("component.yaml");
+    let per_component_path = dir.join(".atlas").join("cache").join("component.yaml");
     let bytes = std::fs::read(&per_component_path).expect("per-component file written");
     let parsed: PerComponentFile = serde_yaml::from_slice(&bytes).unwrap();
     assert_eq!(
@@ -283,7 +286,7 @@ fn dockerfile_classified_component_records_dockerfile_analyser_identity() {
 
 /// PR-4 regression: an `overrides.additions` entry without a corresponding
 /// pin must record `analyser_id: "override"` (not `"none"`) in its
-/// per-component `component.yaml`. Previously `lookup_analyser_identity`
+/// per-component cache/component.yaml. Previously `lookup_analyser_identity`
 /// re-invoked `is_component`, which returned `"none"` for a directory that
 /// no analyser recognised; the fix reads the identity from the L4 identity
 /// map captured during assembly.
@@ -331,7 +334,7 @@ fn overrides_addition_records_override_analyser_id() {
     .expect("run_index succeeds");
     assert!(summary.outputs_written);
 
-    let per_component_path = hand_dir.join(".atlas").join("component.yaml");
+    let per_component_path = hand_dir.join(".atlas").join("cache").join("component.yaml");
     let bytes = std::fs::read(&per_component_path).unwrap_or_else(|e| {
         panic!(
             "per-component file must exist at {}: {e}",
@@ -373,8 +376,8 @@ fn dry_run_skips_per_component_writes() {
     assert!(!summary.outputs_written);
 
     // The fixture's only component is `dry-lib`. No
-    // `<root>/dry-lib/.atlas/component.yaml` may exist.
-    let per_component = tmp.path().join("dry-lib/.atlas/component.yaml");
+    // `<root>/dry-lib/.atlas/cache/component.yaml` may exist.
+    let per_component = tmp.path().join("dry-lib/.atlas/cache/component.yaml");
     assert!(
         !per_component.exists(),
         "dry-run must not write per-component files; found {}",

@@ -187,8 +187,8 @@ fn seed_one_root(
     // prior-run artefacts cannot be re-ingested as L0 inputs.
     //
     // Additionally — universally — prune every `.atlas/` directory
-    // anywhere under the walk. PR-6's per-component writers create
-    // `<component>/.atlas/component.yaml` (and PR-7+ adds more); on
+    // anywhere under the walk. PR-6 / PR-3's per-component writers create
+    // `<component>/.atlas/cache/component.yaml` (and PR-7+ adds more); on
     // re-run the file walk would otherwise pick those up and L8's
     // immediate-subdir enumeration would treat `<component>/.atlas`
     // as a candidate component directory. Per the design (§4.6,
