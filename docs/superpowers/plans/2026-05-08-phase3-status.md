@@ -7,9 +7,10 @@ continuation prompt at
 reads this file (via the `*phase3-plan*` wildcard match) to find the
 next PR to dispatch.
 
-**Last updated:** 2026-05-08 (PR-0b landed: design-doc touch-ups in
-canonical system-model spec). Wave 2 (PR-1 + PR-7) is now dispatchable
-concurrently — independent surfaces, no shared files.
+**Last updated:** 2026-05-08 (PR-1 landed: gitignore mechanism +
+atomic_write helper). PR-7 is the remaining Wave 2 PR; once PR-7
+lands, Wave 3 (PR-2..PR-5 retrofits) becomes dispatchable in
+parallel.
 
 ## PR status
 
@@ -19,7 +20,7 @@ commit sha + anything load-bearing the next session needs to know).
 
 - [x] PR-0a — Plan + status (docs only)
 - [x] PR-0b — Design-doc touch-ups in canonical system-model spec (docs only)
-- [ ] PR-1  — Gitignore mechanism for `<scope>/.atlas/cache/` + atomic_write helper
+- [x] PR-1  — Gitignore mechanism for `<scope>/.atlas/cache/` + atomic_write helper
 - [ ] PR-2  — Phase 1 retrofit: per-component `surfaces.yaml` → cache
 - [ ] PR-3  — Phase 1 retrofit: per-component `component.yaml` → cache
 - [ ] PR-4  — Phase 1 retrofit: top-level `components.yaml` → cache
@@ -201,3 +202,27 @@ Wave 2 ready: PR-1 (gitignore + atomic_write helper) and PR-7
 independent surfaces and dispatchable concurrently. Use
 `superpowers:dispatching-parallel-agents` (one Agent tool call per
 PR, both in a single message).
+
+### PR-1
+2026-05-08 — Landed: per-scope `.gitignore` writer + shared
+`atomic_write` helper. Commit `31c329d` (5 files, +536 lines net).
+
+**Code surface:**
+- New: `crates/atlas-engine/src/atomic_write.rs` — `pub fn atomic_write(&Path, &[u8]) -> io::Result<()>` performing temp + `sync_all` + rename. Temp filename `<final>.tmp.<pid>.<rand-u64-hex>`. Best-effort temp cleanup on `io::Error`. Test-only (`#[cfg(test)]`) panic-injection hook between temp-write and rename — verified absent from release binary symbols.
+- New: `crates/atlas-engine/src/gitignore.rs` — `pub fn ensure_atlas_gitignore(&Path) -> io::Result<EnsureGitignoreOutcome>` with three variants (`Wrote`, `AlreadyPresent`, `CustomisedWithoutCacheLine`). Exact-match-after-trim on `cache/` (NOT substring or glob). Wrote path uses `atomic_write` (eats own dogfood).
+- Modified: engine `lib.rs` (mod decls + re-exports), CLI `pipeline.rs` (call sites + `GitignoreSession` dedup struct), CLI integration test file.
+
+**Interpretive call (sound, ratified by spec review):** the dedup mechanism is a `GitignoreSession { visited: BTreeSet<PathBuf> }` struct threaded through `write_per_component_files` as `&mut`, with canonicalised-path keying (input-path fallback when canonicalisation fails on a not-yet-existent dir). Plan does not prescribe a specific dedup mechanism; this is the smallest signature change consistent with "at most one warning line per session per scope."
+
+**Load-bearing details for downstream PRs (PR-2..PR-5, PR-8, PR-10):**
+- Re-exports for downstream callers: `atlas_engine::atomic_write` (function), `atlas_engine::ensure_atlas_gitignore`, `atlas_engine::EnsureGitignoreOutcome`.
+- `GitignoreSession::ensure_for(scope)` is the per-scope ensure call sites in PR-2..PR-5 should use; lives in `crates/atlas-cli/src/pipeline.rs`. Each retrofit PR's writer should call into the existing session rather than constructing a new one.
+- Existing private `cache::layout::atomic_write` (different signature, returns `anyhow::Result`) was left in place to keep PR-1 within scope. A future refactor can converge them; not blocking Phase 3.
+- POSIX 1s mtime granularity: integration test for idempotency sleeps 1100ms between runs. Future cache-related integration tests with mtime checks should follow this pattern.
+
+Wave 2 still has PR-7 (`atlas-reports` crate scaffold) outstanding.
+PR-7 is independent of PR-1 (no shared files; PR-7 only stubs and
+returns `Err(NotImplemented)`, no `atomic_write` use yet — that
+lands in PR-8/PR-10/PR-11). Once PR-7 lands, Wave 3 (PR-2..PR-5
+retrofits) becomes dispatchable in parallel; each retrofit calls
+`ensure_atlas_gitignore` from PR-1 via the `GitignoreSession`.
