@@ -1,0 +1,3 @@
+FROM alpine:3.20
+COPY ../../ts_pkg /app/ts_pkg
+CMD ["/app/ts_pkg/start"]

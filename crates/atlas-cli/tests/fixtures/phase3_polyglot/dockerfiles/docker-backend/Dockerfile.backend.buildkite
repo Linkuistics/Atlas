@@ -1,0 +1,3 @@
+FROM alpine:3.20
+COPY ../../py_pkg /app/py_pkg
+CMD ["/app/py_pkg/start"]
