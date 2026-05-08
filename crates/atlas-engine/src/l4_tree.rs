@@ -82,6 +82,22 @@ pub enum TreeAssemblyError {
     /// realising it.
     #[error("failed to parse per-component override file `{file}`: {message}")]
     PerComponentParseError { file: String, message: String },
+
+    /// A per-component override file declared `edges_add` or
+    /// `edges_suppress`. Per design §5.5, these top-level-only
+    /// blocks describe relationships between two components and
+    /// therefore have no natural owner at the per-component scope —
+    /// they belong only in the primary or peer top-level
+    /// `components.overrides.yaml`. Allowing them at the per-
+    /// component scope would let a single component's overrides file
+    /// silently mutate edges anchored elsewhere in the tree, which
+    /// the spec explicitly prohibits.
+    #[error(
+        "per-component override file `{file}` declares `{kind}`, which is permitted \
+         only at the top-level `components.overrides.yaml` (design §5.5); \
+         move the entry to the workspace's primary or peer top-level overrides file"
+    )]
+    EdgesOverridesAtPerComponentScope { file: String, kind: &'static str },
 }
 
 /// Map from [`ComponentId`] to `(analyser_id, analyser_version)` as captured
@@ -128,7 +144,7 @@ pub fn all_component_analyser_identities(db: &AtlasDatabase) -> Arc<AnalyserIden
 /// invariant in [`all_components`]. Callers that want to recover
 /// from those errors should use [`try_assemble`] directly and walk
 /// the override files themselves.
-pub fn merged_overrides(db: &AtlasDatabase) -> Arc<OverridesFile> {
+pub(crate) fn merged_overrides(db: &AtlasDatabase) -> Arc<OverridesFile> {
     let workspace = db.workspace();
     let roots = workspace.roots(db as &dyn salsa::Database).clone();
     let primary_overrides = workspace
@@ -231,6 +247,7 @@ fn try_assemble_inner(
         &mut finalised,
         &merged.per_component_field_overrides,
         &roots,
+        warnings,
     );
 
     enforce_acyclicity(&finalised)?;
@@ -251,11 +268,13 @@ fn try_assemble_inner(
 /// - `kind` overwrites `ComponentEntry.kind` directly.
 /// - `lifecycle` parses through [`LifecycleScope`] and replaces the
 ///   analyser-emitted `lifecycle_roles` with the single authored
-///   scope. An unparseable lifecycle string is silently dropped to
-///   avoid surfacing schema-vocabulary errors as engine-internal
-///   panics; the design spec leaves the lifecycle vocabulary open
-///   and future analysers may add scopes the engine binary has not
-///   yet learned about.
+///   scope. An unparseable lifecycle string is dropped (the analyser
+///   value sticks) and a warning is emitted to the same channel that
+///   carries override-conflict warnings, so the user sees the typo
+///   without the run failing. The design spec leaves the lifecycle
+///   vocabulary open and future analysers may add scopes the engine
+///   binary has not yet learned about, so a hard error here would be
+///   wrong.
 /// - `subsystem` is captured in the schema for forward
 ///   compatibility but has no destination field on
 ///   `ComponentEntry`; future PRs will wire it.
@@ -270,6 +289,7 @@ fn apply_per_component_field_overrides(
     entries: &mut [ComponentEntry],
     by_dir: &BTreeMap<PathBuf, ComponentFieldOverrides>,
     roots: &[PathBuf],
+    warnings: &mut dyn Write,
 ) {
     for (dir, fo) in by_dir {
         // Resolve the directory to its allocated id by matching the
@@ -300,13 +320,17 @@ fn apply_per_component_field_overrides(
             // user's overrides file or an analyser-shipped scope
             // the engine binary has not yet learned about; the
             // failure mode is "no override applied, analyser value
-            // sticks". Surface it as a stderr-style note via the
-            // existing warnings channel would tangle this helper
-            // with `&mut dyn Write`; for the current PR's scope we
-            // accept the silent skip and document it on the
-            // function's contract above.
+            // sticks". Emit a warning so the user sees the typo
+            // without the run failing.
             if let Some(scope) = LifecycleScope::parse(lifecycle) {
                 entry.lifecycle_roles = vec![scope];
+            } else {
+                let _ = writeln!(
+                    warnings,
+                    "warning: unrecognised lifecycle scope `{}` in per-component overrides at {} — override not applied",
+                    lifecycle,
+                    dir.display()
+                );
             }
         }
         // `subsystem` has no destination field on `ComponentEntry`
@@ -1046,6 +1070,27 @@ fn validate_per_component_scope(
     file: &OverridesFile,
     prefixes: &[String],
 ) -> Result<(), TreeAssemblyError> {
+    // Design §5.5: `edges_add` / `edges_suppress` are top-level-only.
+    // A per-component file may not author edges because edges
+    // describe relationships between two components and therefore
+    // have no natural single-component owner; allowing them here
+    // would let one component's overrides silently mutate edges
+    // anchored elsewhere in the tree. Reject before the merge ever
+    // sees the file so the error message names the offending file
+    // directly.
+    if !file.edges_add.is_empty() {
+        return Err(TreeAssemblyError::EdgesOverridesAtPerComponentScope {
+            file: file_path.display().to_string(),
+            kind: "edges_add",
+        });
+    }
+    if !file.edges_suppress.is_empty() {
+        return Err(TreeAssemblyError::EdgesOverridesAtPerComponentScope {
+            file: file_path.display().to_string(),
+            kind: "edges_suppress",
+        });
+    }
+
     let mut all_ids: Vec<&ComponentId> = Vec::new();
     for id in file.pins.keys() {
         all_ids.push(id);
@@ -1470,6 +1515,150 @@ mod tests {
             }
             other => panic!("expected PerComponentScopeViolation, got {other:?}"),
         }
+    }
+
+    /// Design §5.5: `edges_add` is top-level-only. A per-component
+    /// `overrides.yaml` declaring an `edges_add` entry must be
+    /// rejected with `EdgesOverridesAtPerComponentScope` before the
+    /// merge consumes it, regardless of whether the participants
+    /// fall inside the file's scoping prefix. The error message must
+    /// name both the offending file and the offending kind so the
+    /// user knows which entry to move.
+    #[test]
+    fn per_component_edges_add_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_overrides(
+            &root.join("billing-core/.atlas/overrides.yaml"),
+            "schema_version: 1\nedges_add:\n  - kind: depends-on\n    from: billing-core\n    to: billing-core/api\n    reason: manual\n",
+        );
+
+        let primary = OverridesFile::default();
+        let mut warnings: Vec<u8> = Vec::new();
+        let err = merge_overrides_in_discovery_order(
+            &[root.to_path_buf()],
+            root,
+            &primary,
+            &mut warnings,
+        )
+        .expect_err("edges_add at per-component scope must be rejected");
+        match err {
+            TreeAssemblyError::EdgesOverridesAtPerComponentScope { file, kind } => {
+                assert!(
+                    file.contains("billing-core/.atlas/overrides.yaml"),
+                    "error must name the offending file: {file}"
+                );
+                assert_eq!(kind, "edges_add");
+            }
+            other => panic!("expected EdgesOverridesAtPerComponentScope, got {other:?}"),
+        }
+    }
+
+    /// Companion to `per_component_edges_add_is_rejected`: the
+    /// `edges_suppress` block is rejected with the same error variant
+    /// when authored at per-component scope.
+    #[test]
+    fn per_component_edges_suppress_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_overrides(
+            &root.join("billing-core/.atlas/overrides.yaml"),
+            "schema_version: 1\nedges_suppress:\n  - kind: depends-on\n    from: billing-core\n    to: billing-core/api\n    reason: bogus\n",
+        );
+
+        let primary = OverridesFile::default();
+        let mut warnings: Vec<u8> = Vec::new();
+        let err = merge_overrides_in_discovery_order(
+            &[root.to_path_buf()],
+            root,
+            &primary,
+            &mut warnings,
+        )
+        .expect_err("edges_suppress at per-component scope must be rejected");
+        match err {
+            TreeAssemblyError::EdgesOverridesAtPerComponentScope { file, kind } => {
+                assert!(
+                    file.contains("billing-core/.atlas/overrides.yaml"),
+                    "error must name the offending file: {file}"
+                );
+                assert_eq!(kind, "edges_suppress");
+            }
+            other => panic!("expected EdgesOverridesAtPerComponentScope, got {other:?}"),
+        }
+    }
+
+    /// Fix 3 regression guard: a per-component `field_overrides`
+    /// block with a `lifecycle:` value that does not parse as a
+    /// known `LifecycleScope` emits a warning to the warnings
+    /// channel and leaves the analyser-emitted lifecycle in place.
+    /// The unparseable case is a soft failure (typo or future-
+    /// scope), not a panic, but it must surface to the user.
+    #[test]
+    fn unparseable_lifecycle_emits_warning_and_skips_override() {
+        use atlas_index::ComponentFieldOverrides;
+        use std::path::PathBuf;
+
+        // Build a minimal `ComponentEntry` that already has a
+        // populated lifecycle, then run `apply_per_component_field_overrides`
+        // with a typo'd lifecycle. The warning must mention the
+        // offending value AND the directory; the entry's
+        // `lifecycle_roles` must be untouched.
+        let dir = PathBuf::from("/tmp/atlas-test/billing-core");
+        let mut entries = vec![ComponentEntry {
+            id: ComponentId::parse("billing-core").unwrap(),
+            parent: None,
+            kind: "rust-library".into(),
+            lifecycle_roles: vec![LifecycleScope::Runtime],
+            languages: BTreeSet::new(),
+            build_system: None,
+            role: None,
+            path_segments: vec![PathSegment {
+                path: PathBuf::from("billing-core"),
+                content_sha: String::new(),
+            }],
+            manifests: vec![],
+            doc_anchors: vec![],
+            evidence_grade: component_ontology::EvidenceGrade::Strong,
+            evidence_fields: vec![],
+            rationale: String::new(),
+            deleted: false,
+        }];
+
+        let mut by_dir: BTreeMap<PathBuf, ComponentFieldOverrides> = BTreeMap::new();
+        by_dir.insert(
+            dir.clone(),
+            ComponentFieldOverrides {
+                language: None,
+                kind: None,
+                lifecycle: Some("definitely-not-a-real-scope".into()),
+                subsystem: None,
+            },
+        );
+        let roots = vec![PathBuf::from("/tmp/atlas-test")];
+
+        let mut warnings: Vec<u8> = Vec::new();
+        apply_per_component_field_overrides(&mut entries, &by_dir, &roots, &mut warnings);
+
+        // The analyser-emitted lifecycle is preserved.
+        assert_eq!(
+            entries[0].lifecycle_roles,
+            vec![LifecycleScope::Runtime],
+            "unparseable lifecycle override must not clobber the analyser value"
+        );
+
+        let text = String::from_utf8(warnings).unwrap();
+        assert!(
+            text.contains("definitely-not-a-real-scope"),
+            "warning must echo the offending value: {text}"
+        );
+        assert!(
+            text.contains("billing-core"),
+            "warning must reference the owning directory: {text}"
+        );
+        assert!(
+            text.contains("override not applied"),
+            "warning must state the consequence: {text}"
+        );
     }
 
     /// Two peer-root top-level files with conflicting pins on the

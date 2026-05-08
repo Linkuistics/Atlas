@@ -1164,6 +1164,32 @@ mod tests {
     }
 
     #[test]
+    fn symmetric_edge_suppress_canonicalises_participants() {
+        // Mirror of `symmetric_edge_add_canonicalises_participants`
+        // for the suppress side. The analyser emits a `co-implements`
+        // edge with already-canonicalised participants `[alpha, beta]`
+        // (because non-directed kinds are sorted at construction time
+        // — see `analyser_edge`). The user authors `edges_suppress`
+        // with `from: beta, to: alpha` (reversed). The suppress must
+        // canonicalise its own participants before the
+        // `(kind, participants)` match runs, otherwise it would fail
+        // to remove the analyser edge. This is the regression guard
+        // for the `want_participants.sort()` call in the production
+        // path at `l6_edges.rs:280-281`.
+        let analyser = vec![analyser_edge(EdgeKind::CoImplements, "alpha", "beta")];
+        let out = apply_user_edge_overrides_for_tests(
+            analyser,
+            &[],
+            &[suppress("co-implements", "beta", "alpha", "false-positive")],
+        );
+        assert!(
+            out.is_empty(),
+            "symmetric-kind suppress with reversed participants must canonicalise \
+             before matching and remove the analyser edge; got {out:?}"
+        );
+    }
+
+    #[test]
     fn empty_overrides_return_input_unchanged() {
         let analyser = vec![
             analyser_edge(EdgeKind::DependsOn, "alpha", "beta"),
