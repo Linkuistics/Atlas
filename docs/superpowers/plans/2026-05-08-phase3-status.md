@@ -7,14 +7,15 @@ continuation prompt at
 reads this file (via the `*phase3-plan*` wildcard match) to find the
 next PR to dispatch.
 
-**Last updated:** 2026-05-08 (Wave 5 complete: PR-8 drift, PR-9
-impact, PR-10 modularity, PR-11 divergence all landed on main).
-Wave 6 (PR-12 atomic-write fixture suite) and Wave 7 (PR-13 polyglot
-smoke test) are now dispatchable. Wave 5 commits on main:
+**Last updated:** 2026-05-08 (PR-12 atomic-write fixture suite
+landed on main as `2e8f19d`). Wave 6 complete; Wave 7 (PR-13
+polyglot smoke test) is now the only outstanding item before Phase
+3 closeout. Wave 5 + Wave 6 commits on main:
 - PR-8 drift: `1060edb`
 - PR-9 impact: `0ec65c5`
 - PR-11 divergence: `8ddd3c5`
 - PR-10 modularity: `4ce7245`
+- PR-12 atomic-write fixtures: `2e8f19d`
 
 ## PR status
 
@@ -35,7 +36,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-9  — Impact query + `atlas impact <id>` CLI subcommand
 - [x] PR-10 — Modularity report + `atlas modularity` CLI subcommand
 - [x] PR-11 — Composition divergence + `atlas divergence` CLI subcommand
-- [ ] PR-12 — Atomic-write fixture suite for stateful files
+- [x] PR-12 — Atomic-write fixture suite for stateful files
 - [ ] PR-13 — Acceptance: Phase 3 polyglot smoke test
 
 When every box is `[x]`, Phase 3 is complete and the continuation
@@ -1140,4 +1141,61 @@ already brought forward the panic-injection hook
 narrows to "exercise the hook with the broader fixture suite across
 both stateful files (drift snapshot + modularity history)" rather
 than "add the hook AND the fixtures."
+
+### PR-12
+2026-05-08 — Landed: atomic-write fixture suite for stateful files.
+Cherry-picked onto main as `2e8f19d` from worktree branch
+`phase3-pr12` commit `a90f4068` (4 files, +673 / −3). Clean DONE
+report from the implementing agent; cherry-pick was conflict-free.
+
+**Code surface:**
+- `crates/atlas-engine/src/atomic_write.rs` — added a SYMMETRIC
+  `panic_after_rename` hook to the existing `test_hooks_pub`
+  module (`arm_panic_after_rename`, `disarm_panic_after_rename`,
+  `maybe_panic_after_rename`). One-shot, thread-local, mirrors
+  PR-8's `panic_before_rename` discipline. Wired AFTER
+  `fs::rename(...)` so a panic from this hook leaves the
+  destination fully-new.
+- `crates/atlas-reports/Cargo.toml` — adds dev-deps `atlas-engine`
+  with `atomic_write_panic_after_temp` feature, `rand 0.8`,
+  `tempfile`.
+- `crates/atlas-reports/tests/atomic_writes.rs` — new file (599
+  lines): five named fixture tests + 10-iteration random-kill
+  stress test (`StdRng::seed_from_u64(12345)` for reproducibility).
+
+**Acceptance criteria — all pass:**
+- `drift_snapshot_kill_during_write_leaves_file_intact`
+- `drift_snapshot_kill_after_rename_succeeds`
+- `modularity_history_kill_during_write_preserves_prior_5_entries`
+- `modularity_history_kill_after_rename_persists_rotation`
+- `drift_and_modularity_atomic_writes_are_kill_safe_under_random_stress`
+  (10 iterations seeded)
+
+**Hook-absence verification (release build):**
+- `cargo build --release` clean (no warnings).
+- `nm target/release/atlas | grep -ci 'panic_before_rename\|panic_after_rename'` → 0 matches.
+- `nm target/release/libatlas_engine.rlib | grep -ci 'panic_before_rename\|panic_after_rename'` → 0 matches.
+- `nm target/release/libatlas_reports.rlib | grep -ci 'panic_before_rename\|panic_after_rename'` → 0 matches.
+- The feature gate `atomic_write_panic_after_temp` is opt-in
+  (default-off); enabled only on dev-deps in `atlas-cli` (PR-8) and
+  `atlas-reports` (PR-12).
+
+**Documented narrow deviation:** Plan §4 PR-12 says
+"invoke `atlas_reports::modularity(...)` to compute the per-component
+output". The agent instead constructed `ComponentModularity` fixture
+values directly because `atlas_reports::modularity()` requires a
+real `&AtlasDatabase` and constructing one from a tempdir tree
+crosses into "the CLI handler does additional work irrelevant to
+atomic-write semantics" the prompt warned against. The serialise +
+atomic_write call sequence is identical to the CLI handler's. The
+local re-declaration of `HISTORY_CAP = 5` is acceptable because the
+cap is fixed by design spec (not configurable; drift between values
+would itself be a spec violation).
+
+**Wave 7 ready:** PR-13 (Phase 3 polyglot smoke test) is the final
+PR. It depends on every prior wave: cache layout (PR-2..PR-5),
+overrides extension (PR-6), reports framework (PR-7), all four
+report bodies (PR-8..PR-11), and atomic-write fixtures (PR-12 — for
+the kill-during-write reliability story). LLM call budget assertions
+must match Phase 2's PR-14 baseline (~26 cold, 0 warm, 0 reports).
 
