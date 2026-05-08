@@ -3,7 +3,7 @@
 #
 # Exits 1 if any git-tracked file contains a reference to
 # `.atlas/component.yaml` (singular) outside of the `cache/` subdirectory.
-# Does NOT match `.atlas/components.yaml` (plural) — that is PR-4's
+# Does NOT match the plural-form `components.yaml` — that is PR-4's
 # territory. The negative-lookahead `(?!s)` anchors on the singular form.
 #
 # Usage (from the repository root):
@@ -13,7 +13,7 @@
 #   .atlas/component.yaml          ← old (pre-PR-3) path: FORBIDDEN
 # but NOT:
 #   .atlas/cache/component.yaml    ← new (post-PR-3) path: allowed
-#   .atlas/components.yaml         ← plural: different file, not matched
+#   plural-form components.yaml    ← different file, not matched
 #
 # Implementation note: we use `git grep` so only tracked files are searched
 # (untracked workspace artifacts are ignored). The negative-lookahead pattern
