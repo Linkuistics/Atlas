@@ -7,15 +7,27 @@ continuation prompt at
 reads this file (via the `*phase3-plan*` wildcard match) to find the
 next PR to dispatch.
 
-**Last updated:** 2026-05-08 (PR-12 atomic-write fixture suite
-landed on main as `2e8f19d`). Wave 6 complete; Wave 7 (PR-13
-polyglot smoke test) is now the only outstanding item before Phase
-3 closeout. Wave 5 + Wave 6 commits on main:
+**Last updated:** 2026-05-08 (Phase 3 COMPLETE). All 14 PRs landed.
+Wave 7 closeout: PR-13 polyglot smoke test cherry-picked as
+`6520acb` plus a fix-up commit `a1fde5d` to force-add gitignored
+fixture override files. Final cargo test/clippy/fmt/release on main
+all clean. Phase 3 commits on main (all):
+- PR-0a plan + status: `cac1709`
+- PR-0b design touch-ups: `986b63e`
+- PR-1 atomic_write + gitignore: `31c329d`
+- PR-2 surfaces.yaml retrofit: `e5b7828` + `31e2d20`
+- PR-3 component.yaml retrofit: `5b2ec1a` + `e158114`
+- PR-4 components.yaml retrofit: `a1b9541`
+- PR-5 related-components.yaml retrofit: `e146dd4` + `d1b98a0`
+- PR-6 overrides extension: atlas-contracts `a0a9a8c` + Atlas
+  `1b27827` + `27794d6` (fix-up)
+- PR-7 atlas-reports scaffold: `871d75b` + `e0aa5e5`
 - PR-8 drift: `1060edb`
 - PR-9 impact: `0ec65c5`
-- PR-11 divergence: `8ddd3c5`
 - PR-10 modularity: `4ce7245`
+- PR-11 divergence: `8ddd3c5`
 - PR-12 atomic-write fixtures: `2e8f19d`
+- PR-13 polyglot smoke test: `6520acb` + `a1fde5d` (fix-up)
 
 ## PR status
 
@@ -37,7 +49,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-10 — Modularity report + `atlas modularity` CLI subcommand
 - [x] PR-11 — Composition divergence + `atlas divergence` CLI subcommand
 - [x] PR-12 — Atomic-write fixture suite for stateful files
-- [ ] PR-13 — Acceptance: Phase 3 polyglot smoke test
+- [x] PR-13 — Acceptance: Phase 3 polyglot smoke test
 
 When every box is `[x]`, Phase 3 is complete and the continuation
 prompt should report success and stop.
@@ -1198,4 +1210,192 @@ overrides extension (PR-6), reports framework (PR-7), all four
 report bodies (PR-8..PR-11), and atomic-write fixtures (PR-12 — for
 the kill-during-write reliability story). LLM call budget assertions
 must match Phase 2's PR-14 baseline (~26 cold, 0 warm, 0 reports).
+
+### PR-13
+2026-05-08 — Landed: Phase 3 polyglot smoke test. Two commits on
+main:
+- `6520acb` — main implementation (44 files, +1474). Cherry-picked
+  from worktree branch `phase3-pr13` commit `582b71c`. The agent
+  did not generate a DONE report (token-budget exhaustion
+  pattern, same as PR-8); orchestrator inspected the worktree, ran
+  cargo verification (1 passed in ~17.5 min), and committed.
+- `a1fde5d` — fix-up: force-add `.atlas/components.overrides.yaml`
+  and `.atlas/subsystems.overrides.yaml` (2 files, +131). The repo's
+  top-level `.gitignore:19 .atlas/` rule had filtered them out of
+  the orchestrator's `git add -A` during cherry-pick, leaving the
+  fixture incomplete on main even though it was complete on the
+  worktree. Polyglot test asserted on `edges_add` materialisation
+  and surfaced this as a data-missing failure.
+
+**Code surface:**
+- `crates/atlas-cli/tests/phase3_polyglot_fixture.rs` — single
+  `polyglot_phase3_acceptance` integration test (~1133 lines).
+  Pattern follows Phase 2's `phase2_polyglot_fixture.rs`. Reuses
+  `PR14Backend` for LLM-call counting.
+- `crates/atlas-cli/tests/fixtures/phase3_polyglot/` — verbatim
+  copy of Phase 2 fixture plus:
+  - `outlier_cluster/` (6 peer + 1 outlier crates) — drives the
+    `>2σ` efferent-coupling outlier flag for modularity.
+  - `compose-proxy/` + `compose/` updates — deploy-only divergence
+    trigger via `co-deployed-with`.
+  - `.atlas/components.overrides.yaml` — `edges_add` (depends-on,
+    flutter-app, dart-lib) + `edges_suppress` (one analyser-
+    discovered edge), each with required `reason`.
+  - `.atlas/subsystems.overrides.yaml` — three-member subsystem
+    fixture with the outlier as a member.
+
+**Phase 2 fixture and `phase2_polyglot_fixture.rs` are byte-
+identical pre/post** (verified via `git diff main` returning 0
+lines on the worktree).
+
+**Test coverage (8-step run order, all assertions pass):**
+1. `atlas index` cold — L4 cache populated with PR-2..PR-5
+   retrofit paths; gitignore present at every `.atlas/` scope.
+2. `atlas drift` first run — baseline captured; first-run UX
+   guidance message printed.
+3. Mutate one contract via fixture-helper.
+4. `atlas index` warm + delta — exactly the affected component
+   re-classifies.
+5. `atlas drift` second run — one entry in `contracts_changed`
+   with expected pinned-binding entries.
+6. `atlas modularity` — per-component files written; rollup
+   written; deliberate-outlier component in subsystem outliers
+   for `efferent_coupling`.
+7. `atlas divergence` — two divergent pairs (one `deploy_only`,
+   one `build_only`).
+8. `atlas impact` — partition axes correctly populated.
+
+**LLM call budget invariants (strict, all pass):**
+- Cold (step 1): matches Phase 2 PR-14 baseline.
+- Warm rerun: 0.
+- Drift run 1: 0 (read-only handler).
+- Drift run 2: 0.
+- Modularity: 0 (fixedpoint cache-hit-only).
+- Divergence: 0 (fixedpoint cache-hit-only).
+- Impact: 0 (read-only handler).
+- Each report-run assertion message ends "A non-zero count is a
+  Phase 3 invariant violation — do not relax."
+
+**Cache-discipline assertions (all pass):**
+- All cache files under `<scope>/.atlas/cache/`.
+- `<scope>/.atlas/.gitignore` exists at every scope and contains
+  `cache/`.
+- All eight new Phase 3 cache files populated by end of run order
+  (drift snapshot, drift report, modularity rollup, divergence
+  report, components.yaml, related-components.yaml, per-component
+  modularity.yaml + surfaces.yaml + component.yaml).
+
+**Override fixture assertions (all pass):**
+- `edges_add (depends-on, flutter-app, dart-lib)` materialises in
+  `<root>/.atlas/cache/related-components.yaml`.
+- `edges_suppress` entry eliminates the matching analyser-
+  discovered edge.
+
+**Final cross-tree verification:**
+- `cargo test --workspace --no-fail-fast`: clean.
+- `cargo clippy --all-targets -- -D warnings`: clean.
+- `cargo fmt --check`: clean.
+- `cargo build --release`: clean (panic-injection hooks absent).
+
+## Phase 3 — complete
+
+2026-05-08 — Phase 3 ships. All 14 PRs landed, all four reports
+working end-to-end against the polyglot fixture, every Phase 3
+invariant verified by tests:
+
+- **Greenfield maintained.** No on-disk format compatibility with
+  Phase 1 / Phase 2; no migration commands; users upgrading delete
+  `.atlas/` and re-run.
+- **Six-file editorial tier preserved** (top-level `overrides`,
+  `external-components`, `subsystems`, `analyzers`, `config` +
+  per-component `overrides`). Phase 1's surfaces / component /
+  components / related-components moved to the cache (gitignored)
+  tier. PR-13's polyglot fixture exercises the editorial files.
+- **Schema_version stays at 1.** All Phase 3 on-disk schemas (drift
+  snapshot, drift report, impact, modularity per-component +
+  rollup, divergence) ship as v1.
+- **Zero new LLM call sites.** Cold polyglot LLM-call count matches
+  Phase 2 PR-14 baseline; every report run is 0 LLM calls. Verified
+  by PR-13's strict assertions.
+- **All cache writes are atomic.** PR-1's helper covers everything;
+  PR-12's fixture suite stress-tests the kill-during-write
+  semantics for the two stateful files (drift snapshot, modularity
+  history).
+- **Reports crate is pure-function.** `crates/atlas-reports/` has
+  zero `fs::*` calls; all I/O lives in the CLI handlers. This is
+  the Phase 5 Salsa-conversion invariant.
+
+**Architectural notes for Phase 4 / 5 reviewers:**
+
+- **PR-8 / PR-9 read-from-YAMLs vs PR-10 / PR-11 fixedpoint-with-
+  cache.** The four reports take two different approaches to
+  reading engine state. Both satisfy the no-new-LLM-calls invariant
+  (PR-13 verifies). Convergence to a single approach is a future
+  cleanup; PR-13's smoke test is the regression guard if convergence
+  changes the budget numbers.
+- **`build_engine_database` (PR-10's pipeline helper) and
+  `build_database_for_reports` (PR-11's reports helper) are near-
+  duplicates.** Both build a fresh `AtlasDatabase` and run the
+  fixedpoint. Future PR can converge through a shared inner
+  helper; not blocking.
+- **Orphan `pub use save_related_components_atomic` in
+  atlas-contracts.** From PR-5 closeout. Untouched in Phase 3.
+- **`.atlas/` gitignore + fixture interaction.** PR-13's fix-up
+  commit (`a1fde5d`) documents that fixture editorial files need
+  `git add -f` because the repo's top-level `.gitignore` excludes
+  `.atlas/`. Future fixtures with editorial files must follow this
+  pattern.
+
+**Cumulative LLM-call savings on the polyglot fixture:** Phase 3
+introduces zero new LLM call sites, so cold cost matches Phase 2's
+PR-14 baseline. Warm reruns and report runs are all 0. The savings
+of Phase 3 are **operational** (drift / impact / modularity /
+divergence reports become available without engine recomputation
+cost) rather than **token-budget** — this is the design intent
+("reports observe what the engine has already produced", design
+§3.1).
+
+**Deferred items the user may want to revisit (none blocking):**
+
+- Stale "Phase 4" prose references in canonical system-model spec
+  (§5.6, §9, §11.4, glossary line ~1436). PR-0b's spec review
+  surfaced these as semantically stale post-renumbering. Docs-only
+  retext PR; not blocking Phase 3 since no Phase 3 code reads the
+  prose. Recorded in PR-0b's per-PR notes.
+- Sweep-test boilerplate consolidation (PR-2..PR-5). ~100 LoC
+  duplicated across four `phase3_retrofit_*.rs` files; reviewer
+  recommended `crates/atlas-cli/tests/common/sweep_support.rs`.
+  Not blocking.
+- Phase 3 cache-tier writer-idiom convergence: some retrofits use
+  `atlas_engine::atomic_write` directly (mkdirs internally), some
+  use `save_*_atomic` helpers + explicit `create_dir_all`. Both
+  are correct; convergence to a single idiom would also let
+  `cache::layout::atomic_write` (the duplicate atomic-write helper
+  from Phase 1) be deleted.
+- Convergence of the `build_engine_database` (PR-10) and
+  `build_database_for_reports` (PR-11) helpers; ~50 LoC
+  duplicated.
+- `subsystem` field on `ComponentFieldOverrides` is captured in
+  the schema but applied as a no-op at L4 (because `ComponentEntry`
+  has no `subsystem` field). Future Phase 4+ wiring point.
+- AC-5 narrow deviation in PR-6: the `edges_suppress` no-match
+  warning is emitted in production via `eprintln!` but not
+  captured in CLI tests because the in-process `run()` harness
+  doesn't plumb stderr capture. Verifiable manually; closing the
+  gap is a small test-infra cleanup.
+
+Phase 3 is **ready for the next session's continuation prompt to
+report success and stop, OR for a Phase 4 brainstorm**. The Phase
+3 design spec §9.1 lists Phase 4 candidates: pattern detection,
+subprocess convergence, rust-analyzer integration, LLM threshold
+calibration. The user has not yet drafted a Phase 4 design spec
+(verified `ls docs/superpowers/specs/2026-05-*-atlas-vnext-phase4-design.md`
+returns no matches). Per the continuation prompt's Step 4: "the
+user has not yet decided what Phase 4 contains. Stop the session,
+report Phase 3 success, and surface the question 'Phase 3 is
+complete. Phase 4 design candidates per Phase 3 design §9.1
+(convergence + cleanups + LLM analyses): pattern detection,
+subprocess convergence, rust-analyzer integration, LLM threshold
+calibration, etc. Which subset is Phase 4 vs Phase 5? Want me to
+brainstorm Phase 4 scope?'"
 
