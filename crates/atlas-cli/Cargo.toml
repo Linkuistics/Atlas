@@ -24,6 +24,7 @@ atlas-reports = { path = "../atlas-reports" }
 chrono = { workspace = true }
 clap = { workspace = true }
 component-ontology = { workspace = true }
+salsa = { workspace = true }
 indicatif = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }

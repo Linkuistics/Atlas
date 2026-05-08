@@ -1,49 +1,45 @@
 //! CLI plumbing for the four Phase 3 reports — `atlas drift`,
 //! `atlas impact`, `atlas modularity`, `atlas divergence`.
 //!
-//! PR-7 ships only the clap argument structs and stub handlers that
-//! print `"<subcommand> is not yet implemented"` to stderr and exit 1.
-//! PR-8 lands the real `atlas drift` flow:
+//! PR-7 shipped the clap argument structs and stub handlers; PR-8..PR-11
+//! replace each handler body with the real load-database →
+//! call-`atlas_reports::*` → render-or-persist flow.
 //!
-//! 1. Resolve the workspace primary root (canonicalise the cwd).
-//! 2. Read `<root>/.atlas/cache/components.yaml` (the prior `atlas
-//!    index` output) and each live component's
-//!    `<component>/.atlas/cache/surfaces.yaml`.
-//! 3. Lift out every contract's `content_sha` and every
-//!    binding-consumes-contract relationship into the flat-collection
-//!    inputs [`atlas_reports::drift_pure`] expects.
-//! 4. Read the prior snapshot from
-//!    `<root>/.atlas/cache/contract-shas-snapshot.yaml` (or `None` on
-//!    first run; parse errors degrade to `None` with a warning).
-//! 5. Call [`atlas_reports::drift_pure`].
-//! 6. Render the report to stdout in the requested format.
-//! 7. Unless `--no-write`: atomically write the report to
-//!    `<root>/.atlas/cache/reports/drift.yaml` and the new snapshot
-//!    to `<root>/.atlas/cache/contract-shas-snapshot.yaml`.
-//! 8. Print a one-line summary; first-run UX prints a guidance
-//!    message instead.
+//! PR-8 (`atlas drift`) reads the on-disk
+//! `<root>/.atlas/cache/components.yaml` and each component's
+//! `surfaces.yaml`, lifts contract+binding shas into
+//! `atlas_reports::drift_pure`, then atomically writes the report and
+//! the new snapshot. Reading the YAMLs (rather than recomputing the
+//! engine database) matches design §3.1's "reports observe what the
+//! engine has already produced" rule — no LLM calls, no fixedpoint.
 //!
-//! Reading directly from the on-disk YAMLs (rather than recomputing
-//! the engine database) matches design §3.1's "reports observe what
-//! the engine has already produced" rule and keeps `atlas drift`
-//! cheap — no LLM calls, no fixedpoint iteration.
+//! PR-9 (`atlas impact`) reads from
+//! `Workspace::prior_components` / `Workspace::prior_related_components`
+//! via a hard-error `ReportsBackend` to enforce the same no-engine-
+//! recomputation invariant; PR-10/PR-11 will follow either pattern.
 
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use atlas_engine::atomic_write;
+use atlas_engine::{atomic_write, AtlasDatabase};
 use atlas_index::{
-    load_or_default_components, ComponentEntry, ComponentsFile, ContractKind, SurfacesFile,
+    load_or_default_components, load_or_default_related_components, ComponentEntry,
+    ComponentsFile, ContractKind, SurfacesFile,
 };
+use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest};
 use atlas_reports::{
-    drift_pure, ContractShaSnapshot, CurrentBinding, CurrentContract, DriftReport,
+    drift_pure, impact as run_impact_report, ContractShaSnapshot, CurrentBinding, CurrentContract,
+    DriftReport, ImpactReport, ImpactReportTargetKind, ImpactTarget, ReportError, ReportInputs,
     DERIVED_FROM_CONTRACT_SHA_ATTR,
 };
 use chrono::Utc;
 use clap::ValueEnum;
+use component_ontology::ComponentId;
+use serde_json::Value;
 
 /// Output format selected by `--json | --yaml | --human`. Default is
 /// `Yaml`. Routing into per-format renderers is wired in PR-8..PR-11;
@@ -470,13 +466,257 @@ fn resolve_surfaces_path(entry: &ComponentEntry, roots: &[PathBuf]) -> Option<Pa
     })
 }
 
-/// PR-7 stub for `atlas impact`. PR-9 will replace this with the real
-/// flow: build engine inputs, resolve `<id>` into an
-/// [`atlas_reports::ImpactTarget`], call [`atlas_reports::impact`],
-/// and render to stdout.
-pub fn run_impact_cmd(_args: ImpactArgs) -> Result<ExitCode> {
-    eprintln!("impact is not yet implemented");
-    Ok(ExitCode::from(1))
+/// `atlas impact <id>` — walk downstream consumers of a contract or
+/// component and render a stdout-only impact report.
+///
+/// **Flow (Phase 3 plan §4 PR-9):**
+///
+/// 1. Resolve `<root>/.atlas/cache/components.yaml` and
+///    `related-components.yaml` from disk. These are produced by
+///    `atlas index`; if absent, both fall back to empty defaults and
+///    the user gets a `target not found` error with empty suggestions.
+/// 2. Construct a stand-in [`AtlasDatabase`] with both files installed
+///    on the [`atlas_engine::Workspace`] inputs (`prior_components`,
+///    `prior_related_components`). [`atlas_reports::impact`] reads
+///    those inputs directly — no LLM pipeline runs.
+/// 3. Resolve the user's `<id>` into an [`ImpactTarget`]: contract
+///    namespace first, component namespace second.
+/// 4. Call `atlas_reports::impact`. On `Ok`, render in the requested
+///    format (default YAML; `--json` / `--human` toggle). Exit 0.
+/// 5. On `Err(ReportError::TargetNotFound)`, print `target not found`
+///    plus `did you mean:` candidates to stderr. Exit 2.
+///
+/// **`--no-write` is rejected at clap level** — the [`ImpactArgs`]
+/// struct deliberately omits the flag, so `atlas impact --no-write
+/// foo` produces a clap-emitted "unexpected argument" error and a
+/// non-zero exit before this handler runs.
+pub fn run_impact_cmd(args: ImpactArgs) -> Result<ExitCode> {
+    // The CLI accepts a free-text id and, like `atlas index`, defaults
+    // its working directory to the current working directory. The
+    // user can override the output dir with $ATLAS_OUTPUT_DIR for
+    // tests / non-default layouts; production callers point at
+    // `<cwd>/.atlas`.
+    let cwd = std::env::current_dir().context("failed to resolve current working directory")?;
+    let output_dir = atlas_output_dir(&cwd);
+    let cache_dir = output_dir.join("cache");
+    let components_path = cache_dir.join("components.yaml");
+    let related_path = cache_dir.join("related-components.yaml");
+
+    let components = load_or_default_components(&components_path).with_context(|| {
+        format!(
+            "failed to load components.yaml at {}",
+            components_path.display()
+        )
+    })?;
+    let related = load_or_default_related_components(&related_path).with_context(|| {
+        format!(
+            "failed to load related-components.yaml at {}",
+            related_path.display()
+        )
+    })?;
+
+    let db = build_reports_database(&cwd, components, related);
+
+    // Build inputs and resolve the target. Resolution order: contract
+    // first, component second. We attempt a `ComponentId::parse` for
+    // the component branch; an unparseable id falls through to the
+    // contract branch, where the report function returns
+    // `TargetNotFound` with Levenshtein-1 suggestions. This matches
+    // the "two namespaces, disjoint by Phase 1 construction"
+    // contract: a single `<id>` resolves into one or the other.
+    let target = if id_is_known_contract(&db, &args.id) {
+        ImpactTarget::Contract(args.id.clone())
+    } else if let Ok(parsed) = ComponentId::parse(&args.id) {
+        ImpactTarget::Component(parsed)
+    } else {
+        // Unparseable as a ComponentId and not a known contract; let
+        // `impact()` fall through and emit Levenshtein candidates
+        // against the union pool.
+        ImpactTarget::Contract(args.id.clone())
+    };
+
+    let workspace = db.workspace();
+    let inputs = ReportInputs {
+        db: &db,
+        workspace: &workspace,
+    };
+
+    match run_impact_report(inputs, target) {
+        Ok(report) => {
+            render_impact_report(&report, args.format)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(ReportError::TargetNotFound { needle, candidates }) => {
+            eprintln!("target not found: {needle}");
+            if !candidates.is_empty() {
+                eprintln!("did you mean:");
+                for c in &candidates {
+                    eprintln!("  - {c}");
+                }
+            }
+            Ok(ExitCode::from(2))
+        }
+        Err(other) => Err(anyhow::anyhow!("impact report failed: {other}")),
+    }
+}
+
+/// Resolve the Atlas output directory the way `atlas index` does:
+/// `$ATLAS_OUTPUT_DIR` if set, else `<cwd>/.atlas`. Used by
+/// [`run_impact_cmd`] so integration tests can point at a tempdir.
+fn atlas_output_dir(cwd: &Path) -> PathBuf {
+    if let Ok(p) = std::env::var("ATLAS_OUTPUT_DIR") {
+        PathBuf::from(p)
+    } else {
+        cwd.join(crate::DEFAULT_OUTPUT_SUBDIR)
+    }
+}
+
+/// Build a minimal [`AtlasDatabase`] for report queries: a
+/// [`ReportsBackend`] (never invoked because reports do not call the
+/// LLM) plus the disk-loaded `components.yaml` /
+/// `related-components.yaml` installed on the workspace's `prior_*`
+/// slots, which is exactly what [`atlas_reports::impact`] reads from.
+fn build_reports_database(
+    root: &Path,
+    components: atlas_index::ComponentsFile,
+    related: atlas_index::RelatedComponentsFile,
+) -> AtlasDatabase {
+    let backend: Arc<dyn LlmBackend> = Arc::new(ReportsBackend);
+    let mut db = AtlasDatabase::new(backend, vec![root.to_path_buf()], reports_fingerprint());
+    db.set_prior_components(components);
+    db.set_prior_related_components(related);
+    db
+}
+
+/// Stand-in [`LlmFingerprint`] used by the report subcommands. The
+/// fingerprint is never propagated into a real LLM call site (the
+/// backend rejects every request) but [`AtlasDatabase::new`] requires
+/// one on construction. Stable bytes keep two consecutive
+/// `atlas impact` invocations on the same workspace deterministic.
+fn reports_fingerprint() -> LlmFingerprint {
+    LlmFingerprint {
+        template_sha: [0u8; 32],
+        ontology_sha: [0u8; 32],
+        model_id: "atlas-reports/no-llm".into(),
+        backend_version: "0".into(),
+    }
+}
+
+/// LLM backend used for report subcommands. Reports do not call the
+/// LLM — they read pre-computed engine state — but [`AtlasDatabase`]
+/// requires a backend on construction. Any unexpected backend call
+/// returns [`LlmError::Setup`] so a bug that triggers an LLM call
+/// fails loudly instead of silently returning a stubbed response.
+struct ReportsBackend;
+
+impl LlmBackend for ReportsBackend {
+    fn call(&self, _req: &LlmRequest) -> Result<Value, LlmError> {
+        Err(LlmError::Setup(
+            "reports backend should never be called; report subcommands read pre-computed state"
+                .into(),
+        ))
+    }
+
+    fn fingerprint(&self) -> LlmFingerprint {
+        reports_fingerprint()
+    }
+}
+
+/// `true` when `id` matches a contract id present in the prior
+/// `related-components.yaml` (either as a `defines-contract` /
+/// `implements-contract` / `consumes-contract` participant). We use
+/// the same set [`atlas_reports::impact`] would consult when
+/// resolving the target, so this check stays in sync with the report
+/// function's resolution rule.
+fn id_is_known_contract(db: &AtlasDatabase, id: &str) -> bool {
+    let workspace = db.workspace();
+    let related = workspace.prior_related_components(db as &dyn salsa::Database);
+    for edge in &related.edges {
+        // Contract participants live in `participants[1]` for the
+        // contract-family kinds.
+        let is_contract_kind = matches!(
+            edge.kind,
+            component_ontology::EdgeKind::DefinesContract
+                | component_ontology::EdgeKind::ImplementsContract
+                | component_ontology::EdgeKind::ConsumesContract
+        );
+        if is_contract_kind && edge.participants.get(1).map(|p| p.as_str()) == Some(id) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Render an [`ImpactReport`] to stdout in the requested format. YAML
+/// and JSON go through `serde_yaml` / `serde_json` directly; `Human`
+/// emits an indented tree of consumers with per-axis annotations.
+fn render_impact_report(report: &ImpactReport, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Yaml => {
+            let yaml = serde_yaml::to_string(report).context("serialise impact report as YAML")?;
+            print!("{yaml}");
+        }
+        OutputFormat::Json => {
+            let json =
+                serde_json::to_string_pretty(report).context("serialise impact report as JSON")?;
+            println!("{json}");
+        }
+        OutputFormat::Human => {
+            print_human(report);
+        }
+    }
+    Ok(())
+}
+
+/// Indented-tree rendering of an impact report. The exact layout is
+/// not part of the wire format (only YAML / JSON are), so the test for
+/// `human` only asserts the presence of an indented consumer list.
+fn print_human(report: &ImpactReport) {
+    let kind = match report.target.kind {
+        ImpactReportTargetKind::Contract => "contract",
+        ImpactReportTargetKind::Component => "component",
+    };
+    println!("impact of {kind} `{}`:", report.target.id);
+    println!("  direct consumers ({}):", report.summary.direct_count);
+    if report.direct_consumers.is_empty() {
+        println!("    (none)");
+    } else {
+        for c in &report.direct_consumers {
+            println!("    - {c}");
+        }
+    }
+    println!(
+        "  transitive consumers ({}):",
+        report.summary.transitive_count
+    );
+    if report.transitive_consumers.is_empty() {
+        println!("    (none)");
+    } else {
+        for c in &report.transitive_consumers {
+            println!("    - {c}");
+        }
+    }
+    print_partition("by language", &report.partitions.by_language);
+    print_partition("by deploy graph", &report.partitions.by_deploy_graph);
+    print_partition("by lifecycle", &report.partitions.by_lifecycle);
+}
+
+fn print_partition(label: &str, map: &std::collections::BTreeMap<String, Vec<String>>) {
+    println!("  {label}:");
+    if map.is_empty() {
+        println!("    (none)");
+        return;
+    }
+    for (key, members) in map {
+        println!("    {key}:");
+        if members.is_empty() {
+            println!("      (none)");
+        } else {
+            for m in members {
+                println!("      - {m}");
+            }
+        }
+    }
 }
 
 /// PR-7 stub for `atlas modularity`. PR-10 will replace this with the
