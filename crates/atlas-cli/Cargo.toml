@@ -38,9 +38,11 @@ thiserror = { workspace = true }
 assert_cmd = { workspace = true }
 atlas-engine = { path = "../atlas-engine", features = ["atomic_write_panic_after_temp"] }
 atlas-llm = { path = "../atlas-llm" }
+atlas-reports = { path = "../atlas-reports" }
 chrono = { workspace = true }
 predicates = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

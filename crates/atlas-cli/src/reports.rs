@@ -18,18 +18,25 @@
 //! via a hard-error `ReportsBackend` to enforce the same no-engine-
 //! recomputation invariant.
 //!
-//! PR-11 (`atlas divergence`) takes a different approach: it builds a
-//! full `AtlasDatabase` and runs the fixedpoint, relying on the
-//! persistent LLM cache to make recomputation near-free post-`atlas
-//! index`. The drift snapshot is read read-only from
+//! PR-10 (`atlas modularity`) builds a full `AtlasDatabase` via
+//! [`build_engine_database`] and runs the fixedpoint, then loads each
+//! component's prior `modularity.yaml` history before calling
+//! [`atlas_reports::modularity`]. Persistent LLM cache makes the
+//! re-run near-free post-`atlas index`. Per-component files +
+//! top-level rollup are written atomically via [`atomic_write`].
+//!
+//! PR-11 (`atlas divergence`) similarly builds a full database and
+//! runs the fixedpoint. The drift snapshot is read read-only from
 //! `<output>/.atlas/cache/contract-shas-snapshot.yaml`; the divergence
 //! report is atomically written to
 //! `<output>/.atlas/cache/reports/composition-divergence.yaml`. The
-//! mechanism difference vs PR-8/PR-9 is acknowledged as load-bearing
-//! for future converge-or-keep-divergent cleanup; PR-13's polyglot
-//! smoke test is the ground-truth verifier (cold = Phase 2 baseline,
-//! warm = 0, report-runs = 0 LLM calls).
+//! mechanism difference between PR-8/PR-9 (read from YAMLs) and
+//! PR-10/PR-11 (run fixedpoint with cache) is acknowledged as
+//! load-bearing for future converge-or-keep-divergent cleanup; PR-13's
+//! polyglot smoke test is the ground-truth verifier (cold = Phase 2
+//! baseline, warm = 0, report-runs = 0 LLM calls).
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -48,17 +55,20 @@ use atlas_index::{
 };
 use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest};
 use atlas_reports::{
-    divergence, drift_pure, impact as run_impact_report, ContractShaSnapshot, CurrentBinding,
-    CurrentContract, DivergenceReport, DriftReport, ImpactReport, ImpactReportTargetKind,
-    ImpactTarget, ReportError, ReportInputs, DERIVED_FROM_CONTRACT_SHA_ATTR,
+    divergence, drift_pure, impact as run_impact_report, modularity, ComponentModularity,
+    ContractShaSnapshot, CurrentBinding, CurrentContract, DivergenceReport, DriftReport,
+    ImpactReport, ImpactReportTargetKind, ImpactTarget, ModularityHistory, ModularityReport,
+    ReportError, ReportInputs, DERIVED_FROM_CONTRACT_SHA_ATTR,
 };
 use chrono::Utc;
 use clap::ValueEnum;
 use component_ontology::ComponentId;
 use serde_json::Value;
 
-use crate::backend;
-use crate::pipeline::DEFAULT_OUTPUT_SUBDIR;
+use crate::backend::{self, compute_prompt_shas};
+use crate::pipeline::{build_engine_database, resolve_component_dir, IndexConfig};
+use crate::progress::{make_stderr_reporter, ProgressBackend, ProgressMode};
+use crate::DEFAULT_OUTPUT_SUBDIR;
 
 /// Output format selected by `--json | --yaml | --human`. Default is
 /// `Yaml`. Routing into per-format renderers is wired in PR-8..PR-11;
@@ -113,6 +123,13 @@ pub struct ImpactArgs {
 /// rollup.
 #[derive(Debug, clap::Args)]
 pub struct ModularityArgs {
+    /// Root of the codebase whose modularity to compute. Defaults to
+    /// the current directory; mirrors `atlas index`'s positional
+    /// argument so per-PR-10 the report subcommands share the same
+    /// invocation shape.
+    #[arg(default_value = ".")]
+    pub root: PathBuf,
+
     /// Output format. Defaults to `yaml`.
     #[arg(long, value_enum, default_value_t = OutputFormat::Yaml)]
     pub format: OutputFormat,
@@ -121,6 +138,17 @@ pub struct ModularityArgs {
     /// `modularity.yaml` files or the rollup.
     #[arg(long)]
     pub no_write: bool,
+
+    /// LLM token budget for any cache misses below the surface /
+    /// edges queries. Same `--budget` / `--no-budget` semantics as
+    /// `atlas index`. Cache hits cost nothing; a fully-populated
+    /// `.atlas/cache/` from a prior `atlas index` run is enough.
+    #[arg(long)]
+    pub budget: Option<u64>,
+
+    /// Skip the budget check. Local development only.
+    #[arg(long, conflicts_with = "budget")]
+    pub no_budget: bool,
 }
 
 /// `atlas divergence` — pair-wise build-vs-deploy coupling check.
@@ -744,14 +772,75 @@ fn print_partition(label: &str, map: &std::collections::BTreeMap<String, Vec<Str
     }
 }
 
-/// PR-7 stub for `atlas modularity`. PR-10 will replace this with the
-/// real flow: read each component's prior `modularity.yaml`, call
-/// [`atlas_reports::modularity`], rotate history, and (unless
-/// `--no-write`) atomically persist the per-component files and
-/// rollup.
-pub fn run_modularity_cmd(_args: ModularityArgs) -> Result<ExitCode> {
-    eprintln!("modularity is not yet implemented");
-    Ok(ExitCode::from(1))
+/// `atlas modularity` production entry point. Builds the engine
+/// database against the live workspace via
+/// [`build_engine_database`], then delegates to [`run_modularity`].
+///
+/// Mirrors `atlas index`'s budget posture (`--budget` mandatory unless
+/// `--no-budget`) — a cold cache means LLM calls fire below the
+/// surface / edges queries, and Atlas fails loud on runaway token
+/// usage.
+pub fn run_modularity_cmd(args: ModularityArgs) -> Result<ExitCode> {
+    if args.budget.is_none() && !args.no_budget {
+        anyhow::bail!(
+            "`atlas modularity` requires `--budget <N-tokens>` to fail loudly on runaway LLM \
+             usage (cold caches still fire LLM calls below the surface / edges queries). \
+             Pass `--no-budget` for local development if you understand the risk."
+        );
+    }
+
+    let root = args
+        .root
+        .canonicalize()
+        .with_context(|| format!("failed to resolve root path {}", args.root.display()))?;
+    let output_dir = root.join(DEFAULT_OUTPUT_SUBDIR);
+    let config_path = output_dir.join("config.yaml");
+    let atlas_config = atlas_llm::AtlasConfig::load(&config_path)
+        .with_context(|| format!("failed to load {}", config_path.display()))?;
+
+    let mut index_config = IndexConfig::new(root.clone());
+    index_config.output_dir = output_dir.clone();
+    index_config.prompt_shas = Some(compute_prompt_shas());
+
+    let counter = args
+        .budget
+        .map(|b| Arc::new(atlas_llm::TokenCounter::new(b)));
+    let reporter = make_stderr_reporter(ProgressMode::Auto, counter.clone());
+
+    let observer = if reporter.drawing() {
+        Some(Arc::clone(&reporter) as Arc<dyn atlas_llm::AgentObserver>)
+    } else {
+        None
+    };
+
+    let handles = crate::backend::build_production_backend_with_counter(
+        &atlas_config,
+        &index_config.root,
+        counter.clone(),
+        observer,
+    )
+    .context("failed to build LLM backend")?;
+    index_config.fingerprint_override = Some(handles.fingerprint.clone());
+
+    let backend: Arc<dyn atlas_llm::LlmBackend> =
+        ProgressBackend::new(handles.backend.clone(), Arc::clone(&reporter))
+            as Arc<dyn atlas_llm::LlmBackend>;
+
+    let (db, roots) = build_engine_database(&index_config, backend, Arc::clone(&reporter))
+        .context("failed to build engine database for modularity report")?;
+    reporter.finish();
+
+    let opts = ModularityRunOptions {
+        format: args.format,
+        no_write: args.no_write,
+        roots,
+        output_dir,
+    };
+
+    run_modularity(&db, &opts, &mut std::io::stdout().lock())?;
+
+    drop(handles);
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `atlas divergence` entry-point. Resolves the production backend,
@@ -1041,4 +1130,357 @@ fn print_divergence_summary(report: &DivergenceReport) {
         s.divergent_count,
         hist_parts.join(", "),
     );
+}
+
+/// Library-shape options for [`run_modularity`]. The CLI binary
+/// constructs one of these from clap-parsed flags + the resolved
+/// roots; integration tests construct one directly.
+#[derive(Debug, Clone)]
+pub struct ModularityRunOptions {
+    /// Output format selected by `--json | --yaml | --human`.
+    pub format: OutputFormat,
+    /// When `true`, [`run_modularity`] still computes the report and
+    /// renders it but does not touch any cache file. Mirrors the CLI's
+    /// `--no-write` flag.
+    pub no_write: bool,
+    /// Workspace roots, primary first. Used to resolve each
+    /// component's on-disk directory for the per-component
+    /// `<component>/.atlas/cache/modularity.yaml` write.
+    pub roots: Vec<PathBuf>,
+    /// Workspace output directory (`<primary-root>/.atlas`). The
+    /// rollup lands at `<output_dir>/cache/reports/modularity-rollup.yaml`.
+    pub output_dir: PathBuf,
+}
+
+/// Compute the modularity report off an already-built
+/// [`AtlasDatabase`], rendering it to `out` and (unless
+/// `opts.no_write`) writing per-component files + the top-level
+/// rollup atomically.
+///
+/// Returns the in-memory [`ModularityReport`] for callers that want
+/// to inspect the result; the same value is rendered to `out`.
+pub fn run_modularity<W: Write>(
+    db: &AtlasDatabase,
+    opts: &ModularityRunOptions,
+    out: &mut W,
+) -> Result<ModularityReport> {
+    // ---- prior history per component ---------------------------------
+    // Plan §4 PR-10 step 2: walk every live component; for each, read
+    // its prior `<component>/.atlas/cache/modularity.yaml` if present
+    // and deserialise the `history` block into a `ModularityHistory`.
+    let live_components = atlas_engine::all_components(db);
+    let mut prior_per_component: HashMap<ComponentId, ModularityHistory> = HashMap::new();
+    for entry in live_components.iter() {
+        if entry.deleted {
+            continue;
+        }
+        let Some(segment) = entry.path_segments.first() else {
+            continue;
+        };
+        let component_dir = resolve_component_dir(&segment.path, &entry.manifests, &opts.roots);
+        let prior_path = component_dir
+            .join(".atlas")
+            .join("cache")
+            .join("modularity.yaml");
+        if !prior_path.exists() {
+            continue;
+        }
+        let bytes = match std::fs::read(&prior_path) {
+            Ok(b) => b,
+            Err(err) => {
+                eprintln!(
+                    "warning: failed to read {}: {err:#}; treating as no prior history",
+                    prior_path.display()
+                );
+                continue;
+            }
+        };
+        // The on-disk shape is the full `ComponentModularity` block;
+        // we only need its `history` field for the prior-per-component
+        // map. `ComponentModularity::history` deserialises directly,
+        // and we accept the rest of the fields without re-validating
+        // them (`schema_version` mismatch is fine — greenfield Phase 3
+        // ships v1 only).
+        match serde_yaml::from_slice::<ComponentModularity>(&bytes) {
+            Ok(comp) => {
+                prior_per_component.insert(
+                    entry.id.clone(),
+                    ModularityHistory {
+                        entries: comp.history,
+                    },
+                );
+            }
+            Err(err) => {
+                eprintln!(
+                    "warning: failed to parse {}: {err:#}; treating as no prior history",
+                    prior_path.display()
+                );
+            }
+        }
+    }
+
+    // ---- compute the report ------------------------------------------
+    let workspace = db.workspace();
+    let inputs = ReportInputs {
+        db,
+        workspace: &workspace,
+    };
+    let report = modularity(inputs, prior_per_component)
+        .context("atlas_reports::modularity returned an error")?;
+
+    // ---- render ------------------------------------------------------
+    match opts.format {
+        OutputFormat::Yaml => {
+            let yaml = serde_yaml::to_string(&report).context("serialising modularity to YAML")?;
+            out.write_all(yaml.as_bytes())
+                .context("writing modularity YAML to output")?;
+        }
+        OutputFormat::Json => {
+            let json =
+                serde_json::to_string_pretty(&report).context("serialising modularity to JSON")?;
+            out.write_all(json.as_bytes())
+                .context("writing modularity JSON to output")?;
+            out.write_all(b"\n").ok();
+        }
+        OutputFormat::Human => {
+            render_modularity_human(&report, out).context("writing modularity human output")?;
+        }
+    }
+
+    // ---- writes ------------------------------------------------------
+    if !opts.no_write {
+        // Per-component files. `atomic_write` mkdirs the parent chain.
+        for entry in live_components.iter() {
+            if entry.deleted {
+                continue;
+            }
+            let Some(component) = report.per_component.get(&entry.id) else {
+                continue;
+            };
+            let Some(segment) = entry.path_segments.first() else {
+                continue;
+            };
+            let component_dir = resolve_component_dir(&segment.path, &entry.manifests, &opts.roots);
+            let target = component_dir
+                .join(".atlas")
+                .join("cache")
+                .join("modularity.yaml");
+            let yaml = serde_yaml::to_string(component)
+                .with_context(|| format!("failed to serialise modularity for {}", entry.id))?;
+            atomic_write(&target, yaml.as_bytes())
+                .with_context(|| format!("failed to write {}", target.display()))?;
+        }
+
+        // Top-level rollup. `<output_dir>/cache/reports/modularity-rollup.yaml`.
+        let rollup_path = opts
+            .output_dir
+            .join("cache")
+            .join("reports")
+            .join("modularity-rollup.yaml");
+        let rollup_yaml = serde_yaml::to_string(&report.rollup)
+            .context("failed to serialise modularity rollup")?;
+        atomic_write(&rollup_path, rollup_yaml.as_bytes())
+            .with_context(|| format!("failed to write {}", rollup_path.display()))?;
+    }
+
+    // ---- summary ----------------------------------------------------
+    let outlier_count: usize = report
+        .rollup
+        .subsystems
+        .iter()
+        .map(|s| s.outliers.len())
+        .sum();
+    eprintln!(
+        "modularity: {} components, {} subsystems, {} outliers, {} unattached",
+        report.per_component.len(),
+        report.rollup.subsystems.len(),
+        outlier_count,
+        report.rollup.unattached_components.count,
+    );
+
+    Ok(report)
+}
+
+/// Render the modularity report in the `human` format — an indented
+/// per-component breakdown followed by a subsystem rollup section.
+/// Matches the design-spec §6.1 "indented text rendering" intent
+/// without locking in a precise pixel layout (the JSON / YAML formats
+/// are the canonical machine-readable shapes).
+fn render_modularity_human<W: Write>(
+    report: &ModularityReport,
+    out: &mut W,
+) -> std::io::Result<()> {
+    writeln!(out, "modularity report")?;
+    writeln!(out, "  generated_at: {}", report.generated_at)?;
+    writeln!(out, "  components: {}", report.per_component.len())?;
+    let mut ids: Vec<&ComponentId> = report.per_component.keys().collect();
+    ids.sort();
+    for id in ids {
+        let comp = &report.per_component[id];
+        let m = &comp.metrics;
+        writeln!(out, "  - {}", id.as_str())?;
+        writeln!(
+            out,
+            "      ca={} ce={} I={:.3} cohesion={:.3} stability={:.3} complexity={}",
+            m.afferent_coupling,
+            m.efferent_coupling,
+            m.instability,
+            m.cohesion,
+            m.surface_stability,
+            m.surface_complexity
+        )?;
+        writeln!(out, "      history_len={}", comp.history.len())?;
+    }
+    writeln!(out)?;
+    writeln!(out, "subsystems: {}", report.rollup.subsystems.len())?;
+    for sub in &report.rollup.subsystems {
+        writeln!(
+            out,
+            "  - {} ({} members, {} outliers)",
+            sub.id,
+            sub.members.len(),
+            sub.outliers.len()
+        )?;
+        let a = &sub.aggregates;
+        writeln!(
+            out,
+            "      mean: ca={:.2} ce={:.2} I={:.3} cohesion={:.3} stability={:.3} complexity={:.2}",
+            a.afferent_coupling.mean,
+            a.efferent_coupling.mean,
+            a.instability.mean,
+            a.cohesion.mean,
+            a.surface_stability.mean,
+            a.surface_complexity.mean
+        )?;
+        for outlier in &sub.outliers {
+            writeln!(
+                out,
+                "      OUTLIER {} on {}: value={:.3} (mean={:.3}, {:.2}σ)",
+                outlier.component_id.as_str(),
+                outlier.metric,
+                outlier.value,
+                outlier.subsystem_mean,
+                outlier.deviation_sigmas,
+            )?;
+        }
+    }
+    let unatt = &report.rollup.unattached_components;
+    writeln!(out, "unattached: {}", unatt.count)?;
+    for id in &unatt.ids {
+        writeln!(out, "  - {}", id.as_str())?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // Pure-shape tests for the renderers. The integration tests
+    // exercising the full Salsa-driven flow live under
+    // `crates/atlas-cli/tests/atlas_modularity.rs`.
+
+    use atlas_reports::{
+        ModularityHistoryEntry, ModularityHistoryMetrics, ModularityMetrics, ModularityRollup,
+        SubsystemAggregate, SubsystemAggregateMetrics, SubsystemMetricStats, UnattachedComponents,
+    };
+    use chrono::TimeZone;
+
+    fn cid(s: &str) -> ComponentId {
+        ComponentId::parse(s).unwrap()
+    }
+
+    fn sample_report() -> ModularityReport {
+        let mut per_component: HashMap<ComponentId, ComponentModularity> = HashMap::new();
+        per_component.insert(
+            cid("a/b"),
+            ComponentModularity {
+                schema_version: 1,
+                component_id: cid("a/b"),
+                generated_at: chrono::Utc.with_ymd_and_hms(2026, 5, 8, 0, 0, 0).unwrap(),
+                metrics: ModularityMetrics {
+                    afferent_coupling: 1,
+                    efferent_coupling: 2,
+                    instability: 0.6667,
+                    cohesion: 1.0,
+                    surface_stability: 1.0,
+                    surface_complexity: 4,
+                },
+                history: vec![ModularityHistoryEntry {
+                    generated_at: chrono::Utc.with_ymd_and_hms(2026, 5, 7, 0, 0, 0).unwrap(),
+                    surface_fingerprint: "fp-1".into(),
+                    metrics: ModularityHistoryMetrics {
+                        afferent_coupling: 1,
+                        efferent_coupling: 2,
+                        instability: 0.6667,
+                        cohesion: 1.0,
+                        surface_complexity: 4,
+                    },
+                }],
+            },
+        );
+        ModularityReport {
+            schema_version: 1,
+            generated_at: chrono::Utc.with_ymd_and_hms(2026, 5, 8, 0, 0, 0).unwrap(),
+            per_component,
+            rollup: ModularityRollup {
+                schema_version: 1,
+                generated_at: chrono::Utc.with_ymd_and_hms(2026, 5, 8, 0, 0, 0).unwrap(),
+                subsystems: vec![SubsystemAggregate {
+                    id: "core".into(),
+                    members: vec![cid("a/b")],
+                    aggregates: SubsystemAggregateMetrics {
+                        afferent_coupling: SubsystemMetricStats {
+                            mean: 1.0,
+                            stddev: 0.0,
+                        },
+                        efferent_coupling: SubsystemMetricStats {
+                            mean: 2.0,
+                            stddev: 0.0,
+                        },
+                        instability: SubsystemMetricStats {
+                            mean: 0.6667,
+                            stddev: 0.0,
+                        },
+                        cohesion: SubsystemMetricStats {
+                            mean: 1.0,
+                            stddev: 0.0,
+                        },
+                        surface_stability: SubsystemMetricStats {
+                            mean: 1.0,
+                            stddev: 0.0,
+                        },
+                        surface_complexity: SubsystemMetricStats {
+                            mean: 4.0,
+                            stddev: 0.0,
+                        },
+                    },
+                    outliers: vec![],
+                }],
+                unattached_components: UnattachedComponents {
+                    count: 0,
+                    ids: vec![],
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn human_format_renders_component_block_and_subsystem_rollup() {
+        let report = sample_report();
+        let mut buf: Vec<u8> = Vec::new();
+        render_modularity_human(&report, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.contains("a/b"),
+            "human render must mention the component id; got: {s}"
+        );
+        assert!(
+            s.contains("core"),
+            "human render must mention the subsystem id; got: {s}"
+        );
+        assert!(
+            s.contains("ca=1") && s.contains("ce=2"),
+            "human render must surface raw metrics; got: {s}"
+        );
+    }
 }

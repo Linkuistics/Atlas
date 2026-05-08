@@ -15,4 +15,7 @@ pub mod reports;
 pub mod timestamp;
 pub mod validate;
 
-pub use pipeline::{run_index, IndexConfig, IndexError, IndexSummary, DEFAULT_OUTPUT_SUBDIR};
+pub use pipeline::{
+    build_engine_database, resolve_component_dir, run_index, IndexConfig, IndexError, IndexSummary,
+    DEFAULT_OUTPUT_SUBDIR,
+};

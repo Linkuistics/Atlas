@@ -731,6 +731,275 @@ pub fn run_index(
     Ok(summary)
 }
 
+/// Build an [`AtlasDatabase`] up to and including the L4–L6 fixedpoint
+/// plus an L5 surface pre-warm, returning the populated database
+/// alongside the canonicalised root set the workspace was seeded
+/// with. Skips all of [`run_index`]'s post-fixedpoint writes, the
+/// validators that inspect related-components / subsystem id-form
+/// members, and the `IndexSummary` accounting.
+///
+/// Used by the read-only Phase 3 report subcommands (`atlas drift`,
+/// `atlas modularity`, `atlas divergence`) which need a fully-driven
+/// `AtlasDatabase` but do not produce the four canonical YAMLs. The
+/// flow here is intentionally a focused subset of [`run_index`]:
+///
+/// 1. Load prior YAMLs (components / externals / related / overrides /
+///    subsystems-overrides).
+/// 2. Discover roots via [`expand_roots`].
+/// 3. Build the analyser registry from the in-tree default + any
+///    `<output>/.atlas/analyzers.yaml` overrides.
+/// 4. Construct the [`AtlasDatabase`], install the persistent LLM
+///    cache (in-memory fallback on open failure), seed the filesystem.
+/// 5. Run the L4–L6 fixedpoint via [`run_fixedpoint`].
+/// 6. Pre-warm L5 surface_of for every live component (mirrors the
+///    parallel walk in [`run_index`]).
+///
+/// Reports compute their own metric blocks downstream; they do not need
+/// the L9 projections (`components.yaml`, etc.). The persistent LLM
+/// cache is opened so that a second `atlas modularity` invocation
+/// behind an already-populated cache does not re-spend tokens.
+pub fn build_engine_database(
+    config: &IndexConfig,
+    backend: Arc<dyn LlmBackend>,
+    reporter: Arc<crate::progress::Reporter>,
+) -> Result<(AtlasDatabase, Vec<PathBuf>), IndexError> {
+    let sentinel = BudgetSentinel::new(backend);
+    let backend: Arc<dyn LlmBackend> = sentinel.clone();
+
+    reporter.on_event(ProgressEvent::Started {
+        root: config.root.clone(),
+    });
+    reporter.on_event(ProgressEvent::Phase(Phase::Seed));
+
+    // ---- load prior outputs ---------------------------------------
+    let prior_components_path = config.output_dir.join("cache/components.yaml");
+    let prior_externals_path = config.output_dir.join("external-components.yaml");
+    let prior_related_path = config.output_dir.join("cache/related-components.yaml");
+    let overrides_path = config.output_dir.join("components.overrides.yaml");
+    let subsystems_overrides_path = config.output_dir.join("subsystems.overrides.yaml");
+
+    let prior_components =
+        load_or_default_components(&prior_components_path).map_err(IndexError::Other)?;
+    let prior_externals =
+        load_or_default_externals(&prior_externals_path).map_err(IndexError::Other)?;
+    let prior_related =
+        load_or_default_related_components(&prior_related_path).map_err(IndexError::Other)?;
+    let (overrides, subsystems_overrides) = if config.no_overrides {
+        (OverridesFile::default(), SubsystemsOverridesFile::default())
+    } else {
+        let overrides = load_or_default_overrides(&overrides_path).map_err(IndexError::Other)?;
+        let subsystems_overrides = load_or_default_subsystems_overrides(&subsystems_overrides_path)
+            .map_err(IndexError::Other)?;
+        (overrides, subsystems_overrides)
+    };
+
+    // ---- root discovery -------------------------------------------
+    let mut fingerprint = config
+        .fingerprint_override
+        .clone()
+        .unwrap_or_else(|| backend.fingerprint());
+    if config.no_overrides {
+        fingerprint.backend_version.push_str("+overrides=disabled");
+    }
+
+    let auto_expanded = expand_roots(&config.root).context("failed to expand path-dep roots")?;
+    let auto_additional: Vec<PathBuf> = auto_expanded.iter().skip(1).cloned().collect();
+
+    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
+    let canonical_primary = auto_expanded
+        .first()
+        .cloned()
+        .unwrap_or_else(|| config.root.clone());
+    seen.insert(canonical_primary.clone());
+
+    let mut all_additional: Vec<PathBuf> = Vec::new();
+    let manual_iter = config.additional_roots.iter().map(|r| (true, r));
+    let auto_iter = auto_additional.iter().map(|r| (false, r));
+    for (_is_manual, r) in manual_iter.chain(auto_iter) {
+        if let Ok(canonical) = std::fs::canonicalize(r) {
+            if seen.insert(canonical.clone()) {
+                all_additional.push(canonical);
+            }
+        }
+    }
+
+    let mut roots: Vec<PathBuf> = Vec::with_capacity(1 + all_additional.len());
+    roots.push(canonical_primary);
+    roots.extend(all_additional.iter().cloned());
+
+    // ---- analyser registry ----------------------------------------
+    let mut registry = AnalyzerRegistry::builtin();
+    let analyzers_yaml_path = config.output_dir.join("analyzers.yaml");
+    if analyzers_yaml_path.exists() {
+        if let Ok(text) = std::fs::read_to_string(&analyzers_yaml_path) {
+            if let Ok(parsed) = serde_yaml::from_str::<atlas_index::AnalyzersFile>(&text) {
+                registry.merge_yaml(&parsed);
+            }
+        }
+    }
+    let registry = std::sync::Arc::new(registry);
+
+    // ---- construct + seed database --------------------------------
+    let mut db = AtlasDatabase::new_with_registry(
+        backend.clone(),
+        roots.clone(),
+        fingerprint.clone(),
+        registry,
+    );
+
+    let persistent_cache_root = config.output_dir.join("cache");
+    let llm_cache = match PersistentCache::open(&persistent_cache_root) {
+        Ok(cache) => LlmResponseCache::new_with_persistent(cache),
+        Err(_) => LlmResponseCache::new(),
+    };
+    db.set_llm_cache(llm_cache);
+
+    let mut excluded_dirs: Vec<PathBuf> = Vec::with_capacity(roots.len());
+    excluded_dirs.push(config.output_dir.clone());
+    for _ in 1..roots.len() {
+        excluded_dirs.push(PathBuf::new());
+    }
+    seed_filesystem_excluding(&mut db, &roots, &excluded_dirs, config.respect_gitignore)
+        .context("failed to seed filesystem")
+        .map_err(IndexError::Other)?;
+
+    if config.recarve {
+        db.set_prior_components(ComponentsFile::default());
+    } else {
+        db.set_prior_components(prior_components.clone());
+    }
+    db.set_prior_externals(prior_externals);
+    db.set_prior_related_components(prior_related);
+    db.set_components_overrides(overrides);
+    db.set_subsystems_overrides(subsystems_overrides);
+
+    // ---- fixedpoint -----------------------------------------------
+    reporter.on_event(ProgressEvent::Phase(Phase::Fixedpoint));
+    let sink: Arc<dyn atlas_engine::ProgressSink> = reporter.clone();
+    let fp_config = FixedpointConfig {
+        max_depth: config.max_depth,
+        map_concurrency: config.map_concurrency,
+        progress: Some(sink.clone()),
+        ..FixedpointConfig::default()
+    };
+    let fp_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_fixedpoint(&mut db, fp_config)
+    }));
+    match fp_outcome {
+        Ok(_r) => {}
+        Err(payload) => {
+            if sentinel.was_exhausted() {
+                return Err(IndexError::BudgetExhausted);
+            }
+            std::panic::resume_unwind(payload);
+        }
+    }
+
+    if sentinel.was_exhausted() {
+        return Err(IndexError::BudgetExhausted);
+    }
+    if sentinel.was_setup_failed() {
+        return Err(IndexError::SetupFailed(
+            sentinel
+                .first_setup_message()
+                .unwrap_or_else(|| "(no message)".to_string()),
+        ));
+    }
+
+    // ---- L5 surface pre-warm --------------------------------------
+    reporter.on_event(ProgressEvent::Phase(Phase::Project));
+    let live_components: Vec<_> = atlas_engine::all_components(&db)
+        .iter()
+        .filter(|c| !c.deleted)
+        .cloned()
+        .collect();
+    let n = live_components.len() as u64;
+    let map_concurrency = config.map_concurrency.max(1);
+    if map_concurrency <= 1 || live_components.len() <= 1 {
+        for (i, comp) in live_components.iter().enumerate() {
+            reporter.on_event(ProgressEvent::Surface {
+                component_id: comp.id.as_str().to_string(),
+                relpath: atlas_engine::relpath_of(comp),
+                k: (i as u64) + 1,
+                n,
+            });
+            let _ = atlas_engine::surface_of(&db, comp.id.clone());
+        }
+    } else {
+        use rayon::prelude::*;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let progress = AtomicU64::new(0);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(map_concurrency)
+            .thread_name(|i| format!("atlas-l5-prewarm-{i}"))
+            .build()
+            .expect("rayon thread pool construction is infallible at sane sizes");
+        let seed_db = db.clone();
+        pool.install(|| {
+            live_components
+                .par_iter()
+                .for_each_with(seed_db, |db_handle, comp| {
+                    let k = progress.fetch_add(1, Ordering::Relaxed) + 1;
+                    reporter.on_event(ProgressEvent::Surface {
+                        component_id: comp.id.as_str().to_string(),
+                        relpath: atlas_engine::relpath_of(comp),
+                        k,
+                        n,
+                    });
+                    let _ = atlas_engine::surface_of(db_handle, comp.id.clone());
+                });
+        });
+    }
+
+    if sentinel.was_setup_failed() {
+        return Err(IndexError::SetupFailed(
+            sentinel
+                .first_setup_message()
+                .unwrap_or_else(|| "(no message)".to_string()),
+        ));
+    }
+
+    Ok((db, roots))
+}
+
+/// Resolve a component's absolute on-disk directory from its
+/// `path_segments[0].path` against the workspace `roots`. Same logic
+/// as the private helper used by [`write_per_component_files`]: walk
+/// roots in order, prefer one whose `<root>/<segment>` exists and
+/// (if the entry has manifests) at least one manifest also resolves;
+/// fall back to `roots[0]` joined with the segment when nothing
+/// matches.
+///
+/// Exposed publicly so the report subcommands (`atlas modularity`)
+/// can write per-component output under the same directory the
+/// `atlas index` flow uses.
+pub fn resolve_component_dir(
+    segment_path: &Path,
+    manifests: &[PathBuf],
+    roots: &[PathBuf],
+) -> PathBuf {
+    if segment_path.is_absolute() {
+        return segment_path.to_path_buf();
+    }
+    for root in roots {
+        let abs = root.join(segment_path);
+        if !abs.exists() {
+            continue;
+        }
+        if manifests.is_empty() {
+            return abs;
+        }
+        let any_manifest_present = manifests.iter().any(|m| root.join(m).exists());
+        if any_manifest_present {
+            return abs;
+        }
+    }
+    roots
+        .first()
+        .map(|r| r.join(segment_path))
+        .unwrap_or_else(|| segment_path.to_path_buf())
+}
+
 /// Decide what to stamp into `components.yaml::generated_at`. Returns
 /// the prior value when the new snapshot equals what's already on
 /// disk (modulo the timestamp itself); otherwise `now` formatted as
