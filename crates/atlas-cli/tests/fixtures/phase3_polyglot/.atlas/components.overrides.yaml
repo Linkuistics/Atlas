@@ -1,0 +1,97 @@
+schema_version: 1
+
+# Hand-authored components for kinds the engine cannot auto-discover
+# from manifests alone (carried forward verbatim from the Phase 2 PR-14
+# fixture — the same justification applies: `Makefile` and `*.sh` are
+# not in `manifest_patterns::is_manifest_file`, so the L1 walk does not
+# create a component dir for them; PR-12's shell-script LLM-fallback
+# gates `applies()` on the file living in `target.manifests`).
+additions:
+  - id: shell-scripts
+    kind: shell-script
+    lifecycle_roles: [deploy]
+    languages: [shell]
+    path_segments:
+      - path: scripts
+        content_sha: "0000000000000000000000000000000000000000000000000000000000000000"
+    manifests: []
+    doc_anchors: []
+    evidence_grade: medium
+    evidence_fields: ["pr13-fixture-addition"]
+    rationale: "PR-13 acceptance fixture addition (kind not auto-discoverable)."
+  - id: makefile
+    kind: makefile-orchestration
+    lifecycle_roles: [build]
+    languages: [makefile]
+    path_segments:
+      - path: build_glue
+        content_sha: "0000000000000000000000000000000000000000000000000000000000000000"
+    manifests: []
+    doc_anchors: []
+    evidence_grade: medium
+    evidence_fields: ["pr13-fixture-addition"]
+    rationale: "PR-13 acceptance fixture addition (kind not auto-discoverable)."
+
+# Plan §4 PR-13 override fixtures.
+#
+# The first entry is the canonical "edges_add fixture" — a single
+# user-asserted edge with reason. The remaining seven drive the
+# modularity outlier (six consumes-contract edges from `outlier` to
+# each peer's contract) and divergence trigger #2 (the depends-on
+# edge between `outlier` and `rust-lib` with no composition between
+# them).
+edges_add:
+  # Canonical "edges_add fixture" — plan §4 PR-13 happy-path test.
+  - kind: depends-on
+    from: flutter-app
+    to: dart-lib
+    reason: "PR-13 fixture: documents an editor-asserted dev-time dep."
+  # Modularity-outlier edges. Six consumes-contract edges → outlier's
+  # efferent_coupling = 6. Each contract id is the kebab-cased struct
+  # name produced by the Rust analyser (component-id/struct-kebab).
+  - kind: consumes-contract
+    from: outlier
+    to: peer1/peer-one
+    reason: "PR-13 fixture: drives modularity outlier ce."
+  - kind: consumes-contract
+    from: outlier
+    to: peer2/peer-two
+    reason: "PR-13 fixture: drives modularity outlier ce."
+  - kind: consumes-contract
+    from: outlier
+    to: peer3/peer-three
+    reason: "PR-13 fixture: drives modularity outlier ce."
+  - kind: consumes-contract
+    from: outlier
+    to: peer4/peer-four
+    reason: "PR-13 fixture: drives modularity outlier ce."
+  - kind: consumes-contract
+    from: outlier
+    to: peer5/peer-five
+    reason: "PR-13 fixture: drives modularity outlier ce."
+  - kind: consumes-contract
+    from: outlier
+    to: peer6/peer-six
+    reason: "PR-13 fixture: drives modularity outlier ce."
+  # Divergence trigger #2 (build-only). `outlier` and `rust-lib` share
+  # a `depends-on` edge via this entry; neither component sits in any
+  # composition together (rust-lib is bundled into docker-main; outlier
+  # is in nothing), so the pair is build-coupled-only.
+  - kind: depends-on
+    from: outlier
+    to: rust-lib
+    reason: "PR-13 fixture: drives divergence trigger #2 (build_only)."
+
+# Suppress one analyser-discovered edge (compose orchestration's
+# bundled-into for docker-frontend → compose). The Phase 2 PR-14 fixture
+# wires `compose/docker-compose.yml::services.ts-svc.build.context =
+# ../dockerfiles/docker-frontend`, so the engine's compose-edges pass
+# emits `bundled-into [docker-frontend, compose]` deterministically;
+# this suppress removes exactly that triple from the on-disk
+# related-components.yaml. The matching `bundled-into [docker-main,
+# compose]` survives.
+edges_suppress:
+  - kind: bundled-into
+    from: docker-frontend
+    to: compose
+    reason: "PR-13 fixture: drives the edges_suppress happy-path assertion."

@@ -1,0 +1,34 @@
+schema_version: 1
+subsystems:
+  # Three-member subsystem (plan §4 PR-13: "one subsystem with three
+  # members defined in subsystems.yaml"). Members chosen so they share
+  # a natural runtime concern (the docker images bundling the polyglot
+  # services) without being marked as outliers.
+  - id: deployment-images
+    members:
+      - docker-main
+      - docker-frontend
+      - docker-backend
+    role: deployment
+    rationale: "PR-13 fixture: groups the three docker-image components."
+    evidence_grade: strong
+    evidence_fields: ["pr13-fixture"]
+  # Outlier subsystem with seven members. A 3-member subsystem cannot
+  # mathematically produce a >2σ outlier with a single deviating value
+  # (max sigma-from-mean for n=3 is 2/sqrt(3) ≈ 1.15). The minimum
+  # n that allows a single outlier above 2σ is n=6 (5/sqrt(6) ≈ 2.04);
+  # we use n=7 to keep the deviation comfortably above the threshold
+  # (5/sqrt(7)*1.2 ≈ 2.27σ once `outlier` consumes from all six peers).
+  - id: outlier-cluster
+    members:
+      - peer1
+      - peer2
+      - peer3
+      - peer4
+      - peer5
+      - peer6
+      - outlier
+    role: test-fixture
+    rationale: "PR-13 fixture: drives the modularity outlier flag for `outlier`."
+    evidence_grade: strong
+    evidence_fields: ["pr13-fixture"]
