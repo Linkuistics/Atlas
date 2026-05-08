@@ -20,3 +20,4 @@ Keep this index ≤200 lines (the harness truncates beyond that).
 -->
 
 - [Atlas long-term monorepo consolidation](project_monorepo_consolidation.md) — user wants to fold atlas-contracts + Ravel + Ravel-Lite into Atlas and delete multi-root support.
+- [Verify worktree base before parallel dispatch](feedback_worktree_base_verification.md) — `isolation:"worktree"` may create worktrees off a stale ref; verify each base matches current main before subagents proceed.
