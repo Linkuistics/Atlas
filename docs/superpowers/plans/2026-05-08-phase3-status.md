@@ -7,12 +7,13 @@ continuation prompt at
 reads this file (via the `*phase3-plan*` wildcard match) to find the
 next PR to dispatch.
 
-**Last updated:** 2026-05-08 (PR-4 landed: top-level `components.yaml`
-retrofit to `<root>/.atlas/cache/components.yaml`). Wave 3
-(PR-2..PR-5) is partially complete: PR-4 on main; PR-5 awaiting
-integration; PR-2 awaiting redispatch (initial agent contaminated by
-worktree-base issue); PR-3 awaiting redispatch (initial agent BLOCKED
-on missing PR-1 helpers). Wave 2 closed.
+**Last updated:** 2026-05-08 (PR-4 + PR-5 landed: top-level
+`components.yaml` and `related-components.yaml` retrofitted to
+`<root>/.atlas/cache/`). Wave 3 (PR-2..PR-5) half complete:
+PR-4 + PR-5 on main; PR-2 + PR-3 awaiting sequential redispatch
+(initial parallel-dispatch agents hit a session-state worktree-base
+bug — see `.claude/memory/feedback_worktree_base_verification.md`).
+Wave 2 closed.
 
 ## PR status
 
@@ -26,7 +27,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [ ] PR-2  — Phase 1 retrofit: per-component `surfaces.yaml` → cache
 - [ ] PR-3  — Phase 1 retrofit: per-component `component.yaml` → cache
 - [x] PR-4  — Phase 1 retrofit: top-level `components.yaml` → cache
-- [ ] PR-5  — Phase 1 retrofit: top-level `related-components.yaml` → cache
+- [x] PR-5  — Phase 1 retrofit: top-level `related-components.yaml` → cache
 - [ ] PR-6  — Overrides schema extension: `edges_add` / `edges_suppress` + per-component field overrides
 - [x] PR-7  — `atlas-reports` crate scaffold + CLI subcommand framework
 - [ ] PR-8  — Drift report + `atlas drift` CLI subcommand
@@ -419,3 +420,73 @@ the Atlas project memory at
 sessions verifying parallel worktree dispatch should run
 `git worktree list` immediately and confirm each new worktree's
 HEAD matches current main.
+
+### PR-5
+2026-05-08 — Landed: top-level `related-components.yaml` retrofit
+to `<root>/.atlas/cache/related-components.yaml`. Two commits on
+main: `e146dd4` (cherry-pick from worktree commit `f9ab087`) and
+`d1b98a0` (orchestrator fix-up — strip `.atlas/` prefix from two
+literal old-path mentions in the new sweep test docstring +
+assertion message so the PR-5 grep-audit exits 0). Spec compliance
+✅ (4/4 acceptance criteria); code quality review verdict
+"Ready to merge: Yes" (no Critical / Important issues; six Minor
+nice-to-haves on writer-comment clarification + orphan re-export
+tracking, all non-blocking).
+
+**Code surface:**
+- `crates/atlas-cli/src/pipeline.rs`: import `atlas_engine::atomic_write`,
+  remove `save_related_components_atomic`. Update `prior_related_path`
+  reader (line ~231) to `cache/related-components.yaml`. Replace
+  the writer call with an inline `serde_yaml::to_string` +
+  `atomic_write` block — `atomic_write` `create_dir_all`s the
+  `cache/` parent before the rename target lands, which the existing
+  `save_related_components_atomic` helper does NOT.
+- 4 CLI integration test files updated with path-only changes
+  (`agent_observer_e2e.rs`, `atlas_contracts_in_ravel_lite.rs`,
+  `phase2_polyglot_fixture.rs`, `pipeline_integration.rs`). Two of
+  these (`agent_observer_e2e.rs`, `pipeline_integration.rs`)
+  required cherry-pick conflict resolution because PR-4 touched
+  the same files; resolutions union both PRs' assertions correctly.
+- New: `crates/atlas-cli/tests/grep_no_old_related_path.sh`
+  (chmod +x) — Perl negative-lookahead regex
+  `\.atlas/(?!cache/)related-components\.yaml`; excludes `docs/`,
+  `LLM_STATE/`, and `evaluation/results/`. PR-5's exclusion of
+  `LLM_STATE/` differs from PR-4's audit (no `LLM_STATE/` excluded
+  there); both are correct because `LLM_STATE/` only contains
+  matching strings for the related-components case in this session.
+- New: `crates/atlas-cli/tests/phase3_retrofit_related.rs` —
+  3 tests calling `run_index` end-to-end against the `tiny`
+  fixture with `LenientBackend`; covers cache-path populated +
+  parseable, dry-run no-write, byte-identity on no-op rerun.
+
+**Load-bearing details for downstream PRs:**
+- **`atlas_engine::atomic_write` is the preferred cache-tier writer.**
+  PR-4 used the existing `save_components_atomic` helper plus an
+  explicit `create_dir_all(cache/)`. PR-5 used `atomic_write`
+  directly because it `create_dir_all`s parents internally. PR-2 +
+  PR-3 should pick the simpler idiom (direct `atomic_write`) for
+  consistency, OR continue using the existing save-helper plus
+  explicit mkdir. Either is acceptable; the *invariant* is that the
+  `cache/` subdir must exist before the rename target lands.
+- **Orphan `pub use save_related_components_atomic` in
+  `atlas-contracts/crates/atlas-index/src/lib.rs` line 60.**
+  After PR-5, this re-export has zero callers in either repo.
+  Rust does NOT warn on orphan public re-exports, so the dead
+  code persists silently. **Tracking item: a future Phase 3 / 4
+  cleanup PR should remove this re-export from atlas-contracts.**
+  Not blocking PR-5; defer to a sibling-repo cleanup PR.
+- **PR-2's redispatch.** PR-2's worktree at
+  `.claude/worktrees/agent-a33068c44f27fca4d` is contaminated
+  (uncommitted duplicates of `atomic_write.rs` and `gitignore.rs`
+  + modifications to `lib.rs` to register them, all on a stale
+  `c6ddb67` base). The orchestrator should remove that worktree
+  via `git worktree remove --force` after PR-2's initial agent
+  finishes its current run (likely a long workspace-test pass that
+  may eventually succeed on the contaminated tree but produces a
+  diff that's a mix of PR-1 + PR-2 work — review-fail). Then
+  redispatch PR-2 fresh on a verified main-base worktree.
+
+PR-2 (surfaces.yaml) and PR-3 (component.yaml) remain the only
+Wave 3 PRs outstanding. Wave 4 (PR-6 overrides extension) and
+Wave 5 (PR-8..PR-11 reports) become dispatchable once Wave 3
+completes.
