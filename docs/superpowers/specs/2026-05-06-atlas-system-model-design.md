@@ -345,6 +345,11 @@ cache is persistent across processes and across restarts; an Atlas server
 warm-starts from an existing cache; cross-process re-use of analyser results
 is a property of the cache, not a coordination protocol.
 
+Cache files are local-only and gitignored by convention. `atlas-cli` writes a
+one-line `.gitignore` at each `.atlas/` scope on first cache-write, containing
+`cache/`. Cache portability across hosts is via explicit `atlas cache
+export/import` commands (deferred); cache is not shared via git.
+
 ### 4.6 Data co-locates with source
 
 A component's intrinsic facts (its classification, its surface, its
@@ -356,6 +361,10 @@ top-level `.atlas/` from which `atlas index` was run.
 The principle: data travels with the source it describes. A vendored copy of
 `atlas-contracts/atlas-index` brings its `.atlas/` along; a host repo can read
 that data immediately without re-running L5 surface analysis.
+
+Co-located means same directory tree as source, not git-tracked alongside
+source. Editorial files are git-tracked; derived files (cache, reports) are
+gitignored.
 
 ### 4.7 Salsa as the engine
 
@@ -521,6 +530,9 @@ changes go through a migration spec.
 
 ### 6.1 Top-level `components.yaml`
 
+**Path:** `<primary-root>/.atlas/cache/components.yaml`. **Git status:**
+`gitignored (under cache/)` — derived tier (Phase 3 retrofit; see §11.2.9).
+
 ```yaml
 schema_version: 2
 root: /Users/antony/Development/Ravel-Lite          # primary root
@@ -584,6 +596,9 @@ components:
 
 ### 6.2 Per-component `<component-path>/.atlas/component.yaml`
 
+**Path:** `<component-path>/.atlas/cache/component.yaml`. **Git status:**
+`gitignored (under cache/)` — derived tier (Phase 3 retrofit; see §11.2.9).
+
 A single-component projection of the same data, plus pointers to surfaces
 and overrides:
 
@@ -607,6 +622,9 @@ The top-level `components.yaml` is a synthesis of all per-component
 intrinsic record, the top-level file is the system view from this vantage).
 
 ### 6.3 Per-component `<component-path>/.atlas/surfaces.yaml`
+
+**Path:** `<component-path>/.atlas/cache/surfaces.yaml`. **Git status:**
+`gitignored (under cache/)` — derived tier (Phase 3 retrofit; see §11.2.9).
 
 ```yaml
 schema_version: 1
@@ -679,6 +697,10 @@ contracts_consumed:
 ```
 
 ### 6.4 `related-components.yaml` extended edge vocabulary
+
+**Path:** `<primary-root>/.atlas/cache/related-components.yaml`. **Git
+status:** `gitignored (under cache/)` — derived tier (Phase 3 retrofit; see
+§11.2.9).
 
 ```yaml
 schema_version: 2
@@ -1122,7 +1144,7 @@ deploy-format coverage.
 **Goal:** Deliver the LLM-tooling-facing analyses that the redesign was
 built to support.
 
-**Scope:**
+**Scope (four canonical analyses):**
 - **Drift report**: a contract whose content sha changed, with the list of
   bindings (across components, across roots) whose binding-content-sha is
   pinned to the previous contract sha.
@@ -1130,13 +1152,39 @@ built to support.
   consumers, partitioned by language, deploy graph, and lifecycle.
 - **Modularity report**: per-component coupling, cohesion, surface stability,
   surface complexity. Per-subsystem aggregates.
-- **Pattern detection** (initial): recurring component shapes (e.g., "trio of
-  components with parallel surfaces" suggesting a strategy pattern), recurring
-  edge shapes.
 - **Composition divergence report**: components that are deploy-coupled but
   not build-coupled (or vice versa), with severity rated by surface drift.
 
-### 10.4 Phase 4 — Server mode
+§10.3 introduces no new LLM call sites; all analyses are pure aggregations
+over L4–L8 outputs.
+
+### 10.4 Phase 4 — Convergence and cleanups
+
+**Goal:** Subprocess convergence, LLM-bearing analyses, and Phase 1/2/3
+closeout cleanups before server mode lands.
+
+**Scope:**
+- **Pattern detection** (originally design §10.3): recurring component shapes
+  (e.g., "trio of components with parallel surfaces" suggesting a strategy
+  pattern), recurring edge shapes. Needs LLM machinery that Phase 4
+  introduces.
+- **Subprocess convergence**: migrate Cargo / Dockerfile / RustSurface /
+  LlmClassify / TS-as-subprocess from in-process to subprocess.
+- **Bidirectional LLM callback channel** for subprocess analysers.
+- **`rust-analyzer` integration** replacing `syn` (stretch).
+- **LLM confidence threshold calibration** (§11.2.6).
+- **Contract rename-match** (§11.2.4).
+- **`--strict-overrides` flag**.
+- **Cache compression** (§11.2.7).
+- **Worktree commit-sha consistency annotations** (§11.2.8).
+- **Phase 2 closeout cleanups**: `LenientBackend` extraction, decoder
+  consolidation, `is_manifest_file` extension for Makefile/shell, L8
+  phantom-subcomponent fix.
+- **Per-language Phase 3 refinements**: full tree-sitter-dart, raco-driven
+  Racket dep resolution, Phoenix sub-kinds for Elixir, Mix umbrella
+  decomposition, LispKit `(import …)` symbolic resolution.
+
+### 10.5 Phase 5 — Server mode
 
 **Goal:** Long-running service with reactive recomputation and query API.
 
@@ -1148,7 +1196,12 @@ built to support.
 - CLI as thin client to co-located server.
 - Optional Grafeo derived index for ad-hoc Cypher/GQL/SPARQL queries.
 
-### 10.5 Migration from v1
+### 10.6 Migration from v1
+
+> **OBSOLETE.** Superseded by the greenfield non-negotiable adopted in
+> Phase 1. There is no migration path from v1 layouts; a user upgrading
+> deletes `.atlas/` and re-runs `atlas index`. The historical text below is
+> retained for context only.
 
 A `atlas migrate-v1` command runs once per workspace:
 
@@ -1212,9 +1265,10 @@ The following are flagged for resolution before the relevant phase ships.
    from v1 covers components; an analogous mechanism for contracts is
    needed.
 
-5. **Phase 4 query API authentication and authorisation.** Server mode running
+5. **Phase 5 query API authentication and authorisation.** Server mode running
    in a multi-tenant environment (CI, shared dev server) needs an auth model.
-   Defer to Phase 4 design.
+   Defer to Phase 5 design (server mode moved from Phase 4 to Phase 5; see
+   §10.5).
 
 6. **LLM analyser confidence thresholds.** The threshold for "confident" vs
    "declines" is per-analyser. Defaults need calibration against real
@@ -1230,6 +1284,13 @@ The following are flagged for resolution before the relevant phase ships.
    if mutually consistent. The schema includes a hook for per-root commit
    shas in `config.yaml`; the analysis logic that flags inconsistency is not
    yet specified.
+
+9. **Editorial-vs-derived classification of on-disk files. RESOLVED in
+   Phase 3:** editorial = user-asserted only (overrides / external-components
+   / subsystems / analyzers / config + per-component overrides); everything
+   else is derived and gitignored under `cache/`. Phase 1 files
+   `surfaces.yaml`, `component.yaml`, `components.yaml`,
+   `related-components.yaml` are retrofit to derived tier in Phase 3.
 
 ### 11.3 Explicit non-goals
 
@@ -1278,6 +1339,7 @@ translation when the time comes.
 | Server mode's reactive recomputation amplifies LLM spend during active development. | Medium | High | Per-component debouncing (default 5s); explicit budgets in server mode; opt-in "no LLM during edit" mode. |
 | YAML-as-canonical vs server-state-as-canonical confusion. | Low | High | Server always writes through to YAML on settled state; YAML is always re-readable as ground truth. |
 | Cross-tree path-dep cycles cause analysis loops. | Low | Medium | Fixed-point iteration with cycle detection; cycles are warned, not errored (cycles are legal in some build systems). |
+| Phase 3 retrofit (4 file-path moves + overrides schema extensions) leaves dangling readers. | Medium | High | Sweep tests + grep audit during each retrofit PR; greenfield rule means no migration path. |
 
 
 ## 13. Alternatives considered
