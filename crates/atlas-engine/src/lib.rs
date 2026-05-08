@@ -12,11 +12,13 @@
 //! - L9 projections — live.
 //! - CLI — lives in the `atlas-cli` crate.
 
+pub mod atomic_write;
 pub mod cache;
 pub mod contract_canonicalisation;
 pub mod db;
 pub mod defaults;
 pub mod fixedpoint;
+pub mod gitignore;
 pub mod heuristics;
 pub mod identifiers;
 pub mod ingest;
@@ -45,6 +47,7 @@ pub mod types;
 
 mod prompt_token_coverage;
 
+pub use atomic_write::atomic_write;
 pub use cache::{FingerprintBuilder, GcReport, PersistentCache, Sha256Hex};
 pub use contract_canonicalisation::{
     canonicalise_yaml, code_derived_content_sha, compute_surfaces_fingerprint,
@@ -59,6 +62,7 @@ pub use defaults::{
     EMBEDDED_COMPONENT_KINDS_YAML,
 };
 pub use fixedpoint::{run_fixedpoint, FixedpointConfig, FixedpointResult, FIXEDPOINT_HARD_CAP};
+pub use gitignore::{ensure_atlas_gitignore, EnsureGitignoreOutcome};
 pub use ingest::{
     seed_filesystem, seed_filesystem_excluding, seed_filesystem_excluding_one, seed_filesystem_one,
     seed_filesystem_with_limit, DEFAULT_BINARY_SIZE_LIMIT,

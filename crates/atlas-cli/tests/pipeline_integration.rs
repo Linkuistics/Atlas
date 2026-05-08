@@ -953,3 +953,80 @@ fn summary_reports_llm_errors_for_cache_miss_failures() {
         "pipeline must abort, not produce a misleading 'success' summary"
     );
 }
+
+// ---------------------------------------------------------------
+// Phase 3 PR-1 — gitignore mechanism
+// ---------------------------------------------------------------
+
+#[test]
+fn first_run_writes_atlas_gitignore_at_top_level_scope() {
+    // Plan §4 PR-1 acceptance criterion: a fresh-checkout fixture run
+    // through `pipeline.rs` writes `.atlas/.gitignore` at the
+    // top-level scope.
+    let tmp = materialise_tiny_fixture();
+    let backend = LenientBackend::new();
+    let config = base_config(tmp.path());
+
+    run_index(
+        &config,
+        backend,
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .expect("run_index");
+
+    let gitignore = config.output_dir.join(".gitignore");
+    assert!(
+        gitignore.exists(),
+        "expected .atlas/.gitignore at {}",
+        gitignore.display()
+    );
+    let bytes = std::fs::read(&gitignore).unwrap();
+    assert_eq!(bytes, b"cache/\n");
+}
+
+#[test]
+fn second_run_does_not_rewrite_existing_atlas_gitignore() {
+    // Plan §4 PR-1 idempotency criterion: a second invocation against
+    // the same fixture does NOT rewrite `.atlas/.gitignore` (verified
+    // via mtime comparison after a sleep).
+    let tmp = materialise_tiny_fixture();
+    let config = base_config(tmp.path());
+
+    run_index(
+        &config,
+        LenientBackend::new(),
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
+
+    let gitignore = config.output_dir.join(".gitignore");
+    assert!(gitignore.exists());
+    let mtime_before = std::fs::metadata(&gitignore).unwrap().modified().unwrap();
+    let bytes_before = std::fs::read(&gitignore).unwrap();
+
+    // Sleep just enough to expose any spurious second write — most
+    // POSIX filesystems have at-best-second mtime granularity.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    run_index(
+        &config,
+        LenientBackend::new(),
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .unwrap();
+
+    let mtime_after = std::fs::metadata(&gitignore).unwrap().modified().unwrap();
+    let bytes_after = std::fs::read(&gitignore).unwrap();
+
+    assert_eq!(
+        bytes_before, bytes_after,
+        ".atlas/.gitignore byte-content must be unchanged across runs"
+    );
+    assert_eq!(
+        mtime_before, mtime_after,
+        ".atlas/.gitignore mtime must be unchanged across runs (no rewrite)"
+    );
+}

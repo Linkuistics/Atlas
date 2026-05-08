@@ -32,8 +32,8 @@ use std::time::{Instant, SystemTime};
 use anyhow::{Context, Result};
 use atlas_analyzers::AnalyzerRegistry;
 use atlas_engine::{
-    all_components, components_yaml_snapshot_with_prompt_shas, expand_roots,
-    external_components_yaml_snapshot, per_component_yaml_snapshot,
+    all_components, components_yaml_snapshot_with_prompt_shas, ensure_atlas_gitignore,
+    expand_roots, external_components_yaml_snapshot, per_component_yaml_snapshot,
     related_components_yaml_snapshot, run_fixedpoint, seed_filesystem_excluding,
     surfaces_yaml_snapshot, AtlasDatabase, FixedpointConfig, LlmResponseCache, PersistentCache,
     Phase, ProgressEvent, ProgressSink,
@@ -72,6 +72,43 @@ pub enum IndexError {
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+}
+
+/// Per-session dedup for [`ensure_atlas_gitignore`] calls.
+///
+/// Phase 3 PR-1 (plan §4 PR-1, design §5.6): every `.atlas/` scope
+/// gets a one-line `.gitignore` listing `cache/` so the per-scope
+/// cache directories introduced by PR-2..PR-5 are not accidentally
+/// committed. The check is idempotent on disk, but we still want to
+/// avoid re-walking and re-warning about the same scope on every
+/// individual `.atlas/` write — `dedup` records canonicalised scopes
+/// so the warning emits at most once per session per scope.
+#[derive(Default)]
+struct GitignoreSession {
+    seen: BTreeSet<PathBuf>,
+}
+
+impl GitignoreSession {
+    fn ensure(&mut self, scope: &Path) {
+        // Use the canonicalised scope key so multiple write points that
+        // pass equivalent (but textually different) paths still dedup.
+        // Fall back to the input path when canonicalisation fails — a
+        // brand-new scope might not exist on disk yet at the moment of
+        // the first call, in which case `canonicalize` errors and we
+        // dedup on the literal path. Either is fine for the warning's
+        // "at most once per scope" intent.
+        let key = std::fs::canonicalize(scope).unwrap_or_else(|_| scope.to_path_buf());
+        if !self.seen.insert(key) {
+            return;
+        }
+        if let Err(err) = ensure_atlas_gitignore(scope) {
+            eprintln!(
+                "warning: failed to write .atlas/.gitignore at {}: {err}; \
+                 cache files may be tracked unintentionally",
+                scope.display()
+            );
+        }
+    }
 }
 
 /// Runtime knobs for [`run_index`]. Constructed by the binary from
@@ -293,12 +330,24 @@ pub fn run_index(
     roots.push(canonical_primary);
     roots.extend(all_additional.iter().cloned());
 
+    // PR-1 (Phase 3): the workspace `.atlas/` scope is `output_dir`'s
+    // parent; the gitignore goes into `<scope>/.atlas/.gitignore`. We
+    // call this before the very first `.atlas/` write so retrofit
+    // cache files (PR-2..PR-5) are never tracked.
+    let mut gitignore_session = GitignoreSession::default();
+    let workspace_scope = config
+        .output_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+
     // Persist the discovered roots to `<output>/.atlas/config.yaml`
     // for auditability (plan §4 PR-4). The file is otherwise
     // user-authored — preserve fields we don't own. A failure to
     // write here is non-fatal: the pipeline can still complete and
     // the user can always re-discover the roots by re-running.
     if !config.dry_run {
+        gitignore_session.ensure(&workspace_scope);
         if let Err(err) = persist_discovered_roots(&config.output_dir, &roots) {
             eprintln!(
                 "warning: failed to persist discovered roots to {}: {err:#}",
@@ -604,6 +653,13 @@ pub fn run_index(
             .with_context(|| format!("failed to create {}", config.output_dir.display()))
             .map_err(IndexError::Other)?;
 
+        // PR-1 (Phase 3): make sure the workspace-scope `.gitignore`
+        // is in place before we write any of the canonical YAMLs. The
+        // session dedups against the earlier call sites (config.yaml,
+        // any future write points) so this is a no-op walk on the
+        // hot path.
+        gitignore_session.ensure(&workspace_scope);
+
         save_components_atomic(&prior_components_path, &components_file)
             .map_err(IndexError::Other)?;
         save_externals_atomic(&prior_externals_path, &externals_file).map_err(IndexError::Other)?;
@@ -618,7 +674,7 @@ pub fn run_index(
         // per-component files are projections, so a failed write is
         // a degraded-but-correct state (warning on stderr, run
         // continues) rather than a hard error.
-        write_per_component_files(&db, &components_file, &roots);
+        write_per_component_files(&db, &components_file, &roots, &mut gitignore_session);
 
         // PR-10: the persistent cache is written-through inside
         // `LlmResponseCache::call_cached_with_fp` as each L-stage
@@ -821,6 +877,7 @@ fn write_per_component_files(
     db: &AtlasDatabase,
     components_file: &ComponentsFile,
     roots: &[PathBuf],
+    gitignore_session: &mut GitignoreSession,
 ) {
     for entry in &components_file.components {
         if entry.deleted {
@@ -865,6 +922,12 @@ fn write_per_component_files(
             );
         }
         let candidate_abs = resolution.path;
+
+        // PR-1 (Phase 3): ensure the per-component scope's
+        // `.atlas/.gitignore` is in place before we materialise any
+        // file under `<component>/.atlas/`. The session dedups so we
+        // touch the file at most once per scope per session.
+        gitignore_session.ensure(&candidate_abs);
 
         let target_dir = candidate_abs.join(".atlas");
 
