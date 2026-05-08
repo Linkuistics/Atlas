@@ -7,11 +7,12 @@ continuation prompt at
 reads this file (via the `*phase3-plan*` wildcard match) to find the
 next PR to dispatch.
 
-**Last updated:** 2026-05-08 (PR-7 landed: `atlas-reports` crate
-scaffold + CLI subcommand framework). Wave 2 is complete; Wave 3
-(PR-2..PR-5 retrofits) is now dispatchable in parallel, and PR-8..
-PR-11 (report bodies) become dispatchable as soon as the retrofits
-they need have landed.
+**Last updated:** 2026-05-08 (PR-4 landed: top-level `components.yaml`
+retrofit to `<root>/.atlas/cache/components.yaml`). Wave 3
+(PR-2..PR-5) is partially complete: PR-4 on main; PR-5 awaiting
+integration; PR-2 awaiting redispatch (initial agent contaminated by
+worktree-base issue); PR-3 awaiting redispatch (initial agent BLOCKED
+on missing PR-1 helpers). Wave 2 closed.
 
 ## PR status
 
@@ -24,7 +25,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-1  — Gitignore mechanism for `<scope>/.atlas/cache/` + atomic_write helper
 - [ ] PR-2  — Phase 1 retrofit: per-component `surfaces.yaml` → cache
 - [ ] PR-3  — Phase 1 retrofit: per-component `component.yaml` → cache
-- [ ] PR-4  — Phase 1 retrofit: top-level `components.yaml` → cache
+- [x] PR-4  — Phase 1 retrofit: top-level `components.yaml` → cache
 - [ ] PR-5  — Phase 1 retrofit: top-level `related-components.yaml` → cache
 - [ ] PR-6  — Overrides schema extension: `edges_add` / `edges_suppress` + per-component field overrides
 - [x] PR-7  — `atlas-reports` crate scaffold + CLI subcommand framework
@@ -345,3 +346,76 @@ PR-2..PR-5 (retrofits) and PR-8..PR-11 (report bodies) are now
 unblocked. PR-9 (impact body) inherits the corrected wire-format-
 matching `ImpactReport` shape; no follow-up renderer projection
 needed.
+
+### PR-4
+2026-05-08 — Landed: top-level `components.yaml` retrofit to
+`<root>/.atlas/cache/components.yaml`. Commit `a1b9541` on main
+(cherry-picked from worktree commit `48f6beb`). 9 files changed,
++401 / −19. Spec compliance ✅ (4/4 acceptance criteria); code
+quality review verdict "Ready to merge: Yes" (no Critical / Important
+issues; six Minor nice-to-haves on comment density and DRY,
+non-blocking).
+
+**Code surface:**
+- `crates/atlas-cli/src/pipeline.rs`: `prior_components_path` reader
+  (line 229) and writer call site (line 682) both updated to
+  `cache/components.yaml`. Added explicit `create_dir_all(cache/)`
+  before the writer to handle the `PersistentCache::open`-fell-back
+  case (the existing `save_components_atomic` helper does NOT create
+  parent dirs).
+- 6 CLI integration test files updated with path-only changes
+  (`agent_observer_e2e.rs`, `atlas_contracts_in_ravel_lite.rs`,
+  `byte_identity_l5_demand.rs`, `phase2_polyglot_fixture.rs`,
+  `pipeline_integration.rs`, `scattered_atlas_layout.rs`).
+- New: `crates/atlas-cli/tests/grep_no_old_components_path.sh`
+  (chmod +x) — Perl negative-lookahead regex
+  `\.atlas/(?!cache/)components\.yaml`; excludes `docs/` and
+  `evaluation/results/`. Wire it into CI by invoking from a `#[test]`
+  shim (PR-13 may consolidate the four retrofit grep-audit invocations).
+- New: `crates/atlas-cli/tests/phase3_retrofit_components.rs` —
+  4 tests calling `run_index` end-to-end against the `tiny` fixture
+  with `SweepBackend`; covers cache-path populated, content sanity,
+  byte-identity on no-op rerun (content-equality based, not mtime,
+  so no `sleep 1100ms` needed), and recursive sweep for stray
+  non-cache files.
+
+**Load-bearing details for downstream PRs:**
+- **`atlas-contracts/crates/atlas-index/src/yaml_io.rs`'s
+  `save_components_atomic` is the canonical writer.** It wraps
+  `write_atomic` (temp-file + rename) but does NOT create parent
+  directories. When PR-2/PR-3/PR-5/etc. write to `<scope>/.atlas/cache/`
+  paths, they must `create_dir_all(cache/)` before the save call OR
+  rely on `atlas_engine::atomic_write` (PR-1's helper) which DOES
+  create parent dirs. PR-4 used the explicit `create_dir_all` form;
+  PR-5's PR uses `atomic_write` directly. Either is acceptable; the
+  *invariant* is that the `cache/` subdir must exist before the
+  rename target lands.
+- **PersistentCache fallback.** `PersistentCache::open` creates the
+  `cache/` dir on success but may fall back to in-memory; in that
+  case the `cache/` dir does not yet exist. Hence the explicit mkdir.
+  This is a Phase 3 invariant: every cache-tier writer must tolerate
+  the in-memory-fallback case.
+- **Worktree-local target/ cache produced phantom polyglot test
+  failures.** During PR-4's spec-review verification, the
+  `phase2_polyglot_fixture` tests failed on the worktree but passed
+  3/3 on main with the commit cherry-picked. Root cause was the
+  worktree's stale `target/` artefacts (the worktree had been
+  iterating across multiple cargo runs). Lesson for future
+  retrofit reviews: when "regression on the worktree" appears, verify
+  by cherry-picking the diff onto a clean main and re-running there.
+- **Greenfield holds.** No compatibility shim, no migration code.
+  Reader and writer move in lockstep; old-path consumers that survive
+  in `git grep` would be caught by the grep-audit script.
+
+PR-5 (related-components.yaml) is committed on its worktree branch
+(`f9ab087`) awaiting integration onto main. PR-2 (surfaces.yaml) and
+PR-3 (component.yaml) need redispatch — PR-2's initial agent ran
+on a stale `c6ddb67` worktree base and tried to manually duplicate
+PR-1's `atomic_write` / `gitignore` helpers (contamination); PR-3's
+initial agent reported BLOCKED for the same root cause and its
+worktree was auto-cleaned. The worktree-base issue is documented in
+the Atlas project memory at
+`.claude/memory/feedback_worktree_base_verification.md`; future
+sessions verifying parallel worktree dispatch should run
+`git worktree list` immediately and confirm each new worktree's
+HEAD matches current main.
