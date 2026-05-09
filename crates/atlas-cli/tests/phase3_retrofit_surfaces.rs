@@ -15,123 +15,20 @@
 //!
 //! The test uses the `tiny` fixture (two-crate Rust workspace: `mylib` + `mycli`).
 //! A canned-response backend avoids any real LLM calls.
+//!
+//! Fixture-build boilerplate (`materialise_fixture`, `base_config`,
+//! `run_with`, the canned-response backend) lives in the shared
+//! `tests/common/sweep_support.rs` module — see Phase 4 PR-6.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use atlas_cli::progress::{make_stderr_reporter, ProgressMode};
-use atlas_cli::{run_index, IndexConfig};
 use atlas_index::{SurfacesFile, SURFACES_SCHEMA_VERSION};
-use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId};
-use serde_json::{json, Value};
-use tempfile::TempDir;
+
+mod common;
+use common::sweep_support::*;
 
 // ---------------------------------------------------------------------------
-// Canned-response backend (self-contained copy so this file stands alone).
-// ---------------------------------------------------------------------------
-
-fn fingerprint() -> LlmFingerprint {
-    LlmFingerprint {
-        template_sha: [0xA2u8; 32],
-        ontology_sha: [0xA3u8; 32],
-        model_id: "pr2-sweep-backend".into(),
-        backend_version: "v-pr2-sweep".into(),
-    }
-}
-
-struct SweepBackend {
-    fingerprint: LlmFingerprint,
-}
-
-impl SweepBackend {
-    fn new() -> Arc<Self> {
-        Arc::new(SweepBackend {
-            fingerprint: fingerprint(),
-        })
-    }
-}
-
-impl LlmBackend for SweepBackend {
-    fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        Ok(match req.prompt_template {
-            PromptId::Classify => json!({
-                "kind": "rust-library",
-                "language": "rust",
-                "build_system": "cargo",
-                "evidence_grade": "medium",
-                "evidence_fields": [],
-                "rationale": "pr2 sweep backend classification",
-                "is_boundary": true,
-            }),
-            PromptId::Stage1Surface => json!({
-                "purpose": "pr2 sweep backend surface",
-                "notes": "",
-            }),
-            PromptId::Stage2Edges => json!([]),
-            PromptId::Subcarve => json!({
-                "should_subcarve": false,
-                "sub_dirs": [],
-                "rationale": "pr2 sweep backend declined",
-            }),
-        })
-    }
-
-    fn fingerprint(&self) -> LlmFingerprint {
-        self.fingerprint.clone()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Fixture helpers.
-// ---------------------------------------------------------------------------
-
-fn tiny_fixture_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("tiny")
-}
-
-fn copy_fixture_to_tmp(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap();
-    for entry in std::fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_fixture_to_tmp(&from, &to);
-        } else {
-            std::fs::copy(&from, &to).unwrap();
-        }
-    }
-}
-
-fn materialise_tiny_fixture() -> TempDir {
-    let tmp = TempDir::new().unwrap();
-    copy_fixture_to_tmp(&tiny_fixture_root(), tmp.path());
-    tmp
-}
-
-fn base_config(root: &Path) -> IndexConfig {
-    let mut config = IndexConfig::new(root.to_path_buf());
-    config.output_dir = root.join(".atlas");
-    config.respect_gitignore = false;
-    config.fingerprint_override = Some(fingerprint());
-    config
-}
-
-fn run_with(config: &IndexConfig, backend: Arc<dyn LlmBackend>) {
-    run_index(
-        config,
-        backend,
-        None,
-        make_stderr_reporter(ProgressMode::Never, None),
-    )
-    .expect("run_index must succeed");
-}
-
-// ---------------------------------------------------------------------------
-// Walk helpers.
+// Walk helpers (test-specific — only PR-2 cares about old-path surfaces.yaml).
 // ---------------------------------------------------------------------------
 
 /// Recursively collect all files named `surfaces.yaml` whose path does NOT
@@ -178,10 +75,10 @@ fn walk_for_old_surfaces(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[test]
 fn cache_surfaces_yaml_written_for_each_component_and_no_old_path() {
-    let tmp = materialise_tiny_fixture();
+    let tmp = materialise_fixture();
     let config = base_config(tmp.path());
 
-    run_with(&config, SweepBackend::new());
+    run_with(&config, LenientBackend::new(sweep_fingerprint()));
 
     // AC(a): every component directory must contain a non-empty
     // cache/surfaces.yaml that parses as SurfacesFile.
@@ -231,11 +128,11 @@ fn cache_surfaces_yaml_written_for_each_component_and_no_old_path() {
 
 #[test]
 fn cache_surfaces_yaml_is_byte_identical_on_no_op_rerun() {
-    let tmp = materialise_tiny_fixture();
+    let tmp = materialise_fixture();
     let config = base_config(tmp.path());
 
     // First run — cold.
-    run_with(&config, SweepBackend::new());
+    run_with(&config, LenientBackend::new(sweep_fingerprint()));
 
     let first_mylib = std::fs::read(tmp.path().join("mylib/.atlas/cache/surfaces.yaml"))
         .expect("PR-2: cache/surfaces.yaml must exist for mylib after first run");
@@ -245,7 +142,7 @@ fn cache_surfaces_yaml_is_byte_identical_on_no_op_rerun() {
     // Second run — same inputs, same fingerprint. The pipeline's
     // unconditional write with atomic_write should produce identical bytes
     // (fingerprint-equality, not mtime).
-    run_with(&config, SweepBackend::new());
+    run_with(&config, LenientBackend::new(sweep_fingerprint()));
 
     let second_mylib = std::fs::read(tmp.path().join("mylib/.atlas/cache/surfaces.yaml"))
         .expect("PR-2: cache/surfaces.yaml must exist for mylib after second run");
@@ -270,10 +167,10 @@ fn cache_surfaces_yaml_is_byte_identical_on_no_op_rerun() {
 
 #[test]
 fn atlas_gitignore_exists_at_each_component_scope() {
-    let tmp = materialise_tiny_fixture();
+    let tmp = materialise_fixture();
     let config = base_config(tmp.path());
 
-    run_with(&config, SweepBackend::new());
+    run_with(&config, LenientBackend::new(sweep_fingerprint()));
 
     for name in ["mylib", "mycli"] {
         let gitignore_path = tmp.path().join(name).join(".atlas/.gitignore");

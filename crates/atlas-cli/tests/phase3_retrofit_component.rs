@@ -10,124 +10,18 @@
 //!     `.atlas/` directory unless it is under the `cache/` sub-path.
 //!     I.e. the old non-cache location is empty after the retrofit.
 //!
-//! The test uses the `tiny` fixture (two-crate Rust workspace) and a
-//! self-contained canned-response backend, mirroring the shape of the
-//! sibling PR-4 and PR-5 sweep tests.
+//! The test uses the `tiny` fixture (two-crate Rust workspace).
+//!
+//! Fixture-build boilerplate (`materialise_fixture`, `base_config`,
+//! `run_with`, the canned-response backend) lives in the shared
+//! `tests/common/sweep_support.rs` module — see Phase 4 PR-6.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use atlas_cli::progress::{make_stderr_reporter, ProgressMode};
-use atlas_cli::{run_index, IndexConfig};
 use atlas_index::{load_or_default_components, PerComponentFile};
-use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId};
-use serde_json::{json, Value};
-use tempfile::TempDir;
 
-// ---------------------------------------------------------------------------
-// Minimal canned-response backend (mirrors LenientBackend in
-// pipeline_integration.rs — self-contained copy so this file stands alone).
-// ---------------------------------------------------------------------------
-
-fn fingerprint() -> LlmFingerprint {
-    LlmFingerprint {
-        template_sha: [0xA3u8; 32],
-        ontology_sha: [0xA4u8; 32],
-        model_id: "pr3-sweep-backend".into(),
-        backend_version: "v-pr3-sweep".into(),
-    }
-}
-
-struct SweepBackend {
-    fingerprint: LlmFingerprint,
-}
-
-impl SweepBackend {
-    fn new() -> Arc<Self> {
-        Arc::new(SweepBackend {
-            fingerprint: fingerprint(),
-        })
-    }
-}
-
-impl LlmBackend for SweepBackend {
-    fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        Ok(match req.prompt_template {
-            PromptId::Classify => json!({
-                "kind": "rust-library",
-                "language": "rust",
-                "build_system": "cargo",
-                "evidence_grade": "medium",
-                "evidence_fields": [],
-                "rationale": "pr3-sweep-backend default classification",
-                "is_boundary": true,
-            }),
-            PromptId::Stage1Surface => json!({
-                "purpose": "pr3-sweep-backend default surface",
-                "notes": "",
-            }),
-            PromptId::Stage2Edges => json!([]),
-            PromptId::Subcarve => json!({
-                "should_subcarve": false,
-                "sub_dirs": [],
-                "rationale": "pr3-sweep-backend declined",
-            }),
-        })
-    }
-
-    fn fingerprint(&self) -> LlmFingerprint {
-        self.fingerprint.clone()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Fixture helpers — tiny two-crate fixture.
-// ---------------------------------------------------------------------------
-
-fn tiny_fixture_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("tiny")
-}
-
-fn copy_dir_all(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap();
-    for entry in std::fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir_all(&from, &to);
-        } else {
-            std::fs::copy(&from, &to).unwrap();
-        }
-    }
-}
-
-fn materialise_fixture() -> TempDir {
-    let tmp = TempDir::new().unwrap();
-    copy_dir_all(&tiny_fixture_root(), tmp.path());
-    tmp
-}
-
-fn base_config(root: &Path) -> IndexConfig {
-    let mut config = IndexConfig::new(root.to_path_buf());
-    config.output_dir = root.join(".atlas");
-    config.respect_gitignore = false;
-    config.fingerprint_override = Some(fingerprint());
-    config
-}
-
-fn run_with(config: &IndexConfig, backend: Arc<dyn LlmBackend>) {
-    run_index(
-        config,
-        backend,
-        None,
-        make_stderr_reporter(ProgressMode::Never, None),
-    )
-    .expect("run_index must succeed");
-}
+mod common;
+use common::sweep_support::*;
 
 // ---------------------------------------------------------------------------
 // AC(a): every live component has cache/component.yaml with analyser fields.
@@ -142,7 +36,7 @@ fn every_live_component_has_cache_component_yaml_with_analyser_fields() {
     let tmp = materialise_fixture();
     let config = base_config(tmp.path());
 
-    run_with(&config, SweepBackend::new());
+    run_with(&config, LenientBackend::new(sweep_fingerprint()));
 
     // Load the top-level components list (now at cache/components.yaml).
     let components_path = config.output_dir.join("cache/components.yaml");
@@ -218,7 +112,7 @@ fn no_per_component_yaml_outside_cache() {
     let tmp = materialise_fixture();
     let config = base_config(tmp.path());
 
-    run_with(&config, SweepBackend::new());
+    run_with(&config, LenientBackend::new(sweep_fingerprint()));
 
     // Load the live component list to know which component directories to check.
     let components_path = config.output_dir.join("cache/components.yaml");

@@ -12,74 +12,17 @@
 //!    (parsed as `ComponentsFile`).
 //! 4. Bit-for-bit stability: two consecutive runs with identical inputs
 //!    produce byte-identical `cache/components.yaml` output.
+//!
+//! Fixture-build boilerplate (`materialise_fixture`, `base_config`,
+//! `run_with`, `LenientBackend`) lives in the shared
+//! `tests/common/sweep_support.rs` module — see Phase 4 PR-6.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use atlas_cli::progress::{make_stderr_reporter, ProgressMode};
-use atlas_cli::{run_index, IndexConfig};
-use atlas_engine::testing::LenientBackend;
 use atlas_index::{load_or_default_components, ComponentsFile};
-use atlas_llm::{LlmBackend, LlmFingerprint};
-use tempfile::TempDir;
 
-fn fingerprint() -> LlmFingerprint {
-    LlmFingerprint {
-        template_sha: [0xCAu8; 32],
-        ontology_sha: [0xCBu8; 32],
-        model_id: "pr4-sweep-backend".into(),
-        backend_version: "v-pr4-sweep".into(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Fixture helpers — reuse the tiny fixture already in tests/fixtures/tiny/
-// ---------------------------------------------------------------------------
-
-fn tiny_fixture_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("tiny")
-}
-
-fn copy_dir_all(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap();
-    for entry in std::fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir_all(&from, &to);
-        } else {
-            std::fs::copy(&from, &to).unwrap();
-        }
-    }
-}
-
-fn materialise_fixture() -> TempDir {
-    let tmp = TempDir::new().unwrap();
-    copy_dir_all(&tiny_fixture_root(), tmp.path());
-    tmp
-}
-
-fn base_config(root: &Path) -> IndexConfig {
-    let mut config = IndexConfig::new(root.to_path_buf());
-    config.output_dir = root.join(".atlas");
-    config.respect_gitignore = false;
-    config.fingerprint_override = Some(fingerprint());
-    config
-}
-
-fn run_with(config: &IndexConfig, backend: Arc<dyn LlmBackend>) {
-    run_index(
-        config,
-        backend,
-        None,
-        make_stderr_reporter(ProgressMode::Never, None),
-    )
-    .expect("run_index must succeed");
-}
+mod common;
+use common::sweep_support::*;
 
 // ---------------------------------------------------------------------------
 // AC#1 + AC#2: cache/components.yaml populated, no top-level components.yaml
@@ -90,7 +33,7 @@ fn cache_components_yaml_written_and_no_top_level_file() {
     let tmp = materialise_fixture();
     let config = base_config(tmp.path());
 
-    run_with(&config, LenientBackend::new(fingerprint()));
+    run_with(&config, LenientBackend::new(sweep_fingerprint()));
 
     // AC#1: components.yaml must exist at the new cache location.
     let cache_path = config.output_dir.join("cache/components.yaml");
@@ -121,7 +64,7 @@ fn cache_components_yaml_contains_expected_components() {
     let tmp = materialise_fixture();
     let config = base_config(tmp.path());
 
-    run_with(&config, LenientBackend::new(fingerprint()));
+    run_with(&config, LenientBackend::new(sweep_fingerprint()));
 
     let cache_path = config.output_dir.join("cache/components.yaml");
     let bytes = std::fs::read(&cache_path).unwrap_or_else(|e| {
@@ -172,14 +115,14 @@ fn cache_components_yaml_is_byte_identical_on_no_op_rerun() {
     let config = base_config(tmp.path());
 
     // First run — cold.
-    run_with(&config, LenientBackend::new(fingerprint()));
+    run_with(&config, LenientBackend::new(sweep_fingerprint()));
     let first = std::fs::read(config.output_dir.join("cache/components.yaml"))
         .expect("cache/components.yaml must exist after first run");
 
     // Second run — same inputs, same fingerprint. The pipeline's
     // `stable_generated_at` heuristic should preserve the timestamp,
     // making the file byte-identical.
-    run_with(&config, LenientBackend::new(fingerprint()));
+    run_with(&config, LenientBackend::new(sweep_fingerprint()));
     let second = std::fs::read(config.output_dir.join("cache/components.yaml"))
         .expect("cache/components.yaml must exist after second run");
 
@@ -200,7 +143,7 @@ fn no_components_yaml_outside_cache_in_atlas_dir() {
     let tmp = materialise_fixture();
     let config = base_config(tmp.path());
 
-    run_with(&config, LenientBackend::new(fingerprint()));
+    run_with(&config, LenientBackend::new(sweep_fingerprint()));
 
     // Walk every file under .atlas/ and collect any `components.yaml`
     // that does NOT live in a `cache/` sub-path.
