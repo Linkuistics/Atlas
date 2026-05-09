@@ -854,161 +854,14 @@ fn racket_surface_artefacts(
         }
     };
 
-    let (bindings, library_apis) = decode_racket_surface_payload(&payload, entry.id.as_str());
+    let (bindings, library_apis) =
+        decode_subprocess_surface_payload(&payload, entry.id.as_str(), "racket");
     Some(Arc::new(SurfaceArtefacts {
         record: record.clone(),
         contracts: Vec::new(),
         bindings,
         library_apis,
     }))
-}
-
-/// Decode the JSON payload returned by the racket-analyzer subprocess.
-/// The wire shape is identical to the python-analyzer's shape; the
-/// same decoder logic applies with `language: "racket"` substituted.
-fn decode_racket_surface_payload(
-    payload: &Value,
-    component_id: &str,
-) -> (Vec<Binding>, Vec<LibraryApi>) {
-    use atlas_index::{ContractKind, PubItem, PubItemKind, Visibility};
-    use std::collections::BTreeMap as StdBTreeMap;
-
-    let Some(obj) = payload.as_object() else {
-        return (Vec::new(), Vec::new());
-    };
-
-    let mut bindings: Vec<Binding> = Vec::new();
-    if let Some(arr) = obj.get("bindings").and_then(Value::as_array) {
-        for v in arr {
-            let Some(b) = v.as_object() else { continue };
-            let language = b
-                .get("language")
-                .and_then(Value::as_str)
-                .unwrap_or("racket")
-                .to_string();
-            let symbol = b
-                .get("symbol")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let file = b
-                .get("file")
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
-                .unwrap_or_default();
-            let span = b
-                .get("span")
-                .and_then(Value::as_array)
-                .and_then(|a| {
-                    let s = a.first().and_then(Value::as_u64)? as usize;
-                    let e = a.get(1).and_then(Value::as_u64)? as usize;
-                    Some((s, e))
-                })
-                .unwrap_or((0, 0));
-            let content_sha = b
-                .get("content_sha")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let visibility = b
-                .get("visibility")
-                .map(|v| {
-                    serde_json::from_value::<Visibility>(v.clone())
-                        .unwrap_or(Visibility::Conventional)
-                })
-                .unwrap_or(Visibility::Conventional);
-            let module_path = b
-                .get("module_path")
-                .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let attributes: StdBTreeMap<String, serde_yaml::Value> = b
-                .get("attributes")
-                .and_then(Value::as_object)
-                .map(|m| {
-                    m.iter()
-                        .filter_map(|(k, v)| {
-                            let yaml: serde_yaml::Value = serde_json::from_value(v.clone()).ok()?;
-                            Some((k.clone(), yaml))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            bindings.push(Binding {
-                language,
-                symbol,
-                file,
-                span,
-                content_sha,
-                visibility,
-                module_path,
-                attributes,
-            });
-        }
-    }
-
-    let mut library_apis: Vec<LibraryApi> = Vec::new();
-    if let Some(arr) = obj.get("library_apis").and_then(Value::as_array) {
-        for v in arr {
-            let Some(api) = v.as_object() else { continue };
-            let id = api
-                .get("id")
-                .and_then(Value::as_str)
-                .map(String::from)
-                .unwrap_or_else(|| format!("{component_id}/public-api"));
-            let language = api
-                .get("language")
-                .and_then(Value::as_str)
-                .unwrap_or("racket")
-                .to_string();
-            let fingerprint = api
-                .get("fingerprint")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let pub_items: Vec<PubItem> = api
-                .get("pub_items")
-                .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|p| {
-                            let p = p.as_object()?;
-                            let name = p.get("name").and_then(Value::as_str)?.to_string();
-                            let file = p.get("file").and_then(Value::as_str).map(PathBuf::from)?;
-                            let kind_str = p.get("kind").and_then(Value::as_str)?;
-                            let kind = match kind_str {
-                                "struct" => PubItemKind::Struct,
-                                "enum" => PubItemKind::Enum,
-                                "fn" => PubItemKind::Fn,
-                                "trait" => PubItemKind::Trait,
-                                "mod" => PubItemKind::Mod,
-                                "type-alias" => PubItemKind::TypeAlias,
-                                "const" => PubItemKind::Const,
-                                "static" => PubItemKind::Static,
-                                "union" => PubItemKind::Union,
-                                "macro" => PubItemKind::Macro,
-                                _ => return None,
-                            };
-                            Some(PubItem { name, file, kind })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            library_apis.push(LibraryApi {
-                id,
-                kind: ContractKind::LibraryApi,
-                language,
-                fingerprint,
-                pub_items,
-            });
-        }
-    }
-
-    (bindings, library_apis)
 }
 
 /// Decode the JSON payload returned by a subprocess analyser
@@ -1264,7 +1117,8 @@ fn csharp_surface_artefacts(
         }
     };
 
-    let (bindings, library_apis) = decode_csharp_surface_payload(&payload, entry.id.as_str());
+    let (bindings, library_apis) =
+        decode_subprocess_surface_payload(&payload, entry.id.as_str(), "csharp");
     Some(Arc::new(SurfaceArtefacts {
         record: record.clone(),
         contracts: Vec::new(),
@@ -1291,159 +1145,6 @@ fn resolve_csharp_component_dir(entry: &ComponentEntry, roots: &[PathBuf]) -> Op
         }
     }
     Some(roots.first()?.join(&segment.path))
-}
-
-/// Decode the JSON payload returned by the csharp-analyzer subprocess
-/// into typed `Binding` / `LibraryApi` values. The wire shape is
-/// identical to the Python analyser's shape (same `AnalysePayload`
-/// struct mirrored in `csharp-analyzer`'s `main.rs`); this decoder
-/// is a near-copy of `decode_python_surface_payload` with language
-/// defaulting to `"csharp"`.
-fn decode_csharp_surface_payload(
-    payload: &Value,
-    component_id: &str,
-) -> (Vec<Binding>, Vec<LibraryApi>) {
-    use atlas_index::{ContractKind, PubItem, PubItemKind, Visibility};
-    use std::collections::BTreeMap as StdBTreeMap;
-
-    let Some(obj) = payload.as_object() else {
-        return (Vec::new(), Vec::new());
-    };
-
-    let mut bindings: Vec<Binding> = Vec::new();
-    if let Some(arr) = obj.get("bindings").and_then(Value::as_array) {
-        for v in arr {
-            let Some(b) = v.as_object() else { continue };
-            let language = b
-                .get("language")
-                .and_then(Value::as_str)
-                .unwrap_or("csharp")
-                .to_string();
-            let symbol = b
-                .get("symbol")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let file = b
-                .get("file")
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
-                .unwrap_or_default();
-            let span = b
-                .get("span")
-                .and_then(Value::as_array)
-                .and_then(|a| {
-                    let s = a.first().and_then(Value::as_u64)? as usize;
-                    let e = a.get(1).and_then(Value::as_u64)? as usize;
-                    Some((s, e))
-                })
-                .unwrap_or((0, 0));
-            let content_sha = b
-                .get("content_sha")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let visibility = b
-                .get("visibility")
-                .map(|v| {
-                    serde_json::from_value::<Visibility>(v.clone())
-                        .unwrap_or(Visibility::Conventional)
-                })
-                .unwrap_or(Visibility::Conventional);
-            let module_path = b
-                .get("module_path")
-                .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let attributes: StdBTreeMap<String, serde_yaml::Value> = b
-                .get("attributes")
-                .and_then(Value::as_object)
-                .map(|m| {
-                    m.iter()
-                        .filter_map(|(k, v)| {
-                            // JSON → YAML via serde_json::from_value (PR-3 F-CQ-3
-                            // fix — avoids YAML-special-character corruption).
-                            let yaml: serde_yaml::Value = serde_json::from_value(v.clone()).ok()?;
-                            Some((k.clone(), yaml))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            bindings.push(Binding {
-                language,
-                symbol,
-                file,
-                span,
-                content_sha,
-                visibility,
-                module_path,
-                attributes,
-            });
-        }
-    }
-
-    let mut library_apis: Vec<LibraryApi> = Vec::new();
-    if let Some(arr) = obj.get("library_apis").and_then(Value::as_array) {
-        for v in arr {
-            let Some(api) = v.as_object() else { continue };
-            let id = api
-                .get("id")
-                .and_then(Value::as_str)
-                .map(String::from)
-                .unwrap_or_else(|| format!("{component_id}/public-api"));
-            let language = api
-                .get("language")
-                .and_then(Value::as_str)
-                .unwrap_or("csharp")
-                .to_string();
-            let fingerprint = api
-                .get("fingerprint")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let pub_items: Vec<PubItem> = api
-                .get("pub_items")
-                .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|p| {
-                            let p = p.as_object()?;
-                            let name = p.get("name").and_then(Value::as_str)?.to_string();
-                            let file = p.get("file").and_then(Value::as_str).map(PathBuf::from)?;
-                            let kind_str = p.get("kind").and_then(Value::as_str)?;
-                            let kind = match kind_str {
-                                "struct" => PubItemKind::Struct,
-                                "enum" => PubItemKind::Enum,
-                                "fn" => PubItemKind::Fn,
-                                "trait" => PubItemKind::Trait,
-                                "mod" => PubItemKind::Mod,
-                                "type-alias" => PubItemKind::TypeAlias,
-                                "const" => PubItemKind::Const,
-                                "static" => PubItemKind::Static,
-                                "union" => PubItemKind::Union,
-                                "macro" => PubItemKind::Macro,
-                                _ => return None,
-                            };
-                            Some(PubItem { name, file, kind })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            library_apis.push(LibraryApi {
-                id,
-                kind: ContractKind::LibraryApi,
-                language,
-                fingerprint,
-                pub_items,
-            });
-        }
-    }
-
-    (bindings, library_apis)
 }
 
 /// True when the component looks like a Dart/Flutter component.
@@ -1510,7 +1211,8 @@ fn dart_surface_artefacts(
         }
     };
 
-    let (bindings, library_apis) = decode_dart_surface_payload(&payload, entry.id.as_str());
+    let (bindings, library_apis) =
+        decode_subprocess_surface_payload(&payload, entry.id.as_str(), "dart");
     Some(Arc::new(SurfaceArtefacts {
         record: record.clone(),
         contracts: Vec::new(),
@@ -1535,156 +1237,6 @@ fn resolve_dart_component_dir(entry: &ComponentEntry, roots: &[PathBuf]) -> Opti
         }
     }
     Some(roots.first()?.join(&segment.path))
-}
-
-/// Decode the JSON payload returned by the dart-analyzer subprocess.
-/// Mirrors [`decode_python_surface_payload`] with `"dart"` as the default
-/// language tag.
-fn decode_dart_surface_payload(
-    payload: &Value,
-    component_id: &str,
-) -> (Vec<Binding>, Vec<LibraryApi>) {
-    use atlas_index::{ContractKind, PubItem, PubItemKind, Visibility};
-    use std::collections::BTreeMap as StdBTreeMap;
-
-    let Some(obj) = payload.as_object() else {
-        return (Vec::new(), Vec::new());
-    };
-
-    let mut bindings: Vec<Binding> = Vec::new();
-    if let Some(arr) = obj.get("bindings").and_then(Value::as_array) {
-        for v in arr {
-            let Some(b) = v.as_object() else { continue };
-            let language = b
-                .get("language")
-                .and_then(Value::as_str)
-                .unwrap_or("dart")
-                .to_string();
-            let symbol = b
-                .get("symbol")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let file = b
-                .get("file")
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
-                .unwrap_or_default();
-            let span = b
-                .get("span")
-                .and_then(Value::as_array)
-                .and_then(|a| {
-                    let s = a.first().and_then(Value::as_u64)? as usize;
-                    let e = a.get(1).and_then(Value::as_u64)? as usize;
-                    Some((s, e))
-                })
-                .unwrap_or((0, 0));
-            let content_sha = b
-                .get("content_sha")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let visibility = b
-                .get("visibility")
-                .map(|v| {
-                    serde_json::from_value::<Visibility>(v.clone())
-                        .unwrap_or(Visibility::Conventional)
-                })
-                .unwrap_or(Visibility::Conventional);
-            let module_path = b
-                .get("module_path")
-                .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let attributes: StdBTreeMap<String, serde_yaml::Value> = b
-                .get("attributes")
-                .and_then(Value::as_object)
-                .map(|m| {
-                    m.iter()
-                        .filter_map(|(k, v)| {
-                            // JSON → YAML via serde_json::from_value (PR-3 F-CQ-3
-                            // fix — avoids YAML-special-character corruption).
-                            let yaml: serde_yaml::Value = serde_json::from_value(v.clone()).ok()?;
-                            Some((k.clone(), yaml))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            bindings.push(Binding {
-                language,
-                symbol,
-                file,
-                span,
-                content_sha,
-                visibility,
-                module_path,
-                attributes,
-            });
-        }
-    }
-
-    let mut library_apis: Vec<LibraryApi> = Vec::new();
-    if let Some(arr) = obj.get("library_apis").and_then(Value::as_array) {
-        for v in arr {
-            let Some(api) = v.as_object() else { continue };
-            let id = api
-                .get("id")
-                .and_then(Value::as_str)
-                .map(String::from)
-                .unwrap_or_else(|| format!("{component_id}/public-api"));
-            let language = api
-                .get("language")
-                .and_then(Value::as_str)
-                .unwrap_or("dart")
-                .to_string();
-            let fingerprint = api
-                .get("fingerprint")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let pub_items: Vec<PubItem> = api
-                .get("pub_items")
-                .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|p| {
-                            let p = p.as_object()?;
-                            let name = p.get("name").and_then(Value::as_str)?.to_string();
-                            let file = p.get("file").and_then(Value::as_str).map(PathBuf::from)?;
-                            let kind_str = p.get("kind").and_then(Value::as_str)?;
-                            let kind = match kind_str {
-                                "struct" => PubItemKind::Struct,
-                                "enum" => PubItemKind::Enum,
-                                "fn" => PubItemKind::Fn,
-                                "trait" => PubItemKind::Trait,
-                                "mod" => PubItemKind::Mod,
-                                "type-alias" => PubItemKind::TypeAlias,
-                                "const" => PubItemKind::Const,
-                                "static" => PubItemKind::Static,
-                                "union" => PubItemKind::Union,
-                                "macro" => PubItemKind::Macro,
-                                _ => return None,
-                            };
-                            Some(PubItem { name, file, kind })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            library_apis.push(LibraryApi {
-                id,
-                kind: ContractKind::LibraryApi,
-                language,
-                fingerprint,
-                pub_items,
-            });
-        }
-    }
-
-    (bindings, library_apis)
 }
 
 /// True when the component looks like an Elixir component to the L5
@@ -1783,152 +1335,32 @@ fn resolve_elixir_component_dir(entry: &ComponentEntry, roots: &[PathBuf]) -> Op
 ///
 /// The wire shape is defined in the elixir-analyzer binary
 /// (`AnalysePayload`, `WireBinding`, `WireLibraryApi`, `WireContract`).
+///
+/// Bindings + library APIs share the canonical wire shape with the
+/// other subprocess analysers and are decoded via
+/// [`decode_subprocess_surface_payload`]. The `contracts` block is
+/// elixir-specific (carries `@callback`-derived behaviour contracts
+/// with their `definition_binding`) and stays in this wrapper rather
+/// than being absorbed into the shared helper — see Phase 4 PR-2 risk
+/// mitigation §5: language-specific complexity is preserved as a
+/// wrapper around the canonical call, not folded in.
 fn decode_elixir_surface_payload(
     payload: &Value,
     component_id: &str,
 ) -> (Vec<Binding>, Vec<LibraryApi>, Vec<Contract>) {
-    use atlas_index::{ContractKind, PubItem, PubItemKind, Visibility};
+    use atlas_index::{ContractKind, Visibility};
     use std::collections::BTreeMap as StdBTreeMap;
 
-    let Some(obj) = payload.as_object() else {
-        return (Vec::new(), Vec::new(), Vec::new());
-    };
+    // Canonical-shape portion: bindings + library_apis decode through
+    // the shared helper with `"elixir"` as the default language tag.
+    let (bindings, library_apis) =
+        decode_subprocess_surface_payload(payload, component_id, "elixir");
 
-    // Decode bindings (same shape as the Python decoder).
-    let mut bindings: Vec<Binding> = Vec::new();
-    if let Some(arr) = obj.get("bindings").and_then(Value::as_array) {
-        for v in arr {
-            let Some(b) = v.as_object() else { continue };
-            let language = b
-                .get("language")
-                .and_then(Value::as_str)
-                .unwrap_or("elixir")
-                .to_string();
-            let symbol = b
-                .get("symbol")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let file = b
-                .get("file")
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
-                .unwrap_or_default();
-            let span = b
-                .get("span")
-                .and_then(Value::as_array)
-                .and_then(|a| {
-                    let s = a.first().and_then(Value::as_u64)? as usize;
-                    let e = a.get(1).and_then(Value::as_u64)? as usize;
-                    Some((s, e))
-                })
-                .unwrap_or((0, 0));
-            let content_sha = b
-                .get("content_sha")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let visibility = b
-                .get("visibility")
-                .map(|v| {
-                    serde_json::from_value::<Visibility>(v.clone())
-                        .unwrap_or(Visibility::Conventional)
-                })
-                .unwrap_or(Visibility::Conventional);
-            let module_path = b
-                .get("module_path")
-                .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let attributes: StdBTreeMap<String, serde_yaml::Value> = b
-                .get("attributes")
-                .and_then(Value::as_object)
-                .map(|m| {
-                    m.iter()
-                        .filter_map(|(k, v)| {
-                            let yaml: serde_yaml::Value = serde_json::from_value(v.clone()).ok()?;
-                            Some((k.clone(), yaml))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            bindings.push(Binding {
-                language,
-                symbol,
-                file,
-                span,
-                content_sha,
-                visibility,
-                module_path,
-                attributes,
-            });
-        }
-    }
-
-    // Decode library APIs.
-    let mut library_apis: Vec<LibraryApi> = Vec::new();
-    if let Some(arr) = obj.get("library_apis").and_then(Value::as_array) {
-        for v in arr {
-            let Some(api) = v.as_object() else { continue };
-            let id = api
-                .get("id")
-                .and_then(Value::as_str)
-                .map(String::from)
-                .unwrap_or_else(|| format!("{component_id}/public-api"));
-            let language = api
-                .get("language")
-                .and_then(Value::as_str)
-                .unwrap_or("elixir")
-                .to_string();
-            let fingerprint = api
-                .get("fingerprint")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let pub_items: Vec<PubItem> = api
-                .get("pub_items")
-                .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|p| {
-                            let p = p.as_object()?;
-                            let name = p.get("name").and_then(Value::as_str)?.to_string();
-                            let file = p.get("file").and_then(Value::as_str).map(PathBuf::from)?;
-                            let kind_str = p.get("kind").and_then(Value::as_str)?;
-                            let kind = match kind_str {
-                                "struct" => PubItemKind::Struct,
-                                "enum" => PubItemKind::Enum,
-                                "fn" => PubItemKind::Fn,
-                                "trait" => PubItemKind::Trait,
-                                "mod" => PubItemKind::Mod,
-                                "type-alias" => PubItemKind::TypeAlias,
-                                "const" => PubItemKind::Const,
-                                "static" => PubItemKind::Static,
-                                "union" => PubItemKind::Union,
-                                "macro" => PubItemKind::Macro,
-                                _ => return None,
-                            };
-                            Some(PubItem { name, file, kind })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            library_apis.push(LibraryApi {
-                id,
-                kind: ContractKind::LibraryApi,
-                language,
-                fingerprint,
-                pub_items,
-            });
-        }
-    }
-
-    // Decode behaviour contracts.
+    // Elixir-specific portion: behaviour contracts.
     let mut contracts: Vec<Contract> = Vec::new();
+    let Some(obj) = payload.as_object() else {
+        return (bindings, library_apis, contracts);
+    };
     if let Some(arr) = obj.get("contracts").and_then(Value::as_array) {
         for v in arr {
             let Some(c) = v.as_object() else { continue };
