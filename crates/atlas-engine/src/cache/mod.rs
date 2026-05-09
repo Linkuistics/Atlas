@@ -15,8 +15,8 @@
 //! treats the fingerprint as opaque bytes).
 //!
 //! Writes are atomic via tempfile-then-rename (see
-//! [`layout::atomic_write`]). Reads return `Ok(None)` on miss and
-//! propagate other I/O errors.
+//! [`crate::atomic_write::atomic_write`]). Reads return `Ok(None)` on
+//! miss and propagate other I/O errors.
 //!
 //! ## Greenfield
 //!
@@ -126,7 +126,9 @@ impl PersistentCache {
     /// which is a bug the caller must fix).
     pub fn put(&self, stage: Stage, fingerprint: &Sha256Hex, blob: &[u8]) -> Result<()> {
         let path = layout::blob_path(&self.root, stage, fingerprint);
-        layout::atomic_write(&path, blob)
+        crate::atomic_write::atomic_write(&path, blob)
+            .with_context(|| format!("atomic_write to {} failed", path.display()))?;
+        Ok(())
     }
 
     /// Mark-and-sweep GC. Walks every `<stage>/<sha>.blob` file

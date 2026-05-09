@@ -13,9 +13,9 @@
 //! - PR-8 (drift snapshot) and PR-10 (modularity history) — stateful
 //!   files where a half-written state would corrupt the next run's
 //!   baseline.
-//! - The pure-derived cache writers can adopt this helper too; the
-//!   existing `cache::layout::atomic_write` is left in place for now
-//!   (a future refactor can converge them — out of scope for PR-1).
+//! - The persistent cache writer (`cache::PersistentCache::put`),
+//!   which converged on this helper in Phase 4 PR-4 (the previously
+//!   duplicated `cache::layout::atomic_write` was deleted).
 
 use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, OpenOptions};
