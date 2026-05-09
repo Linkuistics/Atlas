@@ -1,5 +1,14 @@
 # Atlas vNext — Continuation Prompt (Phase 3-shaped)
 
+> **OBSOLETE.** Superseded by
+> `docs/superpowers/prompts/2026-05-09-vnext-continue.md`
+> (Phase-4-shaped) on 2026-05-09 with Phase 4 PR-0. Phase 3 closed on
+> 2026-05-08 (final commit `5dd1e92` on main); this prompt is retained
+> for forensic value but pasting it into a new session will route the
+> session into Phase 3's "phase complete; consider Phase 4" branch
+> rather than continuing the Phase 4 arc. Use the Phase-4-shaped
+> prompt instead.
+
 **Paste the fenced block below into a fresh Claude Code session.** The
 prompt is idempotent across the Phase 3 arc: re-paste it across as
 many sessions as it takes; each session detects whether Phase 3 is
