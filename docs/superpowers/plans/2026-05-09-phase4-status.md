@@ -7,10 +7,12 @@ continuation prompt at
 reads this file (via the `*phase4-plan*` wildcard match) to find the
 next PR to dispatch.
 
-**Last updated:** 2026-05-09 (PR-0 landed). Phase 4 has begun — plan,
-status, and continuation prompt seeded as a single docs-only commit.
-PR-1..PR-8 are dispatched by future sessions pasting the new
-continuation prompt.
+**Last updated:** 2026-05-09 (PR-0 landed; PR-7 dropped after Wave 1
+pre-flight grep surfaced two real callers of the alias the design
+spec classified as orphan — see PR-7 note below). Phase 4 has begun —
+plan, status, and continuation prompt seeded as a single docs-only
+commit. PR-1..PR-6 + PR-8 are dispatched by execution sessions pasting
+the continuation prompt.
 
 ## PR status
 
@@ -25,7 +27,7 @@ commit sha + anything load-bearing the next session needs to know).
 - [ ] PR-4 — `atomic_write` helper convergence
 - [ ] PR-5 — `build_engine_database` / `build_database_for_reports` convergence
 - [ ] PR-6 — Sweep-test boilerplate consolidation
-- [ ] PR-7 — Orphan `pub use save_related_components_atomic` removal (atlas-contracts)
+- [x] PR-7 — Orphan `pub use save_related_components_atomic` removal (atlas-contracts) — **dropped 2026-05-09**, the alias is not orphan
 - [ ] PR-8 — Stale "Phase 4" prose retext + §10 renumbering in canonical system-model spec
 
 When every box is `[x]`, Phase 4 is complete and the continuation
@@ -164,7 +166,48 @@ Load-bearing context for Wave 1 reviewers:
 *Awaiting dispatch (sequenced after PR-1).*
 
 ### PR-7
-*Awaiting dispatch.*
+2026-05-09 — **Dropped.** The Phase 4 design spec §3 PR-7 and plan §4
+PR-7 classified `save_related_components_atomic` as an orphan
+re-export with zero callers in either repo. PR-7's mandated step-1
+sweep `grep -rn "save_related_components_atomic"
+/Users/antony/Development/atlas-contracts/
+/Users/antony/Development/Atlas/` (run before any edit) found two real
+Atlas-side consumers introduced by Phase 3 PR-9 (impact query, commit
+`0ec65c5`):
+
+- `crates/atlas-cli/tests/atlas_impact_cli.rs:15`
+  `use atlas_index::{save_components_atomic, save_related_components_atomic};`
+- `crates/atlas-cli/tests/atlas_impact_cli.rs:111`
+  `save_related_components_atomic(&cache_dir.join("related-components.yaml"), &related).unwrap();`
+
+The renamed alias is a deliberate, descriptive disambiguator at the
+test call-site (`save_atomic` is the generic helper exported under
+the same `pub use` block from `component_ontology`; the renamed
+alias makes "this saves related-components.yaml specifically"
+locally obvious). It is not orphan — Phase 3 PR-9 added these
+callers after the Phase 3 §9.1 deferred-list was frozen, and the
+Phase 4 design (drafted 2026-05-09) inherited the stale "orphan"
+classification without re-running the grep.
+
+Per the Phase 4 plan's PR-7 step 1 ("If any caller exists, STOP and
+surface it — the design assumed zero callers") and the continuation
+prompt §5 ("If a plan instruction doesn't match the codebase…"),
+PR-7 is dropped from Phase 4 rather than expanding scope to rewrite
+the Atlas-side callers. The alias stays; nothing is deleted; nothing
+is renamed.
+
+Acceptance: PR-7 contributes zero LOC delta to Phase 4. Phase 4
+ships 7 code/docs PRs (PR-1..PR-6 + PR-8) instead of 8. The Phase 4
+closeout note in this file should record the final cumulative LOC
+delta accordingly.
+
+No design-spec retext is required for this drop — the Phase 4 design
+spec (§3 PR-7 + §6 §10.4 row) and plan (§4 PR-7 + §5 acceptance
+table) become forensically inaccurate from 2026-05-09 onward; future
+readers should treat this status-file note as the canonical
+disposition. If a Phase 5+ session wants to retext the Phase 4 spec,
+that's a one-line strikethrough at design §3 PR-7 — out of scope for
+the current arc.
 
 ### PR-8
 *Awaiting dispatch.*
