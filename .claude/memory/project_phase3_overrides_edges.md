@@ -23,11 +23,12 @@ mechanisms:
    §5.5's example.
 
 `subsystem` is captured in the schema for forward compatibility but has
-no destination on `ComponentEntry` yet — Phase 4+ adds the destination
-field. The other three flow through L4 onto the component descriptor.
+no destination on `ComponentEntry` yet — Phase 6 (user-facing schema
+cleanups) adds the destination field. The other three flow through L4
+onto the component descriptor.
 
 **Why:** these are the canonical mechanisms the user authors when
-the analyser is wrong. Phase 4's LLM analysers are expected to emit
+the analyser is wrong. Phase 9's LLM analysers are expected to emit
 candidate edges as `edges_add` suggestions for a human to accept;
 suppression similarly gives the user a way to silence false-positive
 analyser edges without rewriting the analyser. Treating them as the
@@ -37,10 +38,13 @@ side-channels.
 
 **How to apply:**
 
-- Phase 4 LLM analysers that propose edges should emit them as
+- Phase 9 LLM analysers that propose edges should emit them as
   `edges_add` candidates, not as direct `Edge` rows. The engine reads
-  the merged `edges_add`/`edges_suppress` via
-  `atlas_engine::merged_overrides(db)`.
+  the merged `edges_add`/`edges_suppress` internally via
+  `pub(crate) merged_overrides(db)`; external consumers (analysers,
+  reports) read the post-merge edge set via the existing public
+  projections (`all_proposed_edges`, `RelatedComponentsFile`), not
+  via the internal helper.
 - The `reason` field is deserialise-required. Any new pre-population
   flow that writes `edges_add` entries MUST populate `reason` —
   Atlas refuses to load entries without it.
