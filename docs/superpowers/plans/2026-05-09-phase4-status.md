@@ -9,10 +9,10 @@ next PR to dispatch.
 
 **Last updated:** 2026-05-09 (PR-0 landed; PR-7 dropped after Wave 1
 pre-flight grep surfaced two real callers of the alias the design
-spec classified as orphan — see PR-7 note below). Phase 4 has begun —
-plan, status, and continuation prompt seeded as a single docs-only
-commit. PR-1..PR-6 + PR-8 are dispatched by execution sessions pasting
-the continuation prompt.
+spec classified as orphan — see PR-7 note below; PR-1 landed via
+cherry-pick from worktree branch `phase4-pr1`, commits `5e781d9` +
+`abb7f44`). PR-2..PR-6 + PR-8 are dispatched by execution sessions
+pasting the continuation prompt.
 
 ## PR status
 
@@ -21,7 +21,7 @@ when the PR is reviewed and committed. Append a one-line note (date +
 commit sha + anything load-bearing the next session needs to know).
 
 - [x] PR-0 — Plan + status + continuation prompt (docs only)
-- [ ] PR-1 — LenientBackend extraction (Phase 2 closeout)
+- [x] PR-1 — LenientBackend extraction (Phase 2 closeout)
 - [ ] PR-2 — Decoder consolidation (Phase 2 closeout)
 - [ ] PR-3 — L8 phantom-subcomponent fix (Phase 2 closeout)
 - [ ] PR-4 — `atomic_write` helper convergence
@@ -148,7 +148,103 @@ Load-bearing context for Wave 1 reviewers:
   rather than deferring.
 
 ### PR-1
-*Awaiting dispatch.*
+2026-05-09 — Landed via cherry-pick from worktree branch `phase4-pr1`.
+Commits on main: `5e781d9` (extraction) + `abb7f44` (review-feedback
+fix-up). Net diff: 19 files, +452/-730 (net **−278 LOC**); the +8
+extra over the implementer's reported +444 is the two doc-only
+review tweaks in the fix-up commit.
+
+**Implementation summary:** `LenientBackend` lives at
+`crates/atlas-engine/src/testing.rs` (240 LOC) gated
+`#[cfg(any(test, feature = "test-fixtures"))]`. 13 inline duplicates
+deleted across `crates/atlas-cli/tests/*.rs` (9 files) and
+`crates/atlas-engine/tests/*.rs` (4 files). Three unit tests in
+`atlas_engine::testing::tests` cover decline-shape + alternate
+classify + per-input call log. `cargo build --release -p atlas-engine`
+produces an rlib with zero `LenientBackend` symbols (verified via
+`nm`).
+
+**Plan deviations the implementer surfaced as concerns** (all triaged
+before merge; recorded for forensic value):
+
+- **Plan claimed the 13 inline copies were byte-identical except for
+  whitespace — they weren't.** Copies varied semantically:
+  `pipeline_integration.rs` carried unused `overrides` / `force_error`
+  fields with zero call sites (verified via grep before deletion);
+  `persistent_cache_lifecycle.rs` logged `Vec<(PromptId, String)>`
+  (tuple form) where most logged `Vec<PromptId>`; the four
+  atlas-engine polyglot tests (`l5_csharp_surface`, `l5_elixir_surface`,
+  `l5_python_surface`, `multi_root_path_deps`) used non-Rust default
+  classifications (`csharp-project`, `python-package`, etc.).
+  Implementer canonicalised a configurable form — `new(fp)` for the
+  Rust-library default + `with_classify(fp, value)` for the four
+  polyglot sites + both `calls()` (returning `Vec<PromptId>`) and
+  `calls_with_inputs()` (returning `Vec<(PromptId, String)>`) for
+  the two consumption shapes. Both extra constructors and the second
+  inspection method are *used* by ≥1 migrated test (verified during
+  spec-compliance review); they are not API bloat.
+- **Plan's trait-API references (`LlmBackend::classify`,
+  `Outcome::Decline`) were wrong.** The actual trait is
+  `LlmBackend::call(&LlmRequest) -> Result<Value, LlmError>`; the
+  "decline" shape lives at `PromptId::Subcarve` returning
+  `{ should_subcarve: false, sub_dirs: [], rationale: "policy declined" }`.
+  Implementer mapped "decline shape" to the Subcarve canned response
+  and wrote three tests instead of the spec's one (covering decline +
+  classify-override + canonical-input logging).
+- **Polyglot smoke test debug-mode runs were unusably slow** (>9 min
+  on this machine, killed twice). Implementer ran the test in
+  `--release` mode where it finished in 87.27s with all budget
+  assertions passing (`cold = 40 LLM calls` within the test's
+  pre-existing `< 100` bound; warm = 0; modularity = 0; divergence =
+  0; impact = 0). Orchestrator confirmed via diff that PR-1's only
+  change to `phase3_polyglot_fixture.rs` was rustfmt-only reflow
+  (no logic, no assertion changes), so debug-mode slowness is a
+  property of the polyglot test itself (multi-language tree-sitter
+  + L0–L8 fixedpoint + 8-step report flow), not a PR-1 regression.
+- **Plan's "~26 cold LLM calls" was stale prose.** The actual
+  pre-PR-1 polyglot test asserts `cold > 0 && cold < 100` (see doc
+  comment at lines 67-70 of pre-PR-1 `phase3_polyglot_fixture.rs`).
+  The current cold count of 40 was the pre-PR-1 baseline; this is
+  not a PR-1 regression. Future Phase 4 sessions should treat the
+  test's `< 100` assertion as canonical and ignore the plan/prompt's
+  "~26" number. (PR-8 may want to refresh this prose; tracking as a
+  PR-8 sub-task is out of scope for this note.)
+
+**Two-stage review:** spec-compliance reviewer ran independent
+verification (read all 13 migrated files; ran `nm` on release rlib;
+re-ran the polyglot smoke test in release mode; confirmed `cold=40`,
+all zero-budget invariants hold) — ✅ compliant, no issues. Code-
+quality reviewer found zero Critical / zero Important issues; flagged
+six Minor doc/comment polish items (M1–M6) plus one hidden-coupling
+note (H1, the LenientBackend-is-infallible boundary). Two of the
+seven (M6, H1) were applied as the fix-up commit `abb7f44`; the
+other five are forensic notes.
+
+**Cumulative regression guard:** polyglot smoke test passes (87s
+release-mode); cold = 40, warm = 0, modularity = 0, divergence = 0,
+impact = 0. `cargo fmt --check` + `cargo clippy --all-targets -- -D
+warnings` clean on main after cherry-pick.
+
+**Wave-1 follow-on:** Wave 1's recommended next pairing is PR-4
+(`atomic_write` convergence) + PR-5 (`build_engine_database`
+convergence) + PR-8 (spec retext + §10 renumbering) — three medium
+PRs on disjoint surfaces (atlas-engine cache, atlas-cli pipeline +
+reports, docs). PR-2 (decoder consolidation) and PR-3 (L8 phantom-
+subcomponent fix) are investigation-heavy and should land last to
+avoid scope-creep blocking the rest. PR-6 (sweep-test boilerplate)
+sequences after PR-1 (this commit) since `sweep_support.rs`
+re-exports `atlas_engine::testing::LenientBackend`.
+
+**Worktree mechanism note for future Phase 4 sessions:** the runtime's
+`isolation: "worktree"` parameter created the first PR-1 attempt's
+worktree off sha `1b3d7cd` (14 commits stale) — the failure mode
+memory `feedback_worktree_base_verification` warns about. The fix
+was to create the worktree manually via
+`git worktree add /Users/antony/Development/Atlas-phase4-prN -b
+phase4-prN <current-main-sha>` and brief the implementer to work
+from that path without `isolation: "worktree"`. Adopt this pattern
+for subsequent Phase 4 PRs until the runtime's stale-base bug is
+resolved.
 
 ### PR-2
 *Awaiting dispatch.*
