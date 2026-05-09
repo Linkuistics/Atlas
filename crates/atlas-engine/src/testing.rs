@@ -18,6 +18,11 @@
 //! Tests that need a non-Rust default classification (e.g. the
 //! polyglot L5 surface tests) construct via
 //! [`LenientBackend::with_classify`].
+//!
+//! Tests that need to inject `LlmError`s for specific prompts (e.g.
+//! the L5 surface tests' `ClassifyCountingBackend`) are not served by
+//! this fixture and should keep their bespoke counting/erroring
+//! backends inline — `LenientBackend` is intentionally infallible.
 
 use std::sync::{Arc, Mutex};
 

@@ -36,6 +36,9 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
+# `test-fixtures` pulls in `atlas_engine::testing::LenientBackend` for our
+# integration tests. See `crates/atlas-engine/Cargo.toml` for the canonical
+# explanation of the feature gate.
 atlas-engine = { path = "../atlas-engine", features = ["atomic_write_panic_after_temp", "test-fixtures"] }
 atlas-llm = { path = "../atlas-llm" }
 atlas-reports = { path = "../atlas-reports" }
