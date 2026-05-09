@@ -962,6 +962,49 @@ pub fn build_engine_database(
     Ok((db, roots))
 }
 
+/// Thin wrapper around [`build_engine_database`] for the read-only
+/// `atlas divergence` handler. PR-11 of Phase 3 introduced a private
+/// `build_database_for_reports` helper inside `reports.rs` that
+/// duplicated ~75 lines of [`build_engine_database`]'s body via a
+/// slightly leaner code path (no [`BudgetSentinel`], no
+/// [`crate::progress::Reporter`] events, no analyser-overrides merge,
+/// sequential L5 pre-warm, default `IndexConfig` flags). Phase 4 PR-5
+/// converged the two: this wrapper synthesises an [`IndexConfig`] with
+/// the same defaults the helper used (no `--no-overrides`, no
+/// `--recarve`, `respect_gitignore = true`) and forwards through to
+/// [`build_engine_database`], which is a strict semantic superset.
+///
+/// The wrapper exists rather than baking divergence-specific knobs into
+/// [`build_engine_database`] because the canonical helper is correct
+/// for both code paths: gaining BudgetSentinel coverage, the
+/// analyser-overrides merge, and the parallel L5 pre-warm in the
+/// divergence path is upside, not drift.
+///
+/// Returns the populated database, discarding the resolved roots
+/// (`run_divergence` re-derives them via [`AtlasDatabase::workspace`]).
+pub fn build_engine_database_for_reports(
+    root: &Path,
+    output_dir: &Path,
+    fingerprint_override: Option<LlmFingerprint>,
+    backend: Arc<dyn LlmBackend>,
+) -> Result<AtlasDatabase> {
+    let mut config = IndexConfig::new(root.to_path_buf());
+    config.output_dir = output_dir.to_path_buf();
+    config.fingerprint_override = fingerprint_override;
+
+    // The reports path predates the progress reporter; emit a silent
+    // reporter so the call site stays event-free (the divergence
+    // handler renders its own summary on stderr after the fact).
+    let reporter =
+        crate::progress::make_stderr_reporter(crate::progress::ProgressMode::Never, None);
+
+    let (db, _roots) = build_engine_database(&config, backend, reporter).map_err(|e| match e {
+        IndexError::Other(err) => err,
+        other => anyhow::anyhow!("{other}"),
+    })?;
+    Ok(db)
+}
+
 /// Resolve a component's absolute on-disk directory from its
 /// `path_segments[0].path` against the workspace `roots`. Same logic
 /// as the private helper used by [`write_per_component_files`]: walk

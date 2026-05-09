@@ -44,14 +44,10 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use atlas_engine::{
-    all_components, atomic_write, expand_roots, run_fixedpoint, seed_filesystem_excluding,
-    surface_of, AtlasDatabase, FixedpointConfig, LlmResponseCache, PersistentCache,
-};
+use atlas_engine::{atomic_write, AtlasDatabase};
 use atlas_index::{
-    load_or_default_components, load_or_default_externals, load_or_default_overrides,
-    load_or_default_related_components, load_or_default_subsystems_overrides, ComponentEntry,
-    ComponentsFile, ContractKind, OverridesFile, SubsystemsOverridesFile, SurfacesFile,
+    load_or_default_components, load_or_default_related_components, ComponentEntry, ComponentsFile,
+    ContractKind, SurfacesFile,
 };
 use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest};
 use atlas_reports::{
@@ -66,7 +62,9 @@ use component_ontology::ComponentId;
 use serde_json::Value;
 
 use crate::backend::{self, compute_prompt_shas};
-use crate::pipeline::{build_engine_database, resolve_component_dir, IndexConfig};
+use crate::pipeline::{
+    build_engine_database, build_engine_database_for_reports, resolve_component_dir, IndexConfig,
+};
 use crate::progress::{make_stderr_reporter, ProgressBackend, ProgressMode};
 use crate::DEFAULT_OUTPUT_SUBDIR;
 
@@ -911,7 +909,7 @@ pub fn run_divergence(
     opts: &DivergenceOptions,
     backend: Arc<dyn LlmBackend>,
 ) -> Result<DivergenceReport> {
-    let db = build_database_for_reports(
+    let db = build_engine_database_for_reports(
         &opts.root,
         &opts.output_dir,
         opts.fingerprint_override.clone(),
@@ -967,92 +965,6 @@ fn read_drift_snapshot_if_present(path: &Path) -> Result<Option<ContractShaSnaps
     let parsed: ContractShaSnapshot = serde_yaml::from_slice(&bytes)
         .with_context(|| format!("failed to parse drift snapshot {}", path.display()))?;
     Ok(Some(parsed))
-}
-
-/// Construct an [`AtlasDatabase`] over `<root>`, seed the filesystem,
-/// install the prior YAMLs (so the engine's rename-match and edge-
-/// canonicalisation steps see the same baseline `atlas index` sees),
-/// and run the fixedpoint. After the call the database's Salsa graph
-/// is fully populated for reports to demand surfaces and edges
-/// against.
-fn build_database_for_reports(
-    root: &Path,
-    output_dir: &Path,
-    fingerprint_override: Option<LlmFingerprint>,
-    backend: Arc<dyn LlmBackend>,
-) -> Result<AtlasDatabase> {
-    // Mirror `run_index`'s prior-load + seed phases. The sub-paths
-    // are the canonical Phase 3 cache locations (PR-4 / PR-5).
-    let prior_components_path = output_dir.join("cache/components.yaml");
-    let prior_externals_path = output_dir.join("external-components.yaml");
-    let prior_related_path = output_dir.join("cache/related-components.yaml");
-    let overrides_path = output_dir.join("components.overrides.yaml");
-    let subsystems_overrides_path = output_dir.join("subsystems.overrides.yaml");
-
-    let prior_components = load_or_default_components(&prior_components_path)?;
-    let prior_externals = load_or_default_externals(&prior_externals_path)?;
-    let prior_related = load_or_default_related_components(&prior_related_path)?;
-    let overrides: OverridesFile = load_or_default_overrides(&overrides_path)?;
-    let subsystems_overrides: SubsystemsOverridesFile =
-        load_or_default_subsystems_overrides(&subsystems_overrides_path)?;
-
-    let fingerprint = fingerprint_override.unwrap_or_else(|| backend.fingerprint());
-
-    // Path-dep root expansion — same call `atlas index` makes so that
-    // multi-root workspaces flow through identically.
-    let auto_expanded = expand_roots(root).context("failed to expand path-dep roots")?;
-    let roots: Vec<PathBuf> = if auto_expanded.is_empty() {
-        vec![root.to_path_buf()]
-    } else {
-        auto_expanded
-    };
-
-    let mut db = AtlasDatabase::new(backend, roots.clone(), fingerprint);
-
-    // Open the persistent on-disk cache. A failure here is non-fatal —
-    // we degrade to in-memory cache. The CLI test pattern is "run
-    // `atlas index` first, then `atlas divergence`" — the persistent
-    // cache makes the divergence run a no-op LLM-call-wise.
-    let persistent_cache_root = output_dir.join("cache");
-    let llm_cache = match PersistentCache::open(&persistent_cache_root) {
-        Ok(cache) => LlmResponseCache::new_with_persistent(cache),
-        Err(_) => LlmResponseCache::new(),
-    };
-    db.set_llm_cache(llm_cache);
-
-    // Match `run_index`'s exclusion shape: the primary root excludes
-    // the output dir; peer roots get an empty exclusion.
-    let mut excluded_dirs: Vec<PathBuf> = Vec::with_capacity(roots.len());
-    excluded_dirs.push(output_dir.to_path_buf());
-    for _ in 1..roots.len() {
-        excluded_dirs.push(PathBuf::new());
-    }
-    seed_filesystem_excluding(&mut db, &roots, &excluded_dirs, true)
-        .context("failed to seed filesystem")?;
-
-    db.set_prior_components(prior_components);
-    db.set_prior_externals(prior_externals);
-    db.set_prior_related_components(prior_related);
-    db.set_components_overrides(overrides);
-    db.set_subsystems_overrides(subsystems_overrides);
-
-    let fp_config = FixedpointConfig::default();
-    let _fp_result = run_fixedpoint(&mut db, fp_config);
-
-    // Pre-warm surfaces so the divergence report's `surface_artefacts_of`
-    // calls land Salsa cache hits rather than restarting fixedpoint
-    // dependencies. Without the pre-warm, the report's first contract-
-    // sha lookup would block on a cold L5 surface query.
-    let live: Vec<_> = all_components(&db)
-        .iter()
-        .filter(|c| !c.deleted)
-        .cloned()
-        .collect();
-    for comp in &live {
-        let _ = surface_of(&db, comp.id.clone());
-    }
-
-    Ok(db)
 }
 
 /// Render the report to stdout in the requested format. Errors are
