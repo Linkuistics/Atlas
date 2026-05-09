@@ -13,10 +13,11 @@ use std::sync::{Arc, Mutex};
 
 use atlas_cli::progress::{make_stderr_reporter, ProgressMode};
 use atlas_cli::{run_index, IndexConfig, IndexError};
+use atlas_engine::testing::LenientBackend;
 use atlas_llm::{
     AtlasConfig, LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId, TokenCounter,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 use tempfile::TempDir;
 
 fn fingerprint() -> LlmFingerprint {
@@ -25,83 +26,6 @@ fn fingerprint() -> LlmFingerprint {
         ontology_sha: [2u8; 32],
         model_id: "test-backend".into(),
         backend_version: "v-test".into(),
-    }
-}
-
-/// Backend that returns canned defaults for every prompt — L5 sees a
-/// minimal surface, L6 sees an empty edge list, L8 sees "do not
-/// recurse". Tests can override the default per-prompt by registering
-/// a specific response.
-struct LenientBackend {
-    fingerprint: LlmFingerprint,
-    call_log: Mutex<Vec<PromptId>>,
-    overrides: Mutex<Vec<(PromptId, String, Value)>>,
-    force_error: Mutex<Option<LlmError>>,
-}
-
-impl LenientBackend {
-    fn new() -> Arc<Self> {
-        Arc::new(LenientBackend {
-            fingerprint: fingerprint(),
-            call_log: Mutex::new(Vec::new()),
-            overrides: Mutex::new(Vec::new()),
-            force_error: Mutex::new(None),
-        })
-    }
-
-    fn calls(&self) -> Vec<PromptId> {
-        self.call_log.lock().unwrap().clone()
-    }
-
-    fn call_count(&self) -> usize {
-        self.call_log.lock().unwrap().len()
-    }
-}
-
-impl LlmBackend for LenientBackend {
-    fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        self.call_log.lock().unwrap().push(req.prompt_template);
-
-        if let Some(err) = self.force_error.lock().unwrap().take() {
-            return Err(err);
-        }
-
-        let inputs_canonical = serde_json::to_string(&req.inputs).unwrap_or_default();
-        let mut overrides = self.overrides.lock().unwrap();
-        if let Some(pos) = overrides
-            .iter()
-            .position(|(id, inputs, _)| *id == req.prompt_template && *inputs == inputs_canonical)
-        {
-            let (_, _, value) = overrides.remove(pos);
-            return Ok(value);
-        }
-        drop(overrides);
-
-        Ok(match req.prompt_template {
-            PromptId::Classify => json!({
-                "kind": "rust-library",
-                "language": "rust",
-                "build_system": "cargo",
-                "evidence_grade": "medium",
-                "evidence_fields": [],
-                "rationale": "default lenient classification",
-                "is_boundary": true,
-            }),
-            PromptId::Stage1Surface => json!({
-                "purpose": "default lenient surface",
-                "notes": "",
-            }),
-            PromptId::Stage2Edges => json!([]),
-            PromptId::Subcarve => json!({
-                "should_subcarve": false,
-                "sub_dirs": [],
-                "rationale": "policy declined",
-            }),
-        })
-    }
-
-    fn fingerprint(&self) -> LlmFingerprint {
-        self.fingerprint.clone()
     }
 }
 
@@ -147,7 +71,7 @@ fn base_config(root: &Path) -> IndexConfig {
 #[test]
 fn first_run_produces_the_three_generated_yamls() {
     let tmp = materialise_tiny_fixture();
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
     let config = base_config(tmp.path());
 
     let summary = run_index(
@@ -182,7 +106,7 @@ fn second_run_on_unchanged_fixture_is_byte_identical() {
     let tmp = materialise_tiny_fixture();
     let config = base_config(tmp.path());
 
-    let backend1 = LenientBackend::new();
+    let backend1 = LenientBackend::new(fingerprint());
     run_index(
         &config,
         backend1,
@@ -200,7 +124,7 @@ fn second_run_on_unchanged_fixture_is_byte_identical() {
     // Second run with a fresh backend — the on-disk LLM cache seeds
     // the new database, so a deterministic-input run makes no fresh
     // backend calls at all.
-    let backend2 = LenientBackend::new();
+    let backend2 = LenientBackend::new(fingerprint());
     let summary2 = run_index(
         &config,
         backend2.clone(),
@@ -240,7 +164,7 @@ fn modifying_a_source_file_invalidates_that_components_surface_cache() {
     let tmp = materialise_tiny_fixture();
     let config = base_config(tmp.path());
 
-    let backend1 = LenientBackend::new();
+    let backend1 = LenientBackend::new(fingerprint());
     run_index(
         &config,
         backend1,
@@ -258,7 +182,7 @@ fn modifying_a_source_file_invalidates_that_components_surface_cache() {
     // guaranteed, hence the weaker assertion on Stage2 below.
     std::fs::write(tmp.path().join("mylib/src/lib.rs"), "// modified\n").unwrap();
 
-    let backend2 = LenientBackend::new();
+    let backend2 = LenientBackend::new(fingerprint());
     run_index(
         &config,
         backend2.clone(),
@@ -291,7 +215,7 @@ fn dry_run_produces_summary_but_writes_no_files() {
     let tmp = materialise_tiny_fixture();
     let mut config = base_config(tmp.path());
     config.dry_run = true;
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
 
     let summary = run_index(
         &config,
@@ -324,7 +248,7 @@ fn tiny_budget_triggers_budget_exhausted_and_no_writes() {
     let tmp = materialise_tiny_fixture();
     let config = base_config(tmp.path());
     let counter = Arc::new(TokenCounter::new(1));
-    let inner = LenientBackend::new();
+    let inner = LenientBackend::new(fingerprint());
     let backend: Arc<dyn LlmBackend> = Arc::new(BudgetedBackend::new(
         inner,
         counter.clone(),
@@ -359,7 +283,7 @@ fn max_depth_zero_still_emits_top_level_components_but_no_subcarve_back_edge() {
     let tmp = materialise_tiny_fixture();
     let mut config = base_config(tmp.path());
     config.max_depth = 0;
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
 
     let summary = run_index(
         &config,
@@ -403,7 +327,7 @@ fn overrides_file_never_written_by_pipeline() {
     .unwrap();
     let before = std::fs::read(&overrides_path).unwrap();
 
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
     run_index(
         &config,
         backend,
@@ -439,7 +363,7 @@ fn no_overrides_skips_loading_pins_so_suppress_does_not_apply() {
     .unwrap();
 
     // Baseline: pin honoured, mylib suppressed.
-    let backend1 = LenientBackend::new();
+    let backend1 = LenientBackend::new(fingerprint());
     let summary_with = run_index(
         &config,
         backend1,
@@ -456,7 +380,7 @@ fn no_overrides_skips_loading_pins_so_suppress_does_not_apply() {
 
     let mut config_no_overrides = config.clone();
     config_no_overrides.no_overrides = true;
-    let backend2 = LenientBackend::new();
+    let backend2 = LenientBackend::new(fingerprint());
     let summary_without = run_index(
         &config_no_overrides,
         backend2,
@@ -484,7 +408,7 @@ fn no_overrides_does_not_modify_overrides_file() {
     std::fs::write(&overrides_path, body).unwrap();
     let before = std::fs::read(&overrides_path).unwrap();
 
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
     run_index(
         &config,
         backend,
@@ -509,7 +433,7 @@ fn persistent_cache_directory_is_populated_and_satisfies_re_runs() {
     let tmp = materialise_tiny_fixture();
     let config = base_config(tmp.path());
 
-    let backend1 = LenientBackend::new();
+    let backend1 = LenientBackend::new(fingerprint());
     run_index(
         &config,
         backend1.clone(),
@@ -531,7 +455,7 @@ fn persistent_cache_directory_is_populated_and_satisfies_re_runs() {
 
     // On the next run a fresh backend sees zero requests because the
     // persistent layer satisfies every L5/L6 lookup.
-    let backend2 = LenientBackend::new();
+    let backend2 = LenientBackend::new(fingerprint());
     run_index(
         &config,
         backend2.clone(),
@@ -586,7 +510,7 @@ fn pipeline_emits_subsystems_yaml_when_overrides_present() {
 
     run_index(
         &config,
-        LenientBackend::new(),
+        LenientBackend::new(fingerprint()),
         None,
         make_stderr_reporter(ProgressMode::Never, None),
     )
@@ -612,7 +536,7 @@ fn pipeline_emits_empty_subsystems_yaml_when_no_overrides() {
 
     run_index(
         &config,
-        LenientBackend::new(),
+        LenientBackend::new(fingerprint()),
         None,
         make_stderr_reporter(ProgressMode::Never, None),
     )
@@ -660,7 +584,7 @@ fn subsystems_glob_and_id_membership_both_resolve() {
 
     run_index(
         &config,
-        LenientBackend::new(),
+        LenientBackend::new(fingerprint()),
         None,
         make_stderr_reporter(ProgressMode::Never, None),
     )
@@ -722,7 +646,7 @@ fn subsystems_yaml_is_byte_identical_on_no_op_re_run() {
 
     run_index(
         &config,
-        LenientBackend::new(),
+        LenientBackend::new(fingerprint()),
         None,
         make_stderr_reporter(ProgressMode::Never, None),
     )
@@ -731,7 +655,7 @@ fn subsystems_yaml_is_byte_identical_on_no_op_re_run() {
 
     run_index(
         &config,
-        LenientBackend::new(),
+        LenientBackend::new(fingerprint()),
         None,
         make_stderr_reporter(ProgressMode::Never, None),
     )
@@ -770,7 +694,7 @@ fn config_yaml_loads_and_pipeline_runs_when_present() {
     // valid config.yaml present (backend is mocked — no live LLM calls).
     let summary = run_index(
         &config,
-        LenientBackend::new(),
+        LenientBackend::new(fingerprint()),
         None,
         make_stderr_reporter(ProgressMode::Never, None),
     )
@@ -812,7 +736,7 @@ fn pipeline_halts_when_subsystem_id_collides_with_component() {
 
     let err = run_index(
         &config,
-        LenientBackend::new(),
+        LenientBackend::new(fingerprint()),
         None,
         make_stderr_reporter(ProgressMode::Never, None),
     )
@@ -924,7 +848,7 @@ fn budget_exhausted_does_not_alias_setup_failed_error() {
     let tmp = materialise_tiny_fixture();
     let config = base_config(tmp.path());
     let counter = Arc::new(TokenCounter::new(1));
-    let inner = LenientBackend::new();
+    let inner = LenientBackend::new(fingerprint());
     let backend: Arc<dyn LlmBackend> = Arc::new(BudgetedBackend::new(
         inner,
         counter.clone(),
@@ -984,7 +908,7 @@ fn first_run_writes_atlas_gitignore_at_top_level_scope() {
     // through `pipeline.rs` writes `.atlas/.gitignore` at the
     // top-level scope.
     let tmp = materialise_tiny_fixture();
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
     let config = base_config(tmp.path());
 
     run_index(
@@ -1015,7 +939,7 @@ fn second_run_does_not_rewrite_existing_atlas_gitignore() {
 
     run_index(
         &config,
-        LenientBackend::new(),
+        LenientBackend::new(fingerprint()),
         None,
         make_stderr_reporter(ProgressMode::Never, None),
     )
@@ -1032,7 +956,7 @@ fn second_run_does_not_rewrite_existing_atlas_gitignore() {
 
     run_index(
         &config,
-        LenientBackend::new(),
+        LenientBackend::new(fingerprint()),
         None,
         make_stderr_reporter(ProgressMode::Never, None),
     )

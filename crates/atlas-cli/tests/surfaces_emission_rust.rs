@@ -23,13 +23,12 @@
 //!    entry under `library_apis` listing its top-level `pub` items.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 
 use atlas_cli::progress::{make_stderr_reporter, ProgressMode};
 use atlas_cli::{run_index, IndexConfig};
+use atlas_engine::testing::LenientBackend;
 use atlas_index::{ContractKind, PubItemKind, SurfacesFile, SURFACES_SCHEMA_VERSION};
-use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId};
-use serde_json::{json, Value};
+use atlas_llm::LlmFingerprint;
 use tempfile::TempDir;
 
 fn fingerprint() -> LlmFingerprint {
@@ -38,51 +37,6 @@ fn fingerprint() -> LlmFingerprint {
         ontology_sha: [17u8; 32],
         model_id: "test-backend".into(),
         backend_version: "v-pr7".into(),
-    }
-}
-
-/// Returns canned defaults so the pipeline can complete without the
-/// surface emission depending on a real LLM. Mirrors
-/// `scattered_atlas_layout::LenientBackend` in shape.
-struct LenientBackend {
-    fingerprint: LlmFingerprint,
-    call_log: Mutex<Vec<PromptId>>,
-}
-
-impl LenientBackend {
-    fn new() -> Arc<Self> {
-        Arc::new(LenientBackend {
-            fingerprint: fingerprint(),
-            call_log: Mutex::new(Vec::new()),
-        })
-    }
-}
-
-impl LlmBackend for LenientBackend {
-    fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        self.call_log.lock().unwrap().push(req.prompt_template);
-        Ok(match req.prompt_template {
-            PromptId::Classify => json!({
-                "kind": "rust-library",
-                "language": "rust",
-                "build_system": "cargo",
-                "evidence_grade": "medium",
-                "evidence_fields": [],
-                "rationale": "default lenient",
-                "is_boundary": true,
-            }),
-            PromptId::Stage1Surface => json!({"purpose": "stub", "notes": ""}),
-            PromptId::Stage2Edges => json!([]),
-            PromptId::Subcarve => json!({
-                "should_subcarve": false,
-                "sub_dirs": [],
-                "rationale": "policy declined",
-            }),
-        })
-    }
-
-    fn fingerprint(&self) -> LlmFingerprint {
-        self.fingerprint.clone()
     }
 }
 
@@ -111,7 +65,7 @@ fn rust_component_surfaces_yaml_carries_data_format_contract_with_correct_span()
     let mut config = IndexConfig::new(tmp.path().to_path_buf());
     config.respect_gitignore = false;
     config.fingerprint_override = Some(fingerprint());
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
 
     let summary = run_index(
         &config,
@@ -231,7 +185,7 @@ fn whitespace_outside_span_does_not_change_binding_content_sha() {
         let mut config = IndexConfig::new(tmp.path().to_path_buf());
         config.respect_gitignore = false;
         config.fingerprint_override = Some(fingerprint());
-        let backend = LenientBackend::new();
+        let backend = LenientBackend::new(fingerprint());
         run_index(
             &config,
             backend,
@@ -278,7 +232,7 @@ fn whitespace_inside_span_changes_binding_content_sha() {
         let mut config = IndexConfig::new(tmp.path().to_path_buf());
         config.respect_gitignore = false;
         config.fingerprint_override = Some(fingerprint());
-        let backend = LenientBackend::new();
+        let backend = LenientBackend::new(fingerprint());
         run_index(
             &config,
             backend,
@@ -328,7 +282,7 @@ fn surfaces_yaml_aggregate_fingerprint_is_stable_across_no_op_reruns() {
         let mut config = IndexConfig::new(root.to_path_buf());
         config.respect_gitignore = false;
         config.fingerprint_override = Some(fingerprint());
-        let backend = LenientBackend::new();
+        let backend = LenientBackend::new(fingerprint());
         run_index(
             &config,
             backend,
@@ -366,7 +320,7 @@ fn surfaces_yaml_emitted_for_every_live_component_in_multi_crate_fixture() {
     let mut config = IndexConfig::new(tmp.path().to_path_buf());
     config.respect_gitignore = false;
     config.fingerprint_override = Some(fingerprint());
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
     run_index(
         &config,
         backend,
@@ -418,7 +372,7 @@ fn dry_run_skips_surfaces_yaml_writes() {
     config.respect_gitignore = false;
     config.fingerprint_override = Some(fingerprint());
     config.dry_run = true;
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
     let summary = run_index(
         &config,
         backend,

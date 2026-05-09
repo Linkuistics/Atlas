@@ -14,15 +14,14 @@
 //! of the writer's eventual landing order.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
 use atlas_cli::progress::{make_stderr_reporter, ProgressMode};
 use atlas_cli::reports::{run_divergence, DivergenceOptions, OutputFormat};
 use atlas_cli::{run_index, IndexConfig};
-use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId};
+use atlas_engine::testing::LenientBackend;
+use atlas_llm::LlmFingerprint;
 use atlas_reports::{ContractShaEntry, ContractShaSnapshot, DivergenceReport};
 use chrono::{TimeZone, Utc};
-use serde_json::{json, Value};
 use tempfile::TempDir;
 
 fn fingerprint() -> LlmFingerprint {
@@ -31,54 +30,6 @@ fn fingerprint() -> LlmFingerprint {
         ontology_sha: [12u8; 32],
         model_id: "test-backend".into(),
         backend_version: "v-divergence-test".into(),
-    }
-}
-
-/// Lenient backend mirroring `pipeline_integration.rs`'s shape: returns
-/// minimal canned defaults for every prompt so the engine completes
-/// without exercising a real LLM.
-struct LenientBackend {
-    fingerprint: LlmFingerprint,
-    call_log: Mutex<Vec<PromptId>>,
-}
-
-impl LenientBackend {
-    fn new() -> Arc<Self> {
-        Arc::new(LenientBackend {
-            fingerprint: fingerprint(),
-            call_log: Mutex::new(Vec::new()),
-        })
-    }
-}
-
-impl LlmBackend for LenientBackend {
-    fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        self.call_log.lock().unwrap().push(req.prompt_template);
-        Ok(match req.prompt_template {
-            PromptId::Classify => json!({
-                "kind": "rust-library",
-                "language": "rust",
-                "build_system": "cargo",
-                "evidence_grade": "medium",
-                "evidence_fields": [],
-                "rationale": "default lenient classification",
-                "is_boundary": true,
-            }),
-            PromptId::Stage1Surface => json!({
-                "purpose": "default lenient surface",
-                "notes": "",
-            }),
-            PromptId::Stage2Edges => json!([]),
-            PromptId::Subcarve => json!({
-                "should_subcarve": false,
-                "sub_dirs": [],
-                "rationale": "policy declined",
-            }),
-        })
-    }
-
-    fn fingerprint(&self) -> LlmFingerprint {
-        self.fingerprint.clone()
     }
 }
 
@@ -121,7 +72,7 @@ fn base_config(root: &Path) -> IndexConfig {
 /// and the four Atlas YAMLs land on disk under `<root>/.atlas/`.
 fn run_index_once(root: &Path) {
     let config = base_config(root);
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
     run_index(
         &config,
         backend,
@@ -196,7 +147,7 @@ fn atlas_divergence_after_drift_writes_severity_aware_report() {
     );
 
     let opts = divergence_opts(tmp.path());
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
     let report = run_divergence(&opts, backend).expect("run_divergence must succeed");
 
     assert_eq!(report.schema_version, 1);
@@ -233,7 +184,7 @@ fn atlas_divergence_without_prior_drift_writes_null_severity_report() {
     assert!(!snapshot_path.exists());
 
     let opts = divergence_opts(tmp.path());
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
     let report = run_divergence(&opts, backend).expect("run_divergence must succeed");
 
     assert_eq!(
@@ -264,7 +215,7 @@ fn atlas_divergence_no_write_skips_writes() {
     let mut opts = divergence_opts(tmp.path());
     opts.no_write = true;
 
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
     let report = run_divergence(&opts, backend).expect("run_divergence must succeed");
 
     // The report itself is still produced.
@@ -309,7 +260,7 @@ fn atlas_divergence_does_not_modify_drift_snapshot() {
         .ok();
 
     let opts = divergence_opts(tmp.path());
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
     run_divergence(&opts, backend).expect("run_divergence must succeed");
 
     let after_bytes = std::fs::read(&snapshot_path).expect("snapshot readable after run");

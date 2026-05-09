@@ -13,14 +13,14 @@ use atlas_cli::pipeline::build_engine_database;
 use atlas_cli::progress::{make_stderr_reporter, ProgressMode};
 use atlas_cli::reports::{run_modularity, ModularityRunOptions, OutputFormat};
 use atlas_cli::{run_index, IndexConfig};
+use atlas_engine::testing::LenientBackend;
 use atlas_index::{
     save_subsystems_overrides_atomic, SubsystemOverride, SubsystemsOverridesFile,
     SUBSYSTEMS_OVERRIDES_SCHEMA_VERSION,
 };
-use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId};
+use atlas_llm::{LlmBackend, LlmFingerprint};
 use atlas_reports::ComponentModularity;
 use component_ontology::EvidenceGrade;
-use serde_json::{json, Value};
 use tempfile::TempDir;
 
 fn fingerprint() -> LlmFingerprint {
@@ -29,54 +29,6 @@ fn fingerprint() -> LlmFingerprint {
         ontology_sha: [10u8; 32],
         model_id: "modularity-test-backend".into(),
         backend_version: "v-test".into(),
-    }
-}
-
-/// Lenient test backend identical in spirit to
-/// `pipeline_integration::LenientBackend`. Returns canned defaults
-/// for every prompt; `Stage2Edges` returns one `consumes-contract`
-/// edge if a previous defines-contract surface advertised one (we
-/// hard-code here for simplicity since the modularity tests only need
-/// a small, predictable graph).
-struct LenientBackend {
-    fingerprint: LlmFingerprint,
-}
-
-impl LenientBackend {
-    fn new() -> Arc<Self> {
-        Arc::new(LenientBackend {
-            fingerprint: fingerprint(),
-        })
-    }
-}
-
-impl LlmBackend for LenientBackend {
-    fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        Ok(match req.prompt_template {
-            PromptId::Classify => json!({
-                "kind": "rust-library",
-                "language": "rust",
-                "build_system": "cargo",
-                "evidence_grade": "medium",
-                "evidence_fields": [],
-                "rationale": "test",
-                "is_boundary": true,
-            }),
-            PromptId::Stage1Surface => json!({
-                "purpose": "test surface",
-                "notes": "",
-            }),
-            PromptId::Stage2Edges => json!([]),
-            PromptId::Subcarve => json!({
-                "should_subcarve": false,
-                "sub_dirs": [],
-                "rationale": "policy declined",
-            }),
-        })
-    }
-
-    fn fingerprint(&self) -> LlmFingerprint {
-        self.fingerprint.clone()
     }
 }
 
@@ -108,7 +60,7 @@ fn base_config(root: &Path) -> IndexConfig {
 fn build_db_for_test(
     config: &IndexConfig,
 ) -> (atlas_engine::AtlasDatabase, Vec<std::path::PathBuf>) {
-    let backend: Arc<dyn LlmBackend> = LenientBackend::new();
+    let backend: Arc<dyn LlmBackend> = LenientBackend::new(fingerprint());
     let reporter = make_stderr_reporter(ProgressMode::Never, None);
     build_engine_database(config, backend, reporter).expect("build_engine_database succeeded")
 }
@@ -141,7 +93,7 @@ fn atlas_modularity_first_run_writes_per_component_files() {
     std::fs::create_dir_all(&config.output_dir).unwrap();
     run_index(
         &config,
-        LenientBackend::new(),
+        LenientBackend::new(fingerprint()),
         None,
         make_stderr_reporter(ProgressMode::Never, None),
     )
@@ -195,7 +147,7 @@ fn atlas_modularity_second_run_with_no_changes_no_history_append() {
     std::fs::create_dir_all(&config.output_dir).unwrap();
     run_index(
         &config,
-        LenientBackend::new(),
+        LenientBackend::new(fingerprint()),
         None,
         make_stderr_reporter(ProgressMode::Never, None),
     )
@@ -246,7 +198,7 @@ fn atlas_modularity_second_run_with_surface_change_appends_history() {
     std::fs::create_dir_all(&config.output_dir).unwrap();
     run_index(
         &config,
-        LenientBackend::new(),
+        LenientBackend::new(fingerprint()),
         None,
         make_stderr_reporter(ProgressMode::Never, None),
     )
@@ -278,7 +230,7 @@ fn atlas_modularity_second_run_with_surface_change_appends_history() {
     // change before modularity recomputes.
     run_index(
         &config,
-        LenientBackend::new(),
+        LenientBackend::new(fingerprint()),
         None,
         make_stderr_reporter(ProgressMode::Never, None),
     )
@@ -342,7 +294,7 @@ fn atlas_modularity_writes_rollup_at_top_level() {
 
     run_index(
         &config,
-        LenientBackend::new(),
+        LenientBackend::new(fingerprint()),
         None,
         make_stderr_reporter(ProgressMode::Never, None),
     )
@@ -388,7 +340,7 @@ fn atlas_modularity_no_write_skips_writes() {
     std::fs::create_dir_all(&config.output_dir).unwrap();
     run_index(
         &config,
-        LenientBackend::new(),
+        LenientBackend::new(fingerprint()),
         None,
         make_stderr_reporter(ProgressMode::Never, None),
     )

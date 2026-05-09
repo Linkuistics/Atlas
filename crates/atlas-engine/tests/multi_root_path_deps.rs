@@ -23,11 +23,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use atlas_engine::testing::LenientBackend;
 use atlas_engine::{
     all_components, compute_l6_batch_fingerprint, expand_roots, expand_roots_with_warnings,
     seed_filesystem, AtlasDatabase,
 };
-use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId};
+use atlas_llm::{LlmBackend, LlmFingerprint};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -456,13 +457,6 @@ fn pyproject_uv_sources_path_dep_expands_to_peer_root() {
 // public surface changes the consumer's L6 fingerprint.
 // ---------------------------------------------------------------------
 
-/// Lenient stub backend: returns minimal valid responses for every
-/// prompt so the L3 + L5 path completes during fingerprint capture.
-/// Mirrors the LenientBackend pattern used in PR-3's other tests.
-struct LenientBackend {
-    fingerprint: LlmFingerprint,
-}
-
 fn lenient_fp() -> LlmFingerprint {
     LlmFingerprint {
         template_sha: [0u8; 32],
@@ -472,30 +466,15 @@ fn lenient_fp() -> LlmFingerprint {
     }
 }
 
-impl LlmBackend for LenientBackend {
-    fn call(&self, req: &LlmRequest) -> Result<serde_json::Value, LlmError> {
-        Ok(match req.prompt_template {
-            PromptId::Classify => json!({
-                "kind": "python-package",
-                "language": "python",
-                "evidence_grade": "strong",
-                "evidence_fields": [],
-                "rationale": "stub",
-                "is_boundary": true,
-            }),
-            PromptId::Stage1Surface => json!({ "purpose": "stub", "notes": "" }),
-            PromptId::Stage2Edges => json!([]),
-            PromptId::Subcarve => json!({
-                "should_subcarve": false,
-                "sub_dirs": [],
-                "rationale": "policy declined",
-            }),
-        })
-    }
-
-    fn fingerprint(&self) -> LlmFingerprint {
-        self.fingerprint.clone()
-    }
+fn lenient_python_classify() -> serde_json::Value {
+    json!({
+        "kind": "python-package",
+        "language": "python",
+        "evidence_grade": "strong",
+        "evidence_fields": [],
+        "rationale": "stub",
+        "is_boundary": true,
+    })
 }
 
 /// Compute the consumer's L6 fingerprint over the live component set
@@ -504,9 +483,8 @@ impl LlmBackend for LenientBackend {
 /// filesystem). Returns the 64-char hex fingerprint that the
 /// production `all_proposed_edges` would feed to the L6 cache layer.
 fn consumer_l6_fingerprint(roots: &[PathBuf]) -> String {
-    let backend: Arc<dyn LlmBackend> = Arc::new(LenientBackend {
-        fingerprint: lenient_fp(),
-    });
+    let backend: Arc<dyn LlmBackend> =
+        LenientBackend::with_classify(lenient_fp(), lenient_python_classify());
     let mut db = AtlasDatabase::new(backend, roots.to_vec(), lenient_fp());
     seed_filesystem(&mut db, roots, false).expect("seed_filesystem must succeed");
 

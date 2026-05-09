@@ -17,15 +17,14 @@
 //!    `fingerprint`) are present and non-empty.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 
 use atlas_cli::progress::{make_stderr_reporter, ProgressMode};
 use atlas_cli::{run_index, IndexConfig};
+use atlas_engine::testing::LenientBackend;
 use atlas_index::{
     load_or_default_components, ComponentsFile, PerComponentFile, PER_COMPONENT_SCHEMA_VERSION,
 };
-use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId};
-use serde_json::{json, Value};
+use atlas_llm::LlmFingerprint;
 use tempfile::TempDir;
 
 fn fingerprint() -> LlmFingerprint {
@@ -34,51 +33,6 @@ fn fingerprint() -> LlmFingerprint {
         ontology_sha: [11u8; 32],
         model_id: "test-backend".into(),
         backend_version: "v-pr6".into(),
-    }
-}
-
-/// Returns canned defaults so the pipeline can complete without the
-/// per-component scattering work depending on a real LLM. Mirrors
-/// `pipeline_integration::LenientBackend` in shape.
-struct LenientBackend {
-    fingerprint: LlmFingerprint,
-    call_log: Mutex<Vec<PromptId>>,
-}
-
-impl LenientBackend {
-    fn new() -> Arc<Self> {
-        Arc::new(LenientBackend {
-            fingerprint: fingerprint(),
-            call_log: Mutex::new(Vec::new()),
-        })
-    }
-}
-
-impl LlmBackend for LenientBackend {
-    fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        self.call_log.lock().unwrap().push(req.prompt_template);
-        Ok(match req.prompt_template {
-            PromptId::Classify => json!({
-                "kind": "rust-library",
-                "language": "rust",
-                "build_system": "cargo",
-                "evidence_grade": "medium",
-                "evidence_fields": [],
-                "rationale": "default lenient",
-                "is_boundary": true,
-            }),
-            PromptId::Stage1Surface => json!({"purpose": "stub", "notes": ""}),
-            PromptId::Stage2Edges => json!([]),
-            PromptId::Subcarve => json!({
-                "should_subcarve": false,
-                "sub_dirs": [],
-                "rationale": "policy declined",
-            }),
-        })
-    }
-
-    fn fingerprint(&self) -> LlmFingerprint {
-        self.fingerprint.clone()
     }
 }
 
@@ -117,7 +71,7 @@ fn every_component_has_a_per_component_atlas_file_matching_the_top_level_project
     let mut config = IndexConfig::new(tmp.path().to_path_buf());
     config.respect_gitignore = false;
     config.fingerprint_override = Some(fingerprint());
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
 
     let summary = run_index(
         &config,
@@ -215,7 +169,7 @@ fn cargo_classified_component_records_cargo_analyser_identity() {
     let mut config = IndexConfig::new(tmp.path().to_path_buf());
     config.respect_gitignore = false;
     config.fingerprint_override = Some(fingerprint());
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
 
     let summary = run_index(
         &config,
@@ -265,7 +219,7 @@ fn dockerfile_classified_component_records_dockerfile_analyser_identity() {
     let mut config = IndexConfig::new(tmp.path().to_path_buf());
     config.respect_gitignore = false;
     config.fingerprint_override = Some(fingerprint());
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
 
     let summary = run_index(
         &config,
@@ -326,7 +280,7 @@ fn overrides_addition_records_override_analyser_id() {
     let mut config = IndexConfig::new(tmp.path().to_path_buf());
     config.respect_gitignore = false;
     config.fingerprint_override = Some(fingerprint());
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
 
     let summary = run_index(
         &config,
@@ -367,7 +321,7 @@ fn dry_run_skips_per_component_writes() {
     config.respect_gitignore = false;
     config.fingerprint_override = Some(fingerprint());
     config.dry_run = true;
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
 
     let summary = run_index(
         &config,

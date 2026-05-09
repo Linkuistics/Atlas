@@ -238,6 +238,7 @@ dependencies = [
  "anyhow",
  "atlas-analyzers",
  "atlas-csharp-analyzer",
+ "atlas-engine",
  "atlas-index",
  "atlas-llm",
  "component-ontology",

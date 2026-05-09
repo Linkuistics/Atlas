@@ -13,12 +13,11 @@
 //!    entry misses) and the cache rebuilds.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
 use atlas_cli::progress::{make_stderr_reporter, ProgressMode};
 use atlas_cli::{run_index, IndexConfig};
-use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId};
-use serde_json::{json, Value};
+use atlas_engine::testing::LenientBackend;
+use atlas_llm::{LlmFingerprint, PromptId};
 use tempfile::TempDir;
 
 fn fingerprint() -> LlmFingerprint {
@@ -27,66 +26,6 @@ fn fingerprint() -> LlmFingerprint {
         ontology_sha: [2u8; 32],
         model_id: "test-backend".into(),
         backend_version: "v-test".into(),
-    }
-}
-
-/// Backend that returns canned defaults for every prompt id and logs
-/// every call. Distinct per-run instance, so the call count reported
-/// after a run reflects only that run's backend invocations.
-struct LenientBackend {
-    fingerprint: LlmFingerprint,
-    call_log: Mutex<Vec<(PromptId, String)>>,
-}
-
-impl LenientBackend {
-    fn new() -> Arc<Self> {
-        Arc::new(LenientBackend {
-            fingerprint: fingerprint(),
-            call_log: Mutex::new(Vec::new()),
-        })
-    }
-
-    fn calls(&self) -> Vec<(PromptId, String)> {
-        self.call_log.lock().unwrap().clone()
-    }
-
-    fn call_count(&self) -> usize {
-        self.call_log.lock().unwrap().len()
-    }
-}
-
-impl LlmBackend for LenientBackend {
-    fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        let inputs_canonical = serde_json::to_string(&req.inputs).unwrap_or_default();
-        self.call_log
-            .lock()
-            .unwrap()
-            .push((req.prompt_template, inputs_canonical));
-        Ok(match req.prompt_template {
-            PromptId::Classify => json!({
-                "kind": "rust-library",
-                "language": "rust",
-                "build_system": "cargo",
-                "evidence_grade": "medium",
-                "evidence_fields": [],
-                "rationale": "default lenient classification",
-                "is_boundary": true,
-            }),
-            PromptId::Stage1Surface => json!({
-                "purpose": "default lenient surface",
-                "notes": "",
-            }),
-            PromptId::Stage2Edges => json!([]),
-            PromptId::Subcarve => json!({
-                "should_subcarve": false,
-                "sub_dirs": [],
-                "rationale": "policy declined",
-            }),
-        })
-    }
-
-    fn fingerprint(&self) -> LlmFingerprint {
-        self.fingerprint.clone()
     }
 }
 
@@ -126,7 +65,7 @@ fn base_config(root: &Path) -> IndexConfig {
 }
 
 fn cold_run_baseline(config: &IndexConfig) -> usize {
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
     run_index(
         config,
         backend.clone(),
@@ -153,7 +92,7 @@ fn fresh_process_re_run_hits_persistent_cache_for_every_entry() {
         "cold run must exercise the backend for the test to be meaningful"
     );
 
-    let backend2 = LenientBackend::new();
+    let backend2 = LenientBackend::new(fingerprint());
     run_index(
         &config,
         backend2.clone(),
@@ -166,7 +105,7 @@ fn fresh_process_re_run_hits_persistent_cache_for_every_entry() {
         0,
         "fresh-process re-run must hit the persistent cache for every entry; \
          actual calls: {:?}",
-        backend2.calls()
+        backend2.calls_with_inputs()
     );
 
     // The on-disk layout should match design §5.5.
@@ -197,7 +136,7 @@ fn single_file_content_change_invalidates_only_affected_entries() {
     // the new bytes via Salsa input churn.
     std::fs::write(tmp.path().join("mylib/src/lib.rs"), "// modified by test\n").unwrap();
 
-    let backend2 = LenientBackend::new();
+    let backend2 = LenientBackend::new(fingerprint());
     run_index(
         &config,
         backend2.clone(),
@@ -206,7 +145,7 @@ fn single_file_content_change_invalidates_only_affected_entries() {
     )
     .expect("warm run with file change");
 
-    let calls = backend2.calls();
+    let calls = backend2.calls_with_inputs();
     let surface_calls: Vec<&(PromptId, String)> = calls
         .iter()
         .filter(|(p, _)| *p == PromptId::Stage1Surface)
@@ -274,7 +213,7 @@ fn deleting_cache_directory_forces_full_rerun() {
     // persistent state and rebuilds.
     std::fs::remove_dir_all(config.output_dir.join("cache")).unwrap();
 
-    let backend2 = LenientBackend::new();
+    let backend2 = LenientBackend::new(fingerprint());
     run_index(
         &config,
         backend2.clone(),
@@ -295,7 +234,7 @@ fn deleting_cache_directory_forces_full_rerun() {
     );
 
     // A subsequent run is back to all-hits.
-    let backend3 = LenientBackend::new();
+    let backend3 = LenientBackend::new(fingerprint());
     run_index(
         &config,
         backend3.clone(),

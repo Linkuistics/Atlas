@@ -92,8 +92,7 @@ use atlas_cli::reports::{
 };
 use atlas_cli::{run_index, IndexConfig};
 use atlas_index::{
-    load_or_default_components, load_or_default_related_components, ComponentsFile,
-    SurfacesFile,
+    load_or_default_components, load_or_default_related_components, ComponentsFile, SurfacesFile,
 };
 use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId};
 use atlas_reports::{
@@ -305,8 +304,9 @@ fn assert_step1_index_cold(root: &Path, output_dir: &Path) {
 
     // PR-2 retrofit: every live component's surfaces.yaml under
     // <component>/.atlas/cache/. PR-3: same for component.yaml.
-    let components: ComponentsFile = serde_yaml::from_slice(&std::fs::read(&components_path).unwrap())
-        .expect("components.yaml parses");
+    let components: ComponentsFile =
+        serde_yaml::from_slice(&std::fs::read(&components_path).unwrap())
+            .expect("components.yaml parses");
     let live: Vec<&_> = components
         .components
         .iter()
@@ -386,11 +386,7 @@ fn assert_step1_index_cold(root: &Path, output_dir: &Path) {
 /// Assert that `<scope>/.atlas/.gitignore` exists and lists `cache/`.
 fn assert_gitignore_at(scope_atlas_dir: &Path) {
     let gi = scope_atlas_dir.join(".gitignore");
-    assert!(
-        gi.exists(),
-        "PR-1: expected .gitignore at {}",
-        gi.display()
-    );
+    assert!(gi.exists(), "PR-1: expected .gitignore at {}", gi.display());
     let body = std::fs::read_to_string(&gi).unwrap();
     assert!(
         body.contains("cache/"),
@@ -415,8 +411,8 @@ fn assert_step2_drift_first_run(root: &Path, output_dir: &Path) -> ContractShaSn
         report_path.display()
     );
 
-    let report: DriftReport = serde_yaml::from_slice(&std::fs::read(&report_path).unwrap())
-        .expect("drift.yaml parses");
+    let report: DriftReport =
+        serde_yaml::from_slice(&std::fs::read(&report_path).unwrap()).expect("drift.yaml parses");
     assert!(
         report.contracts_changed.is_empty(),
         "step 2: first-run drift must have empty contracts_changed; got {:?}",
@@ -464,7 +460,8 @@ fn step3_mutate_contract(root: &Path) {
         "pub struct PeerOne {\n    pub value: u32,\n    pub flag: bool,\n}",
     );
     assert_ne!(
-        mutated, original,
+        mutated,
+        original,
         "step 3: failed to find PeerOne struct definition in {}",
         path.display()
     );
@@ -503,8 +500,8 @@ fn assert_step4_index_warm_delta(backend: &PR14Backend) {
 /// entries.
 fn assert_step5_drift_second_run(output_dir: &Path) {
     let report_path = output_dir.join("cache/reports/drift.yaml");
-    let report: DriftReport = serde_yaml::from_slice(&std::fs::read(&report_path).unwrap())
-        .expect("drift.yaml parses");
+    let report: DriftReport =
+        serde_yaml::from_slice(&std::fs::read(&report_path).unwrap()).expect("drift.yaml parses");
 
     assert_eq!(
         report.contracts_changed.len(),
@@ -685,8 +682,8 @@ fn assert_step8_impact(root: &Path, output_dir: &Path) {
     let cache_dir = output_dir.join("cache");
     let components: ComponentsFile =
         load_or_default_components(&cache_dir.join("components.yaml")).unwrap();
-    let related = load_or_default_related_components(&cache_dir.join("related-components.yaml"))
-        .unwrap();
+    let related =
+        load_or_default_related_components(&cache_dir.join("related-components.yaml")).unwrap();
 
     // Build a stand-in AtlasDatabase for the report (mirrors
     // run_impact_cmd's setup).
@@ -705,7 +702,9 @@ fn assert_step8_impact(root: &Path, output_dir: &Path) {
     assert_eq!(report.target.kind, ImpactReportTargetKind::Contract);
     assert_eq!(report.target.id, "peer1/peer-one");
     assert!(
-        report.transitive_consumers.contains(&ID_OUTLIER.to_string()),
+        report
+            .transitive_consumers
+            .contains(&ID_OUTLIER.to_string()),
         "step 8: expected `outlier` in transitive consumers; got {:?}",
         report.transitive_consumers
     );
@@ -728,7 +727,9 @@ fn assert_step8_impact(root: &Path, output_dir: &Path) {
     // empty or `unattached` key when the consumer is in no compose
     // orchestration; we assert presence rather than a specific key.
     assert!(
-        by_deploy.values().any(|v| v.iter().any(|c| c == ID_OUTLIER)),
+        by_deploy
+            .values()
+            .any(|v| v.iter().any(|c| c == ID_OUTLIER)),
         "step 8: by_deploy_graph partition must include outlier; got: {by_deploy:?}"
     );
 }
@@ -782,10 +783,9 @@ fn canonical_pair(a: &str, b: &str) -> (String, String) {
 /// - `edges_suppress` entry eliminates the matching analyser-discovered
 ///   edge from the same file.
 fn assert_overrides_materialised(output_dir: &Path) {
-    let related = load_or_default_related_components(
-        &output_dir.join("cache/related-components.yaml"),
-    )
-    .expect("related-components.yaml parses");
+    let related =
+        load_or_default_related_components(&output_dir.join("cache/related-components.yaml"))
+            .expect("related-components.yaml parses");
 
     // edges_add happy path: the workspace components.overrides.yaml
     // declares `depends-on flutter-app dart-lib` (with reason). It
@@ -795,8 +795,7 @@ fn assert_overrides_materialised(output_dir: &Path) {
         .iter()
         .filter(|e| {
             e.kind == EdgeKind::DependsOn
-                && e.participants
-                    == vec![ID_FLUTTER.to_string(), ID_DART.to_string()]
+                && e.participants == vec![ID_FLUTTER.to_string(), ID_DART.to_string()]
         })
         .count();
     assert_eq!(
@@ -813,8 +812,7 @@ fn assert_overrides_materialised(output_dir: &Path) {
     // appear in the on-disk file.
     let suppressed_present = related.edges.iter().any(|e| {
         e.kind == EdgeKind::BundledInto
-            && e.participants
-                == vec![ID_DOCKER_FRONTEND.to_string(), "compose".to_string()]
+            && e.participants == vec![ID_DOCKER_FRONTEND.to_string(), "compose".to_string()]
     });
     assert!(
         !suppressed_present,
@@ -844,12 +842,12 @@ fn assert_overrides_materialised(output_dir: &Path) {
 /// run order.
 fn assert_phase3_cache_files_present(root: &Path, output_dir: &Path) {
     for rel in [
-        "cache/contract-shas-snapshot.yaml",          // PR-8
-        "cache/reports/drift.yaml",                   // PR-8
-        "cache/reports/modularity-rollup.yaml",       // PR-10
-        "cache/reports/composition-divergence.yaml",  // PR-11
-        "cache/components.yaml",                      // PR-4 retrofit
-        "cache/related-components.yaml",              // PR-5 retrofit
+        "cache/contract-shas-snapshot.yaml",         // PR-8
+        "cache/reports/drift.yaml",                  // PR-8
+        "cache/reports/modularity-rollup.yaml",      // PR-10
+        "cache/reports/composition-divergence.yaml", // PR-11
+        "cache/components.yaml",                     // PR-4 retrofit
+        "cache/related-components.yaml",             // PR-5 retrofit
     ] {
         let p = output_dir.join(rel);
         assert!(
@@ -862,7 +860,9 @@ fn assert_phase3_cache_files_present(root: &Path, output_dir: &Path) {
     // Per-component PR-2/PR-3/PR-10 files for the seven outlier-cluster
     // components — they all exist on disk so the resolver finds them
     // deterministically.
-    for cid in [ID_OUTLIER, "peer1", "peer2", "peer3", "peer4", "peer5", "peer6"] {
+    for cid in [
+        ID_OUTLIER, "peer1", "peer2", "peer3", "peer4", "peer5", "peer6",
+    ] {
         let dir = root.join("outlier_cluster").join(cid);
         for rel in ["surfaces.yaml", "component.yaml", "modularity.yaml"] {
             let p = dir.join(".atlas/cache").join(rel);
@@ -907,8 +907,11 @@ fn assert_no_cache_leakage(root: &Path) {
             };
             if matches!(
                 name,
-                "surfaces.yaml" | "component.yaml" | "modularity.yaml"
-                    | "components.yaml" | "related-components.yaml"
+                "surfaces.yaml"
+                    | "component.yaml"
+                    | "modularity.yaml"
+                    | "components.yaml"
+                    | "related-components.yaml"
                     | "contract-shas-snapshot.yaml"
             ) {
                 hits.push(p);
@@ -927,10 +930,9 @@ fn assert_no_cache_leakage(root: &Path) {
 /// Used after step 1 / step 4 to confirm the engine wrote a parseable
 /// file for every live component (and not just an empty stub).
 fn assert_per_component_surfaces_parseable(root: &Path, output_dir: &Path) {
-    let components: ComponentsFile = serde_yaml::from_slice(
-        &std::fs::read(output_dir.join("cache/components.yaml")).unwrap(),
-    )
-    .unwrap();
+    let components: ComponentsFile =
+        serde_yaml::from_slice(&std::fs::read(output_dir.join("cache/components.yaml")).unwrap())
+            .unwrap();
     for entry in components.components.iter().filter(|c| !c.deleted) {
         let Some(seg) = entry.path_segments.first() else {
             continue;
@@ -1007,7 +1009,10 @@ fn polyglot_phase3_acceptance() {
         warm_backend.total(),
         warm_backend.calls(),
     );
-    eprintln!("[pr13] warm atlas index rerun: {} LLM calls", warm_backend.total());
+    eprintln!(
+        "[pr13] warm atlas index rerun: {} LLM calls",
+        warm_backend.total()
+    );
 
     // ─── Step 2: `atlas drift` (first run) ─────────────────────────
     let drift_backend1 = PR14Backend::new();
@@ -1027,7 +1032,11 @@ fn polyglot_phase3_acceptance() {
         root: Some(root.to_path_buf()),
     };
     let exit = run_drift(&drift_args, &mut sink).expect("step 2: run_drift returns Ok");
-    assert_eq!(exit, ExitCode::SUCCESS, "step 2: first drift run must exit 0");
+    assert_eq!(
+        exit,
+        ExitCode::SUCCESS,
+        "step 2: first drift run must exit 0"
+    );
     assert_step2_drift_first_run(root, &output_dir);
 
     // ─── Step 3: mutate one contract ───────────────────────────────
@@ -1037,9 +1046,7 @@ fn polyglot_phase3_acceptance() {
     let delta_backend = PR14Backend::new();
     run_with(&config, delta_backend.clone());
     let delta_calls = delta_backend.total();
-    eprintln!(
-        "[pr13] warm-delta atlas index (after peer1 mutation): {delta_calls} LLM calls"
-    );
+    eprintln!("[pr13] warm-delta atlas index (after peer1 mutation): {delta_calls} LLM calls");
     assert_step4_index_warm_delta(&delta_backend);
     assert_per_component_surfaces_parseable(root, &output_dir);
 
@@ -1070,7 +1077,8 @@ fn polyglot_phase3_acceptance() {
         run_modularity(&db, &opts, &mut sink).expect("step 6: run_modularity must succeed");
     let modularity_calls = modularity_backend.total();
     assert_eq!(
-        modularity_calls, 0,
+        modularity_calls,
+        0,
         "step 6 (modularity): expected 0 LLM calls (deterministic projection of L4-L8 outputs); \
          got {modularity_calls}. Full log: {:?}. \
          A non-zero count is a Phase 3 invariant violation — do not relax.",
@@ -1095,7 +1103,8 @@ fn polyglot_phase3_acceptance() {
         run_divergence(&divergence_opts, backend_dyn.clone()).expect("step 7: run_divergence");
     let divergence_calls = divergence_backend.total();
     assert_eq!(
-        divergence_calls, 0,
+        divergence_calls,
+        0,
         "step 7 (divergence): expected 0 LLM calls (the persistent LLM cache makes the \
          fixedpoint re-run free); got {divergence_calls}. Full log: {:?}. \
          A non-zero count is a Phase 3 invariant violation — do not relax.",

@@ -18,15 +18,10 @@ use std::sync::Arc;
 
 use atlas_cli::progress::{make_stderr_reporter, ProgressMode};
 use atlas_cli::{run_index, IndexConfig};
+use atlas_engine::testing::LenientBackend;
 use atlas_index::{load_or_default_components, ComponentsFile};
-use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId};
-use serde_json::{json, Value};
+use atlas_llm::{LlmBackend, LlmFingerprint};
 use tempfile::TempDir;
-
-// ---------------------------------------------------------------------------
-// Minimal canned-response backend (mirrors pipeline_integration.rs
-// `LenientBackend` — a single backend shape for the tiny fixture).
-// ---------------------------------------------------------------------------
 
 fn fingerprint() -> LlmFingerprint {
     LlmFingerprint {
@@ -34,45 +29,6 @@ fn fingerprint() -> LlmFingerprint {
         ontology_sha: [0xCBu8; 32],
         model_id: "pr4-sweep-backend".into(),
         backend_version: "v-pr4-sweep".into(),
-    }
-}
-
-struct LenientBackend {
-    fingerprint: LlmFingerprint,
-}
-
-impl LenientBackend {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            fingerprint: fingerprint(),
-        })
-    }
-}
-
-impl LlmBackend for LenientBackend {
-    fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        Ok(match req.prompt_template {
-            PromptId::Classify => json!({
-                "kind": "rust-library",
-                "language": "rust",
-                "build_system": "cargo",
-                "evidence_grade": "medium",
-                "evidence_fields": [],
-                "rationale": "sweep-backend lenient classify",
-                "is_boundary": true,
-            }),
-            PromptId::Stage1Surface => json!({"purpose": "stub", "notes": ""}),
-            PromptId::Stage2Edges => json!([]),
-            PromptId::Subcarve => json!({
-                "should_subcarve": false,
-                "sub_dirs": [],
-                "rationale": "sweep-backend policy declined",
-            }),
-        })
-    }
-
-    fn fingerprint(&self) -> LlmFingerprint {
-        self.fingerprint.clone()
     }
 }
 
@@ -134,7 +90,7 @@ fn cache_components_yaml_written_and_no_top_level_file() {
     let tmp = materialise_fixture();
     let config = base_config(tmp.path());
 
-    run_with(&config, LenientBackend::new());
+    run_with(&config, LenientBackend::new(fingerprint()));
 
     // AC#1: components.yaml must exist at the new cache location.
     let cache_path = config.output_dir.join("cache/components.yaml");
@@ -165,7 +121,7 @@ fn cache_components_yaml_contains_expected_components() {
     let tmp = materialise_fixture();
     let config = base_config(tmp.path());
 
-    run_with(&config, LenientBackend::new());
+    run_with(&config, LenientBackend::new(fingerprint()));
 
     let cache_path = config.output_dir.join("cache/components.yaml");
     let bytes = std::fs::read(&cache_path).unwrap_or_else(|e| {
@@ -216,14 +172,14 @@ fn cache_components_yaml_is_byte_identical_on_no_op_rerun() {
     let config = base_config(tmp.path());
 
     // First run — cold.
-    run_with(&config, LenientBackend::new());
+    run_with(&config, LenientBackend::new(fingerprint()));
     let first = std::fs::read(config.output_dir.join("cache/components.yaml"))
         .expect("cache/components.yaml must exist after first run");
 
     // Second run — same inputs, same fingerprint. The pipeline's
     // `stable_generated_at` heuristic should preserve the timestamp,
     // making the file byte-identical.
-    run_with(&config, LenientBackend::new());
+    run_with(&config, LenientBackend::new(fingerprint()));
     let second = std::fs::read(config.output_dir.join("cache/components.yaml"))
         .expect("cache/components.yaml must exist after second run");
 
@@ -244,7 +200,7 @@ fn no_components_yaml_outside_cache_in_atlas_dir() {
     let tmp = materialise_fixture();
     let config = base_config(tmp.path());
 
-    run_with(&config, LenientBackend::new());
+    run_with(&config, LenientBackend::new(fingerprint()));
 
     // Walk every file under .atlas/ and collect any `components.yaml`
     // that does NOT live in a `cache/` sub-path.

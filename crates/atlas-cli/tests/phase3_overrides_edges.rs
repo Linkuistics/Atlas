@@ -18,16 +18,15 @@
 //! pipeline change and the tests do not depend on real LLM output.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 
 use atlas_cli::progress::{make_stderr_reporter, ProgressMode};
 use atlas_cli::{run_index, IndexConfig};
+use atlas_engine::testing::LenientBackend;
 use atlas_index::{
     load_or_default_components, load_or_default_related_components, ComponentsFile,
     PerComponentFile,
 };
-use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId};
-use serde_json::{json, Value};
+use atlas_llm::LlmFingerprint;
 use tempfile::TempDir;
 
 fn fingerprint() -> LlmFingerprint {
@@ -36,54 +35,6 @@ fn fingerprint() -> LlmFingerprint {
         ontology_sha: [13u8; 32],
         model_id: "test-backend".into(),
         backend_version: "v-pr6-edges".into(),
-    }
-}
-
-/// Stub backend: every prompt returns a deterministic canned shape.
-/// `Stage2Edges` defaults to an empty array so the analyser
-/// contributes no edges; tests that want analyser edges can set up
-/// the fixture so deterministic Dockerfile / Compose paths fire
-/// instead.
-struct LenientBackend {
-    fingerprint: LlmFingerprint,
-    #[allow(dead_code)]
-    call_log: Mutex<Vec<PromptId>>,
-}
-
-impl LenientBackend {
-    fn new() -> Arc<Self> {
-        Arc::new(LenientBackend {
-            fingerprint: fingerprint(),
-            call_log: Mutex::new(Vec::new()),
-        })
-    }
-}
-
-impl LlmBackend for LenientBackend {
-    fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        self.call_log.lock().unwrap().push(req.prompt_template);
-        Ok(match req.prompt_template {
-            PromptId::Classify => json!({
-                "kind": "rust-library",
-                "language": "rust",
-                "build_system": "cargo",
-                "evidence_grade": "medium",
-                "evidence_fields": [],
-                "rationale": "default lenient",
-                "is_boundary": true,
-            }),
-            PromptId::Stage1Surface => json!({"purpose": "stub", "notes": ""}),
-            PromptId::Stage2Edges => json!([]),
-            PromptId::Subcarve => json!({
-                "should_subcarve": false,
-                "sub_dirs": [],
-                "rationale": "policy declined",
-            }),
-        })
-    }
-
-    fn fingerprint(&self) -> LlmFingerprint {
-        self.fingerprint.clone()
     }
 }
 
@@ -106,7 +57,7 @@ fn run(root: &Path) -> atlas_cli::IndexSummary {
     let mut config = IndexConfig::new(root.to_path_buf());
     config.respect_gitignore = false;
     config.fingerprint_override = Some(fingerprint());
-    let backend = LenientBackend::new();
+    let backend = LenientBackend::new(fingerprint());
     run_index(
         &config,
         backend,
@@ -299,7 +250,7 @@ fn per_component_overrides_with_pin_outside_scope_is_rejected() {
         let mut config = IndexConfig::new(root.to_path_buf());
         config.respect_gitignore = false;
         config.fingerprint_override = Some(fingerprint());
-        let backend = LenientBackend::new();
+        let backend = LenientBackend::new(fingerprint());
         run_index(
             &config,
             backend,

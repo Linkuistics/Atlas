@@ -108,3 +108,6 @@ pub use root_expansion::{expand_roots, expand_roots_with_warnings};
 pub use roots::best_root_for;
 pub use surface_types::{InteractionRoleHint, SurfaceRecord};
 pub use types::{Candidate, Classification, ComponentKind, RationaleBundle};
+
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod testing;

@@ -16,6 +16,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use atlas_engine::testing::LenientBackend;
 use atlas_engine::{
     all_components, seed_filesystem, surface_artefacts_of, AtlasDatabase, ComponentKind,
 };
@@ -32,38 +33,15 @@ fn default_fingerprint() -> LlmFingerprint {
     }
 }
 
-/// A lenient backend that returns empty stubs for every prompt — the
-/// tests below care about the deterministic surface analyser, not the
-/// LLM-derived `SurfaceRecord` inner. The `Stage1Surface` stub returns
-/// the minimum fields `parse_surface_response` accepts.
-struct LenientBackend {
-    fingerprint: LlmFingerprint,
-}
-
-impl LlmBackend for LenientBackend {
-    fn call(&self, req: &LlmRequest) -> Result<serde_json::Value, LlmError> {
-        Ok(match req.prompt_template {
-            PromptId::Classify => json!({
-                "kind": "python-package",
-                "language": "python",
-                "evidence_grade": "strong",
-                "evidence_fields": [],
-                "rationale": "stub",
-                "is_boundary": true,
-            }),
-            PromptId::Stage1Surface => json!({ "purpose": "stub", "notes": "" }),
-            PromptId::Stage2Edges => json!([]),
-            PromptId::Subcarve => json!({
-                "should_subcarve": false,
-                "sub_dirs": [],
-                "rationale": "policy declined",
-            }),
-        })
-    }
-
-    fn fingerprint(&self) -> LlmFingerprint {
-        self.fingerprint.clone()
-    }
+fn lenient_classify() -> serde_json::Value {
+    json!({
+        "kind": "python-package",
+        "language": "python",
+        "evidence_grade": "strong",
+        "evidence_fields": [],
+        "rationale": "stub",
+        "is_boundary": true,
+    })
 }
 
 /// A counting backend that tracks every `Classify`-stage prompt
@@ -105,9 +83,8 @@ impl LlmBackend for ClassifyCountingBackend {
 }
 
 fn build_db_lenient(root: &Path) -> AtlasDatabase {
-    let backend: Arc<dyn LlmBackend> = Arc::new(LenientBackend {
-        fingerprint: default_fingerprint(),
-    });
+    let backend: Arc<dyn LlmBackend> =
+        LenientBackend::with_classify(default_fingerprint(), lenient_classify());
     let mut db = AtlasDatabase::new(backend, vec![root.to_path_buf()], default_fingerprint());
     seed_filesystem(&mut db, &[root.to_path_buf()], false).expect("seed_filesystem must succeed");
     db

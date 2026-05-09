@@ -28,6 +28,12 @@ toml = { workspace = true }
 
 [dev-dependencies]
 atlas-csharp-analyzer = { path = "../analyzers/csharp" }
+# Self-dev-dep with the `test-fixtures` feature so integration tests
+# under `crates/atlas-engine/tests/` see `atlas_engine::testing`.
+# The lib's own unit tests get access via `cfg(test)`; integration
+# tests link against the lib-as-an-rlib and need the feature flag to
+# include the gated `testing` module.
+atlas-engine = { path = ".", features = ["test-fixtures"] }
 proptest = { workspace = true }
 
 [features]
@@ -38,6 +44,13 @@ proptest = { workspace = true }
 # that need to exercise the atomic-write contract end-to-end. See
 # Phase 3 plan §4 PR-8 acceptance criteria + design §6.3.
 atomic_write_panic_after_temp = []
+
+# Exposes the `testing` module (notably `LenientBackend`) to
+# downstream test crates. Off in release builds, on under
+# `cfg(test)` automatically. Phase 4 PR-1: extracted so adding a new
+# integration test no longer requires copy-pasting the LenientBackend
+# struct + impl.
+test-fixtures = []
 
 [lints]
 workspace = true
