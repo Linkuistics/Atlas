@@ -7,13 +7,14 @@ continuation prompt at
 reads this file (via the `*phase4-plan*` wildcard match) to find the
 next PR to dispatch.
 
-**Last updated:** 2026-05-09 (Wave-1+2 trio PR-4 / PR-5 / PR-8 landed
-via cherry-pick from worktree branches `phase4-pr4` / `phase4-pr5` /
-`phase4-pr8`; commits on main `02d608d` / `e89c55f` / `009d7e5`).
-Cumulative Phase 4 LOC delta running tally: PR-1 (−278) + PR-4 (−25)
-+ PR-5 (−45) + PR-8 (+23) = **−325 net** so far. PR-2 + PR-3 + PR-6
-remain; the next dispatch wave is PR-2 + PR-3 + PR-6 (PR-2 and PR-3
-are investigation-heavy; PR-6 unblocks now that PR-1 is on main).
+**Last updated:** 2026-05-09 (Wave-3 trio PR-2 / PR-3 / PR-6 landed
+via cherry-pick from worktree branches `phase4-pr2` / `phase4-pr3` /
+`phase4-pr6`; commits on main `d1a4378` / `5bff442` / `2892a82`).
+**Phase 4 is now complete.** Cumulative LOC delta: PR-1 (−278) + PR-2
+(−568) + PR-3 (+137) + PR-4 (−25) + PR-5 (−45) + PR-6 (−258) + PR-7
+(0; dropped) + PR-8 (+23) = **−1014 net LOC** across the cleanup
+release. See "### Phase 4 — complete" closeout note at the bottom of
+this file.
 
 ## PR status
 
@@ -23,11 +24,11 @@ commit sha + anything load-bearing the next session needs to know).
 
 - [x] PR-0 — Plan + status + continuation prompt (docs only)
 - [x] PR-1 — LenientBackend extraction (Phase 2 closeout)
-- [ ] PR-2 — Decoder consolidation (Phase 2 closeout)
-- [ ] PR-3 — L8 phantom-subcomponent fix (Phase 2 closeout)
+- [x] PR-2 — Decoder consolidation (Phase 2 closeout)
+- [x] PR-3 — L8 phantom-subcomponent fix (Phase 2 closeout)
 - [x] PR-4 — `atomic_write` helper convergence
 - [x] PR-5 — `build_engine_database` / `build_database_for_reports` convergence
-- [ ] PR-6 — Sweep-test boilerplate consolidation
+- [x] PR-6 — Sweep-test boilerplate consolidation
 - [x] PR-7 — Orphan `pub use save_related_components_atomic` removal (atlas-contracts) — **dropped 2026-05-09**, the alias is not orphan
 - [x] PR-8 — Stale "Phase 4" prose retext + §10 renumbering in canonical system-model spec
 
@@ -248,10 +249,154 @@ for subsequent Phase 4 PRs until the runtime's stale-base bug is
 resolved.
 
 ### PR-2
-*Awaiting dispatch.*
+2026-05-09 — Landed via cherry-pick from worktree branch `phase4-pr2`.
+Commit on main: `d1a4378`. Net diff: 1 file, +45/−613 (net **−568
+LOC**) — slightly over the plan's −500 estimate; well within
+tolerance.
+
+**Implementation summary:** the canonical helper
+`decode_subprocess_surface_payload(payload, component_id, language)`
+lives at `crates/atlas-engine/src/l5_surface.rs:876` (replacing the
+prior file-internal location of `decode_python_surface_payload`).
+Three per-language decoders deleted (~150 LoC each):
+`decode_racket_surface_payload`, `decode_csharp_surface_payload`,
+`decode_dart_surface_payload`. Two languages keep thin wrappers
+delegating to the canonical helper: `decode_elixir_surface_payload`
+preserves the elixir-specific call-shape that fixture tests assert;
+`decode_lispkit_surface_payload` passes `"scheme"` as the language
+identifier (lispkit's wire shape uses scheme for its symbol-language
+field). Rust is intentionally untouched — different code path entirely
+(`rust_library_artefacts`, in-process `syn`-based parsing, not a
+subprocess decoder).
+
+**Step-1 enumeration (per plan §4 PR-2 step 1):**
+
+| Language | Migration shape |
+|---|---|
+| python | canonical (direct call to `decode_subprocess_surface_payload`) |
+| racket | canonical (deleted ~150 LoC) |
+| csharp | canonical (deleted ~150 LoC) |
+| dart | canonical (deleted ~150 LoC) |
+| elixir | language-specific wrapper preserved (delegates to canonical with `"elixir"`) |
+| lispkit | language-specific wrapper preserved (delegates to canonical with `"scheme"` — wire-format mapping seam) |
+| rust | stays separate (different code path; not a subprocess decoder) |
+
+**Test coverage:** the implementer added a unit test
+`decode_subprocess_surface_payload_preserves_yaml_special_chars_in_string_values`
+in the module's `#[cfg(test)]` section to give the new canonical
+helper baseline test coverage.
+
+**Cumulative regression guard:**
+
+- Phase 2 polyglot trio (`polyglot_fixture_classifies_all_components_
+  and_emits_expected_edges`, `polyglot_no_op_rerun_is_zero_llm_calls`,
+  `polyglot_targeted_edit_invalidates_only_affected_entries`): passed
+  in 17.40s release.
+- Phase 3 polyglot smoke test (`polyglot_phase3_acceptance`): passed
+  in 92.57s release. LLM-call-budget invariants hold (cold > 0 &&
+  < 100; warm = 0; modularity/divergence/impact = 0).
+- 71 test suites green across `cargo test --workspace --release`.
+
+**Worktree mechanism:** worktree created manually via `git worktree
+add /Users/antony/Development/Atlas-phase4-pr2 -b phase4-pr2 c906ebe`
+(off main HEAD post-PR-4/PR-5/PR-8 status update). Note: the original
+implementer subagent bailed mid-run waiting on a `tail -50`-buffered
+cargo test (the `feedback_no_tail_pipe_for_long_tests` failure mode);
+orchestrator recovered by restarting verification with tighter
+chains.
+
+**Verification chain lesson (carrying forward from PR-4):** `cargo
+test --workspace --release` builds *test binaries* but does NOT
+build standalone `[[bin]]` analyzer targets. The polyglot test
+discovers analyzer binaries at runtime via path lookup
+(`target/release/<name>` etc.), and those paths only get populated by
+`cargo build --release --workspace`. The first attempt at the v2
+verification chain ran `cargo test --workspace --release` without
+the prerequisite `cargo build --release --workspace`, and the
+polyglot tests failed with the same `consumes-contract edge:
+component <X> → unresolved contract <Y>` shape PR-4 documented. The
+v3 chain (which prepends `cargo build --release --workspace`) is the
+canonical pattern for release-mode polyglot validation. **Recommend
+amending the continuation prompt's verification protocol to spell
+out the `cargo build --release --workspace` precondition explicitly.**
 
 ### PR-3
-*Awaiting dispatch.*
+2026-05-09 — Landed via cherry-pick from worktree branch `phase4-pr3`.
+Commit on main: `5bff442`. Net diff: 1 file, +139/−2 (net **+137
+LOC**) — higher than the plan's ~20-50 estimate because the fix's
+production code is small (~15 lines of logic) but the diagnosis
+comment (~25 lines) and the regression test (~70 lines including
+fixture builder + extensive in-test commentary) are deliberately
+heavy. The bug is subtle and future readers benefit from the
+forensic record.
+
+**Diagnosis paragraph (input shape → emission step → failure → root
+cause):**
+
+`crates/atlas-engine/src/l8_recurse.rs::absolutise_under_any_root` is
+called when L8 needs to convert a `path_segments[0].path` into an
+absolute filesystem path under one of the workspace's roots. It runs
+two passes:
+
+- **Pass 1** uses a `manifests` signal: if the entry declares a
+  manifest, look up the manifest's resolved file path, then
+  back-derive the matching root.
+- **Pass 2** is a "first root whose `<root>/<segment>` contains a
+  registered file" check.
+
+When more than one root passes Pass 2's prefix check, the segment is
+genuinely ambiguous and Pass 1's manifest signal could not break the
+tie. The pre-PR-3 behaviour silently returned the candidate from
+`roots[0]`, which `enumerate_immediate_subdirs` then walked end-to-
+end, emitting every primary-root sub-directory as a phantom sub-
+component of the (mis-routed) entry. The trigger in practice is an
+override-addition or other synthetic entry whose
+`path_segments[0].path == ""` and `manifests == []`, in which case
+`<root>/<empty>` matches every root trivially.
+
+**Fix:**
+
+When the prefix check matches more than one root and we have no
+manifest signal to disambiguate, return a path containing the
+synthetic marker `__atlas_unresolved__` — a name that no real file
+path can collide with. The caller's `enumerate_immediate_subdirs`
+then walks the workspace, finds no descendants under the unresolved
+path, and proposes nothing. That is the correct behaviour: when
+ownership cannot be determined, the safe answer is "no sub-dirs",
+not "every primary-root sub-dir". Existing semantics for the
+unambiguous cases (0 matches → fall back to `roots[0]`; 1 match →
+return that root's candidate) preserved.
+
+**Regression test:**
+`empty_segment_with_no_manifests_does_not_phantom_emit_primary_subdirs`
+in `l8_recurse.rs::tests` builds a two-root layout (primary holds a
+real `consumer-crate` rust library; peer holds only a top-level
+README.md), declares a synthetic entry with empty
+`path_segments[0].path` and empty `manifests`, calls
+`enumerate_immediate_subdirs`, and asserts no path containing
+`consumer-crate` (any primary-root sub-dir name) leaks through and
+that every immediate sub-dir starts with the peer root.
+
+**Code comment** at the fix site cites "Phase 4 PR-3 (L8 phantom
+subcomponent fix)" so future readers locate this commit's diagnosis.
+
+**Cumulative regression guard:**
+
+- `cargo test -p atlas-engine` (debug, v1 chain): passed including the
+  new regression test. Release-mode unit-test semantics are identical
+  to debug-mode (in-module `#[cfg(test)]` sections).
+- Phase 2 polyglot trio: passed in 17.07s release.
+- Phase 3 polyglot smoke test: passed in 92.87s release. LLM-call-
+  budget invariants hold (cold > 0 && < 100; warm = 0;
+  modularity/divergence/impact = 0).
+- No L8 regressions; existing `enumerate_immediate_subdirs` semantics
+  for unambiguous cases unchanged.
+
+**Worktree mechanism:** worktree created manually via `git worktree
+add /Users/antony/Development/Atlas-phase4-pr3 -b phase4-pr3 c906ebe`.
+Same recovery pattern as PR-2 (original subagent bailed on
+tail-buffered cargo test; orchestrator restarted verification with
+tighter chains).
 
 ### PR-4
 2026-05-09 — Landed via cherry-pick from worktree branch `phase4-pr4`.
@@ -395,7 +540,166 @@ add /Users/antony/Development/Atlas-phase4-pr5 -b phase4-pr5
 fe7070d` per the PR-1 pattern.
 
 ### PR-6
-*Awaiting dispatch (sequenced after PR-1).*
+2026-05-09 — Landed via cherry-pick from worktree branch `phase4-pr6`.
+Commit on main: `2892a82`. Net diff: 6 files, +177/−435 (net **−258
+LOC**) — exceeds the plan's −100 to −200 target because the
+`LenientBackend` re-export (from PR-1's `atlas_engine::testing`)
+also displaced three local `SweepBackend` impls (~50 LoC each) in
+phase3_retrofit_surfaces / component / related, where PR-5's
+component already used LenientBackend.
+
+**Implementation summary:** created `crates/atlas-cli/tests/common/`
+with `mod.rs` (declares `pub mod sweep_support;`) and
+`sweep_support.rs` (the shared module, 111 LoC). The four
+`phase3_retrofit_*.rs` files now declare `mod common;` and `use
+common::sweep_support::*;` — Cargo's standard `tests/common/mod.rs`
+idiom prevents `common` from being compiled as its own integration
+test (verified zero `Running tests/common` lines in `cargo test
+-p atlas-cli` output).
+
+**Helper enumeration extracted (with original locations):**
+
+| Helper | Original locations |
+|---|---|
+| `sweep_fingerprint() -> LlmFingerprint` | `fingerprint()` in all four files (model_ids `pr2`/`pr3`/`pr4`/`pr5`-sweep-backend; no test asserts on the bytes, so collapsed to a single fingerprint) |
+| `tiny_fixture_root() -> PathBuf` | All four files (byte-identical) |
+| `copy_dir_all(&Path, &Path)` | `copy_fixture_to_tmp` in surfaces+related; `copy_dir_all` in component+components (functionally identical bodies) |
+| `materialise_fixture() -> TempDir` | `materialise_tiny_fixture` in surfaces+related; `materialise_fixture` in component+components |
+| `base_config(&Path) -> IndexConfig` | All four files (byte-identical except per-file fingerprint call) |
+| `run_with(&IndexConfig, Arc<dyn LlmBackend>)` | surfaces, component, components (related inlined `run_index` directly) |
+| `pub use atlas_engine::testing::LenientBackend` | Re-export from PR-1 — replaces local `SweepBackend` copies in surfaces (~50 LoC), component (~50 LoC), and related (~55 LoC). PR-5's `components.rs` already used LenientBackend. |
+
+The implementer found a forensic detail: PR-5's `SweepBackend` carried
+a `call_count: Mutex<usize>` field that was incremented but never
+read — dead code. The `LenientBackend` re-export displaced this
+without functional change.
+
+Test-specific walkers (`find_surfaces_yaml_outside_cache`,
+`find_component_yaml_outside_cache`,
+`find_components_yaml_outside_cache`) stay with their respective test
+files — each matches a different filename and isn't shareable.
+
+**Cumulative regression guard:**
+- All four `phase3_retrofit_*.rs` tests pass after import-rewrite:
+  surfaces 3 tests, component 2 tests, components 4 tests, related 3
+  tests.
+- `cargo test --workspace --no-fail-fast`: every suite green.
+- `cargo test -p atlas-cli --test phase3_polyglot_fixture --release`:
+  passed in 88.71s. Cold = 40 LLM calls (matches baseline of 40);
+  warm = 0; modularity/divergence/impact = 0.
+- `cargo clippy --all-targets -- -D warnings` clean; `cargo fmt
+  --check` clean; the consolidated module needed no
+  `#[allow(dead_code)]` hints (the helpers are all live-used by at
+  least one of the four tests).
+
+**Worktree mechanism:** worktree created manually via `git worktree
+add /Users/antony/Development/Atlas-phase4-pr6 -b phase4-pr6 c906ebe`.
+The PR-6 implementer subagent did NOT bail mid-run — it completed
+verification end-to-end and reported DONE with full output (this is
+the third Wave-3 dispatch and the only one that succeeded without an
+orchestrator-side recovery).
+
+---
+
+### Phase 4 — complete
+
+**Date:** 2026-05-09. Phase 4 ships **7 code/docs PRs (PR-1, PR-2,
+PR-3, PR-4, PR-5, PR-6, PR-8)** plus PR-0 (plan + status + continuation
+prompt). PR-7 was dropped after pre-flight grep surfaced two real
+callers of the alias the design spec classified as orphan (Phase 3
+PR-9 added them after the §9.1 deferred-list was frozen).
+
+**Cumulative LOC delta:**
+
+| PR | Title | LOC delta |
+|---|---|---|
+| PR-1 | LenientBackend extraction | −278 |
+| PR-2 | Decoder consolidation | −568 |
+| PR-3 | L8 phantom-subcomponent fix | +137 |
+| PR-4 | atomic_write helper convergence | −25 |
+| PR-5 | build_engine_database convergence | −45 |
+| PR-6 | Sweep-test boilerplate consolidation | −258 |
+| PR-7 | Orphan re-export removal — **dropped** | 0 |
+| PR-8 | §10 retext + Phase 3 §9.1 forward-pointers | +23 |
+| **Total** | | **−1014 net LOC** |
+
+The cumulative net deletion of −1014 LoC tracks the design's framing
+of Phase 4 as a *cleanup release* — net negative across PR-1..PR-7
+with PR-8 a small positive offset.
+
+**What shipped:**
+
+- **Phase 2 closeouts:** `LenientBackend` extracted to a single
+  shared `atlas_engine::testing::LenientBackend` (PR-1, PR-6
+  reused); per-language subprocess decoders consolidated into a
+  canonical `decode_subprocess_surface_payload` helper with
+  language-specific wrappers preserved where they carry semantic
+  framing (PR-2); L8 phantom-subcomponent emission fixed via
+  ambiguous-root-resolution synthetic-marker pattern (PR-3).
+- **Convergence cleanups:** `cache::layout::atomic_write` deleted in
+  favour of the canonical `atlas_engine::atomic_write::atomic_write`
+  (PR-4); `reports::build_database_for_reports` deleted in favour
+  of a thin wrapper `pipeline::build_engine_database_for_reports`
+  around the canonical `pipeline::build_engine_database` (PR-5);
+  Phase 3 sweep-test boilerplate extracted to
+  `crates/atlas-cli/tests/common/sweep_support.rs` (PR-6).
+- **Documentation cleanup:** the canonical system-model spec's §10
+  retexted to the validated post-Phase-3 phase ordering (Phase 4 =
+  cleanup release; Phase 5 = monorepo consolidation; Phase 6 =
+  user-facing schema cleanups; Phase 7 = per-language refinements;
+  Phase 8 = subprocess convergence; Phase 9 = LLM-driven analyses;
+  Phase 10 = server mode). Phase 3 §9.1 deferred-list got eleven
+  `(now Phase X)` forward-pointer annotations (PR-8).
+
+**Cumulative regression guard:** the Phase 3 polyglot smoke test
+(`crates/atlas-cli/tests/phase3_polyglot_fixture.rs::polyglot_phase3_acceptance`)
+passes byte-identically across every Phase 4 PR. LLM-call-budget
+invariants held (cold > 0 && < 100, baseline 40; warm = 0;
+modularity/divergence/impact = 0). Zero new LLM call sites
+introduced; on-disk schema_version stays at 1; six-file editorial
+tier preserved; `atlas-reports` stays pure-function (no `fs::*`).
+
+**Build-prerequisite gotcha (load-bearing for Phase 5+):** the
+release-mode polyglot smoke test requires `cargo build --release
+--workspace` to be run *before* `cargo test ... --release` so the
+standalone analyzer binaries (atlas-{python,csharp,dart,elixir,
+racket,lispkit}-analyzer) exist at the runtime path lookups. PR-4
+and PR-2 both surfaced this; the symptom is `consumes-contract
+edge: component <X> → unresolved contract <Y>` from the Phase 3
+polyglot acceptance test. The continuation prompt's verification
+protocol should be amended to spell this out (proposed amendment
+left for Phase 5 docs polish).
+
+**Subagent failure mode (load-bearing for Phase 5+):** four of six
+implementer subagents in this session bailed mid-run waiting on
+buffered cargo test output (used `tail -50`/`tail -f` against
+in-flight cargo logs and lost the parent context when the bash
+buffer didn't flush). The `feedback_no_tail_pipe_for_long_tests`
+memory captures the rule; future continuation prompts should spell
+out the alternative pattern (`run_in_background=true` + check the
+output file via Read after the runtime fires the completion
+notification) rather than just stating the prohibition.
+
+**Subagent runtime stale-base bug (carry-forward from PR-1):** the
+`isolation: "worktree"` parameter creates worktrees off a stale ref
+on this runtime (memory `feedback_worktree_base_verification`).
+Workaround used throughout Phase 4: orchestrator manually creates
+worktrees via `git worktree add <path> -b <branch> <current-main-sha>`
+and briefs implementer subagents to work in those paths without
+`isolation: "worktree"`. This pattern should carry forward to Phase
+5+ until the runtime is fixed.
+
+**Phase 5 routing:** per the validated post-Phase-3 roadmap (memory
+`project_phase4_plus_roadmap`; canonical §10.5 as landed in PR-8),
+Phase 5 = monorepo consolidation: fold atlas-contracts in-tree, fold
+Ravel + Ravel-Lite, delete multi-root machinery. No Phase 5 design
+spec exists yet (`docs/superpowers/specs/2026-05-*-atlas-vnext-
+phase5-design.md` not present). Per the continuation prompt's
+Step 4: surface to the user "Phase 5 (monorepo consolidation) is
+the next phase; want me to brainstorm Phase 5 scope?" This is a
+brainstorm prompt, not an autonomous dispatch — Phase 5 design
+requires user-driven `superpowers:brainstorming`, not orchestrator-
+side improvisation.
 
 ### PR-7
 2026-05-09 — **Dropped.** The Phase 4 design spec §3 PR-7 and plan §4
