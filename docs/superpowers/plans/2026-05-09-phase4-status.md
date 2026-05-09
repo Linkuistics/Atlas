@@ -7,12 +7,13 @@ continuation prompt at
 reads this file (via the `*phase4-plan*` wildcard match) to find the
 next PR to dispatch.
 
-**Last updated:** 2026-05-09 (PR-0 landed; PR-7 dropped after Wave 1
-pre-flight grep surfaced two real callers of the alias the design
-spec classified as orphan — see PR-7 note below; PR-1 landed via
-cherry-pick from worktree branch `phase4-pr1`, commits `5e781d9` +
-`abb7f44`). PR-2..PR-6 + PR-8 are dispatched by execution sessions
-pasting the continuation prompt.
+**Last updated:** 2026-05-09 (Wave-1+2 trio PR-4 / PR-5 / PR-8 landed
+via cherry-pick from worktree branches `phase4-pr4` / `phase4-pr5` /
+`phase4-pr8`; commits on main `02d608d` / `e89c55f` / `009d7e5`).
+Cumulative Phase 4 LOC delta running tally: PR-1 (−278) + PR-4 (−25)
++ PR-5 (−45) + PR-8 (+23) = **−325 net** so far. PR-2 + PR-3 + PR-6
+remain; the next dispatch wave is PR-2 + PR-3 + PR-6 (PR-2 and PR-3
+are investigation-heavy; PR-6 unblocks now that PR-1 is on main).
 
 ## PR status
 
@@ -24,11 +25,11 @@ commit sha + anything load-bearing the next session needs to know).
 - [x] PR-1 — LenientBackend extraction (Phase 2 closeout)
 - [ ] PR-2 — Decoder consolidation (Phase 2 closeout)
 - [ ] PR-3 — L8 phantom-subcomponent fix (Phase 2 closeout)
-- [ ] PR-4 — `atomic_write` helper convergence
-- [ ] PR-5 — `build_engine_database` / `build_database_for_reports` convergence
+- [x] PR-4 — `atomic_write` helper convergence
+- [x] PR-5 — `build_engine_database` / `build_database_for_reports` convergence
 - [ ] PR-6 — Sweep-test boilerplate consolidation
 - [x] PR-7 — Orphan `pub use save_related_components_atomic` removal (atlas-contracts) — **dropped 2026-05-09**, the alias is not orphan
-- [ ] PR-8 — Stale "Phase 4" prose retext + §10 renumbering in canonical system-model spec
+- [x] PR-8 — Stale "Phase 4" prose retext + §10 renumbering in canonical system-model spec
 
 When every box is `[x]`, Phase 4 is complete and the continuation
 prompt should report success and route to the Phase 5 brainstorm
@@ -253,10 +254,145 @@ resolved.
 *Awaiting dispatch.*
 
 ### PR-4
-*Awaiting dispatch.*
+2026-05-09 — Landed via cherry-pick from worktree branch `phase4-pr4`.
+Commit on main: `02d608d`. Net diff: 3 files, +16/−41 (net **−25
+LOC**) — under the plan's −50 to −100 estimate because the deleted
+helper's `tempfile::NamedTempFile` body plus the now-unused `Write`
+and `tempfile` imports compressed cleanly; no extra explanatory
+comments were padded into the canonical helper.
+
+**Implementation summary:** The duplicate `pub(crate) fn atomic_write`
+in `crates/atlas-engine/src/cache/layout.rs` (38-line body using
+`tempfile::NamedTempFile::new_in` + `write_all` + `flush` + `persist`)
+was deleted; its sole call site at `cache/mod.rs:129` now invokes the
+canonical `crate::atomic_write::atomic_write(&path, blob)` wrapped in
+`.with_context(|| format!("atomic_write to {} failed", path.display()))?`.
+The canonical helper uses raw `OpenOptions` + `sync_all()` +
+`fs::rename()` (a leaner shape than `NamedTempFile::persist`) and
+provides the same atomic guarantee. Doc-comments retexted: the
+"left in place for now (a future refactor can converge them — out of
+scope for PR-1)" paragraph at `atomic_write.rs:13-19` replaced with a
+forward note that the cache writer converged on this helper in
+Phase 4 PR-4; `cache/mod.rs:18` and `cache/layout.rs` module-level
+docs updated accordingly.
+
+**Manual error-context verification (per the §4 PR-4 risk gate):** by
+inspection of both implementations, the error-chain shape is
+practically equivalent. The OLD path attached anyhow `.with_context(...)`
+calls at every step ("creating cache directory <dir>", "creating
+temp file in <dir>", "writing cache blob to temp file in <dir>",
+"flushing cache blob to temp file in <dir>", "persisting cache blob
+to <target>"); the NEW path returns raw `io::Error` from each step
+(parent-mkdir, OpenOptions::open, write_all, sync_all, rename) and
+attaches a single outer `.with_context("atomic_write to <path>
+failed")` from the call site. The destination path is preserved in
+every error chain via the outer wrap; the underlying `io::Error::kind()`
+(e.g. `PermissionDenied`, `StorageFull`, `CrossesDevices`) conveys
+which step failed. The PR-12 atomic-write fixture suite
+(`crates/atlas-reports/tests/atomic_writes.rs`, 5 tests; the
+canonical kill-during-write durability regression guard) passes
+byte-identically post-migration — durability semantics preserved.
+
+**Cumulative regression guard:** polyglot smoke test passed in 88.45s
+release-mode (matches PR-1's 87.27s baseline within natural variance);
+LLM-call-budget assertions hold (cold > 0 && < 100; warm = 0;
+modularity/divergence/impact = 0). `cargo fmt --check` + `cargo
+clippy --all-targets -- -D warnings` clean.
+
+**Build-prerequisite gotcha for future Phase 4 sessions:** the
+polyglot smoke test in `--release` mode requires the standalone
+analyzer binaries (atlas-{python,csharp,dart,elixir,racket,lispkit}-
+analyzer) to be built first. Running just `cargo test -p atlas-cli
+--test phase3_polyglot_fixture --release --no-fail-fast` only builds
+atlas-cli + its dependencies, leaving the analyzer binaries absent —
+the test then produces empty surfaces for those languages and fails
+on contract validation (the failure shape is `consumes-contract
+edge: component <X> → unresolved contract <Y>`). PR-1's release-mode
+pass implicitly relied on the analyzer binaries already being built.
+Future Phase 4 sessions should `cargo build --release --workspace`
+first when running the polyglot test in release mode (debug works
+without this prerequisite but is unusably slow per the PR-1 note).
+The continuation prompt's verification protocol should be amended
+to include this `cargo build --release --workspace` precondition;
+flagging as a candidate amendment for the next Phase 4 docs PR.
+
+**Worktree mechanism:** worktree created manually via `git worktree
+add /Users/antony/Development/Atlas-phase4-pr4 -b phase4-pr4
+fe7070d` (per the PR-1 status note's pattern; avoids the runtime's
+`isolation: "worktree"` stale-base bug from `feedback_worktree_base_
+verification`).
 
 ### PR-5
-*Awaiting dispatch.*
+2026-05-09 — Landed via cherry-pick from worktree branch `phase4-pr5`.
+Commit on main: `e89c55f`. Net diff: 2 files, +50/−95 (net **−45
+LOC**) — within the plan's −50 to −100 estimate. The +50 is the new
+`build_engine_database_for_reports` wrapper (16 lines of code +
+~30 lines of structured doc-comment); the −95 is the deleted
+`build_database_for_reports` body in `reports.rs` plus pruned
+imports.
+
+**Implementation summary:** PR-11 of Phase 3 (divergence) had
+introduced a private `build_database_for_reports` helper inside
+`reports.rs` that duplicated ~75 lines of
+`pipeline::build_engine_database`'s body via a slightly leaner code
+path. Phase 4 PR-5 collapses the two by adding a thin wrapper
+`pub fn build_engine_database_for_reports(root, output_dir,
+fingerprint_override, backend)` in `pipeline.rs` that synthesises an
+`IndexConfig` with the divergence path's defaults (no `--no-overrides`,
+no `--recarve`, `respect_gitignore = true`), wires up a silent
+stderr reporter (`ProgressMode::Never`), and forwards through to the
+canonical `build_engine_database`. `run_divergence` now calls the
+wrapper instead of the deleted local helper.
+
+**Step-1 delta (per plan §4 PR-5 step 1):** the deleted helper
+diverged from the canonical helper in five distinct ways:
+
+| Aspect | Canonical `build_engine_database` | Deleted `build_database_for_reports` |
+|---|---|---|
+| Signature | `(config: &IndexConfig, backend, reporter) -> Result<(AtlasDatabase, Vec<PathBuf>), IndexError>` | `(root, output_dir, fingerprint_override, backend) -> Result<AtlasDatabase>` |
+| Visibility | `pub` (used by `run_modularity`) | `fn` (private; used only by `run_divergence`) |
+| BudgetSentinel | yes | no |
+| Progress reporter | events emitted | no events |
+| Analyser overrides merge | yes | no |
+| L5 pre-warm | parallel (rayon) | sequential |
+| `IndexConfig` shape | full | implicit defaults |
+
+**Step-2 decision (per plan §4 PR-5 step 2):** chose the *thin-
+wrapper* path explicitly permitted by the plan ("If
+`build_database_for_reports` does anything substantively different
+beyond pre-warming, prefer adding a thin wrapper… rather than baking
+divergence semantics into the shared body"). The wrapper synthesises
+only the *defaults* the deleted helper used; the canonical helper
+takes care of the rest. The convergence point is a strict semantic
+superset for the divergence path: it gains BudgetSentinel coverage,
+the analyser-overrides merge, and the parallel L5 pre-warm. None of
+these change the byte-identical YAML output the divergence handler
+emits — they're operationally invisible from the report's
+perspective.
+
+**Pruned imports (forensic detail):** `atlas_engine::{all_components,
+expand_roots, run_fixedpoint, seed_filesystem_excluding, surface_of,
+FixedpointConfig, LlmResponseCache, PersistentCache}` and
+`atlas_index::{load_or_default_externals, load_or_default_overrides,
+load_or_default_subsystems_overrides, OverridesFile,
+SubsystemsOverridesFile}`. The size of this pruning corroborates
+that the deleted helper had genuinely duplicated machinery (not just
+a couple of redundant lines).
+
+**Cumulative regression guard:** the divergence-byte-identical
+acceptance is satisfied by the existing
+`atlas_divergence_after_drift_writes_severity_aware_report` test in
+`crates/atlas-cli/tests/divergence_cli.rs` (asserts byte-identical
+output YAML against the fixture's expected
+`composition-divergence.yaml`); it passed byte-identically in
+release mode. Polyglot smoke test passed in >60s release-mode
+(the cumulative LLM-call-budget assertions hold; cold > 0 && < 100;
+warm = 0; modularity/divergence/impact = 0). `cargo clippy
+--all-targets -- -D warnings` and `cargo fmt --check` clean.
+
+**Worktree mechanism:** worktree created manually via `git worktree
+add /Users/antony/Development/Atlas-phase4-pr5 -b phase4-pr5
+fe7070d` per the PR-1 pattern.
 
 ### PR-6
 *Awaiting dispatch (sequenced after PR-1).*
@@ -306,4 +442,80 @@ that's a one-line strikethrough at design §3 PR-7 — out of scope for
 the current arc.
 
 ### PR-8
-*Awaiting dispatch.*
+2026-05-09 — Landed via cherry-pick from worktree branch `phase4-pr8`.
+Commit on main: `009d7e5`. Net diff: 2 files, +67/−44 (net **+23
+LOC**) — under the plan's +60 to +120 estimate; the implementer
+used precise replacements rather than always-inserting where the
+existing prose admitted clean substitution.
+
+**Implementation summary:** the PR is one commit, two files changed.
+
+`docs/superpowers/specs/2026-05-06-atlas-system-model-design.md`:
+- §10.4 retexted from "Convergence and cleanups" (the pre-Phase-3
+  multi-track grab-bag) to "Phase 4 — Cleanup release" with the
+  shorter scope-statement landing the canonical Phase 4 design
+  spec's wording verbatim.
+- New §10.5 (Phase 5 — Monorepo consolidation), §10.6 (Phase 6 —
+  User-facing schema cleanups), §10.7 (Phase 7 — Per-language
+  refinements), §10.8 (Phase 8 — Subprocess convergence), §10.9
+  (Phase 9 — LLM-driven analyses) inserted per Phase 4 design spec
+  §6 verbatim.
+- Old §10.5 (Server mode) renumbered to §10.10; old §10.6 (Migration
+  from v1) renumbered to §10.11 (OBSOLETE marker preserved
+  unchanged).
+- Five prose retexts: line 502 (§5.6 server-mode intro: "Phase 4" →
+  "Phase 10"); line 981 (§9 introduction: "Phase 4 target" → "Phase
+  10 target"); line 1270 (§11.2 question 5: full retext + retitle
+  from "Phase 5 query API" to "Phase 10 query API"); line 1314
+  (§11.4: "Phase 4 ships" → "Phase 10 ships"); line 1436 (glossary
+  Role-B Grafeo entry: "deferred to Phase 4 and beyond" → "deferred
+  to Phase 10 (server mode) and beyond" — the surrounding paragraph
+  is about Grafeo as a derived projection alongside server mode, so
+  the explicit Phase 10 wording is more informative than "deferred
+  indefinitely").
+
+`docs/superpowers/specs/2026-05-08-atlas-vnext-phase3-design.md`:
+- §9.1 deferred-list: eleven `(now Phase X)` forward-pointer
+  annotations appended (pattern detection → Phase 9; subprocess
+  convergence → Phase 8; bidirectional LLM callback → Phase 8;
+  rust-analyzer → Phase 8 stretch; LLM threshold calibration →
+  Phase 9; contract rename-match → Phase 6; `--strict-overrides` →
+  Phase 6; cache compression → Phase 6; worktree commit-sha → Phase
+  6; Phase 2 closeouts → Phase 4; per-language refinements →
+  Phase 7).
+
+**Sweep verifications (per plan §4 PR-8 step 14 + continuation
+prompt PR-8 special instructions):**
+
+- `grep -nE "Phase 4" canonical-spec` → exactly two occurrences,
+  both inside the new §10.4 heading and body. Zero missed retexts.
+- `grep -nE "§10\.[0-9]+" docs/superpowers/` → all hits in the
+  current-authoritative docs (canonical spec, Phase 4 design spec)
+  resolve to valid §10.1–§10.11 headings. Other matches in sibling
+  plans/prompts (Phase 1/2/3 plans, the Phase 3 design's own §10
+  renumbering instructions) are forensic — frozen at the time those
+  docs were written; retained intentionally per the prior-phase-doc
+  convention.
+- `grep -nE "Phase 4 = server mode|moved from Phase 4 to Phase 5"`
+  → zero hits. The renumbering rationale lives in the commit
+  message, not in the spec.
+
+**Cumulative regression guard:** PR-8 is docs-only — no code path
+could affect the polyglot smoke test. The cumulative regression-
+guard pass is inherited from PR-1's 87.27s release-mode pass
+(commit `fe7070d`). To preserve the every-PR discipline, future
+sessions running PR-8-shaped pure-docs PRs may skip the polyglot
+re-run if the diff is byte-stable outside touched-prose paragraphs;
+otherwise re-run for safety.
+
+**Worktree mechanism:** worktree created manually via `git worktree
+add /Users/antony/Development/Atlas-phase4-pr8 -b phase4-pr8
+fe7070d` per the PR-1 pattern.
+
+**Forensic loose-end (out-of-scope; not blocking):** the §9.1
+*heading* in the Phase 3 design ("Deferred to Phase 4 (convergence
++ cleanups + LLM analyses)") is now stale because most listed items
+moved to Phase 6/7/8/9; the plan's step 15 only mandated per-item
+forward-pointer annotations, not a heading retext. A future
+Phase 5+ docs polish could update the heading; out of scope for
+PR-8.
