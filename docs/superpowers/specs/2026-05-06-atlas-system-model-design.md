@@ -499,7 +499,7 @@ L6 cache entry that named it as a participant misses on the next access.
 
 ### 5.6 Server mode (eventual)
 
-Server mode (Phase 4) makes Atlas long-running:
+Server mode (Phase 10) makes Atlas long-running:
 
 - A **file watcher** (notify-rs) feeds change events. Affected Salsa inputs
   update; downstream queries become stale; on next access they recompute.
@@ -978,7 +978,7 @@ In server mode, GC runs periodically (default: daily) in a background task.
 
 ## 9. Server mode
 
-Server mode is the Phase 4 target. The CLI continues to work as a degenerate
+Server mode is the Phase 10 target. The CLI continues to work as a degenerate
 client.
 
 ### 9.1 Architecture
@@ -1158,33 +1158,56 @@ built to support.
 §10.3 introduces no new LLM call sites; all analyses are pure aggregations
 over L4–L8 outputs.
 
-### 10.4 Phase 4 — Convergence and cleanups
+### 10.4 Phase 4 — Cleanup release
 
-**Goal:** Subprocess convergence, LLM-bearing analyses, and Phase 1/2/3
-closeout cleanups before server mode lands.
+**Goal:** Pay down internal-quality debt accumulated across
+Phases 1–3 and align canonical documentation with the validated
+post-Phase-3 phase ordering. No new user-facing capability, no
+schema change, no LLM call sites.
 
-**Scope:**
-- **Pattern detection** (originally design §10.3): recurring component shapes
-  (e.g., "trio of components with parallel surfaces" suggesting a strategy
-  pattern), recurring edge shapes. Needs LLM machinery that Phase 4
-  introduces.
-- **Subprocess convergence**: migrate Cargo / Dockerfile / RustSurface /
-  LlmClassify / TS-as-subprocess from in-process to subprocess.
-- **Bidirectional LLM callback channel** for subprocess analysers.
-- **`rust-analyzer` integration** replacing `syn` (stretch).
-- **LLM confidence threshold calibration** (§11.2.6).
-- **Contract rename-match** (§11.2.4).
-- **`--strict-overrides` flag**.
-- **Cache compression** (§11.2.7).
-- **Worktree commit-sha consistency annotations** (§11.2.8).
-- **Phase 2 closeout cleanups**: `LenientBackend` extraction, decoder
-  consolidation, `is_manifest_file` extension for Makefile/shell, L8
-  phantom-subcomponent fix.
-- **Per-language Phase 3 refinements**: full tree-sitter-dart, raco-driven
-  Racket dep resolution, Phoenix sub-kinds for Elixir, Mix umbrella
-  decomposition, LispKit `(import …)` symbolic resolution.
+**Scope (~9 PRs):**
+- LenientBackend extraction; decoder consolidation; L8 phantom-
+  subcomponent fix (Phase 2 closeouts).
+- `atomic_write` helper convergence; `build_engine_database` /
+  `build_database_for_reports` convergence; sweep-test boilerplate
+  consolidation; orphan `save_related_components_atomic` removal.
+- This §10 retext + Phase 3 design §9.1 forward-pointer update.
 
-### 10.5 Phase 5 — Server mode
+See `docs/superpowers/specs/2026-05-09-atlas-vnext-phase4-design.md`
+for the canonical Phase 4 scope.
+
+### 10.5 Phase 5 — Monorepo consolidation
+
+**Goal:** Fold atlas-contracts + Ravel + Ravel-Lite into Atlas;
+delete multi-root machinery.
+
+### 10.6 Phase 6 — User-facing schema cleanups
+
+**Scope:** Contract rename-match (§11.2.4); `--strict-overrides`
+flag; cache compression (§11.2.7); worktree commit-sha
+annotations (§11.2.8); `is_manifest_file` Makefile/shell
+extension; `subsystem` field wiring (Phase 3 PR-9 deferral);
+`edges_suppress` no-match warning stderr-capture test (Phase 3
+PR-10 deferral).
+
+### 10.7 Phase 7 — Per-language refinements
+
+**Scope:** Full tree-sitter-dart; raco-driven Racket dep
+resolution; Phoenix sub-kinds for Elixir; Mix umbrella
+decomposition; LispKit `(import …)` symbolic resolution.
+
+### 10.8 Phase 8 — Subprocess convergence
+
+**Scope:** Migrate Cargo / Dockerfile / RustSurface / LlmClassify /
+TS-as-subprocess to subprocess; bidirectional LLM callback channel;
+rust-analyzer integration (stretch).
+
+### 10.9 Phase 9 — LLM-driven analyses
+
+**Scope:** Pattern detection (recurring component / edge shapes);
+LLM confidence threshold calibration (§11.2.6).
+
+### 10.10 Phase 10 — Server mode
 
 **Goal:** Long-running service with reactive recomputation and query API.
 
@@ -1196,7 +1219,7 @@ closeout cleanups before server mode lands.
 - CLI as thin client to co-located server.
 - Optional Grafeo derived index for ad-hoc Cypher/GQL/SPARQL queries.
 
-### 10.6 Migration from v1
+### 10.11 Migration from v1
 
 > **OBSOLETE.** Superseded by the greenfield non-negotiable adopted in
 > Phase 1. There is no migration path from v1 layouts; a user upgrading
@@ -1265,10 +1288,10 @@ The following are flagged for resolution before the relevant phase ships.
    from v1 covers components; an analogous mechanism for contracts is
    needed.
 
-5. **Phase 5 query API authentication and authorisation.** Server mode running
+5. **Phase 10 query API authentication and authorisation.** Server mode running
    in a multi-tenant environment (CI, shared dev server) needs an auth model.
-   Defer to Phase 5 design (server mode moved from Phase 4 to Phase 5; see
-   §10.5).
+   Defer to Phase 10 design (server mode is now §10.10 under the validated
+   post-Phase-3 ordering; see §10.10).
 
 6. **LLM analyser confidence thresholds.** The threshold for "confident" vs
    "declines" is per-analyser. Defaults need calibration against real
@@ -1311,7 +1334,7 @@ The following are flagged for resolution before the relevant phase ships.
 
 ### 11.4 Deferred: Grafeo as a derived projection
 
-Once Phase 4 ships and the server has concrete polyglot consumers issuing
+Once Phase 10 ships and the server has concrete polyglot consumers issuing
 ad-hoc graph queries (Cypher, GQL, SPARQL), publishing a Grafeo-backed
 derived index alongside the YAMLs becomes an attractive role-B addition:
 
@@ -1433,7 +1456,7 @@ disagreement between the two graphs is itself useful.
 - **Plugin protocol**: the interface analysers conform to, supporting
   in-process Rust trait objects and subprocess stdio JSON.
 - **Role-B Grafeo**: Grafeo as a derived query index alongside YAML,
-  deferred to Phase 4 and beyond.
+  deferred to Phase 10 (server mode) and beyond.
 - **Surface**: a component's complete interface to the system: the contracts
   it defines, implements, consumes, plus the bindings.
 - **Top-level `.atlas/`**: the directory at the primary root holding

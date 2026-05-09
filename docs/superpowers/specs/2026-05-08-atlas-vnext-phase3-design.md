@@ -878,22 +878,22 @@ missing should redirect to the relevant phase.
 ### 9.1 Deferred to Phase 4 (convergence + cleanups + LLM analyses)
 
 - Pattern detection (originally design §10.3) — needs LLM machinery that
-  Phase 4 introduces.
+  Phase 4 introduces. (now Phase 9)
 - Subprocess convergence: migrate Cargo / Dockerfile / RustSurface /
-  LlmClassify / TS-as-subprocess from in-process to subprocess.
-- Bidirectional LLM callback channel for subprocess analysers.
-- `rust-analyzer` integration replacing `syn` (stretch).
-- LLM confidence threshold calibration (§11.2.6).
-- Contract rename-match (§11.2.4).
-- `--strict-overrides` flag.
-- Cache compression (§11.2.7).
-- Worktree commit-sha consistency annotations (§11.2.8).
+  LlmClassify / TS-as-subprocess from in-process to subprocess. (now Phase 8)
+- Bidirectional LLM callback channel for subprocess analysers. (now Phase 8)
+- `rust-analyzer` integration replacing `syn` (stretch). (now Phase 8 stretch)
+- LLM confidence threshold calibration (§11.2.6). (now Phase 9)
+- Contract rename-match (§11.2.4). (now Phase 6)
+- `--strict-overrides` flag. (now Phase 6)
+- Cache compression (§11.2.7). (now Phase 6)
+- Worktree commit-sha consistency annotations (§11.2.8). (now Phase 6)
 - Phase 2 closeout cleanups: `LenientBackend` extraction, decoder
   consolidation, `is_manifest_file` extension for Makefile/shell, L8
-  phantom-subcomponent fix.
+  phantom-subcomponent fix. (now Phase 4)
 - Per-language Phase 3 refinements: full tree-sitter-dart, raco-driven
   Racket dep resolution, Phoenix sub-kinds for Elixir, Mix umbrella
-  decomposition, LispKit `(import …)` symbolic resolution.
+  decomposition, LispKit `(import …)` symbolic resolution. (now Phase 7)
 
 ### 9.2 Deferred to Phase 5 (server mode)
 
