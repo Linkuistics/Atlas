@@ -551,13 +551,47 @@ fn absolutise_under_any_root(
     // Pass 2: legacy "first root whose <root>/<segment> contains a
     // registered file" — preserves single-segment / no-manifest
     // behaviour.
+    //
+    // Phase 4 PR-3 (L8 phantom subcomponent fix). When more than one
+    // root passes this prefix check, the segment is genuinely
+    // ambiguous and Pass 1's manifest signal was unable to break the
+    // tie (either `manifests` is empty or none resolved). The
+    // pre-PR-3 behaviour silently routed the entry to `roots[0]`,
+    // which `enumerate_immediate_subdirs` then walked end-to-end —
+    // emitting every primary-root sub-dir as a phantom sub-component
+    // of the (mis-routed) entry. The trigger in practice is an
+    // override-addition or other synthetic entry whose
+    // `path_segments[0].path == ""` and `manifests == []`, in which
+    // case `<root>/<empty>` matches every root trivially.
+    //
+    // The fix: when the prefix check matches more than one root and
+    // we have no manifest signal to disambiguate, return a path that
+    // does not exist in the registered file set (we simply mark the
+    // resolved segment with a synthetic component — `__atlas_unresolved`
+    // — that no real file path can collide with). The caller's
+    // `enumerate_immediate_subdirs` then walks the workspace, finds
+    // no descendants under the unresolved path, and proposes nothing.
+    // That is the correct behaviour: when ownership cannot be
+    // determined, the safe answer is "no sub-dirs", not "every
+    // primary-root sub-dir".
+    let mut matching: Vec<&PathBuf> = Vec::new();
     for root in roots {
         let candidate = root.join(segment_path);
         if files.iter().any(|f| f.path(dyn_db).starts_with(&candidate)) {
-            return candidate;
+            matching.push(root);
         }
     }
-    absolutise(&roots[0], segment_path)
+    match matching.len() {
+        0 => absolutise(&roots[0], segment_path),
+        1 => matching[0].join(segment_path),
+        _ => {
+            // Ambiguous: more than one root contains files under
+            // `<root>/<segment>` and Pass 1 produced no manifest
+            // disambiguation. Mark the segment unresolved so the
+            // caller's enumeration treats it as "no owned tree".
+            roots[0].join("__atlas_unresolved__").join(segment_path)
+        }
+    }
 }
 
 fn build_rationale(
@@ -971,5 +1005,108 @@ mod tests {
         assert!(r.contains("kept:"));
         assert!(r.contains("src/auth"));
         assert!(r.contains("src/billing"));
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 4 PR-3 — L8 phantom subcomponent regression probe.
+    //
+    // Phase 2 PR-13 closed the manifest-grounded peer-root case via
+    // Pass 1 of `absolutise_under_any_root`. The observation that
+    // remained: when an entry has an empty `path_segments[0].path`
+    // but no `manifests` (or manifests that don't actually exist
+    // under any registered root), Pass 1 can't disambiguate, Pass 2
+    // walks roots in declaration order accepting the first whose
+    // `<root>/<empty>` covers any registered file (trivially every
+    // root), so `roots[0]` always wins. Result: a peer-root component
+    // whose true owner is a non-primary root resolves to the primary,
+    // and `enumerate_immediate_subdirs` proposes every primary-root
+    // subdirectory as a phantom sub-component.
+    //
+    // The fixture below builds a two-root workspace with a
+    // synthetic peer-root entry that mirrors the override-additions
+    // shape (empty path segment, no manifests) and asserts that
+    // none of the primary's sub-directories are proposed under
+    // it. The test fails before the fix.
+    // ---------------------------------------------------------------
+
+    /// Build a peer-root-shaped `ComponentEntry` whose `path_segments`
+    /// is `[""]` and whose `manifests` is empty — the shape that
+    /// caused phantom emission before the Phase 4 PR-3 fix.
+    fn empty_segment_no_manifest_entry(id: &str) -> ComponentEntry {
+        ComponentEntry {
+            id: component_ontology::ComponentId::parse(id).unwrap(),
+            parent: None,
+            kind: "rust-library".into(),
+            lifecycle_roles: Vec::new(),
+            languages: std::collections::BTreeSet::new(),
+            build_system: None,
+            role: None,
+            path_segments: vec![atlas_index::PathSegment {
+                path: PathBuf::new(),
+                content_sha: "0".repeat(64),
+            }],
+            manifests: Vec::new(),
+            doc_anchors: Vec::new(),
+            evidence_grade: component_ontology::EvidenceGrade::Strong,
+            evidence_fields: Vec::new(),
+            rationale: String::new(),
+            deleted: false,
+        }
+    }
+
+    #[test]
+    fn empty_segment_with_no_manifests_does_not_phantom_emit_primary_subdirs() {
+        // Two-root layout. The primary holds a real crate
+        // (`primary/consumer-crate/...`). The peer holds nothing the
+        // walker registers. A synthetic entry whose
+        // `path_segments[0].path == ""` and `manifests` is empty is
+        // declared with `id = "peer-only"`; conceptually it owns the
+        // peer root, but L8's `absolutise_under_any_root` has no
+        // manifest signal to disambiguate. Pass 1 is skipped (no
+        // manifests), Pass 2's "first root with files at <root>/<empty>"
+        // check accepts both roots and takes `roots[0]` (the primary),
+        // and `enumerate_immediate_subdirs` then walks the primary's
+        // tree and proposes `consumer-crate` as an immediate sub-dir.
+        // That is the phantom.
+        let parent = TempDir::new().unwrap();
+        let primary = parent.path().join("primary");
+        let peer = parent.path().join("peer");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&peer).unwrap();
+        build_lib_crate(&primary, "consumer-crate");
+
+        // Peer has at least one registered file so `seed_filesystem`
+        // doesn't drop the root entirely; the file lives at the peer
+        // top level (not in any sub-directory) so the legitimate
+        // immediate-subdir set under the peer is empty.
+        std::fs::write(peer.join("README.md"), "# peer\n").unwrap();
+
+        let backend = Arc::new(TestBackend::with_fingerprint(fingerprint()));
+        let backend_dyn: Arc<dyn atlas_llm::LlmBackend> = backend.clone();
+        let roots = vec![primary.clone(), peer.clone()];
+        let mut db = AtlasDatabase::new(backend_dyn, roots.clone(), fingerprint());
+        seed_filesystem(&mut db, &roots, false).unwrap();
+
+        let workspace = db.workspace();
+        let entry = empty_segment_no_manifest_entry("peer-only");
+        let immediates = enumerate_immediate_subdirs(&db, workspace, &roots, &entry);
+
+        // The peer root has no sub-directories, so the only legitimate
+        // result is an empty vector. Any path containing `consumer-crate`
+        // (or any other primary-root directory) is a phantom.
+        let names: Vec<String> = immediates
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !names.iter().any(|n| n.contains("consumer-crate")),
+            "peer-only entry must not phantom-emit `consumer-crate` (a \
+             primary-root sub-dir): {names:?}"
+        );
+        assert!(
+            immediates.iter().all(|p| p.starts_with(&peer)),
+            "every immediate sub-dir of a peer-root entry must live under \
+             the peer root; got {names:?}"
+        );
     }
 }
