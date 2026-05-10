@@ -12,7 +12,7 @@ Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the
 - [x] PR-1 — Fold A: atlas-contracts in-tree (structural)
 - [x] PR-2 — Drop discovery (deletion + CLI surface change)
 - [x] PR-3 — Singularise `Workspace` (type + call-site refactor)
-- [ ] PR-4 — Salvage tests (test suite surgery)
+- [x] PR-4 — Salvage tests (test suite surgery)
 - [x] PR-5 — Retext canonical system-model design (docs only)
 - [ ] PR-6 — Acceptance + closeout (verification only)
 
@@ -99,6 +99,21 @@ PR-4 now becomes purely adding `contract_edge_in_workspace.rs` (the salvaged sin
 **Follow-up (commit `d2e8381`):** Code-quality review surfaced three cheap cleanups: retexted the misleading "Multi-root: each path segment..." comment in `l8_recurse.rs:~443`, the stale "covers all roots" prose at `db.rs:12`, and removed a vestigial brace scope in `l9_projections.rs:~310`. Two findings deferred: I-1 (l6_paths.rs:51 dead branch — pre-existing) and I-2 (build_engine_database public API still Vec<PathBuf> — plan did not authorise return-type collapse).
 
 **PR-4 scope clarification:** `multi_root.rs` was already deleted in PR-3, so PR-4 is now purely adding `contract_edge_in_workspace.rs` (the salvaged single-root replacement for the AC#1–5 contract-edge tests deleted in PR-2 + tests deleted in PR-3).
+
+### PR-4
+2026-05-10 — Commit: `62517d9` on main. New file `crates/atlas-cli/tests/contract_edge_in_workspace.rs` (554 LOC). Single-root rewrite of `atlas_contracts_in_ravel_lite.rs` (593 LOC; deleted in PR-2 scope-bleed). All cargo gates clean: `cargo build --workspace`, `cargo test --workspace --release --no-fail-fast` (0 failures), `cargo clippy --all-targets -- -D warnings` (0), `cargo fmt --check` (0), `cargo build --release --workspace`, polyglot smoke test (`phase3_polyglot_fixture` ok in 90.51s).
+
+**Key fixture change:** The original fixture created two tempdirs (one per root) connected by a cross-directory path-dep. The new fixture creates one tempdir with two sibling crates (`consumer/` and `schema-crate/`) directly under the root. No workspace-level `Cargo.toml` is written at the root — adding one would cause the cargo-classifier to emit a `kind: workspace` component for the tempdir itself (with a random tempdir-name ID), which would break the contract-id assertion.
+
+**AC#1–5 mapping table:**
+
+| AC | Original assertion (lines in `atlas_contracts_in_ravel_lite.rs`) | New assertion (lines in `contract_edge_in_workspace.rs`) | Single-root translation notes |
+|----|------------------------------------------------------------------|----------------------------------------------------------|-------------------------------|
+| 1 | Lines 294–364: `components.yaml` must list both `consumer-crate` and `atlas-contracts` components; additionally asserts both dirs appear in `components.yaml.roots` (multi-root: two root entries). | Lines 285–328: `components.yaml` must list both `consumer` and `schema-crate` components. | **`roots` assertion dropped**: in single-root mode there is only one root (the tempdir itself). Asserting that both component IDs appear in `components` is the correct single-root equivalent; the dual-root `roots[]` assertion has no analogue and is explicitly not preserved (not redundant — different semantics; dropped because the invariant it tested no longer exists). |
+| 2 | Lines 366–417: `related-components.yaml` carries a `consumes-contract` edge from `consumer-crate` to a contract under `atlas-contracts/`. | Lines 331–381: `related-components.yaml` carries a `consumes-contract` edge from `consumer` to a contract under `schema-crate/`. | Component IDs changed: `consumer-crate` → `consumer`, `atlas-contracts` → `schema-crate`. Assertion structure identical. |
+| 3 | Lines 419–468: `atlas-contracts/.atlas/cache/surfaces.yaml` lists the contract under `contracts_defined`; asserts `kind == DataFormat` and `definition_binding.symbol == "Foo"`. | Lines 383–430: `schema-crate/.atlas/cache/surfaces.yaml` lists the contract under `contracts_defined`; asserts `kind == DataFormat` and `definition_binding.symbol == "Foo"`. | Path change: `parent.path().join("atlas-contracts/.atlas/cache/surfaces.yaml")` → `tmp.path().join("schema-crate/.atlas/cache/surfaces.yaml")`. All assertion fields preserved. |
+| 4 | Lines 498–512: no-op re-run makes zero LLM calls; persistent cache root exists. | Lines 459–474: no-op re-run makes zero LLM calls; persistent cache root exists. | Identical assertion structure; component IDs not referenced directly in this AC. |
+| 5 | Lines 515–592: after editing `atlas-contracts/src/lib.rs`: (a) `Stage2Edges` called ≥1 (L6 batch miss); (b) `surface_calls_for(CONTRACTS_ID) >= 1` (schema crate L5 miss); (c) `surface_calls_for(CONSUMER_ID) == 0` (consumer L5 hit); (d) `Classify == 0`; (e) `edited.total() < cold_total`. | Lines 476–554: after editing `schema-crate/src/lib.rs`: identical five assertions with `SCHEMA_ID` / `CONSUMER_ID` / `edited` substituted. | Full assertion set preserved. Only the path and constant names changed. |
 
 ### PR-5
 2026-05-10 — Commit: `57fb124` on main (cherry-picked from worktree branch `phase5-pr5` commit `1d794eb`). Docs-only retext of canonical system-model design.
