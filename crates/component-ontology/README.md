@@ -12,7 +12,7 @@ vocabulary.
 - **`LifecycleScope`** — 7 lifecycles (`design`, `codegen`, `build`,
   `test`, `deploy`, `runtime`, `dev-workflow`).
 - **`EvidenceGrade`** — `strong` / `medium` / `weak` with criteria
-  documented in `defaults/ontology.yaml`.
+  documented in this crate's embedded `defaults/ontology.yaml`.
 - **`Edge`** — kind + lifecycle + 2 participants + evidence + rationale.
   Validates direction, distinct participants, evidence presence.
 - **`RelatedComponentsFile`** — `schema_version: 2`; idempotent
@@ -27,10 +27,10 @@ vocabulary.
 
 ## Canonical files
 
-- `defaults/ontology.yaml` (at the workspace root) — the single source
-  of truth for the kind / lifecycle / evidence-grade vocabulary. The
-  crate embeds it via `include_str!`; a drift test asserts bijection
-  with the Rust enum surface.
+- `defaults/ontology.yaml` (in this crate's `defaults/` subdirectory) —
+  the single source of truth for the kind / lifecycle / evidence-grade
+  vocabulary. The crate embeds it via `include_str!`; a drift test
+  asserts bijection with the Rust enum surface.
 - `docs/component-ontology.md` (in Atlas) — the spec the Rust types
   realise. (Migrated to Atlas in stage M4.)
 

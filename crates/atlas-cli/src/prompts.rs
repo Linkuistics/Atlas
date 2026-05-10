@@ -39,8 +39,8 @@ pub const EMBEDDED_PROMPTS: &[(PromptId, &str, &str)] = &[
     ),
 ];
 
-/// `defaults/ontology.yaml`, embedded. Re-exposed so the CLI can hash
-/// it into the run-wide `LlmFingerprint.ontology_sha`.
+/// The schema crate's embedded ontology YAML. Re-exposed so the CLI
+/// can hash it into the run-wide `LlmFingerprint.ontology_sha`.
 pub const EMBEDDED_ONTOLOGY_YAML: &str = component_ontology::EMBEDDED_ONTOLOGY_YAML;
 
 /// Write every embedded prompt to `dir`, using

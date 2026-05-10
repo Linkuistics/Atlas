@@ -56,10 +56,9 @@ pub struct EvidenceGradeEntry {
 }
 
 /// Content of the shipped `defaults/ontology.yaml`, embedded at
-/// compile time. The path reaches the workspace-root `defaults/`
-/// directory; the crate is consumed via path or git dep (§9.5), not
-/// via a registry, so this is well-defined.
-pub const EMBEDDED_ONTOLOGY_YAML: &str = include_str!("../../../defaults/ontology.yaml");
+/// compile time. The file lives inside this crate so `cargo
+/// publish` captures it in the published tarball.
+pub const EMBEDDED_ONTOLOGY_YAML: &str = include_str!("../defaults/ontology.yaml");
 
 pub fn parse(yaml: &str) -> Result<OntologyYaml> {
     let parsed: OntologyYaml =
