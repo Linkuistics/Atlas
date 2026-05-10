@@ -92,7 +92,9 @@ PR-4 now becomes purely adding `contract_edge_in_workspace.rs` (the salvaged sin
 
 **Scope-bleed — tests deleted in PR-3:**
 - `crates/atlas-engine/tests/multi_root.rs` (154 LOC): authorised by plan §3.19 — referenced `Workspace.roots` plurally, no compile path post-collapse.
-- Two tests from `crates/atlas-engine/tests/l7_l8_fixedpoint.rs` and one inline test from `crates/atlas-engine/src/l8_recurse.rs`: not in plan, pulled forward (referenced `Workspace.roots` plurally; would have blocked compilation). Spec-compliance review pending.
+- One test (`peer_root_with_empty_segment_does_not_phantom_emit_primary_subdirs`) from `crates/atlas-engine/tests/l7_l8_fixedpoint.rs` and one inline test (`empty_segment_with_no_manifests_does_not_phantom_emit_primary_subdirs`) from `crates/atlas-engine/src/l8_recurse.rs`: not in plan, pulled forward (referenced `Workspace.roots` plurally; would have blocked compilation).
+
+**Audit grep (plan §3.21):** `git grep -E 'multi.root|multi-root|workspace\.roots' crates/atlas-engine/src/ crates/atlas-cli/src/` returns 6 surviving "multi-root" hits in source-tree doc comments (post-Issue-1 fix). Each is either `#[allow(dead_code)]`-annotated forward-compat scaffolding (`l4_tree.rs:382` `owning_root` field, `l4_tree.rs:567` reserved `roots` parameter, `l4_tree.rs:795` `scoping_prefixes` field) or explanatory historical context inside live code (`l8_recurse.rs:64`/`:95`/`:278` rationales for absolute-path storage). All retained intentionally; none describe currently-active multi-root behaviour.
 
 **PR-4 scope clarification:** `multi_root.rs` was already deleted in PR-3, so PR-4 is now purely adding `contract_edge_in_workspace.rs` (the salvaged single-root replacement for the AC#1–5 contract-edge tests deleted in PR-2 + tests deleted in PR-3).
 
