@@ -13,7 +13,7 @@ Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the
 - [x] PR-2 — Drop discovery (deletion + CLI surface change)
 - [x] PR-3 — Singularise `Workspace` (type + call-site refactor)
 - [ ] PR-4 — Salvage tests (test suite surgery)
-- [ ] PR-5 — Retext canonical system-model design (docs only)
+- [x] PR-5 — Retext canonical system-model design (docs only)
 - [ ] PR-6 — Acceptance + closeout (verification only)
 
 When every box is `[x]`, Phase 5 is complete and the continuation prompt should report success and route to the Phase 6 brainstorm question (per validated roadmap; Phase 6 = user-facing schema cleanups; canonical §10.6).
@@ -85,4 +85,21 @@ PR-4 now becomes purely adding `contract_edge_in_workspace.rs` (the salvaged sin
 
 **Follow-up (commit `bc10a9c`):** Spec-compliance review identified two over-deletions: (1) the elixir-surface coverage tests in `l5_elixir_surface.rs` were lost when the file was deleted whole-file; restored as a surgical edit with only the two `expand_roots`-using tests removed. (2) Three stale `root_expansion`/`expand_roots` doc references in `manifest_parse.rs:47`, `manifest_parse.rs:377`, and `manifest_patterns.rs:21` were retexted (plan step 2.10 sweep was incomplete in the original PR-2 commit, missing files outside `pipeline.rs`). All cargo gates re-verified clean post-fix; polyglot smoke test still green.
 
-**PR-3 (commit `f6caa18`, 2026-05-10):** `Workspace.roots: Vec<PathBuf>` → `Workspace.root: PathBuf`; deleted `roots.rs` (61 LOC) + `best_root_for`; rewrote ~30 call sites across L2/L3/L4/L5/L6/L8/L9; deleted scope-bleed tests (`multi_root.rs`, two in `l7_l8_fixedpoint.rs`, one inline in `l8_recurse.rs`). PR-4 scope note: `multi_root.rs` was already deleted in this PR, so PR-4 is purely adding `contract_edge_in_workspace.rs`.
+### PR-3
+2026-05-10 — Commit: `f6caa18` on main; status checkbox + scope-bleed note in `8e7c6c0`. `Workspace.roots: Vec<PathBuf>` → `Workspace.root: PathBuf`; deleted `roots.rs` (61 LOC) + `best_root_for`; rewrote ~30 call sites across L2/L3/L4/L5/L6/L8/L9. Net diff: −622 LOC. All cargo gates clean: build, tests (workspace + polyglot smoke), clippy, fmt.
+
+**Scope-bleed — tests deleted in PR-3:**
+- `crates/atlas-engine/tests/multi_root.rs` (154 LOC): authorised by plan §3.19 — referenced `Workspace.roots` plurally, no compile path post-collapse.
+- Two tests from `crates/atlas-engine/tests/l7_l8_fixedpoint.rs` and one inline test from `crates/atlas-engine/src/l8_recurse.rs`: not in plan, pulled forward (referenced `Workspace.roots` plurally; would have blocked compilation). Spec-compliance review pending.
+
+**PR-4 scope clarification:** `multi_root.rs` was already deleted in PR-3, so PR-4 is now purely adding `contract_edge_in_workspace.rs` (the salvaged single-root replacement for the AC#1–5 contract-edge tests deleted in PR-2 + tests deleted in PR-3).
+
+### PR-5
+2026-05-10 — Commit: `57fb124` on main (cherry-picked from worktree branch `phase5-pr5` commit `1d794eb`). Docs-only retext of canonical system-model design.
+
+- `2026-05-06-atlas-system-model-design.md`: §5.3 "Multi-root workspace" deleted; §5.4→§5.3, §5.5→§5.4, §5.6→§5.5 renumbered; §10.5 marked SHIPPED 2026-05-10 with full §7 retext (literal `<PR-6-COMMIT-SHA>` placeholder); §10.1 multi-root architectural-seam bullet deleted (section kept — multi-root was one of several bullets, not the only); glossary "Multi-root workspace" entry deleted.
+- §6.5 (line 748) had a live functional reference to "multi-root workspace" that wasn't in the plan; agent retexted to "single-root workspace" since it described current behaviour, not historical Phase 1 design. Out-of-plan but in-spirit; flagged for spec review.
+- Override-scoping spec edits actually spanned lines 14–20 / 173–176 / 249–252 (slightly shifted from the plan's nominal 19/177/253 estimates).
+- Historical references retained: §10.1 goal text, §10.5 SHIPPED text, §11.1 decision table ("Multi-root over federation"), and the Federation glossary entry. Specs are time-snapshots.
+
+`<PR-6-COMMIT-SHA>` placeholder in §10.5 to be backfilled by a follow-up commit after PR-6 lands.
