@@ -1089,8 +1089,8 @@ where
 /// per-component `<component-path>/.atlas/cache/component.yaml` (PR-6 / PR-3) and
 /// `<component-path>/.atlas/cache/surfaces.yaml` (PR-7 / PR-2) files. The
 /// component's on-disk path is resolved by joining its
-/// first-`path_segments[0].path` against the matching root (longest
-/// path-prefix among `roots`, via `best_root_for`). One `mkdir -p`
+/// `path_segments[0].path` against the workspace root via
+/// `resolve_component_abs_dir`. One `mkdir -p`
 /// per component path; atomic write via tempfile-then-rename.
 ///
 /// Per-component write failures are non-fatal warnings on stderr —

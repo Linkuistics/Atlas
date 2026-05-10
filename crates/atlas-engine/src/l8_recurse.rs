@@ -1006,25 +1006,4 @@ mod tests {
         assert!(r.contains("src/auth"));
         assert!(r.contains("src/billing"));
     }
-
-    // ---------------------------------------------------------------
-    // Phase 4 PR-3 — L8 phantom subcomponent regression probe.
-    //
-    // Phase 2 PR-13 closed the manifest-grounded peer-root case via
-    // Pass 1 of `absolutise_under_any_root`. The observation that
-    // remained: when an entry has an empty `path_segments[0].path`
-    // but no `manifests` (or manifests that don't actually exist
-    // under any registered root), Pass 1 can't disambiguate, Pass 2
-    // walks roots in declaration order accepting the first whose
-    // `<root>/<empty>` covers any registered file (trivially every
-    // root), so `roots[0]` always wins. Result: a peer-root component
-    // whose true owner is a non-primary root resolves to the primary,
-    // and `enumerate_immediate_subdirs` proposes every primary-root
-    // subdirectory as a phantom sub-component.
-    //
-    // The fixture below builds a two-root workspace with a
-    // synthetic peer-root entry that mirrors the override-additions
-    // shape (empty path segment, no manifests) and asserts that
-    // none of the primary's sub-directories are proposed under
-    // it. The test fails before the fix.
 }
