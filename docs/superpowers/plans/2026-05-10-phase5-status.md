@@ -107,3 +107,5 @@ PR-4 now becomes purely adding `contract_edge_in_workspace.rs` (the salvaged sin
 - Historical references retained: §10.1 goal text, §10.5 SHIPPED text, §11.1 decision table ("Multi-root over federation"), and the Federation glossary entry. Specs are time-snapshots.
 
 `<PR-6-COMMIT-SHA>` placeholder in §10.5 to be backfilled by a follow-up commit after PR-6 lands.
+
+**Follow-up (commit `aa4c646`):** Code-quality review surfaced four editorial issues: (Critical) §8.3's cross-reference `§5.5` was updated to `§5.4` post-renumber — the renumber sweep missed this internal back-reference. (Important) Federation glossary entry retexted to anchor the historical chain (multi-root workspace is itself retired). (Important) §10.1 Goal line: option A applied — `[retired Phase 5]` bracketing note added inline; the canonical design is a living document so flagging retired concepts inline is the correct editorial register. (Minor) §6.5 line 748 phrasing: `within the single-root workspace` qualifier dropped — redundant given surrounding context.
