@@ -268,16 +268,15 @@ pub fn run_index(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
 
-    // Persist the discovered roots to `<output>/.atlas/config.yaml`
+    // Persist the workspace root to `<output>/.atlas/config.yaml`
     // for auditability (plan §4 PR-4). The file is otherwise
     // user-authored — preserve fields we don't own. A failure to
-    // write here is non-fatal: the pipeline can still complete and
-    // the user can always re-discover the roots by re-running.
+    // write here is non-fatal: the pipeline can still complete.
     if !config.dry_run {
         gitignore_session.ensure(&workspace_scope);
-        if let Err(err) = persist_discovered_roots(&config.output_dir, &roots) {
+        if let Err(err) = persist_workspace_root(&config.output_dir, &config.root) {
             eprintln!(
-                "warning: failed to persist discovered roots to {}: {err:#}",
+                "warning: failed to persist workspace root to {}: {err:#}",
                 config.output_dir.join("config.yaml").display()
             );
         }
@@ -645,8 +644,9 @@ pub fn run_index(
 
 /// Build an [`AtlasDatabase`] up to and including the L4–L6 fixedpoint
 /// plus an L5 surface pre-warm, returning the populated database
-/// alongside the canonicalised root set the workspace was seeded
-/// with. Skips all of [`run_index`]'s post-fixedpoint writes, the
+/// alongside the workspace root the database was seeded with
+/// (canonicalised by the caller before being passed in). Skips all of
+/// [`run_index`]'s post-fixedpoint writes, the
 /// validators that inspect related-components / subsystem id-form
 /// members, and the `IndexSummary` accounting.
 ///
@@ -974,13 +974,13 @@ fn stable_generated_at_subsystems(
     }
 }
 
-/// Persist the discovered root set to `<output>/.atlas/config.yaml#roots`
+/// Persist the workspace root to `<output>/.atlas/config.yaml#roots`
 /// (plan §4 PR-4 acceptance criterion). The file is otherwise
 /// user-authored (operations / override_search are user knobs); we
 /// load-or-default, overwrite only `roots`, and write back. The write
 /// is via tempfile-then-rename so a crash mid-write cannot corrupt
 /// the file.
-fn persist_discovered_roots(output_dir: &Path, roots: &[PathBuf]) -> Result<()> {
+fn persist_workspace_root(output_dir: &Path, root: &Path) -> Result<()> {
     let path = output_dir.join("config.yaml");
     std::fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
@@ -994,7 +994,7 @@ fn persist_discovered_roots(output_dir: &Path, roots: &[PathBuf]) -> Result<()> 
     } else {
         AtlasConfigFile::default()
     };
-    existing.roots = roots.to_vec();
+    existing.roots = vec![root.to_path_buf()];
     let yaml = serde_yaml::to_string(&existing).context("failed to serialise config.yaml")?;
     let parent = path
         .parent()

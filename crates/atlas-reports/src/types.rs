@@ -21,7 +21,7 @@ pub struct ReportInputs<'a> {
     /// names this `EngineDb`; the actual engine type is
     /// [`atlas_engine::AtlasDatabase`].
     pub db: &'a AtlasDatabase,
-    /// Borrowed workspace produced by the engine's root-expansion.
+    /// Borrowed workspace (single-root, post-Phase-5-PR-3).
     pub workspace: &'a Workspace,
 }
 

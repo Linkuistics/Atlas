@@ -1,6 +1,6 @@
 //! `<output>/.atlas/config.yaml` schema (Atlas vNext Phase 1).
 //!
-//! Workspace-level configuration: discovered roots, model routing per
+//! Workspace-level configuration: workspace root, model routing per
 //! analyser stage, and override-search paths (design §6.7). Phase 1
 //! ships `schema_version: 1`.
 //!
