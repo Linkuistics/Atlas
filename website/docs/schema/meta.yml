@@ -1,0 +1,11 @@
+name: atlas-contracts
+slug: atlas-contracts
+tagline: Public data-format and schema contracts for the Atlas ecosystem.
+summary: |
+  Shared vocabulary and file-format crates extracted from Atlas so that OSS consumers
+  can depend on them without pulling in Atlas's private implementation.
+  Used by Ravel-Lite and other downstream tools via plain git dependencies.
+status: progress
+github_url: https://github.com/Linkuistics/atlas-contracts
+tags: [ai-tools, ai-analysis, contracts]
+versioning: none

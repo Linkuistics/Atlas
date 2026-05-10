@@ -282,6 +282,7 @@ dependencies = [
  "component-ontology",
  "serde",
  "serde_yaml",
+ "tempfile",
 ]
 
 [[package]]
@@ -540,8 +541,10 @@ name = "component-ontology"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "regex",
  "serde",
  "serde_yaml",
+ "tempfile",
  "thiserror",
 ]
 

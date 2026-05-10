@@ -9,7 +9,11 @@
 # Omit `--execute` for a dry run. Push is not automated; after release:
 #   git push origin main --follow-tags
 
-# Not a crates.io crate — `cargo release` must skip `cargo publish`.
+# Default for Atlas workspace members: do not publish.
+# Per-crate `release.toml` files in `crates/component-ontology/` and
+# `crates/atlas-index/` override this to `publish = true` for the two
+# schema crates that publish to crates.io (folded from atlas-contracts
+# in Phase 5; independent versioning at 0.1.0).
 publish = false
 
 # Leave the push to the operator so the release commit + tag can be

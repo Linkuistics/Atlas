@@ -1,0 +1,6 @@
+# Independent versioning: this crate publishes to crates.io from
+# inside the Atlas workspace, but is excluded from workspace-wide
+# `cargo release` invocations driven by Atlas's top-level
+# release.toml. Bump the version here and run `cargo release` from
+# this crate's directory to publish.
+publish = true

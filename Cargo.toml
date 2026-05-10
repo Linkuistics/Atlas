@@ -6,6 +6,8 @@ members = [
   "crates/atlas-llm",
   "crates/atlas-reports",
   "crates/atlas-cli",
+  "crates/component-ontology",
+  "crates/atlas-index",
   "crates/analyzers/python",
   "crates/analyzers/csharp",
   "crates/analyzers/dart",
@@ -42,12 +44,12 @@ sha2 = "0.10"
 thiserror = "2"
 toml = "1"
 
-# Public data-format / vocabulary crates, hosted at linkuistics/atlas-contracts.
-# Local path deps during development so changes in ../atlas-contracts propagate to consumers
-# without a commit/push round-trip. Before publishing, flip these to a git+rev pin (the upstream
-# repo must be committed and pushed first) and revert after release.
-component-ontology = { path = "../atlas-contracts/crates/component-ontology" }
-atlas-index = { path = "../atlas-contracts/crates/atlas-index" }
+# Public data-format / vocabulary crates, in-tree as workspace members
+# (folded from atlas-contracts in Phase 5). Independent versioning at
+# 0.1.0; per-crate release.toml overrides keep them out of workspace-
+# wide `cargo release` invocations. Both publish to crates.io.
+component-ontology = { path = "crates/component-ontology" }
+atlas-index = { path = "crates/atlas-index" }
 
 # Test-only deps shared by multiple crates.
 assert_cmd = "2"
