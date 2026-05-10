@@ -11,7 +11,7 @@ Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the
 - [x] PR-0 — Plan + status + continuation prompt (docs only)
 - [x] PR-1 — Fold A: atlas-contracts in-tree (structural)
 - [x] PR-2 — Drop discovery (deletion + CLI surface change)
-- [ ] PR-3 — Singularise `Workspace` (type + call-site refactor)
+- [x] PR-3 — Singularise `Workspace` (type + call-site refactor)
 - [ ] PR-4 — Salvage tests (test suite surgery)
 - [ ] PR-5 — Retext canonical system-model design (docs only)
 - [ ] PR-6 — Acceptance + closeout (verification only)
@@ -84,3 +84,5 @@ Usage: atlas index <ROOT>
 PR-4 now becomes purely adding `contract_edge_in_workspace.rs` (the salvaged single-root replacement for the deleted AC#1–5 tests) plus deleting `crates/atlas-engine/tests/multi_root.rs`.
 
 **Follow-up (commit `bc10a9c`):** Spec-compliance review identified two over-deletions: (1) the elixir-surface coverage tests in `l5_elixir_surface.rs` were lost when the file was deleted whole-file; restored as a surgical edit with only the two `expand_roots`-using tests removed. (2) Three stale `root_expansion`/`expand_roots` doc references in `manifest_parse.rs:47`, `manifest_parse.rs:377`, and `manifest_patterns.rs:21` were retexted (plan step 2.10 sweep was incomplete in the original PR-2 commit, missing files outside `pipeline.rs`). All cargo gates re-verified clean post-fix; polyglot smoke test still green.
+
+**PR-3 (commit `f6caa18`, 2026-05-10):** `Workspace.roots: Vec<PathBuf>` → `Workspace.root: PathBuf`; deleted `roots.rs` (61 LOC) + `best_root_for`; rewrote ~30 call sites across L2/L3/L4/L5/L6/L8/L9; deleted scope-bleed tests (`multi_root.rs`, two in `l7_l8_fixedpoint.rs`, one inline in `l8_recurse.rs`). PR-4 scope note: `multi_root.rs` was already deleted in this PR, so PR-4 is purely adding `contract_edge_in_workspace.rs`.
