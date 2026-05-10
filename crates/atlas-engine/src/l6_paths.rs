@@ -8,8 +8,6 @@ use std::path::{Component as PathComponent, Path, PathBuf};
 
 use atlas_index::ComponentEntry;
 
-use crate::roots::best_root_for;
-
 // ─── component-id helpers ─────────────────────────────────────────────────────
 
 /// Extract the leaf segment of a slash-delimited component id (the
@@ -43,14 +41,14 @@ pub(crate) fn build_component_segment_dirs(
 // ─── path resolution helpers ─────────────────────────────────────────────────
 
 /// Resolve a relative path-segment to an absolute path by joining with
-/// the longest-matching root.  If the segment is already absolute,
+/// the first matching root.  If the segment is already absolute,
 /// return it unchanged.  If no root contains it, fall back to the first
 /// root; if there are no roots at all, return the path as-is.
 pub(crate) fn absolute_under_any_root(rel: &Path, roots: &[PathBuf]) -> PathBuf {
     if rel.is_absolute() {
         return rel.to_path_buf();
     }
-    if let Some(root) = best_root_for(roots, rel) {
+    if let Some(root) = roots.iter().find(|r| rel.starts_with(r.as_path())) {
         return root.join(rel);
     }
     if let Some(first) = roots.first() {

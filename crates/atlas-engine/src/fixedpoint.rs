@@ -214,7 +214,7 @@ mod tests {
         write_cli_crate(tmp.path(), "cli");
         let backend = Arc::new(TestBackend::with_fingerprint(fingerprint()));
         let backend_dyn: Arc<dyn LlmBackend> = backend.clone();
-        let mut db = AtlasDatabase::new(backend_dyn, vec![tmp.path().to_path_buf()], fingerprint());
+        let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
         seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
 
         let result = run_fixedpoint(&mut db, FixedpointConfig::default());
@@ -289,7 +289,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_lib_crate(tmp.path(), "lib");
         let backend: Arc<dyn LlmBackend> = Arc::new(AlwaysBoundaryBackend::new());
-        let mut db = AtlasDatabase::new(backend, vec![tmp.path().to_path_buf()], fingerprint());
+        let mut db = AtlasDatabase::new(backend, tmp.path().to_path_buf(), fingerprint());
         seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
 
         let live_id = all_components(&db)
@@ -327,7 +327,7 @@ mod tests {
         write_cli_crate(tmp.path(), "cli");
         let backend = Arc::new(TestBackend::with_fingerprint(fingerprint()));
         let backend_dyn: Arc<dyn LlmBackend> = backend.clone();
-        let mut db = AtlasDatabase::new(backend_dyn, vec![tmp.path().to_path_buf()], fingerprint());
+        let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
         seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
 
         let sink = RecordingSink::new();
@@ -389,7 +389,7 @@ mod tests {
         write_lib_crate(tmp.path(), "lib");
         let backend = Arc::new(TestBackend::with_fingerprint(fingerprint()));
         let backend_dyn: Arc<dyn LlmBackend> = backend.clone();
-        let mut db = AtlasDatabase::new(backend_dyn, vec![tmp.path().to_path_buf()], fingerprint());
+        let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
         seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
 
         let cache = db.llm_cache().clone();

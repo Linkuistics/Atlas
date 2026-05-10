@@ -34,7 +34,7 @@ fn default_fingerprint() -> LlmFingerprint {
 
 fn db_seeded_from(root: &Path) -> AtlasDatabase {
     let backend = Arc::new(TestBackend::new());
-    let mut db = AtlasDatabase::new(backend, vec![root.to_path_buf()], default_fingerprint());
+    let mut db = AtlasDatabase::new(backend, root.to_path_buf(), default_fingerprint());
     seed_filesystem(&mut db, &[root.to_path_buf()], false)
         .expect("seed_filesystem must succeed on fixture");
     db
@@ -263,7 +263,7 @@ fn seed_filesystem_respects_gitignore_when_enabled() {
     std::fs::write(root.join("kept.txt"), "visible").unwrap();
 
     let backend = Arc::new(TestBackend::new());
-    let mut db = AtlasDatabase::new(backend, vec![root.clone()], default_fingerprint());
+    let mut db = AtlasDatabase::new(backend, root.clone(), default_fingerprint());
     seed_filesystem(&mut db, std::slice::from_ref(&root), true).unwrap();
 
     assert!(db.file_by_path(&root.join("kept.txt")).is_some());
@@ -293,7 +293,7 @@ fn seed_filesystem_excluding_skips_output_dir_under_root() {
     std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
 
     let backend = Arc::new(TestBackend::new());
-    let mut db = AtlasDatabase::new(backend, vec![root.clone()], default_fingerprint());
+    let mut db = AtlasDatabase::new(backend, root.clone(), default_fingerprint());
     seed_filesystem_excluding(
         &mut db,
         std::slice::from_ref(&root),
@@ -326,7 +326,7 @@ fn seed_filesystem_excluding_keeps_walk_when_excluded_outside_root() {
     std::fs::write(root.join("src.rs"), "fn main() {}").unwrap();
 
     let backend = Arc::new(TestBackend::new());
-    let mut db = AtlasDatabase::new(backend, vec![root.clone()], default_fingerprint());
+    let mut db = AtlasDatabase::new(backend, root.clone(), default_fingerprint());
     seed_filesystem_excluding(
         &mut db,
         std::slice::from_ref(&root),

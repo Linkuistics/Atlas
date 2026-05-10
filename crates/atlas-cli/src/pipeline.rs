@@ -312,7 +312,7 @@ pub fn run_index(
 
     let mut db = AtlasDatabase::new_with_registry(
         backend.clone(),
-        roots.clone(),
+        config.root.clone(),
         fingerprint.clone(),
         registry,
     );
@@ -730,7 +730,7 @@ pub fn build_engine_database(
     // ---- construct + seed database --------------------------------
     let mut db = AtlasDatabase::new_with_registry(
         backend.clone(),
-        roots.clone(),
+        config.root.clone(),
         fingerprint.clone(),
         registry,
     );

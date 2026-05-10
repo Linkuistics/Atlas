@@ -772,7 +772,7 @@ mod tests {
         write_lib_crate(tmp.path(), "beta");
         let backend = Arc::new(TestBackend::with_fingerprint(fp()));
         let backend_dyn: Arc<dyn atlas_llm::LlmBackend> = backend.clone();
-        let mut db = AtlasDatabase::new(backend_dyn, vec![tmp.path().to_path_buf()], fp());
+        let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fp());
         seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
         (db, backend, tmp)
     }
@@ -942,7 +942,7 @@ mod tests {
         write_lib_crate(tmp.path(), "solo");
         let backend = Arc::new(TestBackend::with_fingerprint(fp()));
         let backend_dyn: Arc<dyn atlas_llm::LlmBackend> = backend.clone();
-        let mut db = AtlasDatabase::new(backend_dyn, vec![tmp.path().to_path_buf()], fp());
+        let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fp());
         seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
 
         let edges = all_proposed_edges(&db);

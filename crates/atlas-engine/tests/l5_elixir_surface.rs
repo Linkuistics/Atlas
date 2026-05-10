@@ -51,7 +51,7 @@ fn lenient_classify() -> serde_json::Value {
 fn build_db(root: &Path) -> AtlasDatabase {
     let backend: Arc<dyn LlmBackend> =
         LenientBackend::with_classify(default_fingerprint(), lenient_classify());
-    let mut db = AtlasDatabase::new(backend, vec![root.to_path_buf()], default_fingerprint());
+    let mut db = AtlasDatabase::new(backend, root.to_path_buf(), default_fingerprint());
     seed_filesystem(&mut db, &[root.to_path_buf()], false).expect("seed_filesystem must succeed");
     db
 }

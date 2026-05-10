@@ -169,7 +169,7 @@ fn defines_and_implements_edges_from_serde_struct() {
     // Use a backend that always accepts Stage 1 and returns an empty
     // Stage 2 response (no LLM edges). Deterministic edges still flow.
     let backend: Arc<dyn LlmBackend> = Arc::new(AnyStage2Backend::new(json!([])));
-    let mut db = AtlasDatabase::new(backend, vec![root.to_path_buf()], fingerprint());
+    let mut db = AtlasDatabase::new(backend, root.to_path_buf(), fingerprint());
     seed_filesystem(&mut db, &[root.to_path_buf()], false).unwrap();
 
     let a_id = find_by_leaf(&db, "crate-a");
@@ -234,7 +234,7 @@ fn consumes_contract_edge_from_llm_stage2() {
     // workspace root prefix), we build the database twice: first pass
     // to discover the ids, second pass with the correct canned response.
     let probe_backend: Arc<dyn LlmBackend> = Arc::new(AnyStage2Backend::new(json!([])));
-    let mut probe_db = AtlasDatabase::new(probe_backend, vec![root.to_path_buf()], fingerprint());
+    let mut probe_db = AtlasDatabase::new(probe_backend, root.to_path_buf(), fingerprint());
     seed_filesystem(&mut probe_db, &[root.to_path_buf()], false).unwrap();
     let a_id = find_by_leaf(&probe_db, "crate-a");
     let b_id = find_by_leaf(&probe_db, "crate-b");
@@ -251,7 +251,7 @@ fn consumes_contract_edge_from_llm_stage2() {
         "rationale": "crate-b reads crate-a/foo data format",
     }]);
     let backend: Arc<dyn LlmBackend> = Arc::new(AnyStage2Backend::new(stage2_response));
-    let mut db = AtlasDatabase::new(backend, vec![root.to_path_buf()], fingerprint());
+    let mut db = AtlasDatabase::new(backend, root.to_path_buf(), fingerprint());
     seed_filesystem(&mut db, &[root.to_path_buf()], false).unwrap();
 
     let edges = all_proposed_edges(&db);
@@ -293,7 +293,7 @@ fn empty_surfaces_produce_no_contract_edges() {
     // deterministic edges survive. Since no serde structs exist,
     // `contract_edges_from_surfaces` returns empty.
     let backend: Arc<dyn LlmBackend> = Arc::new(AnyStage2Backend::new(json!([])));
-    let mut db = AtlasDatabase::new(backend, vec![root.to_path_buf()], fingerprint());
+    let mut db = AtlasDatabase::new(backend, root.to_path_buf(), fingerprint());
     seed_filesystem(&mut db, &[root.to_path_buf()], false).unwrap();
 
     let edges = all_proposed_edges(&db);

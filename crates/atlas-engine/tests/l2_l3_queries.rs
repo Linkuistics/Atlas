@@ -34,7 +34,7 @@ fn default_fingerprint() -> LlmFingerprint {
 }
 
 fn build_db(backend: Arc<TestBackend>, root: &Path) -> AtlasDatabase {
-    let mut db = AtlasDatabase::new(backend, vec![root.to_path_buf()], default_fingerprint());
+    let mut db = AtlasDatabase::new(backend, root.to_path_buf(), default_fingerprint());
     seed_filesystem(&mut db, &[root.to_path_buf()], false).expect("seed_filesystem must succeed");
     db
 }
@@ -92,7 +92,7 @@ impl LlmBackend for LenientStubBackend {
 /// deterministic and LLM-reliant pipeline stages succeed.
 fn build_db_lenient(root: &Path) -> AtlasDatabase {
     let backend = LenientStubBackend::new();
-    let mut db = AtlasDatabase::new(backend, vec![root.to_path_buf()], default_fingerprint());
+    let mut db = AtlasDatabase::new(backend, root.to_path_buf(), default_fingerprint());
     seed_filesystem(&mut db, &[root.to_path_buf()], false).expect("seed_filesystem must succeed");
     db
 }

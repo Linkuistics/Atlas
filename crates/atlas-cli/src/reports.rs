@@ -633,7 +633,7 @@ fn build_reports_database(
     related: atlas_index::RelatedComponentsFile,
 ) -> AtlasDatabase {
     let backend: Arc<dyn LlmBackend> = Arc::new(ReportsBackend);
-    let mut db = AtlasDatabase::new(backend, vec![root.to_path_buf()], reports_fingerprint());
+    let mut db = AtlasDatabase::new(backend, root.to_path_buf(), reports_fingerprint());
     db.set_prior_components(components);
     db.set_prior_related_components(related);
     db

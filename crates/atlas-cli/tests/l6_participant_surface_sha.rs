@@ -279,7 +279,7 @@ fn no_contract_workspace_has_stable_l6_fingerprint() {
     write_private_crate(&tmp.path().join("beta"), "beta");
 
     let backend: Arc<dyn LlmBackend> = TrackingBackend::new();
-    let mut db = AtlasDatabase::new(backend, vec![tmp.path().to_path_buf()], fingerprint());
+    let mut db = AtlasDatabase::new(backend, tmp.path().to_path_buf(), fingerprint());
     seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
 
     let components = all_components(&db);

@@ -51,7 +51,6 @@ use crate::defaults::{
 };
 use crate::heuristics::{classify_deterministic, ManifestContents};
 use crate::l1_queries::{doc_headings, file_content, git_boundaries, manifests_in, shebangs};
-use crate::roots::best_root_for;
 use crate::types::{Classification, ComponentKind, RationaleBundle};
 
 /// Maximum bytes of each manifest passed to the LLM. Generous enough
@@ -109,13 +108,8 @@ pub fn is_component(
     //    wins without LLM expense.
     let dyn_db: &dyn salsa::Database = db;
     let overrides = workspace.components_overrides(dyn_db).clone();
-    // Multi-root: pin lookup tries every root in turn, since a
-    // candidate dir under root[i] is relativised against root[i] for
-    // the relative-path key form. The "best" root is the longest
-    // prefix of the candidate, which `pinned_classification` selects
-    // internally via the supplied roots slice.
-    let roots = workspace.roots(dyn_db).clone();
-    if let Some(classification) = pinned_classification(&overrides, &candidate_dir, &roots) {
+    let root = workspace.root(dyn_db).clone();
+    if let Some(classification) = pinned_classification(&overrides, &candidate_dir, &root) {
         return Arc::new(classification);
     }
 
@@ -128,9 +122,7 @@ pub fn is_component(
     // helper), which pulls through the tracked `File::bytes` edge.
     let snippets = load_manifest_snippets(db, &bundle.manifests);
 
-    let owning_root = best_root_for(&roots, &candidate_dir)
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| roots[0].clone());
+    let owning_root = root.clone();
 
     // 2. Build the analyser Target from the candidate's pre-loaded
     //    manifests and dispatch the registry's deterministic pass
@@ -932,14 +924,13 @@ fn snippet_text<'a>(snippets: &'a BTreeMap<PathBuf, String>, basename: &str) -> 
 fn pinned_classification(
     overrides: &OverridesFile,
     candidate_dir: &Path,
-    roots: &[PathBuf],
+    root: &Path,
 ) -> Option<Classification> {
-    // Multi-root: relativise the candidate against the longest root
-    // that contains it. Pre-vNext callers (single-root) see the same
-    // behaviour because `roots = vec![root]` returns that one root as
-    // the longest prefix.
-    let owning_root = best_root_for(roots, candidate_dir)
-        .unwrap_or_else(|| roots.first().map(|p| p.as_path()).unwrap_or(candidate_dir));
+    let owning_root = if candidate_dir.starts_with(root) {
+        root
+    } else {
+        candidate_dir
+    };
     let rel = candidate_dir
         .strip_prefix(owning_root)
         .unwrap_or(candidate_dir);
@@ -1299,12 +1290,8 @@ mod tests {
     #[test]
     fn pin_matches_relative_path_key() {
         let overrides = overrides_with_pin("crates/foo", "kind", "spec");
-        let got = pinned_classification(
-            &overrides,
-            Path::new("/ws/crates/foo"),
-            &[PathBuf::from("/ws")],
-        )
-        .expect("pin should match relative path key");
+        let got = pinned_classification(&overrides, Path::new("/ws/crates/foo"), Path::new("/ws"))
+            .expect("pin should match relative path key");
         assert_eq!(got.kind, ComponentKind::Spec);
         assert_eq!(got.rationale, "human pin");
     }
@@ -1314,12 +1301,8 @@ mod tests {
         // User-friendly fallback: pin by bare basename when the
         // relative-path form isn't used.
         let overrides = overrides_with_pin("foo", "kind", "spec");
-        let got = pinned_classification(
-            &overrides,
-            Path::new("/ws/crates/foo"),
-            &[PathBuf::from("/ws")],
-        )
-        .expect("pin should match basename key");
+        let got = pinned_classification(&overrides, Path::new("/ws/crates/foo"), Path::new("/ws"))
+            .expect("pin should match basename key");
         assert_eq!(got.kind, ComponentKind::Spec);
     }
 
@@ -1333,7 +1316,7 @@ mod tests {
         let got = pinned_classification(
             &overrides,
             Path::new("/ws/crates/Atlas-Engine"),
-            &[PathBuf::from("/ws")],
+            Path::new("/ws"),
         )
         .expect("pin should match slugified relative path");
         assert_eq!(got.kind, ComponentKind::RustLibrary);
@@ -1345,7 +1328,7 @@ mod tests {
         let got = pinned_classification(
             &overrides,
             Path::new("/ws/crates/Atlas-Engine"),
-            &[PathBuf::from("/ws")],
+            Path::new("/ws"),
         )
         .expect("pin should match slugified basename");
         assert_eq!(got.kind, ComponentKind::RustLibrary);
@@ -1375,12 +1358,9 @@ mod tests {
             rationale: "spec".into(),
             deleted: false,
         });
-        let got = pinned_classification(
-            &overrides,
-            Path::new("/ws/specs/my-spec"),
-            &[PathBuf::from("/ws")],
-        )
-        .expect("pin should match via addition id");
+        let got =
+            pinned_classification(&overrides, Path::new("/ws/specs/my-spec"), Path::new("/ws"))
+                .expect("pin should match via addition id");
         assert_eq!(got.kind, ComponentKind::Spec);
     }
 
@@ -1402,7 +1382,7 @@ mod tests {
             pins,
             ..OverridesFile::default()
         };
-        let got = pinned_classification(&overrides, Path::new("/ws/foo"), &[PathBuf::from("/ws")])
+        let got = pinned_classification(&overrides, Path::new("/ws/foo"), Path::new("/ws"))
             .expect("suppress pin should produce a classification");
         assert!(!got.is_boundary);
     }

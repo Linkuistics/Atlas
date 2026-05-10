@@ -69,7 +69,8 @@ pub fn composition_edges_from_compose(db: &AtlasDatabase) -> Vec<Edge> {
     let components = all_components(db);
     let live: Vec<&ComponentEntry> = components.iter().filter(|c| !c.deleted).collect();
     let workspace = db.workspace();
-    let roots = workspace.roots(db as &dyn salsa::Database).clone();
+    let root = workspace.root(db as &dyn salsa::Database).clone();
+    let roots = [root];
 
     // Pre-compute segment dirs for path-prefix resolution of `build:`
     // contexts — same table as in `l6_composition.rs`.

@@ -85,7 +85,7 @@ impl LlmBackend for ClassifyCountingBackend {
 fn build_db_lenient(root: &Path) -> AtlasDatabase {
     let backend: Arc<dyn LlmBackend> =
         LenientBackend::with_classify(default_fingerprint(), lenient_classify());
-    let mut db = AtlasDatabase::new(backend, vec![root.to_path_buf()], default_fingerprint());
+    let mut db = AtlasDatabase::new(backend, root.to_path_buf(), default_fingerprint());
     seed_filesystem(&mut db, &[root.to_path_buf()], false).expect("seed_filesystem must succeed");
     db
 }
@@ -93,7 +93,7 @@ fn build_db_lenient(root: &Path) -> AtlasDatabase {
 fn build_db_test(root: &Path) -> AtlasDatabase {
     let backend = Arc::new(TestBackend::with_fingerprint(default_fingerprint()));
     let backend_dyn: Arc<dyn LlmBackend> = backend.clone();
-    let mut db = AtlasDatabase::new(backend_dyn, vec![root.to_path_buf()], default_fingerprint());
+    let mut db = AtlasDatabase::new(backend_dyn, root.to_path_buf(), default_fingerprint());
     seed_filesystem(&mut db, &[root.to_path_buf()], false).expect("seed_filesystem must succeed");
     db
 }
@@ -593,7 +593,7 @@ fn pyproject_fixture_classifies_python_package_no_llm_and_lists_pkg_mod_bindings
         fingerprint: default_fingerprint(),
         classify_calls: classify_calls.clone(),
     });
-    let mut db = AtlasDatabase::new(backend, vec![root.clone()], default_fingerprint());
+    let mut db = AtlasDatabase::new(backend, root.clone(), default_fingerprint());
     seed_filesystem(&mut db, std::slice::from_ref(&root), false)
         .expect("seed_filesystem must succeed");
 

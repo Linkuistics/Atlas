@@ -146,17 +146,13 @@ pub fn all_component_analyser_identities(db: &AtlasDatabase) -> Arc<AnalyserIden
 /// the override files themselves.
 pub(crate) fn merged_overrides(db: &AtlasDatabase) -> Arc<OverridesFile> {
     let workspace = db.workspace();
-    let roots = workspace.roots(db as &dyn salsa::Database).clone();
+    let root = workspace.root(db as &dyn salsa::Database).clone();
     let primary_overrides = workspace
         .components_overrides(db as &dyn salsa::Database)
         .clone();
-    let primary_path = roots
-        .first()
-        .cloned()
-        .expect("Workspace.roots is non-empty (enforced by AtlasDatabase::new)");
     match merge_overrides_in_discovery_order(
-        &roots,
-        &primary_path,
+        std::slice::from_ref(&root),
+        &root,
         &primary_overrides,
         &mut io::stderr(),
     ) {
@@ -192,7 +188,7 @@ fn try_assemble_inner(
     warnings: &mut dyn Write,
 ) -> Result<(Arc<Vec<ComponentEntry>>, Arc<AnalyserIdentityMap>), TreeAssemblyError> {
     let workspace = db.workspace();
-    let roots = workspace.roots(db as &dyn salsa::Database).clone();
+    let root = workspace.root(db as &dyn salsa::Database).clone();
     let primary_overrides = workspace
         .components_overrides(db as &dyn salsa::Database)
         .clone();
@@ -205,32 +201,20 @@ fn try_assemble_inner(
     // per-component (component-id-sorted, simulated here by file path
     // sort because we don't have ids yet — see `walk_per_component`
     // for the rationale). Files seeded onto `Workspace.files` by the
-    // CLI's filesystem walk are the source of every per-component and
-    // peer-root file; the primary root's top-level overrides are
-    // injected by the CLI on the workspace input (handled before this
-    // file is read) and arrive here as `primary_overrides`.
-    let primary_path = roots
-        .first()
-        .cloned()
-        .expect("Workspace.roots is non-empty (enforced by AtlasDatabase::new)");
-    let merged =
-        merge_overrides_in_discovery_order(&roots, &primary_path, &primary_overrides, warnings)?;
+    // CLI's filesystem walk are the source of every per-component
+    // file; the root's top-level overrides are injected by the CLI on
+    // the workspace input (handled before this file is read) and
+    // arrive here as `primary_overrides`.
+    let merged = merge_overrides_in_discovery_order(
+        std::slice::from_ref(&root),
+        &root,
+        &primary_overrides,
+        warnings,
+    )?;
     let merged_overrides = &merged.file;
 
-    // Multi-root: gather live components per root, then union.
-    // Per-root walks are independent under the L4 prior-filter
-    // semantics — the rename-match step that follows (in
-    // `resolve_ids_and_tombstones`) sees the unioned live set against
-    // the unioned prior set, which is the single-root case generalised.
-    let mut live: Vec<LiveComponent> = Vec::new();
-    for root in &roots {
-        live.extend(gather_live_components(
-            db,
-            workspace,
-            root,
-            merged_overrides,
-        ));
-    }
+    let live: Vec<LiveComponent> = gather_live_components(db, workspace, &root, merged_overrides);
+    let roots = [root.clone()];
     let (mut finalised, identities) =
         resolve_ids_and_tombstones(&prior, merged_overrides, &roots, live);
 
@@ -296,8 +280,9 @@ fn apply_per_component_field_overrides(
         // first path segment of each finalised entry. The path
         // segment is stored relative to the owning workspace root,
         // so we relativise `dir` against the same root.
-        let owning_root = match crate::roots::best_root_for(roots, dir) {
-            Some(r) => r,
+        let owning_root = roots.iter().find(|r| dir.starts_with(r));
+        let owning_root = match owning_root {
+            Some(r) => r.as_path(),
             None => continue,
         };
         let rel = dir.strip_prefix(owning_root).unwrap_or(dir);
@@ -1033,8 +1018,8 @@ fn derive_scoping_prefixes(file_path: &Path, roots: &[PathBuf]) -> Vec<String> {
         .and_then(|p| p.parent())
         .unwrap_or_else(|| Path::new(""));
 
-    // Find the owning root (longest path-prefix among `roots`).
-    let owning_root = crate::roots::best_root_for(roots, dir);
+    // Find the owning root (the root that contains dir, if any).
+    let owning_root = roots.iter().find(|r| dir.starts_with(r.as_path()));
 
     let rel_path = match owning_root {
         Some(root) => dir.strip_prefix(root).unwrap_or(dir),

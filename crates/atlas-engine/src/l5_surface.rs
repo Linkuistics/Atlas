@@ -16,7 +16,7 @@
 //! manual escape hatch (design §4.1 L5) for components whose surface
 //! the LLM cannot produce well on its own.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use atlas_analyzers::{
@@ -38,7 +38,6 @@ use sha2::{Digest, Sha256};
 use crate::db::AtlasDatabase;
 use crate::l1_queries::file_content;
 use crate::l4_tree::all_components;
-use crate::roots::best_root_for;
 use crate::surface_types::SurfaceRecord;
 
 /// The shipped Atlas Stage 1 prompt, embedded at compile time. Exposed
@@ -270,19 +269,18 @@ pub struct SurfaceArtefacts {
 ///   scan only).
 /// - Only Rust components produce contracts / library-apis; non-Rust
 ///   components return an empty artefact set in those fields.
-/// - Component path resolution uses
-///   [`crate::roots::best_root_for`]; multi-segment components emit
-///   from the first segment that contains a recognised source file.
+/// - Component path resolution uses the workspace root; multi-segment
+///   components emit from the first segment that contains a recognised
+///   source file.
 pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceArtefacts> {
     // 1. Inner record via the existing LLM-driven path.
     let record = (*surface_of(db, id.clone())).clone();
 
     // 2. Resolve the component's on-disk source files to feed into
     //    the deterministic Rust-surface analyser. Component path
-    //    segments are relative to one of the workspace roots; pick
-    //    the longest-prefix match.
+    //    segments are relative to the workspace root.
     let workspace = db.workspace();
-    let roots = workspace.roots(db as &dyn salsa::Database).clone();
+    let root = workspace.root(db as &dyn salsa::Database).clone();
     let components = all_components(db);
     let Some(entry) = components.iter().find(|c| c.id == id && !c.deleted) else {
         return Arc::new(SurfaceArtefacts {
@@ -306,7 +304,7 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
     //     for the component — same posture as the TS/JS branch when
     //     no source is recognised.
     if entry_is_python(entry) {
-        if let Some(artefacts) = python_surface_artefacts(db, entry, &roots, &record) {
+        if let Some(artefacts) = python_surface_artefacts(db, entry, &root, &record) {
             return artefacts;
         }
         // Fallthrough: no python-analyzer binary located. Emit empty
@@ -325,7 +323,7 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
     //     directly. If the binary cannot be located the artefact set is
     //     empty for the component.
     if entry_is_csharp(entry) {
-        if let Some(artefacts) = csharp_surface_artefacts(db, entry, &roots, &record) {
+        if let Some(artefacts) = csharp_surface_artefacts(db, entry, &root, &record) {
             return artefacts;
         }
         return Arc::new(SurfaceArtefacts {
@@ -342,7 +340,7 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
     //     If the binary cannot be located, the artefact set is empty —
     //     same posture as the Python branch.
     if entry_is_dart(entry) {
-        if let Some(artefacts) = dart_surface_artefacts(db, entry, &roots, &record) {
+        if let Some(artefacts) = dart_surface_artefacts(db, entry, &root, &record) {
             return artefacts;
         }
         return Arc::new(SurfaceArtefacts {
@@ -361,7 +359,7 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
     //     cargo target tree), the artefact set is empty for the
     //     component.
     if entry_is_elixir(entry) {
-        if let Some(artefacts) = elixir_surface_artefacts(db, entry, &roots, &record) {
+        if let Some(artefacts) = elixir_surface_artefacts(db, entry, &root, &record) {
             return artefacts;
         }
         return Arc::new(SurfaceArtefacts {
@@ -379,7 +377,7 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
     //     directly. If the binary cannot be located, the artefact set is
     //     empty — same posture as the Python branch.
     if entry_is_racket(entry) {
-        if let Some(artefacts) = racket_surface_artefacts(db, entry, &roots, &record) {
+        if let Some(artefacts) = racket_surface_artefacts(db, entry, &root, &record) {
             return artefacts;
         }
         return Arc::new(SurfaceArtefacts {
@@ -392,7 +390,7 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
     //     A component is handled here when its kind is `lispkit-package`
     //     or it carries `scheme` / `lispkit` in its language set.
     if entry_is_lispkit(entry) {
-        if let Some(artefacts) = lispkit_surface_artefacts(db, entry, &roots, &record) {
+        if let Some(artefacts) = lispkit_surface_artefacts(db, entry, &root, &record) {
             return artefacts;
         }
         return Arc::new(SurfaceArtefacts {
@@ -406,7 +404,7 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
     //     `kind` is `shell-script` or `makefile-orchestration`, or its
     //     language set contains `"shell"` or `"makefile"`.
     if entry_is_shell(entry) {
-        let artefacts = shell_surface_artefacts(db, entry, &roots, &record);
+        let artefacts = shell_surface_artefacts(db, entry, &root, &record);
         return artefacts;
     }
 
@@ -427,51 +425,41 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
         let mut package_json: Option<Vec<u8>> = None;
 
         for segment in &entry.path_segments {
-            let candidate_roots: Vec<PathBuf> = if segment.path.is_absolute() {
-                vec![PathBuf::new()]
-            } else if let Some(owning_root) = best_root_for(&roots, &segment.path) {
-                vec![owning_root.to_path_buf()]
+            let absolute_dir = if segment.path.is_absolute() {
+                segment.path.clone()
             } else {
-                roots.clone()
+                root.join(&segment.path)
             };
 
-            for root in &candidate_roots {
-                let absolute_dir = if segment.path.is_absolute() {
-                    segment.path.clone()
-                } else {
-                    root.join(&segment.path)
-                };
-
-                // Collect well-known source files: `src/<name>.<ext>`.
-                // Phase 1 probes the `src/` subdirectory only; deeper
-                // nesting is Phase 2 (full tree walk). This is the
-                // simplest pattern that works for the integration
-                // fixture (which has just `src/index.ts`).
-                for filename in &[
-                    "src/index.ts",
-                    "src/index.tsx",
-                    "src/index.js",
-                    "src/index.jsx",
-                    "src/main.ts",
-                    "src/main.tsx",
-                    "src/main.js",
-                    "src/main.jsx",
-                ] {
-                    let candidate = absolute_dir.join(filename);
-                    if let Some(bytes) = file_content(db, &candidate) {
-                        let rel = PathBuf::from(filename);
-                        if !sources.iter().any(|(p, _)| p == &rel) {
-                            sources.push((rel, (*bytes).clone()));
-                        }
+            // Collect well-known source files: `src/<name>.<ext>`.
+            // Phase 1 probes the `src/` subdirectory only; deeper
+            // nesting is Phase 2 (full tree walk). This is the
+            // simplest pattern that works for the integration
+            // fixture (which has just `src/index.ts`).
+            for filename in &[
+                "src/index.ts",
+                "src/index.tsx",
+                "src/index.js",
+                "src/index.jsx",
+                "src/main.ts",
+                "src/main.tsx",
+                "src/main.js",
+                "src/main.jsx",
+            ] {
+                let candidate = absolute_dir.join(filename);
+                if let Some(bytes) = file_content(db, &candidate) {
+                    let rel = PathBuf::from(filename);
+                    if !sources.iter().any(|(p, _)| p == &rel) {
+                        sources.push((rel, (*bytes).clone()));
                     }
                 }
+            }
 
-                // Also read `package.json` for entrypoint resolution.
-                if package_json.is_none() {
-                    let pkg_candidate = absolute_dir.join("package.json");
-                    if let Some(bytes) = file_content(db, &pkg_candidate) {
-                        package_json = Some((*bytes).clone());
-                    }
+            // Also read `package.json` for entrypoint resolution.
+            if package_json.is_none() {
+                let pkg_candidate = absolute_dir.join("package.json");
+                if let Some(bytes) = file_content(db, &pkg_candidate) {
+                    package_json = Some((*bytes).clone());
                 }
             }
         }
@@ -524,35 +512,16 @@ pub fn surface_artefacts_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceA
             continue;
         }
 
-        // Relative segment: probe each candidate root for the one whose
-        // `<root>/<segment>/src/{lib,main}.rs` resolves to known file
-        // bytes. Load-bearing for cross-tree (peer-root) components
-        // whose `path_segments[0].path` is empty or root-leaf-only —
-        // for those, `<root>/<segment>` is itself a directory under
-        // every root and the only signal that distinguishes them is the
-        // presence of the Rust source files we're about to read.
-        let candidate_roots: Vec<PathBuf> =
-            if let Some(owning_root) = best_root_for(&roots, &segment.path) {
-                // The relative path happens to also be a descendant of
-                // some root (rare; produced by overrides that synthesise
-                // a path that resolves under one root unambiguously).
-                vec![owning_root.to_path_buf()]
-            } else {
-                roots.clone()
-            };
-
+        // Relative segment: join with the workspace root.
         for filename in ["src/lib.rs", "src/main.rs"] {
-            for root in &candidate_roots {
-                let candidate = root.join(&segment.path).join(filename);
-                if let Some(bytes) = file_content(db, &candidate) {
-                    let rel = PathBuf::from(filename);
-                    // De-duplicate against earlier segments contributing
-                    // the same relative path (rare, but possible for
-                    // overlapping segment definitions).
-                    if !sources.iter().any(|(p, _)| p == &rel) {
-                        sources.push((rel, (*bytes).clone()));
-                    }
-                    break;
+            let candidate = root.join(&segment.path).join(filename);
+            if let Some(bytes) = file_content(db, &candidate) {
+                let rel = PathBuf::from(filename);
+                // De-duplicate against earlier segments contributing
+                // the same relative path (rare, but possible for
+                // overlapping segment definitions).
+                if !sources.iter().any(|(p, _)| p == &rel) {
+                    sources.push((rel, (*bytes).clone()));
                 }
             }
         }
@@ -606,71 +575,61 @@ fn entry_is_shell(entry: &ComponentEntry) -> bool {
 /// Drive a shell-script / Makefile component's surface extraction using
 /// the deterministic [`extract_shell_surface`] extractor.
 ///
-/// Discovery: walks `entry.path_segments` against the workspace roots to
+/// Discovery: walks `entry.path_segments` against the workspace root to
 /// collect all `*.sh`, `*.bash`, `*.zsh`, `Makefile`, `GNUmakefile`, and
 /// `*.mk` files under the component's directory, then passes them to
 /// [`extract_shell_surface`].
 fn shell_surface_artefacts(
     db: &AtlasDatabase,
     entry: &ComponentEntry,
-    roots: &[PathBuf],
+    root: &Path,
     record: &SurfaceRecord,
 ) -> Arc<SurfaceArtefacts> {
     let mut sources: Vec<(PathBuf, Vec<u8>)> = Vec::new();
 
     for segment in &entry.path_segments {
-        let candidate_roots: Vec<PathBuf> = if segment.path.is_absolute() {
-            vec![PathBuf::new()]
-        } else if let Some(owning_root) = crate::roots::best_root_for(roots, &segment.path) {
-            vec![owning_root.to_path_buf()]
+        let absolute_dir = if segment.path.is_absolute() {
+            segment.path.clone()
         } else {
-            roots.to_vec()
+            root.join(&segment.path)
         };
 
-        for root in &candidate_roots {
-            let absolute_dir = if segment.path.is_absolute() {
-                segment.path.clone()
-            } else {
-                root.join(&segment.path)
-            };
-
-            // Probe well-known shell/make filenames. We do a limited
-            // enumeration of common names rather than a full tree walk
-            // (matching the TS/JS branch posture from PR-1).
-            for filename in &[
-                "Makefile",
-                "GNUmakefile",
-                "deploy.sh",
-                "build.sh",
-                "ci.sh",
-                "run.sh",
-                "setup.sh",
-                "install.sh",
-                "release.sh",
-                "lint.sh",
-                "test.sh",
-                "dev.sh",
-            ] {
-                let candidate = absolute_dir.join(filename);
-                if let Some(bytes) = file_content(db, &candidate) {
-                    let rel = PathBuf::from(filename);
-                    if !sources.iter().any(|(p, _)| p == &rel) {
-                        sources.push((rel, (*bytes).clone()));
-                    }
+        // Probe well-known shell/make filenames. We do a limited
+        // enumeration of common names rather than a full tree walk
+        // (matching the TS/JS branch posture from PR-1).
+        for filename in &[
+            "Makefile",
+            "GNUmakefile",
+            "deploy.sh",
+            "build.sh",
+            "ci.sh",
+            "run.sh",
+            "setup.sh",
+            "install.sh",
+            "release.sh",
+            "lint.sh",
+            "test.sh",
+            "dev.sh",
+        ] {
+            let candidate = absolute_dir.join(filename);
+            if let Some(bytes) = file_content(db, &candidate) {
+                let rel = PathBuf::from(filename);
+                if !sources.iter().any(|(p, _)| p == &rel) {
+                    sources.push((rel, (*bytes).clone()));
                 }
             }
+        }
 
-            // Also probe `*.mk` files listed under any manifest that
-            // was pre-loaded (best-effort).
-            for tf in &entry.manifests {
-                let name = tf.display().to_string();
-                if name.ends_with(".mk") {
-                    let candidate = absolute_dir.join(&name);
-                    if let Some(bytes) = file_content(db, &candidate) {
-                        let rel = PathBuf::from(&name);
-                        if !sources.iter().any(|(p, _)| p == &rel) {
-                            sources.push((rel, (*bytes).clone()));
-                        }
+        // Also probe `*.mk` files listed under any manifest that
+        // was pre-loaded (best-effort).
+        for tf in &entry.manifests {
+            let name = tf.display().to_string();
+            if name.ends_with(".mk") {
+                let candidate = absolute_dir.join(&name);
+                if let Some(bytes) = file_content(db, &candidate) {
+                    let rel = PathBuf::from(&name);
+                    if !sources.iter().any(|(p, _)| p == &rel) {
+                        sources.push((rel, (*bytes).clone()));
                     }
                 }
             }
@@ -706,14 +665,13 @@ fn shell_surface_artefacts(
 fn python_surface_artefacts(
     db: &AtlasDatabase,
     entry: &ComponentEntry,
-    roots: &[PathBuf],
+    root: &Path,
     record: &SurfaceRecord,
 ) -> Option<Arc<SurfaceArtefacts>> {
     let binary = locate_python_analyzer_binary()?;
 
-    // Resolve the candidate dir — first segment that resolves
-    // against any root wins.
-    let absolute_dir = resolve_component_dir_first_segment(entry, roots)?;
+    // Resolve the candidate dir — first segment joined with root.
+    let absolute_dir = resolve_component_dir_first_segment(entry, root)?;
 
     // Build a minimal `Target` for the proxy. We pre-load
     // `pyproject.toml` (the manifest the analyser cares about) so
@@ -776,29 +734,15 @@ fn python_surface_artefacts(
 }
 
 /// Resolve a component's first path segment against the workspace
-/// roots, returning the absolute on-disk dir for the candidate.
-/// Language-agnostic: used by both the Python and Racket surface
-/// extraction paths. Mirrors the per-segment walk used by the TS/JS
-/// branch but stops at the first match (single-segment component paths
-/// are the canonical form for Python and Racket).
-fn resolve_component_dir_first_segment(
-    entry: &ComponentEntry,
-    roots: &[PathBuf],
-) -> Option<PathBuf> {
+/// root, returning the absolute on-disk dir for the candidate.
+/// Language-agnostic: used by the Python, Racket, and other subprocess
+/// surface extraction paths.
+fn resolve_component_dir_first_segment(entry: &ComponentEntry, root: &Path) -> Option<PathBuf> {
     let segment = entry.path_segments.first()?;
     if segment.path.is_absolute() {
         return Some(segment.path.clone());
     }
-    if let Some(owning_root) = best_root_for(roots, &segment.path) {
-        return Some(owning_root.join(&segment.path));
-    }
-    for root in roots {
-        let absolute = root.join(&segment.path);
-        if absolute.is_dir() {
-            return Some(absolute);
-        }
-    }
-    Some(roots.first()?.join(&segment.path))
+    Some(root.join(&segment.path))
 }
 
 /// Drive a Racket-component's surface extraction through PR-2's
@@ -807,12 +751,12 @@ fn resolve_component_dir_first_segment(
 fn racket_surface_artefacts(
     db: &AtlasDatabase,
     entry: &ComponentEntry,
-    roots: &[PathBuf],
+    root: &Path,
     record: &SurfaceRecord,
 ) -> Option<Arc<SurfaceArtefacts>> {
     let binary = locate_racket_analyzer_binary()?;
 
-    let absolute_dir = resolve_component_dir_first_segment(entry, roots)?;
+    let absolute_dir = resolve_component_dir_first_segment(entry, root)?;
 
     let mut manifests: Vec<atlas_analyzers::TargetFile> = Vec::new();
     let info_rkt_path = absolute_dir.join("info.rkt");
@@ -1053,12 +997,12 @@ fn entry_is_csharp(entry: &ComponentEntry) -> bool {
 fn csharp_surface_artefacts(
     db: &AtlasDatabase,
     entry: &ComponentEntry,
-    roots: &[PathBuf],
+    root: &Path,
     record: &SurfaceRecord,
 ) -> Option<Arc<SurfaceArtefacts>> {
     let binary = locate_csharp_analyzer_binary()?;
 
-    let absolute_dir = resolve_csharp_component_dir(entry, roots)?;
+    let absolute_dir = resolve_csharp_component_dir(entry, root)?;
 
     // Pre-load the *.csproj manifest (the analyser cares about it for
     // reference extraction). Walk the candidate dir for *.csproj.
@@ -1128,23 +1072,13 @@ fn csharp_surface_artefacts(
 }
 
 /// Resolve a C# component's first path segment against the workspace
-/// roots, returning the absolute on-disk dir. Mirrors
-/// `resolve_python_component_dir`.
-fn resolve_csharp_component_dir(entry: &ComponentEntry, roots: &[PathBuf]) -> Option<PathBuf> {
+/// root, returning the absolute on-disk dir.
+fn resolve_csharp_component_dir(entry: &ComponentEntry, root: &Path) -> Option<PathBuf> {
     let segment = entry.path_segments.first()?;
     if segment.path.is_absolute() {
         return Some(segment.path.clone());
     }
-    if let Some(owning_root) = best_root_for(roots, &segment.path) {
-        return Some(owning_root.join(&segment.path));
-    }
-    for root in roots {
-        let absolute = root.join(&segment.path);
-        if absolute.is_dir() {
-            return Some(absolute);
-        }
-    }
-    Some(roots.first()?.join(&segment.path))
+    Some(root.join(&segment.path))
 }
 
 /// True when the component looks like a Dart/Flutter component.
@@ -1164,12 +1098,12 @@ fn entry_is_dart(entry: &ComponentEntry) -> bool {
 fn dart_surface_artefacts(
     db: &AtlasDatabase,
     entry: &ComponentEntry,
-    roots: &[PathBuf],
+    root: &Path,
     record: &SurfaceRecord,
 ) -> Option<Arc<SurfaceArtefacts>> {
     let binary = locate_dart_analyzer_binary()?;
 
-    let absolute_dir = resolve_dart_component_dir(entry, roots)?;
+    let absolute_dir = resolve_dart_component_dir(entry, root)?;
 
     let mut manifests: Vec<atlas_analyzers::TargetFile> = Vec::new();
     let pubspec_path = absolute_dir.join("pubspec.yaml");
@@ -1221,22 +1155,13 @@ fn dart_surface_artefacts(
     }))
 }
 
-/// Resolve a Dart component's first path segment against the workspace roots.
-fn resolve_dart_component_dir(entry: &ComponentEntry, roots: &[PathBuf]) -> Option<PathBuf> {
+/// Resolve a Dart component's first path segment against the workspace root.
+fn resolve_dart_component_dir(entry: &ComponentEntry, root: &Path) -> Option<PathBuf> {
     let segment = entry.path_segments.first()?;
     if segment.path.is_absolute() {
         return Some(segment.path.clone());
     }
-    if let Some(owning_root) = best_root_for(roots, &segment.path) {
-        return Some(owning_root.join(&segment.path));
-    }
-    for root in roots {
-        let absolute = root.join(&segment.path);
-        if absolute.is_dir() {
-            return Some(absolute);
-        }
-    }
-    Some(roots.first()?.join(&segment.path))
+    Some(root.join(&segment.path))
 }
 
 /// True when the component looks like an Elixir component to the L5
@@ -1254,12 +1179,12 @@ fn entry_is_elixir(entry: &ComponentEntry) -> bool {
 fn elixir_surface_artefacts(
     db: &AtlasDatabase,
     entry: &ComponentEntry,
-    roots: &[PathBuf],
+    root: &Path,
     record: &SurfaceRecord,
 ) -> Option<Arc<SurfaceArtefacts>> {
     let binary = locate_elixir_analyzer_binary()?;
 
-    let absolute_dir = resolve_elixir_component_dir(entry, roots)?;
+    let absolute_dir = resolve_elixir_component_dir(entry, root)?;
 
     let mut manifests: Vec<atlas_analyzers::TargetFile> = Vec::new();
     let mix_exs_path = absolute_dir.join("mix.exs");
@@ -1312,22 +1237,13 @@ fn elixir_surface_artefacts(
 }
 
 /// Resolve an Elixir component's first path segment against the
-/// workspace roots. Mirrors `resolve_python_component_dir`.
-fn resolve_elixir_component_dir(entry: &ComponentEntry, roots: &[PathBuf]) -> Option<PathBuf> {
+/// workspace root.
+fn resolve_elixir_component_dir(entry: &ComponentEntry, root: &Path) -> Option<PathBuf> {
     let segment = entry.path_segments.first()?;
     if segment.path.is_absolute() {
         return Some(segment.path.clone());
     }
-    if let Some(owning_root) = best_root_for(roots, &segment.path) {
-        return Some(owning_root.join(&segment.path));
-    }
-    for root in roots {
-        let absolute = root.join(&segment.path);
-        if absolute.is_dir() {
-            return Some(absolute);
-        }
-    }
-    Some(roots.first()?.join(&segment.path))
+    Some(root.join(&segment.path))
 }
 
 /// Decode the JSON payload returned by the elixir-analyzer subprocess
@@ -1461,12 +1377,12 @@ fn decode_elixir_surface_payload(
 fn lispkit_surface_artefacts(
     _db: &AtlasDatabase,
     entry: &ComponentEntry,
-    roots: &[PathBuf],
+    root: &Path,
     record: &SurfaceRecord,
 ) -> Option<Arc<SurfaceArtefacts>> {
     let binary = locate_lispkit_analyzer_binary()?;
 
-    let absolute_dir = resolve_lispkit_component_dir(entry, roots)?;
+    let absolute_dir = resolve_lispkit_component_dir(entry, root)?;
 
     // Build a minimal Target for the proxy. Pre-load any `*.sld`
     // manifests the engine has read (if the engine pre-loaded them
@@ -1477,12 +1393,8 @@ fn lispkit_surface_artefacts(
     for segment in &entry.path_segments {
         let candidate_dir = if segment.path.is_absolute() {
             segment.path.clone()
-        } else if let Some(owning_root) = best_root_for(roots, &segment.path) {
-            owning_root.join(&segment.path)
-        } else if let Some(root) = roots.first() {
-            root.join(&segment.path)
         } else {
-            segment.path.clone()
+            root.join(&segment.path)
         };
         if let Ok(entries) = std::fs::read_dir(&candidate_dir) {
             for e in entries.flatten() {
@@ -1549,22 +1461,13 @@ fn lispkit_surface_artefacts(
 }
 
 /// Resolve a LispKit component's first path segment against the
-/// workspace roots, returning the absolute on-disk dir.
-fn resolve_lispkit_component_dir(entry: &ComponentEntry, roots: &[PathBuf]) -> Option<PathBuf> {
+/// workspace root, returning the absolute on-disk dir.
+fn resolve_lispkit_component_dir(entry: &ComponentEntry, root: &Path) -> Option<PathBuf> {
     let segment = entry.path_segments.first()?;
     if segment.path.is_absolute() {
         return Some(segment.path.clone());
     }
-    if let Some(owning_root) = best_root_for(roots, &segment.path) {
-        return Some(owning_root.join(&segment.path));
-    }
-    for root in roots {
-        let absolute = root.join(&segment.path);
-        if absolute.is_dir() {
-            return Some(absolute);
-        }
-    }
-    Some(roots.first()?.join(&segment.path))
+    Some(root.join(&segment.path))
 }
 
 /// Decode the JSON payload returned by the lispkit-analyzer subprocess.
@@ -1842,7 +1745,7 @@ mod tests {
     fn db_with_shared_backend(tmp: &TempDir) -> (AtlasDatabase, Arc<TestBackend>) {
         let backend = Arc::new(TestBackend::with_fingerprint(fingerprint()));
         let backend_dyn: Arc<dyn atlas_llm::LlmBackend> = backend.clone();
-        let mut db = AtlasDatabase::new(backend_dyn, vec![tmp.path().to_path_buf()], fingerprint());
+        let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
         seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
         (db, backend)
     }

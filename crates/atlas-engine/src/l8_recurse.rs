@@ -48,7 +48,6 @@ use rayon::prelude::*;
 use crate::db::{AtlasDatabase, Workspace};
 use crate::l4_tree::all_components;
 use crate::l7_structural::modularity_hint;
-use crate::roots::best_root_for;
 use crate::subcarve_policy::{decide, decide_kind_only, PolicyDecision, SubcarveSignals};
 use crate::types::{Classification, ComponentKind};
 
@@ -249,7 +248,8 @@ fn map_reduce_subcarve(
     signals: &SubcarveSignals,
 ) -> SubcarveDecision {
     let workspace = db.workspace();
-    let roots = workspace.roots(db as &dyn salsa::Database).clone();
+    let root = workspace.root(db as &dyn salsa::Database).clone();
+    let roots = [root.clone()];
 
     let suppressed = pin_suppressed_keys(&signals.pin_suppressed_children);
     let candidates: Vec<PathBuf> = enumerate_immediate_subdirs(db, workspace, &roots, entry)
@@ -288,9 +288,9 @@ fn map_reduce_subcarve(
             // L2 already supports out of the box (`if is_absolute()`
             // returns the path unchanged).
             sub_dirs.push(abs_dir.clone());
-            // Rationale stays relative-against-best-root for human
+            // Rationale stays relative-against-root for human
             // readability — consumers don't parse it.
-            let owning_root = best_root_for(&roots, abs_dir);
+            let owning_root = abs_dir.starts_with(&root).then_some(root.as_path());
             let rel = match owning_root {
                 Some(root) => abs_dir.strip_prefix(root).unwrap_or(abs_dir),
                 None => abs_dir.as_path(),
@@ -675,7 +675,7 @@ mod tests {
         builder(tmp.path());
         let backend = Arc::new(TestBackend::with_fingerprint(fingerprint()));
         let backend_dyn: Arc<dyn atlas_llm::LlmBackend> = backend.clone();
-        let mut db = AtlasDatabase::new(backend_dyn, vec![tmp.path().to_path_buf()], fingerprint());
+        let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
         seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
         (db, backend, tmp)
     }
@@ -768,7 +768,7 @@ mod tests {
         builder(tmp.path());
         let backend = Arc::new(RecordingBackend::new(fingerprint()));
         let backend_dyn: Arc<dyn atlas_llm::LlmBackend> = backend.clone();
-        let mut db = AtlasDatabase::new(backend_dyn, vec![tmp.path().to_path_buf()], fingerprint());
+        let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
         seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
         (db, backend, tmp)
     }
@@ -1027,86 +1027,4 @@ mod tests {
     // shape (empty path segment, no manifests) and asserts that
     // none of the primary's sub-directories are proposed under
     // it. The test fails before the fix.
-    // ---------------------------------------------------------------
-
-    /// Build a peer-root-shaped `ComponentEntry` whose `path_segments`
-    /// is `[""]` and whose `manifests` is empty — the shape that
-    /// caused phantom emission before the Phase 4 PR-3 fix.
-    fn empty_segment_no_manifest_entry(id: &str) -> ComponentEntry {
-        ComponentEntry {
-            id: component_ontology::ComponentId::parse(id).unwrap(),
-            parent: None,
-            kind: "rust-library".into(),
-            lifecycle_roles: Vec::new(),
-            languages: std::collections::BTreeSet::new(),
-            build_system: None,
-            role: None,
-            path_segments: vec![atlas_index::PathSegment {
-                path: PathBuf::new(),
-                content_sha: "0".repeat(64),
-            }],
-            manifests: Vec::new(),
-            doc_anchors: Vec::new(),
-            evidence_grade: component_ontology::EvidenceGrade::Strong,
-            evidence_fields: Vec::new(),
-            rationale: String::new(),
-            deleted: false,
-        }
-    }
-
-    #[test]
-    fn empty_segment_with_no_manifests_does_not_phantom_emit_primary_subdirs() {
-        // Two-root layout. The primary holds a real crate
-        // (`primary/consumer-crate/...`). The peer holds nothing the
-        // walker registers. A synthetic entry whose
-        // `path_segments[0].path == ""` and `manifests` is empty is
-        // declared with `id = "peer-only"`; conceptually it owns the
-        // peer root, but L8's `absolutise_under_any_root` has no
-        // manifest signal to disambiguate. Pass 1 is skipped (no
-        // manifests), Pass 2's "first root with files at <root>/<empty>"
-        // check accepts both roots and takes `roots[0]` (the primary),
-        // and `enumerate_immediate_subdirs` then walks the primary's
-        // tree and proposes `consumer-crate` as an immediate sub-dir.
-        // That is the phantom.
-        let parent = TempDir::new().unwrap();
-        let primary = parent.path().join("primary");
-        let peer = parent.path().join("peer");
-        std::fs::create_dir_all(&primary).unwrap();
-        std::fs::create_dir_all(&peer).unwrap();
-        build_lib_crate(&primary, "consumer-crate");
-
-        // Peer has at least one registered file so `seed_filesystem`
-        // doesn't drop the root entirely; the file lives at the peer
-        // top level (not in any sub-directory) so the legitimate
-        // immediate-subdir set under the peer is empty.
-        std::fs::write(peer.join("README.md"), "# peer\n").unwrap();
-
-        let backend = Arc::new(TestBackend::with_fingerprint(fingerprint()));
-        let backend_dyn: Arc<dyn atlas_llm::LlmBackend> = backend.clone();
-        let roots = vec![primary.clone(), peer.clone()];
-        let mut db = AtlasDatabase::new(backend_dyn, roots.clone(), fingerprint());
-        seed_filesystem(&mut db, &roots, false).unwrap();
-
-        let workspace = db.workspace();
-        let entry = empty_segment_no_manifest_entry("peer-only");
-        let immediates = enumerate_immediate_subdirs(&db, workspace, &roots, &entry);
-
-        // The peer root has no sub-directories, so the only legitimate
-        // result is an empty vector. Any path containing `consumer-crate`
-        // (or any other primary-root directory) is a phantom.
-        let names: Vec<String> = immediates
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            !names.iter().any(|n| n.contains("consumer-crate")),
-            "peer-only entry must not phantom-emit `consumer-crate` (a \
-             primary-root sub-dir): {names:?}"
-        );
-        assert!(
-            immediates.iter().all(|p| p.starts_with(&peer)),
-            "every immediate sub-dir of a peer-root entry must live under \
-             the peer root; got {names:?}"
-        );
-    }
 }

@@ -125,7 +125,7 @@ fn db_with_additions(
         backend_version: "0".into(),
     };
     let backend: Arc<dyn LlmBackend> = Arc::new(KindBackend::new(classify_kind));
-    let mut db = AtlasDatabase::new(backend, vec![tmp.path().to_path_buf()], fp);
+    let mut db = AtlasDatabase::new(backend, tmp.path().to_path_buf(), fp);
     db.set_components_overrides(OverridesFile {
         additions,
         ..OverridesFile::default()

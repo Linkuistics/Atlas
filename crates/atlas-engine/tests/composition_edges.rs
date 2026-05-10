@@ -32,7 +32,7 @@ fn fingerprint() -> LlmFingerprint {
 fn db_no_llm(root: &Path) -> AtlasDatabase {
     let mut db = AtlasDatabase::new(
         Arc::new(TestBackend::new()),
-        vec![root.to_path_buf()],
+        root.to_path_buf(),
         fingerprint(),
     );
     seed_filesystem(&mut db, &[root.to_path_buf()], false).expect("seed_filesystem succeeds");

@@ -44,7 +44,7 @@ fn lenient_classify() -> serde_json::Value {
 fn build_db_lenient(root: &Path) -> AtlasDatabase {
     let backend: Arc<dyn LlmBackend> =
         LenientBackend::with_classify(default_fingerprint(), lenient_classify());
-    let mut db = AtlasDatabase::new(backend, vec![root.to_path_buf()], default_fingerprint());
+    let mut db = AtlasDatabase::new(backend, root.to_path_buf(), default_fingerprint());
     seed_filesystem(&mut db, &[root.to_path_buf()], false).expect("seed_filesystem must succeed");
     db
 }
@@ -463,7 +463,7 @@ fn csharp_project_classifies_without_llm_call() {
         fingerprint: default_fingerprint(),
         classify_calls: classify_calls.clone(),
     });
-    let mut db = AtlasDatabase::new(backend, vec![root.clone()], default_fingerprint());
+    let mut db = AtlasDatabase::new(backend, root.clone(), default_fingerprint());
     seed_filesystem(&mut db, std::slice::from_ref(&root), false)
         .expect("seed_filesystem must succeed");
 

@@ -688,7 +688,7 @@ fn assert_step8_impact(root: &Path, output_dir: &Path) {
     // Build a stand-in AtlasDatabase for the report (mirrors
     // run_impact_cmd's setup).
     let backend: Arc<dyn LlmBackend> = PR14Backend::new();
-    let mut db = atlas_engine::AtlasDatabase::new(backend, vec![root.to_path_buf()], fingerprint());
+    let mut db = atlas_engine::AtlasDatabase::new(backend, root.to_path_buf(), fingerprint());
     db.set_prior_components(components);
     db.set_prior_related_components(related);
     let workspace = db.workspace();

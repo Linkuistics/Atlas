@@ -83,7 +83,7 @@ fn back_edge_adds_subcarve_sub_dirs_to_workspace_carve_back_edge() {
     // `lib/`'s immediate sub-dir is `src`. With a Classify response
     // that says "yes, boundary", `<root>/lib/src` lands in the
     // back-edge keyed by the library id (PR-13: stored as ABSOLUTE
-    // path so multi-root layouts route to the correct root in L2).
+    // path so L2 handles it correctly regardless of how the path was derived).
     let tmp = TempDir::new().unwrap();
     write_lib_crate(tmp.path(), "lib");
     let backend = Arc::new(ScriptedBackend::new(vec![
@@ -101,7 +101,7 @@ fn back_edge_adds_subcarve_sub_dirs_to_workspace_carve_back_edge() {
         (PromptId::Stage2Edges, Value::Array(Vec::new())),
     ]));
     let backend_dyn: Arc<dyn LlmBackend> = backend.clone();
-    let mut db = AtlasDatabase::new(backend_dyn, vec![tmp.path().to_path_buf()], fingerprint());
+    let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
     seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
 
     let lib_id = all_components(&db)
@@ -142,7 +142,7 @@ fn max_depth_zero_blocks_every_sub_carve() {
     write_lib_crate(tmp.path(), "lib");
     let backend = Arc::new(ScriptedBackend::new(Vec::new()));
     let backend_dyn: Arc<dyn LlmBackend> = backend.clone();
-    let mut db = AtlasDatabase::new(backend_dyn, vec![tmp.path().to_path_buf()], fingerprint());
+    let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
     seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
 
     let result = run_fixedpoint(
@@ -166,128 +166,6 @@ fn max_depth_zero_blocks_every_sub_carve() {
     );
 }
 
-/// Regression for PR-13 — L8 phantom subcomponent observation.
-///
-/// PR-12-of-Phase-1 noted that the L8 fixedpoint emitted phantom
-/// subcomponents (e.g. `atlas-contracts/consumer-crate`) when the
-/// peer root and the primary share a parent-directory layout. The
-/// underlying cause: `enumerate_immediate_subdirs` resolved the
-/// peer-root component's segment (`""`) under `roots[0]` (the primary)
-/// because `<primary>/<empty>` and `<peer>/<empty>` both trivially
-/// "contain" registered files; iterating roots in order then accepted
-/// the primary, and every immediate sub-dir of the primary was
-/// proposed as a sub-carve of the peer-root component.
-///
-/// The fix disambiguates via the entry's manifests: a root is only
-/// accepted when at least one of `<root>/<manifest>` is registered as
-/// a workspace file. With that in place, the peer-root atlas-contracts
-/// component resolves to the peer root, and the only immediate sub-dir
-/// proposed under it is `atlas-contracts/src` — never
-/// `atlas-contracts/consumer-crate`.
-#[test]
-fn peer_root_with_empty_segment_does_not_phantom_emit_primary_subdirs() {
-    // Mirror PR-12-of-Phase-1's layout: parent dir holds a primary
-    // root (`ravel-lite/`) with one consumer crate inside, and a peer
-    // root (`atlas-contracts/`) whose Cargo manifest sits at the peer
-    // root itself (segment.path == "").
-    let parent = TempDir::new().unwrap();
-    let primary = parent.path().join("ravel-lite");
-    let peer = parent.path().join("atlas-contracts");
-    std::fs::create_dir_all(&primary).unwrap();
-    std::fs::create_dir_all(&peer).unwrap();
-
-    // Primary root: `consumer-crate/` lives one level inside.
-    write_lib_crate(&primary, "consumer-crate");
-
-    // Peer root: the Cargo manifest sits AT the peer root, so the
-    // resulting component's `path_segments[0].path == ""`. The crate
-    // has a `src/lib.rs` so L8 has at least one immediate sub-dir to
-    // potentially propose.
-    std::fs::create_dir_all(peer.join("src")).unwrap();
-    std::fs::write(
-        peer.join("Cargo.toml"),
-        "[package]\n\
-         name = \"atlas-contracts\"\n\
-         version = \"0.1.0\"\n\
-         edition = \"2021\"\n\
-         \n\
-         [lib]\n\
-         name = \"atlas_contracts\"\n\
-         path = \"src/lib.rs\"\n",
-    )
-    .unwrap();
-    std::fs::write(peer.join("src/lib.rs"), "// peer-root lib\n").unwrap();
-
-    // Always-boundary classifier: any sub-dir L3 sees gets reported
-    // as a boundary, so phantom emissions show up as accepted entries
-    // in the back-edge rather than being silently filtered. This is
-    // the failure mode the original bug exhibited.
-    let backend = Arc::new(ScriptedBackend::new(vec![
-        (
-            PromptId::Classify,
-            json!({
-                "kind": "rust-library",
-                "rationale": "stub",
-                "is_boundary": true,
-                "evidence_grade": "medium",
-            }),
-        ),
-        (PromptId::Stage2Edges, Value::Array(Vec::new())),
-        (
-            PromptId::Stage1Surface,
-            json!({ "purpose": "stub", "notes": "" }),
-        ),
-    ]));
-    let backend_dyn: Arc<dyn LlmBackend> = backend.clone();
-    let roots = vec![primary.clone(), peer.clone()];
-    let mut db = AtlasDatabase::new(backend_dyn, roots.clone(), fingerprint());
-    seed_filesystem(&mut db, &roots, false).unwrap();
-
-    let result = run_fixedpoint(
-        &mut db,
-        FixedpointConfig {
-            max_depth: 4,
-            hard_cap: 8,
-            ..FixedpointConfig::default()
-        },
-    );
-
-    // The atlas-contracts component must have at most `src` as a
-    // proposed sub-dir — never `consumer-crate`. Any back-edge entry
-    // whose key is `atlas-contracts` and whose values include a
-    // primary-root sub-dir is a phantom.
-    let plan = result
-        .back_edge
-        .get("atlas-contracts")
-        .cloned()
-        .unwrap_or_default();
-    let plan_strings: Vec<String> = plan
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
-    assert!(
-        !plan_strings
-            .iter()
-            .any(|s| s.contains("consumer-crate") || s == "consumer-crate"),
-        "atlas-contracts must not phantom-emit `consumer-crate` (a primary-root sub-dir) \
-         as a sub-component; back-edge sub_dirs: {plan_strings:?}"
-    );
-    // Defensive: the only legitimate sub-dir for atlas-contracts in
-    // this fixture is `src`. If the back-edge contains anything else,
-    // it is a phantom by exclusion.
-    for entry in &plan_strings {
-        let basename = std::path::Path::new(entry)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        assert!(
-            basename == "src",
-            "atlas-contracts back-edge contained unexpected sub-dir `{entry}`; \
-             only `src` is legitimate for this fixture (any other entry is a phantom)"
-        );
-    }
-}
-
 #[test]
 fn converged_run_stops_growing_back_edge_on_the_stable_iteration() {
     // A backend that consistently classifies sub-dirs as boundaries
@@ -309,7 +187,7 @@ fn converged_run_stops_growing_back_edge_on_the_stable_iteration() {
         (PromptId::Stage2Edges, Value::Array(Vec::new())),
     ]));
     let backend_dyn: Arc<dyn LlmBackend> = backend.clone();
-    let mut db = AtlasDatabase::new(backend_dyn, vec![tmp.path().to_path_buf()], fingerprint());
+    let mut db = AtlasDatabase::new(backend_dyn, tmp.path().to_path_buf(), fingerprint());
     seed_filesystem(&mut db, &[tmp.path().to_path_buf()], false).unwrap();
 
     let result = run_fixedpoint(

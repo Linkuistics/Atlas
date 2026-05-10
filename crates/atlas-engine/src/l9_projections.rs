@@ -36,7 +36,6 @@ use crate::l1_queries::manifests_in;
 use crate::l4_tree::{all_component_analyser_identities, all_components};
 use crate::l5_surface::surface_artefacts_of;
 use crate::l6_edges::all_proposed_edges;
-use crate::roots::best_root_for;
 
 /// Build the `components.yaml` projection from the live engine state.
 /// The `roots` are taken from the workspace input so a caller that
@@ -48,7 +47,7 @@ use crate::roots::best_root_for;
 /// return value stable across re-runs that changed nothing.
 pub fn components_yaml_snapshot(db: &AtlasDatabase) -> Arc<ComponentsFile> {
     let workspace = db.workspace();
-    let roots = workspace.roots(db as &dyn salsa::Database).clone();
+    let root = workspace.root(db as &dyn salsa::Database).clone();
     let fingerprint = workspace
         .llm_fingerprint(db as &dyn salsa::Database)
         .clone();
@@ -69,7 +68,7 @@ pub fn components_yaml_snapshot(db: &AtlasDatabase) -> Arc<ComponentsFile> {
     let components = all_components(db);
     Arc::new(ComponentsFile {
         schema_version: COMPONENTS_SCHEMA_VERSION,
-        roots,
+        roots: vec![root],
         generated_at: String::new(),
         cache_fingerprints,
         components: (*components).clone(),
@@ -197,7 +196,7 @@ fn lookup_analyser_identity(
     // component id is not in the identity map, which should not happen in
     // normal operation but is kept for defensive correctness.
     let workspace = db.workspace();
-    let roots = workspace.roots(db as &dyn salsa::Database).clone();
+    let root = workspace.root(db as &dyn salsa::Database).clone();
     let Some(seg) = entry.path_segments.first() else {
         return (
             atlas_analyzers::NONE_ANALYZER_ID.to_string(),
@@ -205,28 +204,11 @@ fn lookup_analyser_identity(
         );
     };
 
-    // The path segment is stored relative to the owning workspace
-    // root. Resolve against each root in turn and pick the first
-    // existing absolute path; if none exist we still try the joined
-    // path against root[0] to keep the call reachable on synthetic
-    // test setups.
+    // The path segment is stored relative to the workspace root.
     let candidate_dir = if seg.path.is_absolute() {
         seg.path.clone()
     } else {
-        let mut chosen: Option<PathBuf> = None;
-        for root in &roots {
-            let abs = root.join(&seg.path);
-            if abs.exists() {
-                chosen = Some(abs);
-                break;
-            }
-        }
-        chosen.unwrap_or_else(|| {
-            roots
-                .first()
-                .map(|r| r.join(&seg.path))
-                .unwrap_or_else(|| seg.path.clone())
-        })
+        root.join(&seg.path)
     };
 
     let classification = crate::l3_classify::is_component(db, workspace, candidate_dir);
@@ -322,16 +304,10 @@ pub fn surfaces_yaml_snapshot(
 /// references.
 pub fn external_components_yaml_snapshot(db: &AtlasDatabase) -> Arc<ExternalsFile> {
     let workspace = db.workspace();
-    let roots = workspace.roots(db as &dyn salsa::Database).clone();
-    // Per-root externals are unioned by id so a crate that appears in
-    // two roots is reported once with both manifests in
-    // `discovered_from`. Sources accumulate in a `BTreeSet` keyed by
-    // path string to avoid the O(n²) `.any` scan per push; the final
-    // sorted Vec is built at output time. The set's lex ordering is
-    // deterministic, so the resulting YAML is byte-stable.
+    let root = workspace.root(db as &dyn salsa::Database).clone();
     let mut by_id: BTreeMap<String, ExternalEntry> = BTreeMap::new();
     let mut sources_by_id: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for root in &roots {
+    {
         let per_root =
             externals_from_manifests(db as &dyn salsa::Database, workspace, root.clone());
         for entry in per_root.iter() {
@@ -411,10 +387,9 @@ pub fn externals_from_manifests(
 ) -> Arc<Vec<ExternalEntry>> {
     let manifests = manifests_in(db, workspace, dir.clone());
     let mut by_id: BTreeMap<String, ExternalEntry> = BTreeMap::new();
-    // Multi-root: relativise manifest paths against the root they live
-    // under (the longest matching prefix among `workspace.roots()`),
-    // falling back to the query's `dir` if no root matches.
-    let roots = workspace.roots(db);
+    // Relativise manifest paths against the workspace root, falling
+    // back to the query's `dir` if the path is not under the root.
+    let root = workspace.root(db);
 
     for path in manifests.iter() {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
@@ -433,7 +408,11 @@ pub fn externals_from_manifests(
             continue;
         };
 
-        let owning_root = best_root_for(roots, path).unwrap_or(dir.as_path());
+        let owning_root = if path.starts_with(root) {
+            root.as_path()
+        } else {
+            dir.as_path()
+        };
         let rel = path_relative(path, owning_root);
         let rel_str = rel.to_string_lossy().into_owned();
 
@@ -632,7 +611,7 @@ mod tests {
     fn db_no_llm(root: &Path) -> AtlasDatabase {
         let mut db = AtlasDatabase::new(
             Arc::new(TestBackend::new()),
-            vec![root.to_path_buf()],
+            root.to_path_buf(),
             fingerprint(),
         );
         seed_filesystem(&mut db, &[root.to_path_buf()], false).unwrap();
