@@ -440,15 +440,10 @@ fn enumerate_immediate_subdirs(
     entry: &ComponentEntry,
 ) -> Vec<PathBuf> {
     let dyn_db: &dyn salsa::Database = db;
-    // Multi-root: each path segment is relative to one of the roots.
-    // For each segment, try every root and keep the absolutised
-    // version that actually corresponds to a file the workspace knows
-    // about — i.e. for which at least one registered file's path
-    // starts with the candidate. The component's manifests
-    // disambiguate the peer-root-with-empty-segment case where every
-    // root trivially "contains" `<root>/<empty>`. Falling back to the
-    // primary root matches the old single-root behaviour for the
-    // common case.
+    // Each path segment is relative to the workspace root. The
+    // `absolutise_under_any_root` helper retains a multi-root
+    // dispatch path as dormant forward-compat scaffolding; the
+    // `len() == 1` fast-exit covers the live single-root case.
     let owned_dirs: BTreeSet<PathBuf> = entry
         .path_segments
         .iter()

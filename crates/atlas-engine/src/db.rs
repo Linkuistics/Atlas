@@ -9,9 +9,9 @@
 //! - The single filesystem root being analysed (where `atlas index`
 //!   was invoked).
 //! - The list of registered [`File`] inputs (each carries a path and
-//!   its byte contents). A single file vector covers all roots
-//!   transparently — Salsa cares about the file set, not which root a
-//!   file came from.
+//!   its byte contents). A single file vector covers the workspace
+//!   transparently — Salsa cares about the file set, not where a
+//!   file lives under the root.
 //! - The list of directories that contain a `.git` marker (a separate
 //!   field because `.git` directories are typically not registered as
 //!   regular files).

@@ -307,17 +307,14 @@ pub fn external_components_yaml_snapshot(db: &AtlasDatabase) -> Arc<ExternalsFil
     let root = workspace.root(db as &dyn salsa::Database).clone();
     let mut by_id: BTreeMap<String, ExternalEntry> = BTreeMap::new();
     let mut sources_by_id: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    {
-        let per_root =
-            externals_from_manifests(db as &dyn salsa::Database, workspace, root.clone());
-        for entry in per_root.iter() {
-            by_id
-                .entry(entry.id.clone())
-                .or_insert_with(|| entry.clone());
-            let bucket = sources_by_id.entry(entry.id.clone()).or_default();
-            for source in &entry.discovered_from {
-                bucket.insert(source.clone());
-            }
+    let per_root = externals_from_manifests(db as &dyn salsa::Database, workspace, root.clone());
+    for entry in per_root.iter() {
+        by_id
+            .entry(entry.id.clone())
+            .or_insert_with(|| entry.clone());
+        let bucket = sources_by_id.entry(entry.id.clone()).or_default();
+        for source in &entry.discovered_from {
+            bucket.insert(source.clone());
         }
     }
     let mut externals: Vec<ExternalEntry> = by_id
