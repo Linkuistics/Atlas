@@ -82,3 +82,5 @@ Usage: atlas index <ROOT>
 - `crates/atlas-cli/tests/l6_participant_surface_sha.rs`: `cross_tree_cache_invalidates_on_peer_root_serde_struct_edit` test function deleted (relied on peer-root discovery); `write_plain_crate_with_path_dep` helper removed (now dead code). The remaining two test functions still pass.
 
 PR-4 now becomes purely adding `contract_edge_in_workspace.rs` (the salvaged single-root replacement for the deleted AC#1–5 tests) plus deleting `crates/atlas-engine/tests/multi_root.rs`.
+
+**Follow-up (commit `bc10a9c`):** Spec-compliance review identified two over-deletions: (1) the elixir-surface coverage tests in `l5_elixir_surface.rs` were lost when the file was deleted whole-file; restored as a surgical edit with only the two `expand_roots`-using tests removed. (2) Three stale `root_expansion`/`expand_roots` doc references in `manifest_parse.rs:47`, `manifest_parse.rs:377`, and `manifest_patterns.rs:21` were retexted (plan step 2.10 sweep was incomplete in the original PR-2 commit, missing files outside `pipeline.rs`). All cargo gates re-verified clean post-fix; polyglot smoke test still green.
