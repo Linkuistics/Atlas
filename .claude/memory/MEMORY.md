@@ -29,3 +29,4 @@ Keep this index ≤200 lines (the harness truncates beyond that).
 - [User rarely values git-history preservation](feedback_user_low_git_history_value.md) — for repo moves/consolidations, default to plain snapshot copy with a single import commit; don't propose subtree-merge or filter-repo unless asked.
 - [No iterator stubs for known singletons](feedback_no_iterator_stubs_for_singletons.md) — when removing plurality, simplify the API shape end-to-end; don't leave iterator/slice accessors over length-1 collections.
 - [No version on workspace path-deps](feedback_no_version_on_workspace_path_deps.md) — workspace-internal path-deps carry path only, no `version` field; publish-time mechanism injects version externally to source.
+- [Atlas memory lives in-tree at .claude/memory/](feedback_atlas_memory_in_repo.md) — Atlas tracks memory in-repo via a `.gitignore` exception; canonical and in-repo paths are symlinked. Treat in-repo path as the commit target.
