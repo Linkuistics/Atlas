@@ -9,7 +9,7 @@ Companion to `docs/superpowers/specs/2026-05-10-atlas-vnext-phase5-plan.md`. Thi
 Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the PR is reviewed and committed. Append a one-line note (date + commit sha + anything load-bearing the next session needs to know).
 
 - [x] PR-0 — Plan + status + continuation prompt (docs only)
-- [ ] PR-1 — Fold A: atlas-contracts in-tree (structural)
+- [x] PR-1 — Fold A: atlas-contracts in-tree (structural)
 - [ ] PR-2 — Drop discovery (deletion + CLI surface change)
 - [ ] PR-3 — Singularise `Workspace` (type + call-site refactor)
 - [ ] PR-4 — Salvage tests (test suite surgery)
@@ -44,3 +44,20 @@ Sessions append session-relevant context here as PRs land. Examples of what's wo
 
 ### PR-0
 2026-05-10 — Landed: the Phase 5 plan, this status file, and the continuation prompt. Commit: `<sha>` on main. Plan: `docs/superpowers/specs/2026-05-10-atlas-vnext-phase5-plan.md`. Continuation prompt: `docs/superpowers/prompts/2026-05-10-vnext-continue.md`.
+
+### PR-1
+2026-05-10 — Atlas-contracts folded in-tree as Atlas workspace members. Atlas commit `42db86e342f287bde585f969ad80fe6123a90dd9` on main; coordinated Ravel-Lite path-edit commit `820c083ae34fff837476f5aa11d507eeba1e2504` on Ravel-Lite main (Atlas first, Ravel-Lite second per design spec §5 R1). All cargo gates clean: `cargo build --workspace`, `cargo test --workspace --release --no-fail-fast` (78 test result lines, 0 failures), `cargo clippy --all-targets -- -D warnings` (0), `cargo fmt --check` (0), `cargo build --release --workspace`, polyglot smoke test (`phase3_polyglot_fixture` ok in 89s — strict cold/warm-call assertions held).
+
+**Website-merge layout:** Option A — copied `~/Development/atlas-contracts/website/{index.md,meta.yml}` into `website/docs/schema/`. Atlas's static site generator is directory-driven (no nav field in top-level `meta.yml`), so no top-level `meta.yml` change required; the new `docs/schema/` directory is auto-discovered.
+
+**defaults/ diff resolution:** `ontology.yaml` was unique to atlas-contracts and copied across to `defaults/ontology.yaml`. This was forced earlier than the plan ordering anticipated because `component-ontology/src/defaults.rs` does `include_str!("../../../defaults/ontology.yaml")` — without the file, `cargo build --workspace` fails. No deviation from intent, just resequencing.
+
+**`cargo publish --dry-run` outputs (NOT clean — pre-existing publish-flow regressions inherited from atlas-contracts):**
+- `component-ontology`: fails with `couldn't read src/../../../defaults/ontology.yaml`. The crate's `include_str!` reaches outside the crate dir to the workspace root's `defaults/` — fine for path/git-dep consumption, broken for `cargo publish` since the tarball doesn't include the sibling `defaults/`.
+- `atlas-index`: fails with `dependency component-ontology does not specify a version`. Path-dep without `version = "0.1.0"` at the call site — crates.io requires both.
+
+Both issues existed pre-fold in atlas-contracts (the `defaults.rs` source comment explicitly says "the crate is consumed via path or git dep, not via a registry") and are flagged in design spec §5 R2 (publish-flow regression). NOT blocking PR-1 since the fold itself is structural and the publish flow was never functional. Follow-up work to make `cargo publish` actually succeed should: (a) embed `ontology.yaml` inside the crate (e.g., `crates/component-ontology/data/ontology.yaml` + a build-script copy from `defaults/`, or move authoritative copy into the crate and have the workspace `defaults/` symlink); (b) add `version = "0.1.0"` to `atlas-index`'s `component-ontology` dep declaration. Out of scope for PR-1.
+
+**Atlas root `release.toml`:** Existed pre-fold (plan said it didn't); preserved its existing `cargo-release` config (push=false, tag-name conventions) and just augmented the `publish = false` comment to reference the new per-crate overrides. Minor deviation from plan step 1.8 (edit instead of create); content-equivalent.
+
+**Cargo.lock:** Updated as a side effect of adding workspace members (records `tempfile`/`regex` dev-deps for the schema crates). Staged and committed alongside `Cargo.toml`.
