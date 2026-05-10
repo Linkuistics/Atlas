@@ -18,7 +18,7 @@ const EXACT_MANIFEST_BASENAMES: &[&str] = &[
     // pubspec.yaml is the Dart/Flutter manifest. Recognised so the
     // Phase 2 PR-7 `dart-classifier` can inspect it via
     // `Target.manifests`. The root-expansion walker also reads it
-    // for path-dep discovery (see `root_expansion.rs`).
+    // for path-dep discovery.
     "pubspec.yaml",
     // info.rkt is Racket's package manifest; the `racket-classifier`
     // and `racket-surface-analyzer` key on its presence (Phase 2 PR-9).

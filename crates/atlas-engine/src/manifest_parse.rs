@@ -44,9 +44,8 @@ pub fn parse_cargo_toml(contents: &str) -> CargoTomlShape {
 ///
 /// On a malformed manifest the function returns an empty Vec rather
 /// than erroring — the same degrade-to-default policy `parse_cargo_toml`
-/// uses. PR-4's [`crate::root_expansion::expand_roots`] is the primary
-/// caller; an opaque parse failure there should not abort the entire
-/// fixed-point walk.
+/// uses. Callers that walk path-deps should treat an opaque parse
+/// failure as an empty result rather than aborting the entire walk.
 ///
 /// Per-target tables (`[target.'cfg(...)'.dependencies]`) are not
 /// walked in Phase 1 — Atlas vNext analysers do not yet cross
@@ -374,7 +373,7 @@ pub fn parse_package_json(contents: &str) -> PackageJsonShape {
 /// overwhelming majority of real-world `deps/0` bodies. A regex
 /// cannot handle all edge cases (nested brackets, dynamic path
 /// construction) but is sufficient for the fixed-point root
-/// expansion in [`crate::root_expansion`].
+/// expansion during path-dep discovery walks.
 ///
 /// On a malformed manifest (or one with no path-deps) returns an
 /// empty Vec — the same degrade-to-default policy used by
