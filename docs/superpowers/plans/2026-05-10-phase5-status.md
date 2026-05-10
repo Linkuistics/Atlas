@@ -128,7 +128,7 @@ PR-4 now becomes purely adding `contract_edge_in_workspace.rs` (the salvaged sin
 **Follow-up (commit `aa4c646`):** Code-quality review surfaced four editorial issues: (Critical) §8.3's cross-reference `§5.5` was updated to `§5.4` post-renumber — the renumber sweep missed this internal back-reference. (Important) Federation glossary entry retexted to anchor the historical chain (multi-root workspace is itself retired). (Important) §10.1 Goal line: option A applied — `[retired Phase 5]` bracketing note added inline; the canonical design is a living document so flagging retired concepts inline is the correct editorial register. (Minor) §6.5 line 748 phrasing: `within the single-root workspace` qualifier dropped — redundant given surrounding context.
 
 ### PR-6
-2026-05-10 — Commits: `a302ce5` (§5.X sweep + acceptance gates) + `<closeout-sha>` (closeout note + §10.5 sha backfill) on main.
+2026-05-10 — Commits: `a302ce5` (§5.X sweep + acceptance gates) + `448d166` (closeout note + §10.5 sha backfill) on main.
 
 **Verification results:**
 - Polyglot smoke test (`phase3_polyglot_fixture`): ok in 90.87s. Strict cold/warm-call assertions held.
@@ -165,7 +165,7 @@ Final commits (sha → title):
 - PR-3: `f6caa18` (singularise Workspace) + `c60d3be` (orphan comment + stale doc) + `d2e8381` (cleanup follow-up)
 - PR-4: `62517d9` (contract-edge salvage)
 - PR-5: `57fb124` (cherry-picked from worktree branch's `1d794eb`) + `aa4c646` (cross-ref + glossary fix)
-- PR-6: `a302ce5` (§5.X sweep) + `<closeout-sha>` (closeout note + §10.5 sha backfill)
+- PR-6: `a302ce5` (§5.X sweep) + `448d166` (closeout note + §10.5 sha backfill)
 
 ### Upgrade notes
 
