@@ -96,6 +96,8 @@ PR-4 now becomes purely adding `contract_edge_in_workspace.rs` (the salvaged sin
 
 **Audit grep (plan §3.21):** `git grep -E 'multi.root|multi-root|workspace\.roots' crates/atlas-engine/src/ crates/atlas-cli/src/` returns 6 surviving "multi-root" hits in source-tree doc comments (post-Issue-1 fix). Each is either `#[allow(dead_code)]`-annotated forward-compat scaffolding (`l4_tree.rs:382` `owning_root` field, `l4_tree.rs:567` reserved `roots` parameter, `l4_tree.rs:795` `scoping_prefixes` field) or explanatory historical context inside live code (`l8_recurse.rs:64`/`:95`/`:278` rationales for absolute-path storage). All retained intentionally; none describe currently-active multi-root behaviour.
 
+**Follow-up (commit `d2e8381`):** Code-quality review surfaced three cheap cleanups: retexted the misleading "Multi-root: each path segment..." comment in `l8_recurse.rs:~443`, the stale "covers all roots" prose at `db.rs:12`, and removed a vestigial brace scope in `l9_projections.rs:~310`. Two findings deferred: I-1 (l6_paths.rs:51 dead branch — pre-existing) and I-2 (build_engine_database public API still Vec<PathBuf> — plan did not authorise return-type collapse).
+
 **PR-4 scope clarification:** `multi_root.rs` was already deleted in PR-3, so PR-4 is now purely adding `contract_edge_in_workspace.rs` (the salvaged single-root replacement for the AC#1–5 contract-edge tests deleted in PR-2 + tests deleted in PR-3).
 
 ### PR-5
