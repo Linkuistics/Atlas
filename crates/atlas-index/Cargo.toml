@@ -10,7 +10,7 @@ repository.workspace = true
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
-component-ontology = { path = "../component-ontology", version = "0.1.0" }
+component-ontology = { path = "../component-ontology" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
