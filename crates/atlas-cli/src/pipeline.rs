@@ -33,10 +33,10 @@ use anyhow::{Context, Result};
 use atlas_analyzers::AnalyzerRegistry;
 use atlas_engine::{
     all_components, atomic_write, components_yaml_snapshot_with_prompt_shas,
-    ensure_atlas_gitignore, expand_roots, external_components_yaml_snapshot,
-    per_component_yaml_snapshot, related_components_yaml_snapshot, run_fixedpoint,
-    seed_filesystem_excluding, surfaces_yaml_snapshot, AtlasDatabase, FixedpointConfig,
-    LlmResponseCache, PersistentCache, Phase, ProgressEvent, ProgressSink,
+    ensure_atlas_gitignore, external_components_yaml_snapshot, per_component_yaml_snapshot,
+    related_components_yaml_snapshot, run_fixedpoint, seed_filesystem_excluding,
+    surfaces_yaml_snapshot, AtlasDatabase, FixedpointConfig, LlmResponseCache, PersistentCache,
+    Phase, ProgressEvent, ProgressSink,
 };
 use atlas_index::{
     load_or_default_components, load_or_default_externals, load_or_default_overrides,
@@ -113,20 +113,9 @@ impl GitignoreSession {
 
 /// Runtime knobs for [`run_index`]. Constructed by the binary from
 /// parsed command-line flags; tests fill one in by hand.
-///
-/// Atlas vNext is multi-root: `roots[0]` is the primary root (the
-/// directory `atlas index` was invoked from); `additional_roots`
-/// carries peer manifest-roots reached via path-dep walking (PR-4).
-/// In Phase 1 the single-root case is still the natural common case
-/// (the CLI defaults to `vec![primary]`); the multi-root code path is
-/// dormant until path-dep expansion lands.
 #[derive(Debug, Clone)]
 pub struct IndexConfig {
     pub root: PathBuf,
-    /// Peer roots beyond the primary `root`. Defaults to empty;
-    /// PR-4's path-dep walk populates this. The full analysed set
-    /// is `[root].iter().chain(additional_roots.iter())`.
-    pub additional_roots: Vec<PathBuf>,
     pub output_dir: PathBuf,
     pub max_depth: u32,
     /// Bound on parallel `is_component` calls inside L8's map step.
@@ -153,13 +142,11 @@ pub struct IndexConfig {
 
 impl IndexConfig {
     /// Reasonable defaults for a command-line invocation: output
-    /// directory is `<root>/.atlas/`, max depth per §8.2, no
-    /// additional roots (single-root run).
+    /// directory is `<root>/.atlas/`, max depth per §8.2.
     pub fn new(root: PathBuf) -> Self {
         let output_dir = root.join(DEFAULT_OUTPUT_SUBDIR);
         IndexConfig {
             root,
-            additional_roots: Vec::new(),
             output_dir,
             max_depth: atlas_engine::DEFAULT_MAX_DEPTH,
             map_concurrency: atlas_engine::DEFAULT_MAP_CONCURRENCY,
@@ -170,17 +157,6 @@ impl IndexConfig {
             prompt_shas: None,
             fingerprint_override: None,
         }
-    }
-
-    /// Full analysed root set, primary first. Equivalent to
-    /// `[self.root.clone()] + self.additional_roots`; provided as a
-    /// helper because every pipeline call site needs the same
-    /// concatenation.
-    pub fn all_roots(&self) -> Vec<PathBuf> {
-        let mut roots = Vec::with_capacity(1 + self.additional_roots.len());
-        roots.push(self.root.clone());
-        roots.extend(self.additional_roots.iter().cloned());
-        roots
     }
 }
 
@@ -279,62 +255,7 @@ pub fn run_index(
         fingerprint.backend_version.push_str("+overrides=disabled");
     }
 
-    // PR-4: walk path-deps under the primary root to discover peer
-    // manifest-roots automatically. The discovered roots are merged
-    // with any manual `--additional-root` paths from the CLI; the
-    // manual escape hatch coexists with the auto-discovery so users
-    // can still extend the analysed set with paths that have no
-    // path-dep edge (e.g. a sibling docs repo). Dedup is by
-    // canonicalised path via `BTreeSet` so a manual flag pointing at
-    // the same root the walk would have found does not double-count.
-    let auto_expanded = expand_roots(&config.root).context("failed to expand path-dep roots")?;
-    let auto_additional: Vec<PathBuf> = auto_expanded.iter().skip(1).cloned().collect();
-
-    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
-    let canonical_primary = auto_expanded
-        .first()
-        .cloned()
-        .unwrap_or_else(|| config.root.clone());
-    seen.insert(canonical_primary.clone());
-
-    let mut all_additional: Vec<PathBuf> = Vec::new();
-    // Manual `--additional-root` paths win the ordering tie: users
-    // who explicitly listed a root expect it adjacent to the primary
-    // in `components.yaml`. Auto-discovered peers follow.
-    let manual_iter = config.additional_roots.iter().map(|r| (true, r));
-    let auto_iter = auto_additional.iter().map(|r| (false, r));
-    for (is_manual, r) in manual_iter.chain(auto_iter) {
-        let canonical = match std::fs::canonicalize(r) {
-            Ok(c) => c,
-            Err(e) => {
-                if is_manual {
-                    // Manual --additional-root paths must canonicalise so
-                    // dedup against the auto-discovered set works. A
-                    // path that fails canonicalisation (missing,
-                    // permission-denied, broken symlink) cannot be
-                    // safely de-duplicated against the canonical set —
-                    // skipping it is preferable to inserting a
-                    // potentially-aliased non-canonical form.
-                    eprintln!(
-                        "warning: --additional-root {} could not be canonicalised: {}; skipping",
-                        r.display(),
-                        e
-                    );
-                }
-                // Auto-discovered roots already came from `expand_roots`
-                // which canonicalises internally, so a failure here is
-                // a TOCTOU race; just skip silently.
-                continue;
-            }
-        };
-        if seen.insert(canonical.clone()) {
-            all_additional.push(canonical);
-        }
-    }
-
-    let mut roots: Vec<PathBuf> = Vec::with_capacity(1 + all_additional.len());
-    roots.push(canonical_primary);
-    roots.extend(all_additional.iter().cloned());
+    let roots: Vec<PathBuf> = vec![config.root.clone()];
 
     // PR-1 (Phase 3): the workspace `.atlas/` scope is `output_dir`'s
     // parent; the gitignore goes into `<scope>/.atlas/.gitignore`. We
@@ -417,18 +338,9 @@ pub fn run_index(
         }
     };
     db.set_llm_cache(llm_cache);
-    // The output_dir lives under the primary root only; peer roots
-    // get an empty exclusion (no per-root output dir is written
-    // beneath them in Phase 1). The slice positions matter — each
-    // `excluded_dirs[i]` is paired with `roots[i]`.
-    let mut excluded_dirs: Vec<PathBuf> = Vec::with_capacity(roots.len());
-    excluded_dirs.push(config.output_dir.clone());
-    for _ in 1..roots.len() {
-        // Empty PathBuf is the no-op sentinel: excluded_relative_to silently
-        // drops paths not under any root (canonicalize("") fails), so per-root
-        // excluded vectors that lack an entry just contribute nothing.
-        excluded_dirs.push(PathBuf::new());
-    }
+    // The output_dir lives under the workspace root; excluded_dirs[0]
+    // is paired with roots[0] by seed_filesystem_excluding's contract.
+    let excluded_dirs: Vec<PathBuf> = vec![config.output_dir.clone()];
     seed_filesystem_excluding(&mut db, &roots, &excluded_dirs, config.respect_gitignore)
         .context("failed to seed filesystem")
         .map_err(IndexError::Other)?;
@@ -745,7 +657,7 @@ pub fn run_index(
 ///
 /// 1. Load prior YAMLs (components / externals / related / overrides /
 ///    subsystems-overrides).
-/// 2. Discover roots via [`expand_roots`].
+/// 2. Resolve the single workspace root from `config.root`.
 /// 3. Build the analyser registry from the in-tree default + any
 ///    `<output>/.atlas/analyzers.yaml` overrides.
 /// 4. Construct the [`AtlasDatabase`], install the persistent LLM
@@ -793,7 +705,6 @@ pub fn build_engine_database(
         (overrides, subsystems_overrides)
     };
 
-    // ---- root discovery -------------------------------------------
     let mut fingerprint = config
         .fingerprint_override
         .clone()
@@ -802,30 +713,7 @@ pub fn build_engine_database(
         fingerprint.backend_version.push_str("+overrides=disabled");
     }
 
-    let auto_expanded = expand_roots(&config.root).context("failed to expand path-dep roots")?;
-    let auto_additional: Vec<PathBuf> = auto_expanded.iter().skip(1).cloned().collect();
-
-    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
-    let canonical_primary = auto_expanded
-        .first()
-        .cloned()
-        .unwrap_or_else(|| config.root.clone());
-    seen.insert(canonical_primary.clone());
-
-    let mut all_additional: Vec<PathBuf> = Vec::new();
-    let manual_iter = config.additional_roots.iter().map(|r| (true, r));
-    let auto_iter = auto_additional.iter().map(|r| (false, r));
-    for (_is_manual, r) in manual_iter.chain(auto_iter) {
-        if let Ok(canonical) = std::fs::canonicalize(r) {
-            if seen.insert(canonical.clone()) {
-                all_additional.push(canonical);
-            }
-        }
-    }
-
-    let mut roots: Vec<PathBuf> = Vec::with_capacity(1 + all_additional.len());
-    roots.push(canonical_primary);
-    roots.extend(all_additional.iter().cloned());
+    let roots: Vec<PathBuf> = vec![config.root.clone()];
 
     // ---- analyser registry ----------------------------------------
     let mut registry = AnalyzerRegistry::builtin();
@@ -854,11 +742,7 @@ pub fn build_engine_database(
     };
     db.set_llm_cache(llm_cache);
 
-    let mut excluded_dirs: Vec<PathBuf> = Vec::with_capacity(roots.len());
-    excluded_dirs.push(config.output_dir.clone());
-    for _ in 1..roots.len() {
-        excluded_dirs.push(PathBuf::new());
-    }
+    let excluded_dirs: Vec<PathBuf> = vec![config.output_dir.clone()];
     seed_filesystem_excluding(&mut db, &roots, &excluded_dirs, config.respect_gitignore)
         .context("failed to seed filesystem")
         .map_err(IndexError::Other)?;
@@ -1141,8 +1025,8 @@ struct ResolvedComponentDir {
 }
 
 /// Resolve a component's absolute on-disk directory from its
-/// `path_segments[0].path` against the workspace `roots`. Disambiguates
-/// the multi-root cross-tree case via the entry's `manifests`:
+/// `path_segments[0].path` against the workspace `roots`. Disambiguation
+/// via the entry's `manifests`:
 ///
 /// - If `segment_path` is absolute, return it unchanged (no fallback).
 /// - Otherwise, walk `roots` in order. A root matches when
@@ -1237,14 +1121,11 @@ fn write_per_component_files(
         };
 
         // Resolve the component's absolute on-disk directory. The
-        // segment path is relative to one of `roots`; we don't have
-        // explicit ownership recorded on the segment, so probe for the
-        // root whose `<root>/<segment>` actually contains the component's
-        // manifests. For multi-root layouts where the peer-root component
-        // sits at the peer root (segment.path == "") both `roots[0]` and
-        // `roots[1]` "contain" the segment dir (each is itself a dir),
-        // so the existence-of-the-segment-dir check is insufficient —
-        // we need to disambiguate via the entry's manifests.
+        // segment path is relative to the workspace root; probe for
+        // the root whose `<root>/<segment>` actually contains the
+        // component's manifests. Disambiguation via manifests guards
+        // against components whose segment.path == "" (root-level
+        // component) where the segment-dir check alone is insufficient.
         let resolution =
             resolve_component_abs_dir(&segment.path, &entry.manifests, roots, |p| p.exists());
         if resolution.fell_back {

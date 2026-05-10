@@ -65,18 +65,8 @@ enum Command {
 
 #[derive(Debug, clap::Args)]
 struct IndexArgs {
-    /// Root of the codebase to index. The first analysed root; peer
-    /// roots may be added with one or more `--additional-root` flags
-    /// (Phase 1 plumbing — PR-4 will populate them automatically from
-    /// path-dep walking).
+    /// Path to the workspace root. Defaults to the current directory.
     root: PathBuf,
-
-    /// Additional analysed root. May be repeated. Each path becomes a
-    /// peer root in the multi-root `Workspace`; components under it
-    /// land in `components.yaml` alongside the primary root's. Output
-    /// is still written under the primary root only.
-    #[arg(long = "additional-root")]
-    additional_roots: Vec<PathBuf>,
 
     /// Where to write the four Atlas YAMLs. Defaults to
     /// `<root>/.atlas/`.
@@ -228,19 +218,7 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
     let atlas_config = atlas_llm::AtlasConfig::load(&config_path)
         .with_context(|| format!("failed to load {}", config_path.display()))?;
 
-    // Canonicalise additional roots eagerly so id allocation and
-    // path-relativisation see absolute paths only.
-    let additional_roots: Vec<PathBuf> = args
-        .additional_roots
-        .into_iter()
-        .map(|p| {
-            p.canonicalize()
-                .with_context(|| format!("failed to resolve additional-root {}", p.display()))
-        })
-        .collect::<Result<Vec<_>>>()?;
-
     let mut index_config = atlas_cli::IndexConfig::new(root);
-    index_config.additional_roots = additional_roots;
     index_config.output_dir = output_dir;
     index_config.max_depth = args.max_depth;
     index_config.map_concurrency = args.map_concurrency;

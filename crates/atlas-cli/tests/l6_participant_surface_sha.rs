@@ -8,11 +8,7 @@
 //!    the persistent cache on the next run. A subsequent no-edit run hits
 //!    the cache again.
 //!
-//! 2. **Cross-tree cache invalidation** — Same setup, but crate-A lives in
-//!    a peer root reached via a `path = "..."` dependency in crate-B's
-//!    `Cargo.toml`. The invalidation must propagate across roots.
-//!
-//! 3. **No-contract stability** — A workspace whose components carry no
+//! 2. **No-contract stability** — A workspace whose components carry no
 //!    contract content (no serde-derived structs, no library APIs) produces
 //!    the same L6 batch fingerprint regardless of whether PR-11's
 //!    `add_participant_surface_sha` loop fires.  The loop is empty when no
@@ -163,26 +159,6 @@ fn write_serde_crate(dir: &std::path::Path, name: &str) {
     .unwrap();
 }
 
-/// Write a Rust library crate that path-deps on `dep_name` at `dep_path`.
-fn write_plain_crate_with_path_dep(
-    dir: &std::path::Path,
-    name: &str,
-    dep_name: &str,
-    dep_path: &str,
-) {
-    std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(
-        dir.join("Cargo.toml"),
-        format!(
-            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-             [lib]\nname = \"{name}\"\npath = \"src/lib.rs\"\n\
-             \n[dependencies]\n{dep_name} = {{ path = \"{dep_path}\" }}\n"
-        ),
-    )
-    .unwrap();
-    std::fs::write(dir.join("src/lib.rs"), "pub fn world() {}\n").unwrap();
-}
-
 fn base_config(root: &std::path::Path) -> IndexConfig {
     let mut config = IndexConfig::new(root.to_path_buf());
     config.output_dir = root.join(".atlas");
@@ -271,82 +247,6 @@ fn same_root_cache_invalidates_on_serde_struct_edit() {
     assert_eq!(
         noop_stage2, 0,
         "no-op re-run after warm-miss must hit the persistent cache for Stage 2; \
-         got {noop_stage2} Stage2Edges calls"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Acceptance criterion #2: cross-tree cache invalidation
-// ---------------------------------------------------------------------------
-
-#[test]
-fn cross_tree_cache_invalidates_on_peer_root_serde_struct_edit() {
-    // crate-a lives in a sibling directory (peer root, discovered via
-    // path-dep). crate-b is in the primary root and path-deps crate-a.
-    //
-    // PR-4's expand_roots discovers crate-a's directory as a peer root.
-    // PR-11's participant_surface_sha contribution cites crate-a's
-    // surface fingerprint in the L6 batch key, so editing crate-a's
-    // serde struct must invalidate the L6 cache entry even across root
-    // boundaries.
-    let parent = TempDir::new().unwrap();
-    let primary = parent.path().join("primary");
-    let peer_dir = parent.path().join("peer");
-
-    // crate-a: serde crate in the peer root.
-    write_serde_crate(&peer_dir.join("crate-a"), "crate-a");
-
-    // crate-b: plain crate in the primary root, path-deps crate-a.
-    let rel_path = "../../peer/crate-a";
-    write_plain_crate_with_path_dep(&primary.join("crate-b"), "crate-b", "crate-a", rel_path);
-
-    let config = base_config(&primary);
-
-    // Run 1: cold.
-    let cold_stage2 = run_cold(&config);
-    assert!(
-        cold_stage2 >= 1,
-        "cold run must invoke Stage 2 for the cross-tree test to be meaningful; \
-         got {cold_stage2}"
-    );
-
-    // Edit crate-a's serde struct in the peer root.
-    std::fs::write(
-        peer_dir.join("crate-a/src/lib.rs"),
-        "#[derive(serde::Serialize, serde::Deserialize)]\n\
-         pub struct Foo { pub x: u32, pub z: bool }\n",
-    )
-    .unwrap();
-
-    // Run 2: warm-miss — cross-tree participant sha change must propagate.
-    let backend2 = TrackingBackend::new();
-    run_index(
-        &config,
-        backend2.clone(),
-        None,
-        make_stderr_reporter(ProgressMode::Never, None),
-    )
-    .expect("cross-tree warm-miss run must succeed");
-    let miss_stage2 = backend2.stage2_calls();
-    assert!(
-        miss_stage2 >= 1,
-        "after editing crate-a's serde struct in a peer root, L6 batch must miss the \
-         persistent cache and invoke Stage 2 again; got {miss_stage2} Stage2Edges calls"
-    );
-
-    // Run 3: no-op warm — all-hit.
-    let backend3 = TrackingBackend::new();
-    run_index(
-        &config,
-        backend3.clone(),
-        None,
-        make_stderr_reporter(ProgressMode::Never, None),
-    )
-    .expect("cross-tree no-op warm run must succeed");
-    let noop_stage2 = backend3.stage2_calls();
-    assert_eq!(
-        noop_stage2, 0,
-        "no-op cross-tree re-run must hit the persistent cache for Stage 2; \
          got {noop_stage2} Stage2Edges calls"
     );
 }
