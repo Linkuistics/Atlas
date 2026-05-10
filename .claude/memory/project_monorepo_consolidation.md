@@ -19,19 +19,8 @@ into a single repo:
 "Architectural seam"). Once everything Atlas analyses lives in one repo, the
 seam stops earning its keep.
 
-**How to apply:**
+**Status:**
 
-- Future phase planning: a dedicated phase will delete multi-root machinery
-  and treat Atlas as single-root. Substantial deletion phase. Likely Phase 5+
-  given the current §10 numbering (Phase 3 = reports; Phase 4 = convergence;
-  Phase 5 = server mode; consolidation slots after that).
-- Don't *over-invest* in multi-root-specific features in interim phases.
-  Phase 3 (current — reports) operates on engine outputs and is unaffected.
-  Phase 4 (subprocess convergence) likewise unaffected.
-- atlas-contracts in-tree absorption is its own milestone; doesn't affect
-  Phase 3 (contract content shas are content-derived, path-independent).
-- Continuation prompt's references to `atlas-contracts` as a sibling repo
-  (`/Users/antony/Development/atlas-contracts`) need updating once the
-  consolidation lands.
-- Phase 1's design.md §5.3 "Multi-root workspace" and §10.1 references will
-  need a "deprecated as of Phase X" note when the consolidation phase lands.
+- **atlas-contracts in-tree: COMPLETE (Phase 5, shipped 2026-05-10).** `crates/component-ontology` and `crates/atlas-index` now live in the Atlas workspace. Multi-root machinery deleted. Final commits: `a302ce5` + `448d166`. The `~/Development/atlas-contracts` sibling repo is now redundant (see manual checklist in `docs/superpowers/plans/2026-05-10-phase5-status.md`).
+- **Ravel + Ravel-Lite fold: DEFERRED.** Deferred to a later phase (post-Phase-5, name TBD). May include a Bazel build-system migration for the polyglot tree. Ravel-Lite currently path-deps `../Atlas/crates/{component-ontology,atlas-index}` (updated in PR-1 to point at Atlas rather than atlas-contracts).
+- Phase 5 deleted `§5.3 Multi-root workspace` from the canonical design and the `[retired Phase 5]` note was added to `§10.1`.

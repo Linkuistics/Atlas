@@ -11,9 +11,9 @@ User decided 2026-05-10 to split the original Phase 5 scope (atlas-contracts in-
 
 **Why:** Ravel/Ravel-Lite consolidation is independent from the multi-root deletion (Ravel-Lite is the *consumer* of multi-root via path-dep, not the engine). Bundling would inflate the phase and couple unrelated risk surfaces. Bazel-curiosity for the polyglot tree is the user's signal — not a commitment, but a likely direction.
 
-**How to apply:**
+**Phase 5 shipped 2026-05-10.** Scope A (atlas-contracts in-tree) + C (multi-root delete) complete. Final commits: `a302ce5` + `448d166` on main. Status file: `docs/superpowers/plans/2026-05-10-phase5-status.md`.
 
-- Phase 5 design spec must scope to A + C only; explicitly call out that Ravel/Ravel-Lite folding is deferred and may involve Bazel migration.
-- After Phase 5, Ravel-Lite still path-deps `../atlas-contracts/crates/{component-ontology,atlas-index}`. That path no longer exists post-fold, so Phase 5 must define a transition story for external consumers (Ravel-Lite, plus crates.io publishing).
-- Update `project_monorepo_consolidation` and `project_phase4_plus_roadmap` references to reflect this split when the Phase 5 design spec is approved.
-- Don't write or recommend Bazel-related code in Phase 5 itself; only in the deferred polyglot-fold phase.
+**Remaining deferred work:**
+
+- Ravel + Ravel-Lite fold is still the only remaining monorepo consolidation work. No Bazel code written in Phase 5 (scoped out by design). Ravel-Lite was updated in Phase 5 PR-1 (`820c083` on Ravel-Lite main) to path-dep `../Atlas/crates/{component-ontology,atlas-index}` instead of `../atlas-contracts/...`. The `~/Development/atlas-contracts` sibling repo is now an archive candidate (see manual checklist).
+- Phase 5 design spec (`docs/superpowers/specs/2026-05-10-atlas-vnext-phase5-design.md`) canonical §10.5 records "Folding Ravel + Ravel-Lite into Atlas is deferred to a later phase (post-Phase-5, slot TBD), possibly tied to a Bazel build-system migration for the polyglot tree."
