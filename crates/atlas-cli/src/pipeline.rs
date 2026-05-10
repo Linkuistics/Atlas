@@ -319,7 +319,7 @@ pub fn run_index(
     // PR-10: open the persistent content-addressed cache rooted at
     // `<output>/.atlas/cache/`. The on-disk layout is
     // `<output>/.atlas/cache/<stage>/<sha>.blob` (filesystem-native,
-    // design §5.5 / §8.3). Open failures are non-fatal — we degrade
+    // design §5.4 / §8.3). Open failures are non-fatal — we degrade
     // to an in-memory-only cache and warn, matching the policy used
     // by PR-4's config.yaml writer and PR-6's per-component writer.
     // Cache wiring is a perf feature; failing the run because the

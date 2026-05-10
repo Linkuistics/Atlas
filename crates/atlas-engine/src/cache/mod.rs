@@ -1,4 +1,4 @@
-//! Persistent content-addressed cache (Atlas vNext, design §5.5, §8.3).
+//! Persistent content-addressed cache (Atlas vNext, design §5.4, §8.3).
 //!
 //! Filesystem-native object store keyed by `(stage, fingerprint)`,
 //! with the value a `Vec<u8>` — typically the serialised stage

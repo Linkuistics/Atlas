@@ -198,7 +198,7 @@ impl LlmResponseCache {
     ///
     /// `stage` and `fingerprint` come from the L-stage caller and
     /// describe the persistent-cache key shape required by design
-    /// §5.5 / §8.1. The in-memory key is request-shape-derived
+    /// §5.4 / §8.1. The in-memory key is request-shape-derived
     /// independently — see [`LlmCacheKey::from_request`] — so the two
     /// layers stay in sync only because the caller passes the same
     /// request to both lookups.

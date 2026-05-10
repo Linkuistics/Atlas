@@ -108,7 +108,7 @@ fn fresh_process_re_run_hits_persistent_cache_for_every_entry() {
         backend2.calls_with_inputs()
     );
 
-    // The on-disk layout should match design §5.5.
+    // The on-disk layout should match design §5.4.
     let cache_root = config.output_dir.join("cache");
     assert!(
         cache_root.exists(),

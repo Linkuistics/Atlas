@@ -50,7 +50,7 @@ pub enum LlmHookError {
 /// response payload. Hook implementations are expected to:
 ///
 /// 1. Render the engine's `classify` prompt with the supplied inputs.
-/// 2. Route through the in-memory LLM cache (per design §5.5).
+/// 2. Route through the in-memory LLM cache (per design §5.4).
 /// 3. Surface the response as a `serde_json::Value`.
 ///
 /// The hook trait stays small (one method) so the engine can install

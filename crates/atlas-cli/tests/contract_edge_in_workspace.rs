@@ -467,7 +467,7 @@ fn ac_4_5_cache_hit_on_no_op_rerun_and_invalidates_on_defining_binding_edit() {
         warm.calls()
     );
 
-    // The on-disk persistent cache must exist by now (PR-10 design §5.5).
+    // The on-disk persistent cache must exist by now (PR-10 design §5.4).
     assert!(
         config.output_dir.join("cache").exists(),
         "persistent cache root must exist after a successful run"
