@@ -1167,7 +1167,7 @@ helper; collapsed `Workspace.roots: Vec<PathBuf>` to
 `Workspace.root: PathBuf`). Folding Ravel + Ravel-Lite into Atlas is
 deferred to a later phase (post-Phase-5, slot TBD), possibly tied to
 a Bazel build-system migration for the polyglot tree. Final commit:
-`<PR-6-COMMIT-SHA>`.
+`a302ce525bebd2df546472542f798f3c129426ba`.
 
 ### 10.6 Phase 6 — User-facing schema cleanups
 

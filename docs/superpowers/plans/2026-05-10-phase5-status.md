@@ -2,7 +2,7 @@
 
 Companion to `docs/superpowers/specs/2026-05-10-atlas-vnext-phase5-plan.md`. This file tracks per-PR completion state across sessions. The continuation prompt at `docs/superpowers/prompts/2026-05-10-vnext-continue.md` (Phase-5-shaped) reads this file (via the `*phase5-plan*` wildcard match) to find the next PR to dispatch.
 
-**Last updated:** 2026-05-10 (PR-0 landed: plan + status + continuation prompt).
+**Last updated:** 2026-05-10 (PR-6 landed: acceptance + closeout; Phase 5 complete).
 
 ## PR status
 
@@ -14,7 +14,7 @@ Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the
 - [x] PR-3 — Singularise `Workspace` (type + call-site refactor)
 - [x] PR-4 — Salvage tests (test suite surgery)
 - [x] PR-5 — Retext canonical system-model design (docs only)
-- [ ] PR-6 — Acceptance + closeout (verification only)
+- [x] PR-6 — Acceptance + closeout (verification only)
 
 When every box is `[x]`, Phase 5 is complete and the continuation prompt should report success and route to the Phase 6 brainstorm question (per validated roadmap; Phase 6 = user-facing schema cleanups; canonical §10.6).
 
@@ -126,3 +126,59 @@ PR-4 now becomes purely adding `contract_edge_in_workspace.rs` (the salvaged sin
 `<PR-6-COMMIT-SHA>` placeholder in §10.5 to be backfilled by a follow-up commit after PR-6 lands.
 
 **Follow-up (commit `aa4c646`):** Code-quality review surfaced four editorial issues: (Critical) §8.3's cross-reference `§5.5` was updated to `§5.4` post-renumber — the renumber sweep missed this internal back-reference. (Important) Federation glossary entry retexted to anchor the historical chain (multi-root workspace is itself retired). (Important) §10.1 Goal line: option A applied — `[retired Phase 5]` bracketing note added inline; the canonical design is a living document so flagging retired concepts inline is the correct editorial register. (Minor) §6.5 line 748 phrasing: `within the single-root workspace` qualifier dropped — redundant given surrounding context.
+
+### PR-6
+2026-05-10 — Commits: `a302ce5` (§5.X sweep + acceptance gates) + `<closeout-sha>` (closeout note + §10.5 sha backfill) on main.
+
+**Verification results:**
+- Polyglot smoke test (`phase3_polyglot_fixture`): ok in 90.87s. Strict cold/warm-call assertions held.
+- Workspace cargo gates: `cargo build --workspace` clean, `cargo test --workspace --release --no-fail-fast` clean (0 failures), `cargo clippy --all-targets -- -D warnings` clean, `cargo fmt --check` clean.
+- Audit grep (`multi.root|multi-root|additional_root|expand_roots|best_root_for` in `crates/`): 10 hits total. 7 expected hits in `l4_tree.rs`/`l8_recurse.rs` — all `#[allow(dead_code)]` forward-compat scaffolding or retained explanatory comments (enumerated in PR-3 notes). 3 net-new hits assessed: (1) `contract_edge_in_workspace.rs:188` — test fixture comment explaining the old `expand_roots` path, acceptable. (2) `atlas-index/src/schema.rs:181` — doc comment on the plural `roots` field in `ComponentsFile` (schema compatibility retained), acceptable. (3) `atlas-index/src/schema.rs:932` — test function `components_file_round_trips_through_yaml_with_multi_root` testing schema round-trip for the plural `roots` field, acceptable (schema backward compat).
+- `root_expansion.rs` and `roots.rs`: absent (confirmed).
+- `--additional-root`: produces clap error (confirmed).
+- `Cargo.toml`: `crates/component-ontology` and `crates/atlas-index` in members + workspace deps. Zero `atlas-contracts` workspace-member references.
+
+**§5.X sweep:**
+- Category 1 (cache architecture §5.5 → §5.4): 6 hits updated — `persistent_cache_lifecycle.rs:111`, `contract_edge_in_workspace.rs:470`, `cache/mod.rs:1`, `pipeline.rs:322`, `llm_cache.rs:201`, `llm_classify.rs:53`.
+- Category 2/3 (leave): override-scoping "Phase 3 PR-6 / design §5.5" hits in `schema.rs`, `yaml_io.rs`, `rename_match.rs`, `l4_tree.rs`, `l6_edges.rs` (point at Phase 3 override-scoping design doc's §5.5, not canonical system-model design). "Phase 3 design §5.6" hits in `gitignore.rs:3` and `pipeline.rs:79` (Phase 3 time-snapshots). `ingest.rs:195` and canonical design `line 941` already read `§5.4` (correct post-renumber).
+- Post-fix sweep: no remaining §5.5 references to the canonical system-model design's cache/file-layout sections. All surviving §5.5 hits are Phase 3 override-scoping references (different document). §10.5 placeholder `<PR-6-COMMIT-SHA>` backfilled with `a302ce525bebd2df546472542f798f3c129426ba`.
+
+---
+
+## Phase 5 — complete
+
+2026-05-10. All seven PRs merged to main. Cumulative LOC delta:
+- PR-0: docs only (plan + status + continuation prompt).
+- PR-1: snapshot copy of two schema crates from atlas-contracts (~+1500 LOC) plus Cargo.toml path-edits.
+- PR-2: −2,360 / +21 (root_expansion, --additional-root, scope-bleed test deletions).
+- PR-3: −865 / +243 (Workspace.roots → root collapse, ~30 call sites, scope-bleed test deletions).
+- PR-4: +554 (contract_edge_in_workspace.rs single-root salvage).
+- PR-5: docs only (canonical design retext).
+- PR-6: −6 / +6 (§5.X sweep, comment-only; closeout docs).
+
+Net inside `crates/`: net negative when excluding the two folded schema crates as new in-tree code; the schema crates themselves are net new code in-tree that previously lived in atlas-contracts. Net production deletion (excluding folded schema crates): ~−600 LOC. Net test deletion: ~−1,090 LOC. Net documentation deletion: ~−40 lines in canonical design.
+
+Final commits (sha → title):
+- PR-0: `899d983` (plan + status + continuation prompt)
+- PR-1: `42db86e` Atlas + `820c083` Ravel-Lite (separate repo)
+- PR-2: `24a4c6a` (drop discovery) + `bc10a9c` (elixir surface restore + rustdoc retext) + `f5b4148` (post-PR-3 prose retext)
+- PR-3: `f6caa18` (singularise Workspace) + `c60d3be` (orphan comment + stale doc) + `d2e8381` (cleanup follow-up)
+- PR-4: `62517d9` (contract-edge salvage)
+- PR-5: `57fb124` (cherry-picked from worktree branch's `1d794eb`) + `aa4c646` (cross-ref + glossary fix)
+- PR-6: `a302ce5` (§5.X sweep) + `<closeout-sha>` (closeout note + §10.5 sha backfill)
+
+### Upgrade notes
+
+Atlas Phase 5 collapses the multi-root `Workspace` Salsa input to a singular root, which is a hard upgrade discipline boundary:
+
+> **Before upgrading past Phase 5, delete `.atlas/` in every workspace previously indexed by Atlas.** Persisted multi-root output state (component state keyed by per-root namespacing, peer-root-aware path resolution baked into cached fingerprints) is not forward-compatible. No migration command exists; no version-aware decoder is shipped. Re-run `atlas index <root>` from a clean state.
+
+This applies to every persisted `.atlas/` directory anywhere on disk. Atlas's `--additional-root` flag is also gone; any user-side automation that passed it produces a clap error.
+
+### Manual post-merge checklist
+
+- [ ] atlas-contracts GitHub repo: README updated to point at Atlas.
+- [ ] atlas-contracts GitHub repo: archive flag set in repo settings.
+- [ ] User-side: `rm -rf ~/Development/atlas-contracts/`.
+- [ ] User-side: any local `.atlas/` outputs from prior multi-root runs deleted.
+- [ ] (If a schema-crate version bump is wanted concurrent with Phase 5:) `cargo release` from inside `crates/component-ontology/` and `crates/atlas-index/` to publish to crates.io from Atlas's home. Otherwise defer to next schema change.
