@@ -10,7 +10,7 @@ Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the
 
 - [x] PR-0 — Plan + status + continuation prompt (docs only)
 - [x] PR-1 — Fold A: atlas-contracts in-tree (structural)
-- [ ] PR-2 — Drop discovery (deletion + CLI surface change)
+- [x] PR-2 — Drop discovery (deletion + CLI surface change)
 - [ ] PR-3 — Singularise `Workspace` (type + call-site refactor)
 - [ ] PR-4 — Salvage tests (test suite surgery)
 - [ ] PR-5 — Retext canonical system-model design (docs only)
@@ -62,3 +62,23 @@ Phase 5 design spec §6.4 PR-1 acceptance gate: `component-ontology` dry-run cle
 **Atlas root `release.toml`:** Existed pre-fold (plan said it didn't); preserved its existing `cargo-release` config (push=false, tag-name conventions) and just augmented the `publish = false` comment to reference the new per-crate overrides. Minor deviation from plan step 1.8 (edit instead of create); content-equivalent.
 
 **Cargo.lock:** Updated as a side effect of adding workspace members (records `tempfile`/`regex` dev-deps for the schema crates). Staged and committed alongside `Cargo.toml`.
+
+### PR-2
+2026-05-10 — Commit: `24a4c6a` on main. All cargo gates clean: `cargo build --workspace`, `cargo test --workspace --release --no-fail-fast` (0 failures), `cargo clippy --all-targets -- -D warnings` (0), `cargo fmt --check` (0), `cargo build --release --workspace`, polyglot smoke test (`phase3_polyglot_fixture` ok in 94.74s — strict cold/warm-call assertions held).
+
+**`--additional-root` clap error text:**
+```
+error: unexpected argument '--additional-root' found
+
+  tip: to pass '--additional-root' as a value, use '-- --additional-root'
+
+Usage: atlas index <ROOT>
+```
+
+**Scope-bleed — files deleted in PR-2:**
+- `crates/atlas-engine/tests/multi_root_path_deps.rs` (742 LOC): directly imported `expand_roots` + `expand_roots_with_warnings` — blocked test compilation.
+- `crates/atlas-engine/tests/l5_elixir_surface.rs` (291 LOC): imported and called `expand_roots` in two test functions — blocked test compilation.
+- `crates/atlas-cli/tests/atlas_contracts_in_ravel_lite.rs` (593 LOC): was scheduled for PR-4 deletion; pulled forward because the pipeline no longer auto-discovers the peer root via `expand_roots`, so the two-root fixture broke at runtime (unresolved contract participant error).
+- `crates/atlas-cli/tests/l6_participant_surface_sha.rs`: `cross_tree_cache_invalidates_on_peer_root_serde_struct_edit` test function deleted (relied on peer-root discovery); `write_plain_crate_with_path_dep` helper removed (now dead code). The remaining two test functions still pass.
+
+PR-4 now becomes purely adding `contract_edge_in_workspace.rs` (the salvaged single-root replacement for the deleted AC#1–5 tests) plus deleting `crates/atlas-engine/tests/multi_root.rs`.
