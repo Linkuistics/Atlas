@@ -745,7 +745,7 @@ participant resolves to a contract definition in a per-component
 Schema unchanged from v1, but **semantically narrower**: contains only
 genuinely third-party packages (crates.io, npm, PyPI, NuGet). Cross-tree path
 dependencies pointing at sibling Atlas-indexed roots no longer appear here;
-they're resolved into internal components within the single-root workspace.
+they're resolved into internal components.
 
 ### 6.6 `analyzers.yaml`
 
@@ -938,7 +938,7 @@ root cites the peer root's surface shas in its cache keys.
 
 ### 8.3 Cache durability
 
-The cache is filesystem-native (per §5.5). Reasons:
+The cache is filesystem-native (per §5.4). Reasons:
 
 - Git-diffable: cache contents can (optionally) be committed to share warm
   starts across team members.
@@ -1072,7 +1072,7 @@ for performance.
 
 ### 10.1 Phase 1 — Architectural seam
 
-**Goal:** Establish the model. Multi-root, contract-first, scattered
+**Goal:** Establish the model. Multi-root [retired Phase 5], contract-first, scattered
 `.atlas/`, plugin protocol with reference plugins. Still ships as a one-shot
 CLI.
 
@@ -1430,7 +1430,7 @@ disagreement between the two graphs is itself useful.
 - **Deliverable**: a component whose source is a deployment or publish
   artefact (Dockerfile, helm chart, release.toml entry, etc.).
 - **Federation**: a rejected concept — multi-repo as a special architectural
-  layer. Replaced by multi-root workspace.
+  layer. Replaced by multi-root workspace (retired Phase 5).
 - **Fingerprint**: the sha of all inputs to a cacheable computation,
   including content shas, analyser version, and (for LLM analysers) prompt
   and model identifiers.
