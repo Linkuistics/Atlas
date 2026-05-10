@@ -85,6 +85,8 @@ PR-4 now becomes purely adding `contract_edge_in_workspace.rs` (the salvaged sin
 
 **Follow-up (commit `bc10a9c`):** Spec-compliance review identified two over-deletions: (1) the elixir-surface coverage tests in `l5_elixir_surface.rs` were lost when the file was deleted whole-file; restored as a surgical edit with only the two `expand_roots`-using tests removed. (2) Three stale `root_expansion`/`expand_roots` doc references in `manifest_parse.rs:47`, `manifest_parse.rs:377`, and `manifest_patterns.rs:21` were retexted (plan step 2.10 sweep was incomplete in the original PR-2 commit, missing files outside `pipeline.rs`). All cargo gates re-verified clean post-fix; polyglot smoke test still green.
 
+**Follow-up (commit `f5b4148`):** Code-quality review surfaced four prose artefacts that survived PR-2's deletion sweep and now misdescribed the post-PR-2/PR-3 single-root system. Renamed `persist_discovered_roots` → `persist_workspace_root` and retexted `build_engine_database` doc, `manifest_patterns.rs:20` comment, and `manifest_parse.rs:375–383` doc. No behaviour change; cargo + polyglot smoke test re-verified clean.
+
 ### PR-3
 2026-05-10 — Commit: `f6caa18` on main; status checkbox + scope-bleed note in `8e7c6c0`. `Workspace.roots: Vec<PathBuf>` → `Workspace.root: PathBuf`; deleted `roots.rs` (61 LOC) + `best_root_for`; rewrote ~30 call sites across L2/L3/L4/L5/L6/L8/L9. Net diff: −622 LOC. All cargo gates clean: build, tests (workspace + polyglot smoke), clippy, fmt.
 
