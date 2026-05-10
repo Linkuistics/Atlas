@@ -12,12 +12,10 @@ considered closed once this spec lands.
 ## 1. Problem
 
 Phase 1 introduces scattered per-component `.atlas/` directories
-(design §4.6, §5.4): each component carries its own
+(design §4.6, §5.3): each component carries its own
 `<component-path>/.atlas/overrides.yaml` alongside the source it
 describes. The top-level `<primary-root>/.atlas/components.overrides.yaml`
-remains the place for cross-component pins and additions. Multi-root
-workspaces (design §5.3) add another wrinkle: peer roots discovered via
-path-dep walking each carry their own top-level overrides too.
+remains the place for cross-component pins and additions.
 
 Three things need to be defined before PR-6's writers and L4's override
 merger can land:
@@ -173,9 +171,8 @@ informed:
   ```
 
 - **Phase 2 addition:** a `--strict-overrides` CLI flag escalates the
-  warning to a hard error. Phase 1 ships warning-only; we want the
-  multi-root experience to be forgiving while users learn the
-  discovery rules.
+  warning to a hard error. Phase 1 ships warning-only; we want this
+  to be forgiving while users learn the discovery rules.
 
 The validator that enforces the per-component scoping rule (§5) is
 *not* configurable: cross-component pins in a per-component file are
@@ -250,7 +247,7 @@ merge as a precondition check.
 ## 9. References
 
 - Design spec: `2026-05-06-atlas-system-model-design.md` §4.6 (data
-  co-locates with source), §5.3 (multi-root), §5.4 (file layout),
+  co-locates with source), §5.3 (file layout),
   §6.1 (override schema), §11.2.3 (the open question this spec
   resolves).
 - Phase 1 plan: `2026-05-06-atlas-vnext-phase1-plan.md` §2.2

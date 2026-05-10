@@ -431,26 +431,7 @@ include `(stage, component_id, input_blob)`, responses include
 matters in server mode — a buggy Haskell-surface analyser must not take down
 the server.
 
-### 5.3 Multi-root workspace
-
-`Workspace` (a Salsa input) becomes plural: `roots: Vec<PathBuf>`. The primary
-root is the directory `atlas index` was run from. Additional roots are
-discovered by:
-
-1. Walking path dependencies in every reachable manifest under the primary
-   root.
-2. For each path-dep target outside the primary root, walking up until the
-   enclosing manifest-root (Cargo `[workspace]`, npm workspace) or filesystem
-   root is hit.
-3. Adding the manifest-root as an additional root.
-4. Iterating to fixed point so a chain `A→B→C` is followed.
-
-Discovered roots are written to `.atlas/config.yaml#roots`, where they become
-auditable and overridable. During cross-repo refactoring, the user replaces
-the discovered checkout paths with worktree paths and re-indexes; Atlas
-analyses the worktrees as if they were the canonical sources.
-
-### 5.4 File layout
+### 5.3 File layout
 
 ```
 <primary-root>/
@@ -478,7 +459,7 @@ Per-component `.atlas/` directories travel with the source. When a sibling
 repo is pulled in via path-dep, its per-component `.atlas/` directories are
 read as authoritative for those components (subject to fingerprint validation).
 
-### 5.5 Cache architecture
+### 5.4 Cache architecture
 
 The persistent cache is a content-addressed object store keyed by
 `(stage, component_id_or_pair, input_fingerprint_sha)`, with the value being
@@ -497,7 +478,7 @@ For L6 (the only cross-component stage), the cache key includes the surface
 shas of all edge participants. When a participant's surface changes, every
 L6 cache entry that named it as a participant misses on the next access.
 
-### 5.6 Server mode (eventual)
+### 5.5 Server mode (eventual)
 
 Server mode (Phase 10) makes Atlas long-running:
 
@@ -764,7 +745,7 @@ participant resolves to a contract definition in a per-component
 Schema unchanged from v1, but **semantically narrower**: contains only
 genuinely third-party packages (crates.io, npm, PyPI, NuGet). Cross-tree path
 dependencies pointing at sibling Atlas-indexed roots no longer appear here;
-they're resolved into internal components by the multi-root workspace.
+they're resolved into internal components within the single-root workspace.
 
 ### 6.6 `analyzers.yaml`
 
@@ -1096,7 +1077,6 @@ for performance.
 CLI.
 
 **Scope:**
-- Multi-root `Workspace` (Salsa input becomes plural roots).
 - Path-dep walking with fixed-point root expansion.
 - Scattered per-component `.atlas/` directories.
 - `surfaces.yaml` projection with contracts as first-class.
@@ -1176,10 +1156,18 @@ schema change, no LLM call sites.
 See `docs/superpowers/specs/2026-05-09-atlas-vnext-phase4-design.md`
 for the canonical Phase 4 scope.
 
-### 10.5 Phase 5 — Monorepo consolidation
+### 10.5 Phase 5 — Monorepo consolidation, part 1
 
-**Goal:** Fold atlas-contracts + Ravel + Ravel-Lite into Atlas;
-delete multi-root machinery.
+**SHIPPED 2026-05-10.** Folded `atlas-contracts` (schema crates
+`component-ontology` and `atlas-index`) into the Atlas repo as
+workspace members; retired the multi-root architectural seam (deleted
+`expand_roots`, the `--additional-root` CLI flag,
+`IndexConfig.additional_roots`, and the `roots.rs::best_root_for`
+helper; collapsed `Workspace.roots: Vec<PathBuf>` to
+`Workspace.root: PathBuf`). Folding Ravel + Ravel-Lite into Atlas is
+deferred to a later phase (post-Phase-5, slot TBD), possibly tied to
+a Bazel build-system migration for the polyglot tree. Final commit:
+`<PR-6-COMMIT-SHA>`.
 
 ### 10.6 Phase 6 — User-facing schema cleanups
 
@@ -1447,9 +1435,6 @@ disagreement between the two graphs is itself useful.
   including content shas, analyser version, and (for LLM analysers) prompt
   and model identifiers.
 - **L0–L9**: the layered analysis pipeline, inherited from v1 and extended.
-- **Multi-root workspace**: a `Workspace` Salsa input with plural roots,
-  including the primary root and all peer roots discovered via path
-  dependencies.
 - **Per-component `.atlas/`**: a directory at a component's source path
   holding that component's intrinsic data (component entry, surfaces,
   overrides, scoped cache). Travels with the source.
