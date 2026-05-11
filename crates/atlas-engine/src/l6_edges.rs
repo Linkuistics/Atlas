@@ -22,9 +22,11 @@
 
 use std::sync::Arc;
 
-use atlas_index::{rewrite_participant_owner_prefix, ComponentEntry, Stage, SurfacesFile};
+use atlas_index::{
+    rewrite_participant_owner_prefix, ComponentEntry, RenameMap, Stage, SurfacesFile,
+};
 #[cfg(test)]
-use atlas_index::{EdgeAdd, EdgeSuppress, RenameMap};
+use atlas_index::{EdgeAdd, EdgeSuppress};
 use atlas_llm::{LlmRequest, PromptId, ResponseSchema};
 use component_ontology::{Edge, EdgeKind, EvidenceGrade, LifecycleScope};
 use serde::Serialize;
@@ -110,7 +112,8 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
         combined.extend(contract_edges);
         combined.extend(composition_edges);
         combined.extend(compose_edges);
-        apply_contract_owner_follows_to_edge_participants(db, &mut combined);
+        let rename_map = rename_map_after_match(db);
+        apply_contract_owner_follows_to_edge_participants(&rename_map, &mut combined);
         let canonicalised = canonicalise_edges(combined);
         return Arc::new(apply_user_edge_overrides(db, canonicalised));
     }
@@ -168,7 +171,8 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
             combined.extend(contract_edges);
             combined.extend(composition_edges);
             combined.extend(compose_edges);
-            apply_contract_owner_follows_to_edge_participants(db, &mut combined);
+            let rename_map = rename_map_after_match(db);
+            apply_contract_owner_follows_to_edge_participants(&rename_map, &mut combined);
             let canonicalised = canonicalise_edges(combined);
             return Arc::new(apply_user_edge_overrides(db, canonicalised));
         }
@@ -189,7 +193,8 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
     combined.extend(composition_edges);
     combined.extend(compose_edges);
     combined.append(&mut parsed);
-    apply_contract_owner_follows_to_edge_participants(db, &mut combined);
+    let rename_map = rename_map_after_match(db);
+    apply_contract_owner_follows_to_edge_participants(&rename_map, &mut combined);
     let canonicalised = canonicalise_edges(combined);
     Arc::new(apply_user_edge_overrides(db, canonicalised))
 }
@@ -206,26 +211,13 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
 /// participants get re-sorted as part of canonicalisation. The rewrite
 /// also runs before [`apply_user_edge_overrides`] so user-authored
 /// `edges_add` / `edges_suppress` entries see post-rewrite ids.
-fn apply_contract_owner_follows_to_edge_participants(db: &AtlasDatabase, edges: &mut Vec<Edge>) {
-    let rename_map = rename_map_after_match(db);
-    if rename_map.is_empty() {
-        return;
-    }
-    for edge in edges {
-        for participant in &mut edge.participants {
-            rewrite_participant_owner_prefix(participant, &rename_map);
-        }
-    }
-}
-
-/// Test-only pure form of the participant-rewrite pass — takes the
-/// rename map directly so unit tests can exercise the rewrite without
-/// a database. Kept under `cfg(test)` so it never compiles into the
-/// shipped library.
-#[cfg(test)]
-fn apply_contract_owner_follows_to_edge_participants_for_tests(
-    edges: &mut Vec<Edge>,
+///
+/// The rename map is passed in by reference so callers materialise it
+/// once per `all_proposed_edges` branch and unit tests can exercise
+/// the rewrite without a database.
+fn apply_contract_owner_follows_to_edge_participants(
     rename_map: &RenameMap,
+    edges: &mut Vec<Edge>,
 ) {
     if rename_map.is_empty() {
         return;
@@ -1063,10 +1055,10 @@ mod tests {
     }
 
     #[test]
-    fn participant_rewrite_for_tests_noop_under_empty_map() {
+    fn participant_rewrite_noop_under_empty_map() {
         let mut edges = vec![defines_contract_edge("a", "a/c1")];
         let map: RenameMap = RenameMap::new();
-        apply_contract_owner_follows_to_edge_participants_for_tests(&mut edges, &map);
+        apply_contract_owner_follows_to_edge_participants(&map, &mut edges);
         assert_eq!(
             edges[0].participants,
             vec!["a".to_string(), "a/c1".to_string()]
@@ -1074,7 +1066,7 @@ mod tests {
     }
 
     #[test]
-    fn participant_rewrite_for_tests_rewrites_contract_id_prefix_only() {
+    fn participant_rewrite_rewrites_contract_id_prefix_only() {
         // The owner-follows rewrite cascades only into participants
         // whose string starts with `<prior_id>/`. Bare component-id
         // participants (e.g. the component participant of a
@@ -1084,7 +1076,7 @@ mod tests {
         let mut edges = vec![defines_contract_edge("a", "a/c1")];
         let mut map: RenameMap = RenameMap::new();
         map.insert(cid("a"), cid("b"));
-        apply_contract_owner_follows_to_edge_participants_for_tests(&mut edges, &map);
+        apply_contract_owner_follows_to_edge_participants(&map, &mut edges);
         assert_eq!(
             edges[0].participants,
             vec!["a".to_string(), "b/c1".to_string()],
