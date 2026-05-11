@@ -2,14 +2,14 @@
 
 Companion to `docs/superpowers/specs/2026-05-12-atlas-vnext-phase7-plan.md`. This file tracks per-PR completion state across sessions. The continuation prompt at `docs/superpowers/prompts/2026-05-12-vnext-continue.md` (Phase-7-shaped) reads this file (via the `*phase7-plan*` wildcard match) to find the next PR to dispatch.
 
-**Last updated:** 2026-05-12 (PR-0 landed: plan + status + continuation prompt).
+**Last updated:** 2026-05-12 (PR-1 landed: atlas-agents crate + Tool trait + MCP server + async LlmBackend).
 
 ## PR status
 
 Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the PR is reviewed and committed. Append a one-line note (date + commit sha + anything load-bearing the next session needs to know) in the per-PR notes block below.
 
 - [x] PR-0 — Plan + status + continuation prompt (docs only)
-- [ ] PR-1 — `atlas-agents` crate + `Tool` trait + MCP server + async `LlmBackend` (large)
+- [x] PR-1 — `atlas-agents` crate + `Tool` trait + MCP server + async `LlmBackend` (large)
 - [ ] PR-2 — Transcript cache + event bus + JSON-Lines subscriber (medium)
 - [ ] PR-3 — 26 tool wrappers across three parallel subagents (medium)
 - [ ] PR-4 — Agent runtime (single-iteration) + Lane A schema validation (large)
@@ -82,7 +82,25 @@ Key PR-0 design call-outs to surface to PR-1+:
 5. **PR-1 and PR-5 are the scope-creep risks** (plan §7.6, §7.7). PR-1 stacks: new crate + `Tool` trait + MCP multi-client server + async `LlmBackend` for 5 backends + rename + 4 new deps. PR-5 stacks: fixed-point + LLM dispatch + Lane B. Either subagent should stop-and-surface if it hits >2x its time/LOC estimate at any checkpoint.
 
 ### PR-1
-*(populated when PR-1 lands)*
+
+2026-05-12 — Landed: new crate `crates/atlas-agents/` containing the `Tool` trait + args/result/error types + `ToolContext` + `FingerprintInput` + `ToolSchema` + `ToolHandle` alias (in `src/tool.rs`); an in-process MCP stdio server with multi-client multiplexing via `Arc<McpServer>` + per-client tokio task (in `src/mcp/server.rs`); JSON-RPC framing types in `src/mcp/mod.rs`; `Tool::json_schema()` → MCP tool-descriptor conversion in `src/mcp/descriptors.rs`; subprocess built-in tool restrictions documented in `src/mcp/restrictions.md`; and an empty-but-forward-pointer-stubbed `src/runtime/mod.rs` for PR-4+. `crates/atlas-llm` extended: `LlmBackend` trait now carries `async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError>` alongside the sync `call`; subprocess backends (`claude_code`, `codex`) implement `call_async` natively via `tokio::process::Command` reusing existing render/parse helpers; HTTP backends (`http_anthropic`, `http_openai`) implement `call_async` natively via `reqwest::Client`'s async API; `test_backend`/`router`/`budget` delegate. Pre-PR-2 rename: today's `AgentEvent` → `BackendCallEvent` and `AgentObserver` → `BackendCallObserver` (file renamed `agent_observer.rs` → `backend_call_observer.rs`); cascade-updated call sites in `crates/atlas-llm/src/stream_parse.rs`, `crates/atlas-llm/src/codex_stream.rs`, `crates/atlas-cli/src/progress.rs`, and fixture-README docstrings. Trait-impl cascade: `BudgetSentinel` (atlas-cli backend), `AlwaysBoundaryBackend` (atlas-engine fixedpoint test), `PR14Backend` (atlas-cli polyglot test), and every other workspace `LlmBackend` impl gained `#[async_trait::async_trait]` + a `call_async` that delegates to sync `call`. New workspace deps: `tokio` (rt-multi-thread, sync, macros, process, io-util, time), `async-trait`, `ratatui`, `crossterm` (ratatui/crossterm pre-added so PR-6 needn't touch the workspace manifest). Commit: `0ec69f3` (PR-1 main commit).
+
+Acceptance gates met:
+- `cargo build --workspace` clean; `cargo test --workspace --no-fail-fast` all green across all crates including the new `atlas-agents` (22 tests, including `mcp_multiplex::two_concurrent_clients_isolated_dispatch` — the load-bearing multi-client MCP integration test).
+- `cargo clippy --all-targets -- -D warnings` clean.
+- `cargo fmt --check` clean (one trivial line-wrap drift in `crates/atlas-cli/src/progress.rs` import block was fixed via `cargo fmt --all`).
+- `cargo build --release --workspace` clean.
+- `cargo test -p atlas-cli --test phase3_polyglot_fixture --release --no-fail-fast` pass in 101.37s — the cumulative regression guard held (test asserts `0 < cold < 100`; the Phase 6 PR-5 closeout's calibrated ~40 baseline carries forward unchanged).
+
+Notes for PR-2:
+- `crates/atlas-agents::AgentEvent` is now a free name — PR-2 introduces it in `crates/atlas-agents/src/events.rs` with the variants enumerated in brainstorm §4 (`IterationBoundary`, `AgentStart`, `ToolCall`, `ToolResult`, `AgentComplete`, `AuditFire`, `AuditVerdict`, `AuditDegraded`, `HardFail`, `CacheHit`, `RuntimeComplete`).
+- `crates/atlas-agents/src/runtime/mod.rs` has module-doc forward-pointers but no submodules yet; PR-2 + PR-4 + PR-5 progressively populate. Today the crate exports `Tool`, `ToolArgs`, `ToolResult`, `ToolError`, `ToolContext`, `FingerprintInput`, `ToolSchema`, `McpServer` from `lib.rs`.
+- `tokio` is in the workspace at `version = "1"` with features `rt-multi-thread, sync, macros, process, io-util, time`. PR-2 may need additional features (`tokio::sync::broadcast` is in `sync`; `tokio::io::duplex` is in `io-util`; `tokio::test` for the test runtime is gated by the `test-util` feature already in `atlas-agents`'s dev-deps). PR-2 should not need to extend workspace tokio features for the event bus.
+- `crates/atlas-engine/src/atomic_write.rs` and `crates/atlas-engine/src/llm_cache.rs` are pre-existing — PR-2 modifies, never creates. (Confirmed by PR-0 forward-pointer #3.)
+- `tracing` is NOT in the workspace deps today; the implementer correctly dropped it from `crates/atlas-agents/Cargo.toml`. Brainstorm §4 expects PR-2's transcript-cache subscriber to log lagged-receiver `RecvError::Lagged(n)` as an error — PR-2 needs to either (a) add `tracing` to the workspace deps and use `tracing::error!`, or (b) substitute `eprintln!` or `log::error!` if simpler. (a) is preferred for telemetry consistency once the event bus emits events to subscribers.
+- The cumulative regression-guard test (`phase3_polyglot_fixture::polyglot_phase3_acceptance`) asserts `0 < cold < 100` rather than `cold == 40` exactly — the "~40 calibrated" framing in Phase 6 PR-5 closeout is a human-tracked expectation, not a strict assertion. PR-2+ doesn't need to preserve the exact count; only the loose bound.
+
+Deviations from plan: none material. `cargo fmt --all` applied a one-line import wrap fix in `crates/atlas-cli/src/progress.rs:15` (legitimate cascade from the long `BackendCallEvent` name pushing the import block past rustfmt's column threshold). Fixture-README docstrings in `crates/atlas-llm/tests/fixtures/{codex-stream,stream}/README.md` updated to reference `BackendCallEvent::ToolUse`/`ToolResult` instead of the pre-rename name; doc-only, no test-behaviour change.
 
 ### PR-2
 *(populated when PR-2 lands)*
