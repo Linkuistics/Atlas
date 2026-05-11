@@ -35,7 +35,7 @@ This plan does *not* re-derive scope; it sequences and grounds what the pre-pivo
 
 End of Phase 6, the Atlas codebase shall exhibit the following properties without changing any user-observable behaviour beyond the four newly-enabled features:
 
-- **Makefile and shell-script files recognised as manifests.** `is_manifest_file()` returns `true` for `Makefile`, `makefile`, `GNUmakefile`, any `*.mk` file, and any `*.sh` file. No paired classifier ships in this phase (deferred to Phase 9c per recast spec §11.3); recognised candidates fall through L3 to the existing `LlmClassify` fallback. Tests in `manifest_patterns.rs` mirror the existing pattern for the new arms.
+- **Makefile and shell-script files recognised as manifests.** ~~`is_manifest_file()` returns `true` for `Makefile`, `makefile`, `GNUmakefile`, any `*.mk` file, and any `*.sh` file. No paired classifier ships in this phase (deferred to Phase 9c per recast spec §11.3); recognised candidates fall through L3 to the existing `LlmClassify` fallback.~~ **DEFERRED 2026-05-11 to Phase 9c.** At PR-1 pre-flight (Step 1.1), the polyglot fixture was found to contain `build_glue/Makefile` and `scripts/deploy.sh` (inherited from the Phase 2 PR-14 fixture, surfaced today via `.atlas/components.overrides.yaml` `additions:` entries — not via manifest auto-discovery). Landing recognition-only would (a) raise the cumulative regression guard's cold LLM-call count from ~26 to ~28 via LlmClassify fallback, breaking the strict equality assertion, and (b) collide auto-discovered components with the existing `additions:` entries at the same paths. Recognition + paired classifier land together in Phase 9c per recast spec §11.3.
 - **Contract rename-match owner-follows applied.** When the component rename-match (`crates/atlas-index/src/rename_match.rs`) maps `prior_id A → new_id B`, contracts owned by `A` follow to `B`: contract IDs whose owner-prefix is `A` are rewritten to use `B` as the owner-prefix; `DefinesContract` and `ConsumesContract` edges in `related-components.yaml` have their participants rewritten to the new contract IDs. The α implementation (id-embeds-owner) is chosen; β (content-sha-stable) deferred to Phase 10 (fuzzy contract matching). Independent fuzzy contract matching (a contract whose owner did *not* rename but whose content moved or split) remains out of scope per `.claude/memory/project_phase6_paused_for_llm_spine`.
 - **`subsystem:` per-component override applied as overlay.** The parsed-but-ignored `subsystem: Option<String>` field on `ComponentFieldOverrides` (`crates/atlas-index/src/schema.rs:516-549`) is wired through L9 subsystem resolution as an overlay on `subsystems.overrides.yaml`. **Precedence: per-component override wins over central yaml** (closer-to-source wins; aligns with §4.1 plain-text-canonical and the co-located authoring discipline). A new warning class `SubsystemOverrideNonExistent` fires when `subsystems.overrides.yaml` lists a member-id that resolves to no extant component (the new class enumerated in PR-4's strict-mode list).
 - **`--strict-overrides` CLI flag.** A new boolean flag on `atlas index` (added to `IndexArgs` in `crates/atlas-cli/src/main.rs`) escalates a *closed* enumeration of override warnings to errors with non-zero exit. The closed list contains exactly three variants:
@@ -1802,13 +1802,13 @@ Expected: one final commit completing Phase 6.
 | PR | Acceptance gate |
 |----|----------------|
 | PR-0 | Plan + status + continuation prompt files exist; `cargo build --workspace` clean. |
-| PR-1 | New tests pass; polyglot smoke cold count unchanged (~26); lints + fmt clean. |
+| ~~PR-1~~ | **DEFERRED to Phase 9c.** Documented in §1 above; no acceptance gate in Phase 6. |
 | PR-2 | New integration test + 2 unit tests pass; polyglot smoke cold count unchanged; existing tests not regressed. |
 | PR-3 | New integration test (3 cases) + 2 unit tests pass; polyglot smoke clean; existing override tests not regressed. |
 | PR-4 | New dual-mode contract test (6 cases) + 2 unit tests for collectors pass; existing `phase3_overrides_edges` test updated with stderr+exit assertions and passing; polyglot smoke clean. |
-| PR-5 | All four PR-1..PR-4 checkboxes `[x]`; canonical-design retext applied per recast spec §13; audit greps clean; memory updates landed; polyglot smoke cold = ~26 / warm + reports = 0. |
+| PR-5 | PR-2, PR-3, PR-4 checkboxes `[x]` (PR-1 deferred); canonical-design retext applied per recast spec §13; audit greps clean; memory updates landed; polyglot smoke cold = ~26 / warm + reports = 0. PR-5 §10.6 narrative records PR-1's deferral to Phase 9c. |
 
-End-of-phase acceptance: all six PRs `[x]`; cumulative regression guard cold count unchanged; canonical design retext in place; Phase 7 surfaced as next-up in memory.
+End-of-phase acceptance: PR-0, PR-2, PR-3, PR-4, PR-5 all `[x]`; PR-1 deferred to Phase 9c with note in §10.6; cumulative regression guard cold count unchanged; canonical design retext in place; Phase 7 surfaced as next-up in memory.
 
 ---
 
@@ -1817,7 +1817,7 @@ End-of-phase acceptance: all six PRs `[x]`; cumulative regression guard cold cou
 Explicitly **not** in Phase 6:
 
 - Independent fuzzy contract matching (a contract's owner did not rename but the contract content moved or split). Deferred to Phase 10 per recast spec §11.4.
-- Make / shell classifier (paired classifier for the new manifest extensions). Deferred to Phase 9c per recast spec §11.3.
+- **Make / shell manifest recognition** (was PR-1 of Phase 6). **Deferred to Phase 9c** 2026-05-11 after polyglot-fixture pre-flight found `build_glue/Makefile` + `scripts/deploy.sh` already surfaced via `additions:`; recognition-only would have broken the cumulative regression guard. Recognition + paired classifier ship together in Phase 9c per recast spec §11.3.
 - Cache compression. Deferred to its own cache-architecture phase post-Phase-11.
 - Worktree commit-sha annotations. Dropped during pre-pivot brainstorm (Phase 5's multi-root collapse removed the motivating use case).
 - Any LLM-spine runtime work. Begins in Phase 7.
