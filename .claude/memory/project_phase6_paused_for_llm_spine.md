@@ -4,6 +4,8 @@ description: Phase 6 brainstorm (started 2026-05-10) suspended mid-design. Next 
 type: project
 originSessionId: e8e4bd69-2188-46c3-adaf-550f21a65b07
 ---
+**SUPERSEDED 2026-05-11.** The four candidate items shipped as Phase 6 per `docs/superpowers/specs/2026-05-11-atlas-vnext-phase6-plan.md` (PR-2 + PR-3 + PR-4; PR-1 deferred to Phase 9c on polyglot-fixture pre-flight). The LLM-spine recast begins in Phase 7 per `docs/superpowers/specs/2026-05-11-atlas-llm-spine-recast-design.md`. This memory retained for forensic context.
+
 Phase 6 brainstorm reached PR-2's design section (Contract rename-match owner-follows) before the user surfaced the load-bearing concern: Atlas's trajectory has drifted from its original prompts-as-application intent. The roadmap had LLM-driven analyses at Phase 9 (second-to-last); the user wants LLM as the spine, with deterministic code reserved for genuinely deterministic helpers (parsing, schema, cache). See `feedback_atlas_llm_spine_intent.md` for the strategic preference.
 
 **Decision (2026-05-10):** Option B — pause Phase 6, brainstorm the LLM-spine recast first, retext canonical §10 as part of that brainstorm, then return to Phase 6 (or its replacement) as a normal design task.

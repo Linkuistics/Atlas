@@ -312,21 +312,11 @@ The git repo boundary is a boundary-discovery signal, equivalent in role to a
 top-level component." The signal is consumed by L2 candidate generation and
 discarded by the rest of the pipeline.
 
-### 4.3 Determinism over fuzziness
+### 4.3 LLM is the spine; deterministic code is the scaffolding
 
-Atlas prefers deterministic analysers (manifest parsing, AST analysis,
-Dockerfile parsing, k8s manifest parsing, JSON Schema introspection) over LLM
-analysers. LLMs are used for:
+Atlas's analytical work is performed by an LLM agent runtime over a tree of per-stage tasks. Deterministic Rust code is reserved for tasks that are *genuinely* deterministic — parsing structured manifests, walking filesystem trees, computing content shas, validating schemas, replaying cached transcripts, and supporting the agent runtime itself. Each deterministic component must justify *why it is deterministic*; "easier to code than to prompt" is not sufficient justification.
 
-- Classification when deterministic signals are inconclusive (the v1
-  short-circuit pattern).
-- Surface inference for languages or formats without programmatic analysers.
-- Shell-script orchestration analysis.
-- Edge classification when the surface signals are ambiguous.
-- Pattern detection (modularity, anti-patterns, idioms) at higher layers.
-
-LLM analysers run as fallbacks within a pluggable analyser registry: the
-cheapest applicable analyser that produces a confident answer wins.
+The Phase 6 → Phase 7 boundary is the inversion moment in the codebase. Phase 6 ships as the final deterministic-spine release; Phase 7 ships the LLM-spine runtime; subsequent phases retire language-specific deterministic analysers in waves. See `docs/superpowers/specs/2026-05-11-atlas-llm-spine-recast-design.md` for the architectural detail behind this inversion.
 
 ### 4.4 Pluggable analysers
 
@@ -845,6 +835,8 @@ new version. A migration spec accompanies each version bump.
 
 ### 7.1 Analyser interface (Rust trait, in-process)
 
+> **RETIRED Phase 7.** The `Analyzer` trait is superseded by the `Tool` trait defined in `docs/superpowers/specs/2026-05-11-atlas-llm-spine-recast-design.md` §5.1. The text below is retained as historical context for v1 / Phase-1-through-Phase-6 deterministic-spine behaviour; new analytical work uses the agent runtime described in the recast spec.
+
 ```rust
 pub trait Analyzer {
     fn id(&self) -> &str;
@@ -886,6 +878,8 @@ respawn on crash.
 
 ### 7.3 Cost classes and dispatch
 
+> **RETIRED Phase 7.** Cost-class dispatch (`deterministic-cheap < deterministic-expensive < llm-cheap < llm-expensive`) is replaced by LLM-agent dispatch per recast spec §4.2. The text below is retained as historical context for the deterministic-spine era.
+
 For a given target, the dispatcher orders applicable analysers by cost class
 ascending (`deterministic-cheap` < `deterministic-expensive` < `llm-cheap` <
 `llm-expensive`). The first analyser that returns `Confident` or `Graded` with
@@ -923,6 +917,8 @@ contributes to the output contributes to the key.
 | L7 | L4 fingerprint + L6 fingerprint. |
 | L8 | L2 fingerprint + L7 fingerprint + (LLM: same as L3). |
 | L9 | L4 + L5 + L6 + L7 + L8 fingerprints. |
+
+**Phase 7 extension.** When the LLM-spine agent runtime lands (see `docs/superpowers/specs/2026-05-11-atlas-llm-spine-recast-design.md` §6.1), the fingerprint discriminator for L3 / L5 / L6 / L8 stages extends with `iteration_number` (for fixed-point iteration) and `prior_model_sha` (so each iteration of the agent tree caches separately). The existing inputs in the table above remain canonical; the iteration extension is additive.
 
 ### 8.2 Cross-component invalidation
 
@@ -1171,43 +1167,29 @@ a Bazel build-system migration for the polyglot tree. Final commit:
 
 ### 10.6 Phase 6 — User-facing schema cleanups
 
-**Scope:** Contract rename-match (§11.2.4); `--strict-overrides`
-flag; cache compression (§11.2.7); worktree commit-sha
-annotations (§11.2.8); `is_manifest_file` Makefile/shell
-extension; `subsystem` field wiring (Phase 3 PR-9 deferral);
-`edges_suppress` no-match warning stderr-capture test (Phase 3
-PR-10 deferral).
+**SHIPPED 2026-05-11.** Final deterministic-spine release before the LLM-spine recast begins in Phase 7. Five PRs landed (PR-0 plan + PR-2 contract rename-match owner-follows + PR-3 subsystem field overlay + PR-4 --strict-overrides + closed enum + dual-mode contract test + PR-5 acceptance + closeout + this retext). Original PR-1 (Makefile/shell manifest recognition) deferred to Phase 9c per `docs/superpowers/specs/2026-05-11-atlas-llm-spine-recast-design.md` §11.3 after pre-flight found the polyglot fixture already surfaces Makefile/`*.sh` via `additions:`. Closes the §11.2.4 contract-rename-match canonical-design open question (α id-embeds-owner implementation; β content-sha-stable deferred to Phase 10). Companion design + plan: `docs/superpowers/specs/2026-05-11-atlas-vnext-phase6-plan.md`. Final commit: `<PR-5-COMMIT-SHA>`.
 
-### 10.7 Phase 7 — Per-language refinements
+### 10.7 Phase 7 — LLM-spine runtime
 
-**Scope:** Full tree-sitter-dart; raco-driven Racket dep
-resolution; Phoenix sub-kinds for Elixir; Mix umbrella
-decomposition; LispKit `(import …)` symbolic resolution.
+LLM-spine runtime: agent runtime, toolbox, transcript cache, event bus, TUI, fixed-point iteration loop, audit lane. No language retirements; existing deterministic classifiers wrap as `Tool` implementations the agent invokes. Calibrates the cache primitive against known-good reference behaviour and ships the live TUI progress UX. See `docs/superpowers/specs/2026-05-11-atlas-llm-spine-recast-design.md` §11.1.
 
-### 10.8 Phase 8 — Subprocess convergence
+### 10.8 Phase 8 — Cargo retirement
 
-**Scope:** Migrate Cargo / Dockerfile / RustSurface / LlmClassify /
-TS-as-subprocess to subprocess; bidirectional LLM callback channel;
-rust-analyzer integration (stretch).
+First language LLM-driven: retires `cargo_classifier.rs` and Cargo-specific surface analysis in favour of LLM agents driving the toolbox. Calibrates the cold-token budget for the polyglot smoke test (locks in empirical per-language numbers; warm = 0 invariant unchanged). See recast spec §11.2.
 
-### 10.9 Phase 9 — LLM-driven analyses
+### 10.9 Phase 9 — Remaining language retirements (waves)
 
-**Scope:** Pattern detection (recurring component / edge shapes);
-LLM confidence threshold calibration (§11.2.6).
+Retires the remaining 9 hand-coded language classifiers in three waves: 9a (TS/JS + Python), 9b (C# + Dart), 9c (Elixir + Racket + LispKit + Compose + Dockerfile + the deferred Make/shell classifier from Phase 6's pre-pivot brainstorm). Each wave is its own phase with its own PRs, budget assertions, and reference-output comparisons. Mature-language surface analyser code (Rust + TS/JS) collapses to text-scoping `Tool` implementations; weak-tooling languages get no text-scoping helpers — agents read whole files. See recast spec §11.3.
 
-### 10.10 Phase 10 — Server mode
+### 10.10 Phase 10 — LLM-driven analyses
 
-**Goal:** Long-running service with reactive recomputation and query API.
+Pattern detection (recurring component / edge shapes; anti-patterns) as a new L8 agent stage; fuzzy contract matching (deferred from Phase 6 pre-pivot brainstorm) extends contract rename-match with semantic similarity beyond owner-follows / content-sha-stability; qualitative LLM-driven augmentation to existing Phase 3 modularity reports; LLM confidence threshold calibration. **Moved earlier** than today's §10.9 placement, since the agent runtime makes these analyses natural once it exists. See recast spec §11.4.
 
-**Scope:**
-- File watcher and Salsa input updates.
-- gRPC + HTTP+GraphQL query API.
-- Subscription primitives (contract sha, surface sha).
-- Server lifecycle (start, restart, GC).
-- CLI as thin client to co-located server.
-- Optional Grafeo derived index for ad-hoc Cypher/GQL/SPARQL queries.
+### 10.11 Phase 11 — Server mode + web-app subscriber
 
-### 10.11 Migration from v1
+Long-running service with reactive recomputation, query API, file watcher, Salsa input updates, gRPC / HTTP+GraphQL, subscriptions, lifecycle, GC. Also ships the **web-app subscriber** to the agent runtime's event bus (the server already runs the bus across process boundaries; the web app subscribes via WebSocket / SSE). See recast spec §11.5.
+
+### 10.12 Migration from v1
 
 > **OBSOLETE.** Superseded by the greenfield non-negotiable adopted in
 > Phase 1. There is no migration path from v1 layouts; a user upgrading
