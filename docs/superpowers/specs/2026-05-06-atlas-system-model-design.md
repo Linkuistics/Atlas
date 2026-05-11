@@ -1258,10 +1258,10 @@ The following are flagged for resolution before the relevant phase ships.
    from v1 covers components; an analogous mechanism for contracts is
    needed.
 
-5. **Phase 10 query API authentication and authorisation.** Server mode running
+5. **Phase 11 query API authentication and authorisation.** Server mode running
    in a multi-tenant environment (CI, shared dev server) needs an auth model.
-   Defer to Phase 10 design (server mode is now §10.10 under the validated
-   post-Phase-3 ordering; see §10.10).
+   Defer to Phase 11 design (server mode is §10.11 under the LLM-spine recast
+   ordering; see §10.11).
 
 6. **LLM analyser confidence thresholds.** The threshold for "confident" vs
    "declines" is per-analyser. Defaults need calibration against real
