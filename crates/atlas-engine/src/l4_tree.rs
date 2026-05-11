@@ -381,6 +381,12 @@ fn apply_per_component_field_overrides(
 ///
 /// Panics on the same conditions as [`all_components`].
 pub fn per_component_subsystem_overrides(db: &AtlasDatabase) -> BTreeMap<ComponentId, String> {
+    // TODO(phase6-pr4 or later): consolidate this walk into
+    // `apply_per_component_field_overrides` to avoid a third recursive
+    // `merge_overrides_in_discovery_order` call per `run_index`. Today the
+    // walk is redundant with the one in `try_assemble_inner`; the cleaner
+    // fix is to collect the BTreeMap in the same loop where lifecycle /
+    // language / kind overrides are already applied.
     let workspace = db.workspace();
     let root = workspace.root(db as &dyn salsa::Database).clone();
     let primary_overrides = workspace

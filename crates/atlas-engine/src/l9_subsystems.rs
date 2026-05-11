@@ -40,6 +40,31 @@ use globset::{Glob, GlobMatcher};
 use crate::db::AtlasDatabase;
 use crate::l4_tree::{all_components, per_component_subsystem_overrides};
 
+/// Audit-trail note attached to a [`SubsystemEntry`] when, after override
+/// application, none of its member references resolved to a live
+/// component. Centralised so the three call sites that read or write
+/// this note (the central-resolution emit in [`resolve_one_subsystem`],
+/// the per-component-overlay re-application in [`resolve_subsystems`],
+/// and the clear-on-refill branch in the same function) cannot drift.
+const NOTE_ALL_UNRESOLVED: &str = "all members unresolved";
+
+/// Append [`NOTE_ALL_UNRESOLVED`] to `entry.notes` iff not already
+/// present. Idempotent so the per-component overlay can re-assert the
+/// note when a central entry loses its sole member to a higher-priority
+/// per-component override.
+fn mark_unresolved(entry: &mut SubsystemEntry) {
+    if !entry.notes.iter().any(|n| n == NOTE_ALL_UNRESOLVED) {
+        entry.notes.push(NOTE_ALL_UNRESOLVED.to_string());
+    }
+}
+
+/// Drop any prior [`NOTE_ALL_UNRESOLVED`] from `entry.notes`. Used when
+/// a previously-empty subsystem entry is refilled by a per-component
+/// override so the stale note does not survive into the rendered YAML.
+fn clear_unresolved(entry: &mut SubsystemEntry) {
+    entry.notes.retain(|n| n != NOTE_ALL_UNRESOLVED);
+}
+
 /// Produce `subsystems.yaml` from the workspace input + live components.
 /// `generated_at` is left empty; the CLI stamps the wall clock at write
 /// time. Salsa-side stable output preserves byte-identity on no-op
@@ -129,11 +154,8 @@ pub(crate) fn resolve_subsystems(
             entry
                 .member_evidence
                 .retain(|e| e.id != component_id.as_str());
-            if had_member
-                && entry.members.is_empty()
-                && !entry.notes.iter().any(|n| n == "all members unresolved")
-            {
-                entry.notes.push("all members unresolved".into());
+            if had_member && entry.members.is_empty() {
+                mark_unresolved(entry);
             }
         }
 
@@ -151,7 +173,7 @@ pub(crate) fn resolve_subsystems(
             }
             // A subsystem that was previously empty-then-refilled
             // should drop the stale "all members unresolved" note.
-            target.notes.retain(|n| n != "all members unresolved");
+            clear_unresolved(target);
         } else {
             resolved.push(SubsystemEntry {
                 id: subsystem_name.clone(),
@@ -248,12 +270,7 @@ fn resolve_one_subsystem(
     }
 
     let members: Vec<ComponentId> = resolved_ids.into_iter().collect();
-    let mut notes: Vec<String> = Vec::new();
-    if members.is_empty() {
-        notes.push("all members unresolved".into());
-    }
-
-    SubsystemEntry {
+    let mut entry = SubsystemEntry {
         id: sub.id.clone(),
         role: sub.role.clone(),
         lifecycle_roles: sub.lifecycle_roles.clone(),
@@ -262,8 +279,12 @@ fn resolve_one_subsystem(
         evidence_fields: sub.evidence_fields.clone(),
         members,
         member_evidence: evidence,
-        notes,
+        notes: Vec::new(),
+    };
+    if entry.members.is_empty() {
+        mark_unresolved(&mut entry);
     }
+    entry
 }
 
 /// A member entry is a glob iff it contains a glob metacharacter
