@@ -5,42 +5,56 @@
 //!   - Permissive (no `--strict-overrides`): warning text on stderr;
 //!     exit 0.
 //!   - Strict (`--strict-overrides`): warning text on stderr; exit
-//!     non-zero.
+//!     non-zero (`4`).
 //!
 //! This subsumes the deferred Phase 3 PR-10 stderr-capture test for
 //! `edges_suppress no-match` (now one of three variants).
 //!
 //! ## Test harness shape
 //!
-//! The verbatim test reference in the PR-4 plan invokes the binary
-//! as a subprocess. The CLI's production backend stack requires a
-//! filesystem-access LLM provider (`claude-code` / `codex`) on the
-//! host's PATH, so a subprocess-only contract test would be
-//! `claude`-gated like `agent_observer_e2e.rs`. To exercise the
-//! contract under `cargo test --workspace --release` on every CI
-//! lane, we instead drive `run_index` library-side with a
-//! `LenientBackend` stub and a [`CapturingCollector`] that records
-//! warning emits in-memory. The exit-code contract is mapped to the
-//! `Result` returned by `run_index`:
+//! Subprocess invocation of the `atlas` binary requires `claude-code`
+//! (or `codex`) on PATH because L3's `is_component` classify call hits
+//! the LLM before L6's override warnings fire on the merged YAML.
+//! Gating the contract test on `ATLAS_LLM_RUN_CLAUDE_TESTS=1` would
+//! skip it on every default-CI lane — defeating the whole point of a
+//! `--strict-overrides` regression detector.
 //!
-//! - Permissive: `IndexError::StrictOverridesFailed` is NEVER returned
-//!   even when warnings fire — the run completes successfully.
-//! - Strict: `IndexError::StrictOverridesFailed` is returned exactly
-//!   when at least one closed-enumeration warning fired during the run.
+//! Instead the test drives `run_index` library-side, but goes through
+//! the SAME [`IndexArgs`] clap parser the binary uses and the SAME
+//! [`IndexArgs::apply_to`] field-translation helper +
+//! [`index_error_exit_code`] exit-code mapping `main.rs` consults.
+//! Every clap-binding / field-mapping / exit-code-mapping seam in the
+//! production code path is exercised:
 //!
-//! The `RunOutput` shim mirrors `std::process::Output` so the asserts
-//! in the contract are written in the natural `stderr`/`status.code()`
-//! style.
+//!   1. `IndexArgs::try_parse_from([..., "--strict-overrides"])` — proves
+//!      the flag binds to `IndexArgs.strict_overrides`.
+//!   2. `args.apply_to(&mut config)` — proves the field propagates to
+//!      `IndexConfig.strict_overrides`.
+//!   3. `run_index` is then driven with a [`LenientBackend`] stub plus a
+//!      [`CapturingCollector`] override that mirrors the production
+//!      [`StrictCollector`] / [`PermissiveCollector`] policy. The
+//!      pipeline `(None, true) => StrictCollector` instantiation arm is
+//!      covered by `cli_args::tests` + `override_warnings::tests` unit
+//!      tests; substituting `CapturingCollector::new_strict()` here
+//!      lets the test assert on the warning text without
+//!      process-stderr capture acrobatics. The strict-mode contract
+//!      this collector mirrors (echo + flip `has_errors()` on first
+//!      emit) is unit-tested in `override_warnings.rs`.
+//!   4. The resulting `IndexError` is mapped to an exit code via
+//!      `index_error_exit_code` — the SAME helper `main.rs` consults.
+//!      Strict mode must produce `IndexError::StrictOverridesFailed`
+//!      (exit code 4); permissive mode must succeed (exit code 0).
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use atlas_cli::progress::{make_stderr_reporter, ProgressMode};
-use atlas_cli::{run_index, IndexConfig, IndexError};
+use atlas_cli::{index_error_exit_code, run_index, IndexArgs, IndexConfig, IndexError};
 use atlas_engine::testing::LenientBackend;
 use atlas_engine::{CapturingCollector, OverrideWarningCollector};
 use atlas_llm::LlmFingerprint;
+use clap::Parser;
 use tempfile::TempDir;
 
 fn fingerprint() -> LlmFingerprint {
@@ -52,60 +66,112 @@ fn fingerprint() -> LlmFingerprint {
     }
 }
 
+/// Minimal clap harness mirroring `atlas`'s top-level
+/// `Command::Index(IndexArgs)` shape so `try_parse_from` reads the
+/// same argv the binary parses.
+#[derive(Debug, Parser)]
+#[command(name = "atlas")]
+struct AtlasCli {
+    #[command(subcommand)]
+    command: AtlasCmd,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum AtlasCmd {
+    Index(IndexArgs),
+}
+
+fn parse_index_args(argv: &[&str]) -> IndexArgs {
+    let parsed = AtlasCli::try_parse_from(argv)
+        .unwrap_or_else(|err| panic!("clap parse failed for {argv:?}: {err}"));
+    match parsed.command {
+        AtlasCmd::Index(args) => args,
+    }
+}
+
 /// Captures the result of a `run_index` invocation in a shape mirroring
-/// `std::process::Output`. `status` is `Ok` on success;
-/// `stderr` carries the captured warning text from the
-/// `CapturingCollector`; `exit_code` mirrors the CLI's mapping from
-/// `IndexError` to process exit code.
+/// `std::process::Output`. `status` carries the raw `Result` so the
+/// test can assert on the specific `IndexError` variant; `stderr`
+/// carries the captured warning text from the `CapturingCollector`;
+/// `exit_code` is the value `main.rs` would have produced (via the
+/// shared `index_error_exit_code` helper).
 struct RunOutput {
     status: Result<atlas_cli::IndexSummary, IndexError>,
     stderr: String,
-    exit_code: i32,
+    exit_code: u8,
 }
 
 impl RunOutput {
     fn stderr(&self) -> &str {
         &self.stderr
     }
-    fn status_code(&self) -> i32 {
+    fn status_code(&self) -> u8 {
         self.exit_code
     }
 }
 
-/// Drive `run_index` against `root` with a permissive collector
-/// (default mode). Returns the captured warning text plus the exit
-/// code the CLI would emit.
+/// Drive `run_index` against `root` with no `--strict-overrides`
+/// (permissive default). Returns the captured warning text plus the
+/// exit code the CLI would emit.
 fn run_atlas_index(root: &Path) -> RunOutput {
-    run_atlas_index_inner(root, /* strict_overrides */ false)
+    run_atlas_index_with_args(root, &[])
 }
 
-/// Drive `run_index` against `root` with `--strict-overrides`
-/// semantics — install a strict capturing collector and assert the
-/// `StrictOverridesFailed` exit-code path is exercised when warnings
-/// fire.
-fn run_atlas_index_with_args(root: &Path, args: &[&str]) -> RunOutput {
-    let strict = args.contains(&"--strict-overrides");
-    run_atlas_index_inner(root, strict)
-}
+/// Drive `run_index` against `root` with `extra_args` (typically
+/// `["--strict-overrides"]` for the strict-mode arm). The argv is fed
+/// through `IndexArgs::try_parse_from` and the resulting args are
+/// translated to `IndexConfig` via `IndexArgs::apply_to` — i.e. the
+/// exact same path `main.rs` uses.
+fn run_atlas_index_with_args(root: &Path, extra_args: &[&str]) -> RunOutput {
+    // Build the argv: `atlas index <root> --no-budget --no-gitignore <extra>`.
+    // `--no-budget` mirrors the test-harness need (no real budget); the
+    // binary uses `--budget <N>` in production. `--no-gitignore` mirrors
+    // existing in-process integration tests that root Atlas at tempdirs.
+    let root_str = root.to_str().expect("tempdir path is UTF-8");
+    let mut argv: Vec<&str> = vec!["atlas", "index", root_str, "--no-budget", "--no-gitignore"];
+    argv.extend_from_slice(extra_args);
 
-fn run_atlas_index_inner(root: &Path, strict_overrides: bool) -> RunOutput {
-    // Build a capturing collector that mirrors the production
-    // permissive/strict policy so the test exercises the same
-    // `has_errors()` branch the CLI consults.
-    let collector: Arc<CapturingCollector> = Arc::new(if strict_overrides {
+    // Step 1 of the contract: clap parses the argv, binding
+    // `--strict-overrides` (when present) to `IndexArgs.strict_overrides`.
+    let args = parse_index_args(&argv);
+
+    // Build the base `IndexConfig` the way `main.rs` does.
+    let mut config = IndexConfig::new(root.to_path_buf());
+    config.output_dir = root.join(".atlas");
+    config.fingerprint_override = Some(fingerprint());
+
+    // Step 2 of the contract: `apply_to` is the SAME helper `main.rs`
+    // uses — sets `strict_overrides`, `respect_gitignore`, etc. The
+    // test does NOT touch these fields directly.
+    args.apply_to(&mut config);
+
+    // Pivot of the contract: assert `apply_to` propagated the
+    // `--strict-overrides` flag end-to-end. If the binding ever breaks
+    // (e.g., someone renames the field in `IndexArgs` but forgets to
+    // update `apply_to`), this assertion fires before run_index does.
+    assert_eq!(
+        config.strict_overrides,
+        extra_args.contains(&"--strict-overrides"),
+        "IndexArgs.strict_overrides binding broken: extra_args={extra_args:?}, \
+         config.strict_overrides={}",
+        config.strict_overrides
+    );
+
+    // Step 3 of the contract: substitute a `CapturingCollector` for
+    // the in-process StrictCollector / PermissiveCollector. The
+    // capturing collector mirrors the production strict/permissive
+    // contract verbatim (echo + flip `has_errors()` on first emit for
+    // strict; record-only for permissive). The
+    // `pipeline.rs:(None, true) => StrictCollector` instantiation arm
+    // is unit-tested in `cli_args::tests::exit_code_mapping_is_stable`
+    // + `override_warnings::tests::strict_collector_sets_errors_on_emit`;
+    // installing a capturing collector here lets the test assert on
+    // the warning text without process-stderr capture.
+    let collector: Arc<CapturingCollector> = Arc::new(if config.strict_overrides {
         CapturingCollector::new_strict()
     } else {
         CapturingCollector::new_permissive()
     });
-
-    let mut config = IndexConfig::new(root.to_path_buf());
-    config.output_dir = root.join(".atlas");
-    config.respect_gitignore = false;
-    config.fingerprint_override = Some(fingerprint());
-    // The capturing collector mirrors strict vs permissive on its own;
-    // do NOT also set `strict_overrides: true` (that would install a
-    // second `StrictCollector` that competes with ours). The
-    // `override_warning_collector` override-path wins.
     config.override_warning_collector =
         Some(Arc::clone(&collector) as Arc<dyn OverrideWarningCollector>);
 
@@ -118,20 +184,14 @@ fn run_atlas_index_inner(root: &Path, strict_overrides: bool) -> RunOutput {
     );
 
     let stderr = collector.rendered();
-    // Map the library-side `IndexError` taxonomy to the CLI's exit-code
-    // mapping at `crates/atlas-cli/src/main.rs:run_index_cmd`:
-    //   Ok                            -> 0
-    //   StrictOverridesFailed         -> 4
-    //   BudgetExhausted               -> 2
-    //   SetupFailed                   -> 3
-    //   Other                         -> 1
+    // Step 4 of the contract: map IndexError to exit code via the
+    // SAME helper `main.rs` consults. No inline `match` on
+    // `IndexError` in the test.
     let exit_code = match &status {
         Ok(_) => 0,
-        Err(IndexError::StrictOverridesFailed(_)) => 4,
-        Err(IndexError::BudgetExhausted) => 2,
-        Err(IndexError::SetupFailed(_)) => 3,
-        Err(IndexError::Other(_)) => 1,
+        Err(err) => index_error_exit_code(err),
     };
+
     RunOutput {
         status,
         stderr,
@@ -191,7 +251,7 @@ fn fixture_with_edges_add_unknown_kind(tmp: &TempDir) -> PathBuf {
          - kind: bogus-not-a-real-kind\n    \
            from: crate-a\n    \
            to: crate-b\n    \
-           reason: \"forces EdgesAddUnknownKind\"\n",
+           reason: \"forces EdgesOverrideUnknownKind\"\n",
     )
     .unwrap();
     root
@@ -251,10 +311,10 @@ fn edges_suppress_no_match_strict_emits_warning_exits_nonzero() {
             || stderr.contains("matched no edges"),
         "expected edges_suppress no-match warning text on stderr; got: {stderr}"
     );
-    assert_ne!(
+    assert_eq!(
         output.status_code(),
-        0,
-        "strict mode must exit non-zero when the warning fires"
+        4,
+        "strict mode must exit 4 (StrictOverridesFailed) when the warning fires"
     );
     assert!(matches!(
         output.status,
@@ -263,7 +323,7 @@ fn edges_suppress_no_match_strict_emits_warning_exits_nonzero() {
 }
 
 // =============================================================
-// Variant 2: EdgesAddUnknownKind
+// Variant 2: EdgesOverrideUnknownKind
 // =============================================================
 
 #[test]
@@ -294,7 +354,7 @@ fn edges_add_unknown_kind_strict_emits_warning_exits_nonzero() {
         stderr.contains("bogus-not-a-real-kind") || stderr.contains("unknown kind"),
         "expected edges_add unknown-kind warning text on stderr; got: {stderr}"
     );
-    assert_ne!(output.status_code(), 0, "strict mode must exit non-zero");
+    assert_eq!(output.status_code(), 4, "strict mode must exit 4");
     assert!(matches!(
         output.status,
         Err(IndexError::StrictOverridesFailed(_))
@@ -333,7 +393,7 @@ fn subsystem_override_nonexistent_strict_emits_warning_exits_nonzero() {
         stderr.contains("nonexistent-component"),
         "expected subsystem-override warning to name the missing component; got: {stderr}"
     );
-    assert_ne!(output.status_code(), 0, "strict mode must exit non-zero");
+    assert_eq!(output.status_code(), 4, "strict mode must exit 4");
     assert!(matches!(
         output.status,
         Err(IndexError::StrictOverridesFailed(_))

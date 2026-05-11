@@ -149,7 +149,7 @@ pub struct IndexConfig {
     /// the backend's `fingerprint()` is installed verbatim.
     pub fingerprint_override: Option<LlmFingerprint>,
     /// Phase 6 PR-4: escalate the closed-enumeration override
-    /// warnings (`EdgesSuppressNoMatch`, `EdgesAddUnknownKind`,
+    /// warnings (`EdgesSuppressNoMatch`, `EdgesOverrideUnknownKind`,
     /// `SubsystemOverrideNonExistent`) to errors. Permissive runs
     /// (`false`, the default) echo each warning to stderr and exit
     /// `0`; strict runs (`true`, set by `--strict-overrides`) echo

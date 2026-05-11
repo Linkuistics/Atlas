@@ -282,7 +282,7 @@ fn apply_user_edge_overrides(db: &AtlasDatabase, mut edges: Vec<Edge>) -> Vec<Ed
     // missing edge rather than a silent corruption of the edge set.
     for add in edges_add {
         let Some(kind) = EdgeKind::parse(&add.kind) else {
-            collector.emit(OverrideWarning::EdgesAddUnknownKind {
+            collector.emit(OverrideWarning::EdgesOverrideUnknownKind {
                 kind: add.kind.clone(),
                 scope: format!(
                     "components.overrides.yaml edges_add [{} -> {}]",
@@ -315,7 +315,7 @@ fn apply_user_edge_overrides(db: &AtlasDatabase, mut edges: Vec<Edge>) -> Vec<Ed
     // kind still matches the analyser-emitted `[A, B]` participants.
     for suppress in edges_suppress {
         let Some(kind) = EdgeKind::parse(&suppress.kind) else {
-            collector.emit(OverrideWarning::EdgesAddUnknownKind {
+            collector.emit(OverrideWarning::EdgesOverrideUnknownKind {
                 kind: suppress.kind.clone(),
                 scope: format!(
                     "components.overrides.yaml edges_suppress [{} -> {}]",

@@ -34,10 +34,15 @@ pub enum OverrideWarning {
     /// no analyser-discovered edge. Permissive: log + no-op. Strict:
     /// non-zero exit.
     EdgesSuppressNoMatch { directive: String, scope: String },
-    /// An `edges_add` entry references an unknown edge kind. The
-    /// entry is dropped (the edge is never materialised). Permissive:
+    /// An override entry under `edges_add` or `edges_suppress`
+    /// references an unknown edge kind. The entry is dropped (the
+    /// edge is never materialised, or never suppressed). Permissive:
     /// log + drop. Strict: non-zero exit.
-    EdgesAddUnknownKind { kind: String, scope: String },
+    ///
+    /// The `scope` field disambiguates which directive triggered the
+    /// warning (it includes the literal `edges_add` or
+    /// `edges_suppress` substring of the source list).
+    EdgesOverrideUnknownKind { kind: String, scope: String },
     /// A central `subsystems.overrides.yaml` `members:` entry names an
     /// id-form member that does not resolve to any extant component.
     /// The entry is skipped (the subsystem ends up with the
@@ -56,8 +61,8 @@ impl OverrideWarning {
                 "warning: edges_suppress directive `{directive}` in {scope} matched no edges \
                  — override has no effect (no match)"
             ),
-            OverrideWarning::EdgesAddUnknownKind { kind, scope } => format!(
-                "warning: edges_add entry references unknown kind `{kind}` in {scope} \
+            OverrideWarning::EdgesOverrideUnknownKind { kind, scope } => format!(
+                "warning: override entry references unknown kind `{kind}` in {scope} \
                  — entry not applied"
             ),
             OverrideWarning::SubsystemOverrideNonExistent { name, scope } => format!(
@@ -221,7 +226,7 @@ mod tests {
     fn strict_collector_sets_errors_on_emit() {
         let c = StrictCollector::new();
         assert!(!c.has_errors());
-        c.emit(OverrideWarning::EdgesAddUnknownKind {
+        c.emit(OverrideWarning::EdgesOverrideUnknownKind {
             kind: "bogus".into(),
             scope: "y".into(),
         });
@@ -235,7 +240,7 @@ mod tests {
             directive: "a".into(),
             scope: "scope-a".into(),
         });
-        c.emit(OverrideWarning::EdgesAddUnknownKind {
+        c.emit(OverrideWarning::EdgesOverrideUnknownKind {
             kind: "nope".into(),
             scope: "scope-b".into(),
         });

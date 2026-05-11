@@ -8,6 +8,7 @@
 //! prompts-on-disk requirement.
 
 pub mod backend;
+pub mod cli_args;
 pub mod pipeline;
 pub mod progress;
 pub mod prompts;
@@ -15,6 +16,7 @@ pub mod reports;
 pub mod timestamp;
 pub mod validate;
 
+pub use cli_args::{index_error_exit_code, IndexArgs};
 pub use pipeline::{
     build_engine_database, resolve_component_dir, run_index, IndexConfig, IndexError, IndexSummary,
     DEFAULT_OUTPUT_SUBDIR,

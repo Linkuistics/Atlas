@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use atlas_cli::progress::{make_stderr_reporter, ProgressBackend, ProgressMode};
-use atlas_cli::{run_index, IndexError};
+use atlas_cli::{index_error_exit_code, run_index, IndexArgs, IndexError};
 use atlas_llm::LlmBackend;
 use clap::{Parser, Subcommand};
 
@@ -61,82 +61,6 @@ enum Command {
     /// their deploy coupling, scored by drift severity against the
     /// snapshot baseline. Phase 3, PR-11.
     Divergence(reports::DivergenceArgs),
-}
-
-#[derive(Debug, clap::Args)]
-struct IndexArgs {
-    /// Path to the workspace root. Defaults to the current directory.
-    root: PathBuf,
-
-    /// Where to write the four Atlas YAMLs. Defaults to
-    /// `<root>/.atlas/`.
-    #[arg(long)]
-    output_dir: Option<PathBuf>,
-
-    /// LLM token budget for this run. Fail-loud per §7.4: required
-    /// unless `--no-budget` is passed.
-    #[arg(long)]
-    budget: Option<u64>,
-
-    /// Skip the budget check. Intended for local development only.
-    #[arg(long, conflicts_with = "budget")]
-    no_budget: bool,
-
-    /// Maximum depth for L8's sub-carve recursion. 0 = top-level
-    /// components only.
-    #[arg(long, default_value_t = atlas_engine::DEFAULT_MAX_DEPTH)]
-    max_depth: u32,
-
-    /// Bound on parallel `is_component` calls in L8's map step.
-    /// 1 = serial. Defaults to `atlas_engine::DEFAULT_MAP_CONCURRENCY`
-    /// (8). Tune lower against rate-limited HTTP providers; higher when
-    /// the configured backend is local or unrate-limited.
-    #[arg(long, default_value_t = atlas_engine::DEFAULT_MAP_CONCURRENCY)]
-    map_concurrency: usize,
-
-    /// Force L4 to reconsider boundaries — discards prior
-    /// `components.yaml` so rename-match does not anchor allocations
-    /// to stale ids.
-    #[arg(long)]
-    recarve: bool,
-
-    /// Compute outputs but do not write them.
-    #[arg(long)]
-    dry_run: bool,
-
-    /// Disable `.gitignore`-aware filtering when seeding the
-    /// filesystem. Useful for tests and for rooting Atlas at a
-    /// standalone project that has no `.git` directory.
-    #[arg(long)]
-    no_gitignore: bool,
-
-    /// Skip loading `components.overrides.yaml` and
-    /// `subsystems.overrides.yaml` from the output directory. The
-    /// files on disk are untouched. Forces every candidate through
-    /// Atlas's full classification path; useful for cross-target
-    /// validation where pin coverage would otherwise short-circuit
-    /// the pipeline.
-    #[arg(long)]
-    no_overrides: bool,
-
-    /// Force the per-call progress tally on stderr even when stderr
-    /// is not a TTY (e.g., piped to a file). Default behaviour is to
-    /// auto-enable when stderr is a TTY.
-    #[arg(long, conflicts_with = "no_progress")]
-    progress: bool,
-
-    /// Suppress the per-call progress tally even when stderr is a
-    /// TTY. The final summary line on stdout is unaffected.
-    #[arg(long)]
-    no_progress: bool,
-
-    /// Escalate override warnings (edges_suppress no-match,
-    /// edges_add unknown-kind, subsystems.overrides.yaml non-existent
-    /// member) to errors. Outputs are still written; the run exits
-    /// with a non-zero code if any closed-enumeration override
-    /// warning fired.
-    #[arg(long)]
-    strict_overrides: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -220,6 +144,7 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
 
     let output_dir = args
         .output_dir
+        .clone()
         .unwrap_or_else(|| root.join(atlas_cli::DEFAULT_OUTPUT_SUBDIR));
 
     let config_path = output_dir.join("config.yaml");
@@ -228,13 +153,10 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
 
     let mut index_config = atlas_cli::IndexConfig::new(root);
     index_config.output_dir = output_dir;
-    index_config.max_depth = args.max_depth;
-    index_config.map_concurrency = args.map_concurrency;
-    index_config.recarve = args.recarve;
-    index_config.dry_run = args.dry_run;
-    index_config.respect_gitignore = !args.no_gitignore;
-    index_config.no_overrides = args.no_overrides;
-    index_config.strict_overrides = args.strict_overrides;
+    // Single source of truth for `IndexArgs` → `IndexConfig`; shared
+    // with the strict-overrides contract integration test so the test
+    // exercises the same translation the binary uses.
+    args.apply_to(&mut index_config);
     index_config.prompt_shas = Some(atlas_cli::backend::compute_prompt_shas());
 
     let progress_mode = if args.no_progress {
@@ -284,32 +206,39 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
             drop(handles);
             Ok(ExitCode::SUCCESS)
         }
-        Err(IndexError::BudgetExhausted) => {
-            eprintln!("atlas: LLM token budget exhausted; no output files were written");
-            drop(handles);
-            Ok(ExitCode::from(2))
-        }
-        Err(IndexError::SetupFailed(msg)) => {
-            eprintln!("atlas: LLM backend setup failed: {msg}; no output files were written");
-            drop(handles);
-            Ok(ExitCode::from(3))
-        }
-        Err(IndexError::StrictOverridesFailed(summary)) => {
-            // PR-4: outputs were still written; this is a strict-mode
-            // exit-code gate on top of an otherwise-successful run.
-            // The collector already echoed every offending warning to
-            // stderr.
-            println!("{}", atlas_cli::pipeline::format_summary(&summary));
-            eprintln!(
-                "atlas: --strict-overrides set; override warnings escalated to errors \
-                 (see warnings above)"
-            );
-            drop(handles);
-            Ok(ExitCode::from(4))
-        }
         Err(IndexError::Other(err)) => {
             drop(handles);
             Err(err)
+        }
+        Err(err) => {
+            // Diagnostic strings — `index_error_exit_code` owns the
+            // exit-code contract (shared with
+            // `crates/atlas-cli/tests/strict_overrides_contract.rs`).
+            match &err {
+                IndexError::BudgetExhausted => {
+                    eprintln!("atlas: LLM token budget exhausted; no output files were written");
+                }
+                IndexError::SetupFailed(msg) => {
+                    eprintln!(
+                        "atlas: LLM backend setup failed: {msg}; no output files were written"
+                    );
+                }
+                IndexError::StrictOverridesFailed(summary) => {
+                    // PR-4: outputs were still written; this is a
+                    // strict-mode exit-code gate on top of an
+                    // otherwise-successful run. The collector already
+                    // echoed every offending warning to stderr.
+                    println!("{}", atlas_cli::pipeline::format_summary(summary));
+                    eprintln!(
+                        "atlas: --strict-overrides set; override warnings escalated to errors \
+                         (see warnings above)"
+                    );
+                }
+                IndexError::Other(_) => unreachable!("handled above"),
+            }
+            let code = index_error_exit_code(&err);
+            drop(handles);
+            Ok(ExitCode::from(code))
         }
     }
 }

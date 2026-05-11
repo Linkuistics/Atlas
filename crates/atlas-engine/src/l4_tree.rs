@@ -373,7 +373,7 @@ fn apply_per_component_field_overrides(
 /// directory) are silently skipped — the existing scoping check
 /// rejected them at discovery time if they were ill-formed.
 ///
-/// Used by [`crate::l9_subsystems::subsystems_yaml_snapshot_with_warnings`]
+/// Used by [`crate::l9_subsystems::subsystems_yaml_snapshot`]
 /// to overlay per-component assignments on top of the central
 /// `subsystems.overrides.yaml`. Per-component overrides take precedence
 /// over the central file (LLM-spine recast spec §4.1 — closer-to-source
