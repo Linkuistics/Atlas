@@ -10,18 +10,18 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::agent_observer::{tool_summary_for, AgentEvent, AgentObserver};
+use crate::backend_call_observer::{tool_summary_for, BackendCallEvent, BackendCallObserver};
 use crate::{LlmError, PromptId};
 
-/// RAII guard that fires `AgentEvent::CallEnd` on drop, ensuring the
+/// RAII guard that fires `BackendCallEvent::CallEnd` on drop, ensuring the
 /// terminal event reaches the observer in every termination path of
 /// `parse_stream` — success, error, or panic. Spec §7.5.
 pub(crate) struct ObserverGuard<'a> {
-    observer: Option<&'a Arc<dyn AgentObserver>>,
+    observer: Option<&'a Arc<dyn BackendCallObserver>>,
 }
 
 impl<'a> ObserverGuard<'a> {
-    pub(crate) fn new(observer: Option<&'a Arc<dyn AgentObserver>>) -> Self {
+    pub(crate) fn new(observer: Option<&'a Arc<dyn BackendCallObserver>>) -> Self {
         Self { observer }
     }
 }
@@ -29,16 +29,16 @@ impl<'a> ObserverGuard<'a> {
 impl Drop for ObserverGuard<'_> {
     fn drop(&mut self) {
         if let Some(o) = self.observer {
-            o.on_event(AgentEvent::CallEnd);
+            o.on_event(BackendCallEvent::CallEnd);
         }
     }
 }
 
 /// Walk an assistant-typed event's `message.content[]` array and emit
-/// one `AgentEvent::ToolUse` per `tool_use` block. `thinking` and
+/// one `BackendCallEvent::ToolUse` per `tool_use` block. `thinking` and
 /// `text` blocks are skipped (memory: stream-json content[] mixes
 /// thinking/tool_use/text per event).
-pub(crate) fn extract_tool_uses(value: &Value, observer: Option<&Arc<dyn AgentObserver>>) {
+pub(crate) fn extract_tool_uses(value: &Value, observer: Option<&Arc<dyn BackendCallObserver>>) {
     let Some(o) = observer else { return };
     let Some(content) = value
         .get("message")
@@ -59,15 +59,15 @@ pub(crate) fn extract_tool_uses(value: &Value, observer: Option<&Arc<dyn AgentOb
         let empty_input = Value::Object(serde_json::Map::new());
         let input = block.get("input").unwrap_or(&empty_input);
         let summary = tool_summary_for(&name, input);
-        o.on_event(AgentEvent::ToolUse { name, summary });
+        o.on_event(BackendCallEvent::ToolUse { name, summary });
     }
 }
 
 /// Walk a user-typed event's `message.content[]` array and emit one
-/// `AgentEvent::ToolResult` per `tool_result` block. `is_error` is
+/// `BackendCallEvent::ToolResult` per `tool_result` block. `is_error` is
 /// absent on success (memory:
 /// stream-json-tool-result-is-error-absent-on-success).
-pub(crate) fn extract_tool_results(value: &Value, observer: Option<&Arc<dyn AgentObserver>>) {
+pub(crate) fn extract_tool_results(value: &Value, observer: Option<&Arc<dyn BackendCallObserver>>) {
     let Some(o) = observer else { return };
     let Some(content) = value
         .get("message")
@@ -84,7 +84,7 @@ pub(crate) fn extract_tool_results(value: &Value, observer: Option<&Arc<dyn Agen
             .get("is_error")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        o.on_event(AgentEvent::ToolResult { ok: !is_error });
+        o.on_event(BackendCallEvent::ToolResult { ok: !is_error });
     }
 }
 
@@ -106,7 +106,7 @@ pub(crate) fn strip_json_fence(s: &str) -> &str {
 }
 
 /// Drive a `BufRead` of `claude -p --output-format stream-json --verbose`
-/// JSONL output. Emits `AgentEvent`s through `observer` and returns the
+/// JSONL output. Emits `BackendCallEvent`s through `observer` and returns the
 /// JSON value carried in the terminal `result.result` field.
 ///
 /// Unknown event types and non-JSON lines are skipped — only the
@@ -116,12 +116,12 @@ pub(crate) fn strip_json_fence(s: &str) -> &str {
 /// via `ObserverGuard` on every termination path.
 pub(crate) fn parse_stream<R: Read>(
     reader: R,
-    observer: Option<&Arc<dyn AgentObserver>>,
+    observer: Option<&Arc<dyn BackendCallObserver>>,
     prompt: PromptId,
 ) -> Result<Value, LlmError> {
     let _guard = ObserverGuard::new(observer);
     if let Some(o) = observer {
-        o.on_event(AgentEvent::CallStart { prompt });
+        o.on_event(BackendCallEvent::CallStart { prompt });
     }
 
     let mut terminal: Option<Value> = None;
@@ -205,7 +205,7 @@ mod tests {
     /// Minimal observer that records events to a shared Vec for
     /// assertions.
     pub(crate) struct RecordingObserver {
-        pub events: Mutex<Vec<AgentEvent>>,
+        pub events: Mutex<Vec<BackendCallEvent>>,
     }
 
     impl RecordingObserver {
@@ -221,17 +221,17 @@ mod tests {
                 .unwrap()
                 .iter()
                 .map(|e| match e {
-                    AgentEvent::CallStart { .. } => "CallStart".into(),
-                    AgentEvent::ToolUse { name, .. } => format!("ToolUse:{name}"),
-                    AgentEvent::ToolResult { ok } => format!("ToolResult:{ok}"),
-                    AgentEvent::CallEnd => "CallEnd".into(),
+                    BackendCallEvent::CallStart { .. } => "CallStart".into(),
+                    BackendCallEvent::ToolUse { name, .. } => format!("ToolUse:{name}"),
+                    BackendCallEvent::ToolResult { ok } => format!("ToolResult:{ok}"),
+                    BackendCallEvent::CallEnd => "CallEnd".into(),
                 })
                 .collect()
         }
     }
 
-    impl AgentObserver for RecordingObserver {
-        fn on_event(&self, event: AgentEvent) {
+    impl BackendCallObserver for RecordingObserver {
+        fn on_event(&self, event: BackendCallEvent) {
             self.events.lock().unwrap().push(event);
         }
     }
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn extract_tool_uses_emits_one_event_per_tool_use_block() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let value = json!({
             "type": "assistant",
             "message": {
@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn extract_tool_results_treats_absent_is_error_as_ok_true() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let value = json!({
             "type": "user",
             "message": {
@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn extract_tool_results_treats_is_error_true_as_ok_false() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let value = json!({
             "type": "user",
             "message": {
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn parse_stream_no_tools_returns_terminal_result_value() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let events = jsonl_bytes(&[
             json!({"type": "system", "subtype": "init"}),
             json!({
@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn parse_stream_with_tools_emits_tool_use_and_tool_result_events() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let events = jsonl_bytes(&[
             json!({
                 "type": "assistant",
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn parse_stream_generic_non_success_subtype_returns_invocation_error() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let events = jsonl_bytes(&[json!({
             "type": "result",
             "subtype": "error_during_execution",
@@ -427,7 +427,7 @@ mod tests {
     #[test]
     fn parse_stream_error_max_budget_usd_subtype_returns_budget_exhausted() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let events = jsonl_bytes(&[json!({
             "type": "result",
             "subtype": "error_max_budget_usd",
@@ -447,7 +447,7 @@ mod tests {
     #[test]
     fn parse_stream_missing_terminal_returns_parse_error() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let events = jsonl_bytes(&[json!({"type": "system", "subtype": "init"})]);
 
         let err = parse_stream(Cursor::new(events), Some(&observer_dyn), PromptId::Classify)
@@ -459,7 +459,7 @@ mod tests {
     #[test]
     fn parse_stream_skips_non_json_lines() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"this is not json\n");
         bytes.extend_from_slice(
@@ -481,7 +481,7 @@ mod tests {
     #[test]
     fn parse_stream_skips_unknown_event_types() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let events = jsonl_bytes(&[
             json!({"type": "rate_limit_event", "rate_limit_info": {}}),
             json!({
@@ -496,7 +496,7 @@ mod tests {
     #[test]
     fn observer_guard_fires_call_end_on_drop() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         {
             let _g = ObserverGuard::new(Some(&observer_dyn));
         }
@@ -518,7 +518,7 @@ mod tests {
 
     fn parse_fixture(
         name: &str,
-        observer: &Arc<dyn AgentObserver>,
+        observer: &Arc<dyn BackendCallObserver>,
         prompt: PromptId,
     ) -> Result<Value, crate::LlmError> {
         let path = fixture_path(name);
@@ -529,7 +529,7 @@ mod tests {
     #[test]
     fn fixture_simple_classify_returns_ok_true_with_no_tool_events() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
 
         let response = parse_fixture("simple-classify.jsonl", &observer_dyn, PromptId::Classify)
             .expect("simple-classify must succeed");
@@ -547,7 +547,7 @@ mod tests {
     #[test]
     fn fixture_subcarve_with_tools_emits_one_tool_use_and_one_tool_result() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
 
         let response = parse_fixture(
             "subcarve-with-tools.jsonl",
@@ -576,7 +576,7 @@ mod tests {
     #[test]
     fn fixture_error_max_budget_usd_returns_budget_exhausted() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
 
         let err = parse_fixture("error-max-turns.jsonl", &observer_dyn, PromptId::Subcarve)
             .expect_err("non-success terminal must error");

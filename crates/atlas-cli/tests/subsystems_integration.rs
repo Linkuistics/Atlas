@@ -36,6 +36,7 @@ impl SimpleBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl LlmBackend for SimpleBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         Ok(match req.prompt_template {
@@ -59,6 +60,10 @@ impl LlmBackend for SimpleBackend {
                 "rationale": "policy declined",
             }),
         })
+    }
+
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        self.call(req)
     }
 
     fn fingerprint(&self) -> LlmFingerprint {

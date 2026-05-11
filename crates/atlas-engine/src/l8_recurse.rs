@@ -740,6 +740,7 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl atlas_llm::LlmBackend for RecordingBackend {
         fn call(
             &self,
@@ -750,6 +751,16 @@ mod tests {
                 .expect("calls poisoned")
                 .push(req.prompt_template);
             self.inner.call(req)
+        }
+        async fn call_async(
+            &self,
+            req: &atlas_llm::LlmRequest,
+        ) -> Result<serde_json::Value, atlas_llm::LlmError> {
+            self.calls
+                .lock()
+                .expect("calls poisoned")
+                .push(req.prompt_template);
+            self.inner.call_async(req).await
         }
         fn fingerprint(&self) -> LlmFingerprint {
             self.inner.fingerprint()

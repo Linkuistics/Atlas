@@ -104,9 +104,17 @@ impl BudgetedBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl LlmBackend for BudgetedBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         let response = self.inner.call(req)?;
+        let tokens = (self.estimator)(req, &response);
+        self.counter.charge(tokens)?;
+        Ok(response)
+    }
+
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        let response = self.inner.call_async(req).await?;
         let tokens = (self.estimator)(req, &response);
         self.counter.charge(tokens)?;
         Ok(response)

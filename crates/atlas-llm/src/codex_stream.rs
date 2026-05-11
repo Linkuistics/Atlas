@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::agent_observer::{AgentEvent, AgentObserver};
+use crate::backend_call_observer::{BackendCallEvent, BackendCallObserver};
 use crate::stream_parse::{strip_json_fence, ObserverGuard};
 use crate::{LlmError, PromptId};
 
@@ -33,7 +33,7 @@ pub(crate) fn codex_command_summary(command: &str) -> String {
 }
 
 /// Drive a `BufRead` of `codex exec --json` JSONL output. Emits
-/// `AgentEvent`s through `observer` and returns the JSON value carried
+/// `BackendCallEvent`s through `observer` and returns the JSON value carried
 /// in the last `item.completed` event whose `item.type ==
 /// "agent_message"`.
 ///
@@ -45,12 +45,12 @@ pub(crate) fn codex_command_summary(command: &str) -> String {
 /// via `ObserverGuard` on every termination path.
 pub(crate) fn parse_codex_stream<R: Read>(
     reader: R,
-    observer: Option<&Arc<dyn AgentObserver>>,
+    observer: Option<&Arc<dyn BackendCallObserver>>,
     prompt: PromptId,
 ) -> Result<Value, LlmError> {
     let _guard = ObserverGuard::new(observer);
     if let Some(o) = observer {
-        o.on_event(AgentEvent::CallStart { prompt });
+        o.on_event(BackendCallEvent::CallStart { prompt });
     }
 
     let mut last_agent_message: Option<String> = None;
@@ -106,7 +106,7 @@ fn extract_agent_message_text(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-fn emit_command_execution_start(value: &Value, observer: Option<&Arc<dyn AgentObserver>>) {
+fn emit_command_execution_start(value: &Value, observer: Option<&Arc<dyn BackendCallObserver>>) {
     let Some(o) = observer else { return };
     let Some(item) = value.get("item") else {
         return;
@@ -115,13 +115,13 @@ fn emit_command_execution_start(value: &Value, observer: Option<&Arc<dyn AgentOb
         return;
     }
     let command = item.get("command").and_then(|v| v.as_str()).unwrap_or("");
-    o.on_event(AgentEvent::ToolUse {
+    o.on_event(BackendCallEvent::ToolUse {
         name: "command_execution".to_string(),
         summary: codex_command_summary(command),
     });
 }
 
-fn emit_command_execution_end(value: &Value, observer: Option<&Arc<dyn AgentObserver>>) {
+fn emit_command_execution_end(value: &Value, observer: Option<&Arc<dyn BackendCallObserver>>) {
     let Some(o) = observer else { return };
     let Some(item) = value.get("item") else {
         return;
@@ -130,7 +130,7 @@ fn emit_command_execution_end(value: &Value, observer: Option<&Arc<dyn AgentObse
         return;
     }
     let exit_code = item.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0);
-    o.on_event(AgentEvent::ToolResult { ok: exit_code == 0 });
+    o.on_event(BackendCallEvent::ToolResult { ok: exit_code == 0 });
 }
 
 fn extract_turn_failed_message(value: &Value) -> String {
@@ -153,7 +153,7 @@ mod tests {
     /// assertions. Inlined here rather than shared with `stream_parse`'s
     /// equivalent so that test modules stay self-contained.
     struct RecordingObserver {
-        events: Mutex<Vec<AgentEvent>>,
+        events: Mutex<Vec<BackendCallEvent>>,
     }
 
     impl RecordingObserver {
@@ -169,17 +169,17 @@ mod tests {
                 .unwrap()
                 .iter()
                 .map(|e| match e {
-                    AgentEvent::CallStart { .. } => "CallStart".into(),
-                    AgentEvent::ToolUse { name, .. } => format!("ToolUse:{name}"),
-                    AgentEvent::ToolResult { ok } => format!("ToolResult:{ok}"),
-                    AgentEvent::CallEnd => "CallEnd".into(),
+                    BackendCallEvent::CallStart { .. } => "CallStart".into(),
+                    BackendCallEvent::ToolUse { name, .. } => format!("ToolUse:{name}"),
+                    BackendCallEvent::ToolResult { ok } => format!("ToolResult:{ok}"),
+                    BackendCallEvent::CallEnd => "CallEnd".into(),
                 })
                 .collect()
         }
     }
 
-    impl AgentObserver for RecordingObserver {
-        fn on_event(&self, event: AgentEvent) {
+    impl BackendCallObserver for RecordingObserver {
+        fn on_event(&self, event: BackendCallEvent) {
             self.events.lock().unwrap().push(event);
         }
     }
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn parse_codex_stream_no_tools_returns_agent_message_value() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let events = jsonl_bytes(&[
             json!({"type": "thread.started", "thread_id": "abc"}),
             json!({"type": "turn.started"}),
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn parse_codex_stream_with_command_execution_emits_tool_events() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let events = jsonl_bytes(&[
             json!({
                 "type": "item.started",
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn parse_codex_stream_command_execution_non_zero_exit_marks_tool_result_false() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let events = jsonl_bytes(&[
             json!({
                 "type": "item.completed",
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn parse_codex_stream_uses_last_agent_message_when_multiple_present() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let events = jsonl_bytes(&[
             json!({
                 "type": "item.completed",
@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn parse_codex_stream_turn_failed_returns_invocation_error() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let events = jsonl_bytes(&[
             json!({"type": "thread.started"}),
             json!({"type": "turn.started"}),
@@ -357,7 +357,7 @@ mod tests {
     #[test]
     fn parse_codex_stream_missing_agent_message_returns_parse_error() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let events = jsonl_bytes(&[
             json!({"type": "thread.started"}),
             json!({"type": "turn.completed", "usage": {}}),
@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn parse_codex_stream_skips_unknown_event_types_and_non_json_lines() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"not json garbage line\n");
         bytes.extend_from_slice(
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn parse_codex_stream_strips_markdown_fence_defensively() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
         let events = jsonl_bytes(&[json!({
             "type": "item.completed",
             "item": {"type": "agent_message", "text": "```json\n{\"ok\": true}\n```"}
@@ -424,7 +424,7 @@ mod tests {
 
     fn parse_fixture(
         name: &str,
-        observer: &Arc<dyn AgentObserver>,
+        observer: &Arc<dyn BackendCallObserver>,
         prompt: PromptId,
     ) -> Result<Value, LlmError> {
         let path = fixture_path(name);
@@ -435,7 +435,7 @@ mod tests {
     #[test]
     fn fixture_simple_classify_returns_ok_true_with_no_tool_events() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
 
         let response = parse_fixture("simple-classify.jsonl", &observer_dyn, PromptId::Classify)
             .expect("simple-classify must succeed");
@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn fixture_with_tools_emits_one_tool_use_and_one_tool_result() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
 
         let response = parse_fixture("with-tools.jsonl", &observer_dyn, PromptId::Subcarve)
             .expect("with-tools must succeed");
@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn fixture_turn_failed_returns_invocation_error() {
         let observer = RecordingObserver::new();
-        let observer_dyn: Arc<dyn AgentObserver> = observer.clone();
+        let observer_dyn: Arc<dyn BackendCallObserver> = observer.clone();
 
         let err = parse_fixture("turn-failed.jsonl", &observer_dyn, PromptId::Classify)
             .expect_err("turn.failed terminal must error");

@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 atlas-analyzers = { path = "../atlas-analyzers" }
 atlas-engine = { path = "../atlas-engine" }
 atlas-index = { workspace = true }
@@ -36,6 +37,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
+async-trait = { workspace = true }
 # `test-fixtures` pulls in `atlas_engine::testing::LenientBackend` for our
 # integration tests. See `crates/atlas-engine/Cargo.toml` for the canonical
 # explanation of the feature gate.

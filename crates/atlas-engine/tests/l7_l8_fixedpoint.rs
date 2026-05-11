@@ -59,6 +59,7 @@ impl ScriptedBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl LlmBackend for ScriptedBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         let map = self.responses.lock().unwrap();
@@ -68,6 +69,10 @@ impl LlmBackend for ScriptedBackend {
                 req.prompt_template
             ))
         })
+    }
+
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        self.call(req)
     }
 
     fn fingerprint(&self) -> LlmFingerprint {

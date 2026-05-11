@@ -240,6 +240,7 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl LlmBackend for AlwaysBoundaryBackend {
         fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
             match req.prompt_template {
@@ -258,6 +259,10 @@ mod tests {
                     "Subcarve must not be routed through the LLM under map/reduce".to_string(),
                 )),
             }
+        }
+
+        async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+            self.call(req)
         }
 
         fn fingerprint(&self) -> LlmFingerprint {

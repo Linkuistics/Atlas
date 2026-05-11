@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::agent_observer::AgentObserver;
+use crate::backend_call_observer::BackendCallObserver;
 use crate::claude_code::{extract_tokens, prompt_template_filename, validate_response};
 use crate::codex_stream::parse_codex_stream;
 use crate::{prompt, LlmBackend, LlmError, LlmFingerprint, LlmRequest};
@@ -37,7 +37,7 @@ pub struct CodexBackend {
     version: String,
     template_sha: [u8; 32],
     ontology_sha: [u8; 32],
-    observer: Option<Arc<dyn AgentObserver>>,
+    observer: Option<Arc<dyn BackendCallObserver>>,
 }
 
 impl CodexBackend {
@@ -77,10 +77,10 @@ impl CodexBackend {
         self
     }
 
-    /// Attach a side-channel observer that receives `AgentEvent`s while
+    /// Attach a side-channel observer that receives `BackendCallEvent`s while
     /// the streaming subprocess is running. When `None` (the default),
     /// stream events are parsed and discarded.
-    pub fn with_observer(mut self, observer: Arc<dyn AgentObserver>) -> Self {
+    pub fn with_observer(mut self, observer: Arc<dyn BackendCallObserver>) -> Self {
         self.observer = Some(observer);
         self
     }
@@ -140,6 +140,7 @@ fn check_codex_auth() -> Result<(), LlmError> {
     Ok(())
 }
 
+#[async_trait::async_trait]
 impl LlmBackend for CodexBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         let rendered_prompt = self.render_request(req)?;
@@ -193,6 +194,53 @@ impl LlmBackend for CodexBackend {
                 return Err(LlmError::Invocation(format!(
                     "`codex` exited with status {} before emitting an agent_message: {msg}; stderr={}",
                     status,
+                    stderr_snippet.trim()
+                )));
+            }
+            Err(e) => return Err(e),
+        };
+
+        validate_response(&value, &req.schema)?;
+        Ok(value)
+    }
+
+    /// Async surface — spawns the `codex` CLI via `tokio::process::Command`
+    /// and buffers stdout to memory before parsing through the sync
+    /// `parse_codex_stream` helper. Mirrors `ClaudeCodeBackend::call_async`.
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        let rendered_prompt = self.render_request(req)?;
+        let output = tokio::process::Command::new("codex")
+            .arg("exec")
+            .arg("--json")
+            .arg("--skip-git-repo-check")
+            .arg("--ephemeral")
+            .arg("--sandbox")
+            .arg("read-only")
+            .arg("--model")
+            .arg(&self.model_id)
+            .arg("--")
+            .arg(&rendered_prompt)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| {
+                LlmError::Invocation(format!(
+                    "failed to spawn `codex`: {e} (is it still on PATH?)"
+                ))
+            })?;
+
+        let cursor = std::io::Cursor::new(output.stdout);
+        let parsed = parse_codex_stream(cursor, self.observer.as_ref(), req.prompt_template);
+
+        let value = match parsed {
+            Ok(v) => v,
+            Err(LlmError::Parse(msg)) if !output.status.success() => {
+                let stderr_snippet = String::from_utf8_lossy(&output.stderr);
+                return Err(LlmError::Invocation(format!(
+                    "`codex` exited with status {} before emitting an agent_message: {msg}; stderr={}",
+                    output.status,
                     stderr_snippet.trim()
                 )));
             }

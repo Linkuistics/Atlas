@@ -50,6 +50,7 @@ impl KindBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl LlmBackend for KindBackend {
     fn call(&self, req: &LlmRequest) -> Result<serde_json::Value, LlmError> {
         Ok(match req.prompt_template {
@@ -69,6 +70,10 @@ impl LlmBackend for KindBackend {
                 "rationale": "policy declined",
             }),
         })
+    }
+
+    async fn call_async(&self, req: &LlmRequest) -> Result<serde_json::Value, LlmError> {
+        self.call(req)
     }
 
     fn fingerprint(&self) -> LlmFingerprint {

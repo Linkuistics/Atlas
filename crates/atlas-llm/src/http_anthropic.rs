@@ -14,6 +14,7 @@ pub struct AnthropicHttpBackend {
     template_sha: [u8; 32],
     ontology_sha: [u8; 32],
     client: reqwest::blocking::Client,
+    async_client: reqwest::Client,
 }
 
 impl AnthropicHttpBackend {
@@ -37,6 +38,11 @@ impl AnthropicHttpBackend {
                 .timeout(std::time::Duration::from_secs(60))
                 .build()
                 .expect("default reqwest client should build"),
+            async_client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .expect("default reqwest async client should build"),
         }
     }
 
@@ -88,8 +94,8 @@ pub(crate) fn parse_anthropic_response(
     Ok(value)
 }
 
-impl LlmBackend for AnthropicHttpBackend {
-    fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+impl AnthropicHttpBackend {
+    fn build_body(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         let (prefix, suffix) = self.render_request(req)?;
 
         let max_tokens = self
@@ -118,6 +124,14 @@ impl LlmBackend for AnthropicHttpBackend {
                 }
             }
         }
+        Ok(body)
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmBackend for AnthropicHttpBackend {
+    fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        let body = self.build_body(req)?;
 
         let response = self
             .client
@@ -138,6 +152,34 @@ impl LlmBackend for AnthropicHttpBackend {
         }
 
         let resp_json: Value = response.json().map_err(|e| {
+            LlmError::Parse(format!("failed to parse Anthropic response body: {e}"))
+        })?;
+        parse_anthropic_response(&resp_json, &req.schema)
+    }
+
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        let body = self.build_body(req)?;
+
+        let response = self
+            .async_client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| LlmError::Invocation(format!("Anthropic HTTP request failed: {e}")))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(LlmError::Invocation(format!(
+                "Anthropic API returned {status}: {}",
+                &body_text[..body_text.len().min(200)]
+            )));
+        }
+
+        let resp_json: Value = response.json().await.map_err(|e| {
             LlmError::Parse(format!("failed to parse Anthropic response body: {e}"))
         })?;
         parse_anthropic_response(&resp_json, &req.schema)

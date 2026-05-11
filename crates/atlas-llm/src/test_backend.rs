@@ -54,6 +54,7 @@ impl Default for TestBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl LlmBackend for TestBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         let key = (req.prompt_template, canonical_key(&req.inputs));
@@ -68,6 +69,13 @@ impl LlmBackend for TestBackend {
                     req.prompt_template, key.1,
                 ))
             })
+    }
+
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        // TestBackend is in-memory and synchronous; the async surface
+        // simply delegates so unit tests can exercise either entrypoint
+        // without runtime gymnastics.
+        self.call(req)
     }
 
     fn fingerprint(&self) -> LlmFingerprint {

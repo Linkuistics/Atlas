@@ -40,6 +40,7 @@ impl AnyStage2Backend {
     }
 }
 
+#[async_trait::async_trait]
 impl LlmBackend for AnyStage2Backend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         match req.prompt_template {
@@ -64,6 +65,10 @@ impl LlmBackend for AnyStage2Backend {
                 other
             ))),
         }
+    }
+
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        self.call(req)
     }
 
     fn fingerprint(&self) -> LlmFingerprint {

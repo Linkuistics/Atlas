@@ -429,6 +429,7 @@ fn csharp_project_classifies_without_llm_call() {
         classify_calls: Arc<AtomicUsize>,
     }
 
+    #[async_trait::async_trait]
     impl LlmBackend for ClassifyCountingBackend {
         fn call(&self, req: &LlmRequest) -> Result<serde_json::Value, LlmError> {
             match req.prompt_template {
@@ -448,6 +449,9 @@ fn csharp_project_classifies_without_llm_call() {
                     "rationale": "policy declined",
                 })),
             }
+        }
+        async fn call_async(&self, req: &LlmRequest) -> Result<serde_json::Value, LlmError> {
+            self.call(req)
         }
         fn fingerprint(&self) -> LlmFingerprint {
             self.fingerprint.clone()

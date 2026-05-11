@@ -125,6 +125,7 @@ impl PR4Backend {
     }
 }
 
+#[async_trait::async_trait]
 impl LlmBackend for PR4Backend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         let inputs_canonical = serde_json::to_string(&req.inputs).unwrap_or_default();
@@ -161,6 +162,10 @@ impl LlmBackend for PR4Backend {
                 "rationale": "policy declined",
             }),
         })
+    }
+
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        self.call(req)
     }
 
     fn fingerprint(&self) -> LlmFingerprint {

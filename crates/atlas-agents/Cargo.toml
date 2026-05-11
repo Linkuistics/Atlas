@@ -1,0 +1,27 @@
+[package]
+name = "atlas-agents"
+description = "LLM-spine agent runtime: Tool trait, in-process MCP stdio server, async dispatch."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+atlas-engine = { path = "../atlas-engine" }
+atlas-index = { workspace = true }
+atlas-llm = { path = "../atlas-llm" }
+component-ontology = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

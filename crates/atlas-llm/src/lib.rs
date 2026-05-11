@@ -30,7 +30,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub mod agent_observer;
+pub mod backend_call_observer;
 pub mod budget;
 pub mod claude_code;
 pub mod codex;
@@ -44,7 +44,7 @@ pub(crate) mod stream_parse;
 pub mod test_backend;
 pub mod tool_use;
 
-pub use agent_observer::{AgentEvent, AgentObserver};
+pub use backend_call_observer::{BackendCallEvent, BackendCallObserver};
 pub use budget::{default_token_estimator, BudgetedBackend, TokenCounter, TokenEstimator};
 pub use claude_code::{ClaudeCodeBackend, DEFAULT_MODEL_ID, MODEL_ID_ENV};
 pub use codex::CodexBackend;
@@ -113,8 +113,21 @@ pub struct LlmFingerprint {
 /// The trait implemented by every LLM backend wired into the engine.
 /// Implementations must satisfy the invariants listed at the module
 /// level — otherwise Salsa-backed memoisation becomes unsound.
+///
+/// # Sync vs async surface
+///
+/// Both `call` and `call_async` must yield byte-identical JSON for the
+/// same `(fingerprint, request)` pair — i.e. switching surfaces must
+/// not change cache keys. The sync `call` exists for non-agent callers
+/// (e.g. the deterministic engine's classify fallback); the new
+/// `call_async` is what the LLM-spine agent runtime drives, and is
+/// the only surface that may safely participate in async dispatch.
+/// Never bridge between the two with `block_on` (sync→async boundary
+/// is one-way, owned by `atlas-cli`'s top-level Tokio runtime).
+#[async_trait::async_trait]
 pub trait LlmBackend: Send + Sync {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError>;
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError>;
     fn fingerprint(&self) -> LlmFingerprint;
 
     /// True iff this backend exposes filesystem tools to the model

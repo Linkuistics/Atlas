@@ -176,7 +176,7 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
     let reporter = make_stderr_reporter(progress_mode, counter.clone());
 
     let observer = if reporter.drawing() {
-        Some(Arc::clone(&reporter) as Arc<dyn atlas_llm::AgentObserver>)
+        Some(Arc::clone(&reporter) as Arc<dyn atlas_llm::BackendCallObserver>)
     } else {
         None
     };

@@ -99,6 +99,7 @@ impl LenientBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl LlmBackend for LenientBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         let inputs_canonical = serde_json::to_string(&req.inputs).unwrap_or_default();
@@ -116,6 +117,10 @@ impl LlmBackend for LenientBackend {
                 "rationale": "policy declined",
             }),
         })
+    }
+
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        self.call(req)
     }
 
     fn fingerprint(&self) -> LlmFingerprint {

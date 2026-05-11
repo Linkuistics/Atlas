@@ -660,8 +660,16 @@ fn reports_fingerprint() -> LlmFingerprint {
 /// fails loudly instead of silently returning a stubbed response.
 struct ReportsBackend;
 
+#[async_trait::async_trait]
 impl LlmBackend for ReportsBackend {
     fn call(&self, _req: &LlmRequest) -> Result<Value, LlmError> {
+        Err(LlmError::Setup(
+            "reports backend should never be called; report subcommands read pre-computed state"
+                .into(),
+        ))
+    }
+
+    async fn call_async(&self, _req: &LlmRequest) -> Result<Value, LlmError> {
         Err(LlmError::Setup(
             "reports backend should never be called; report subcommands read pre-computed state"
                 .into(),
@@ -806,7 +814,7 @@ pub fn run_modularity_cmd(args: ModularityArgs) -> Result<ExitCode> {
     let reporter = make_stderr_reporter(ProgressMode::Auto, counter.clone());
 
     let observer = if reporter.drawing() {
-        Some(Arc::clone(&reporter) as Arc<dyn atlas_llm::AgentObserver>)
+        Some(Arc::clone(&reporter) as Arc<dyn atlas_llm::BackendCallObserver>)
     } else {
         None
     };

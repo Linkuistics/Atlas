@@ -77,9 +77,28 @@ impl BudgetSentinel {
     }
 }
 
+#[async_trait::async_trait]
 impl LlmBackend for BudgetSentinel {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        match self.inner.call(req) {
+        self.intercept(self.inner.call(req))
+    }
+
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        self.intercept(self.inner.call_async(req).await)
+    }
+
+    fn fingerprint(&self) -> LlmFingerprint {
+        self.inner.fingerprint()
+    }
+
+    fn supports_filesystem_tools(&self) -> bool {
+        self.inner.supports_filesystem_tools()
+    }
+}
+
+impl BudgetSentinel {
+    fn intercept(&self, result: Result<Value, LlmError>) -> Result<Value, LlmError> {
+        match result {
             Err(LlmError::BudgetExhausted {
                 requested,
                 remaining,
@@ -101,14 +120,6 @@ impl LlmBackend for BudgetSentinel {
             other => other,
         }
     }
-
-    fn fingerprint(&self) -> LlmFingerprint {
-        self.inner.fingerprint()
-    }
-
-    fn supports_filesystem_tools(&self) -> bool {
-        self.inner.supports_filesystem_tools()
-    }
 }
 
 /// Construct the production backend stack from an `AtlasConfig`.
@@ -121,7 +132,7 @@ pub fn build_production_backend_with_counter(
     config: &atlas_llm::AtlasConfig,
     workspace_path: &std::path::Path,
     counter: Option<Arc<TokenCounter>>,
-    observer: Option<Arc<dyn atlas_llm::AgentObserver>>,
+    observer: Option<Arc<dyn atlas_llm::BackendCallObserver>>,
 ) -> Result<BackendHandles> {
     let prompts_dir = TempDir::new()?;
     crate::prompts::materialise_to(prompts_dir.path())?;

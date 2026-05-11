@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::agent_observer::AgentObserver;
+use crate::backend_call_observer::BackendCallObserver;
 use crate::{prompt, LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId, ResponseSchema};
 
 /// Environment variable consulted as the default for the `--model`
@@ -33,7 +33,7 @@ pub struct ClaudeCodeBackend {
     version: String,
     template_sha: [u8; 32],
     ontology_sha: [u8; 32],
-    observer: Option<Arc<dyn AgentObserver>>,
+    observer: Option<Arc<dyn BackendCallObserver>>,
 }
 
 impl ClaudeCodeBackend {
@@ -84,10 +84,10 @@ impl ClaudeCodeBackend {
         self
     }
 
-    /// Attach a side-channel observer that receives `AgentEvent`s while
+    /// Attach a side-channel observer that receives `BackendCallEvent`s while
     /// the streaming subprocess is running. When `None` (the default),
     /// stream events are parsed and discarded. Spec §5.2.
-    pub fn with_observer(mut self, observer: Arc<dyn AgentObserver>) -> Self {
+    pub fn with_observer(mut self, observer: Arc<dyn BackendCallObserver>) -> Self {
         self.observer = Some(observer);
         self
     }
@@ -225,6 +225,7 @@ fn type_name(value: &Value) -> &'static str {
     }
 }
 
+#[async_trait::async_trait]
 impl LlmBackend for ClaudeCodeBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         let rendered_prompt = self.render_request(req)?;
@@ -279,6 +280,59 @@ impl LlmBackend for ClaudeCodeBackend {
                 return Err(LlmError::Invocation(format!(
                     "`claude` exited with status {} before emitting a terminal event: {msg}; stderr={}",
                     status,
+                    stderr_snippet.trim()
+                )));
+            }
+            Err(e) => return Err(e),
+        };
+
+        validate_response(&value, &req.schema)?;
+        Ok(value)
+    }
+
+    /// Async surface — spawns the `claude` CLI via `tokio::process::Command`
+    /// and buffers stdout to memory before parsing through the sync
+    /// `stream_parse::parse_stream` helper.
+    ///
+    /// Memory cost: bounded by the model's response length plus tool
+    /// transcript (typical: a few hundred kB; pathological: a few MB
+    /// when the model reads many large files). Acceptable for the
+    /// agent-runtime use case where each call is paired with a budget.
+    /// A streaming async parser is deferred to a later PR if profiling
+    /// shows the buffer is a real cost.
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        let rendered_prompt = self.render_request(req)?;
+        let output = tokio::process::Command::new("claude")
+            .arg("-p")
+            .arg(&rendered_prompt)
+            .arg("--output-format")
+            .arg("stream-json")
+            .arg("--verbose")
+            .arg("--model")
+            .arg(&self.model_id)
+            .current_dir(&self.workspace_path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| {
+                LlmError::Invocation(format!(
+                    "failed to spawn `claude`: {e} (is it still on PATH?)"
+                ))
+            })?;
+
+        let cursor = std::io::Cursor::new(output.stdout);
+        let parsed =
+            crate::stream_parse::parse_stream(cursor, self.observer.as_ref(), req.prompt_template);
+
+        let value = match parsed {
+            Ok(v) => v,
+            Err(LlmError::Parse(msg)) if !output.status.success() => {
+                let stderr_snippet = String::from_utf8_lossy(&output.stderr);
+                return Err(LlmError::Invocation(format!(
+                    "`claude` exited with status {} before emitting a terminal event: {msg}; stderr={}",
+                    output.status,
                     stderr_snippet.trim()
                 )));
             }

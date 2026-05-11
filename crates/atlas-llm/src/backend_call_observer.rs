@@ -2,7 +2,7 @@
 //!
 //! `LlmBackend::call` returns the canonical response value. While the
 //! call is in flight, a streaming backend may also emit transient
-//! `AgentEvent`s through an attached `AgentObserver`. The observer is
+//! `BackendCallEvent`s through an attached `BackendCallObserver`. The observer is
 //! optional; events are discarded when none is attached.
 //!
 //! Spec: `docs/superpowers/specs/2026-05-01-agent-progress-feedback-design.md` §5.1.
@@ -15,8 +15,8 @@ use crate::PromptId;
 /// during an in-flight `LlmBackend::call`. The backend's return value
 /// (the canonical response JSON) is unaffected — this trait is purely
 /// for side-channel UI.
-pub trait AgentObserver: Send + Sync {
-    fn on_event(&self, event: AgentEvent);
+pub trait BackendCallObserver: Send + Sync {
+    fn on_event(&self, event: BackendCallEvent);
 }
 
 /// One transient event emitted by a streaming backend while a call is
@@ -24,7 +24,7 @@ pub trait AgentObserver: Send + Sync {
 /// `ToolUse`/`ToolResult` interleave between them. `CallEnd` is
 /// guaranteed to fire on every termination path (see `ObserverGuard`).
 #[derive(Debug, Clone)]
-pub enum AgentEvent {
+pub enum BackendCallEvent {
     /// Fired once at the start of an `LlmBackend::call`, after the
     /// subprocess has been spawned and observation begins.
     CallStart { prompt: PromptId },
@@ -64,13 +64,13 @@ mod tests {
 
     #[test]
     fn agent_event_clone_round_trip() {
-        let e = AgentEvent::ToolUse {
+        let e = BackendCallEvent::ToolUse {
             name: "Read".into(),
             summary: "/tmp/x".into(),
         };
         let cloned = e.clone();
         match cloned {
-            AgentEvent::ToolUse { name, summary } => {
+            BackendCallEvent::ToolUse { name, summary } => {
                 assert_eq!(name, "Read");
                 assert_eq!(summary, "/tmp/x");
             }
@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn agent_event_debug_includes_variant_name() {
-        let e = AgentEvent::CallStart {
+        let e = BackendCallEvent::CallStart {
             prompt: PromptId::Classify,
         };
         let s = format!("{e:?}");

@@ -43,6 +43,7 @@ impl ContractViolationBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl LlmBackend for ContractViolationBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, atlas_llm::LlmError> {
         match req.prompt_template {
@@ -79,6 +80,10 @@ impl LlmBackend for ContractViolationBackend {
                 "rationale": "policy declined",
             })),
         }
+    }
+
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, atlas_llm::LlmError> {
+        self.call(req)
     }
 
     fn fingerprint(&self) -> LlmFingerprint {

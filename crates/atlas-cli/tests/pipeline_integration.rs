@@ -778,10 +778,15 @@ impl SetupOnlyBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl LlmBackend for SetupOnlyBackend {
     fn call(&self, _req: &LlmRequest) -> Result<Value, LlmError> {
         *self.calls.lock().unwrap() += 1;
         Err(LlmError::Setup(self.message.clone()))
+    }
+
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        self.call(req)
     }
 
     fn fingerprint(&self) -> LlmFingerprint {

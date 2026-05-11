@@ -4,7 +4,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::config::AtlasConfig;
-use crate::{AgentObserver, LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId};
+use crate::{BackendCallObserver, LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId};
 
 pub struct BackendRouter {
     table: HashMap<PromptId, Arc<dyn LlmBackend>>,
@@ -24,7 +24,7 @@ impl BackendRouter {
         workspace_path: &std::path::Path,
         template_sha: [u8; 32],
         ontology_sha: [u8; 32],
-        observer: Option<Arc<dyn AgentObserver>>,
+        observer: Option<Arc<dyn BackendCallObserver>>,
     ) -> Result<Self, LlmError> {
         let all_prompt_ids = [
             PromptId::Classify,
@@ -174,6 +174,7 @@ fn reject_http_for_filesystem_required_prompt(
     )))
 }
 
+#[async_trait::async_trait]
 impl LlmBackend for BackendRouter {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         let backend = self.table.get(&req.prompt_template).ok_or_else(|| {
@@ -183,6 +184,16 @@ impl LlmBackend for BackendRouter {
             ))
         })?;
         backend.call(req)
+    }
+
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        let backend = self.table.get(&req.prompt_template).ok_or_else(|| {
+            LlmError::Setup(format!(
+                "BackendRouter has no entry for {:?}",
+                req.prompt_template
+            ))
+        })?;
+        backend.call_async(req).await
     }
 
     fn fingerprint(&self) -> LlmFingerprint {
@@ -390,8 +401,13 @@ mod tests {
         fs: bool,
     }
 
+    #[async_trait::async_trait]
     impl LlmBackend for CapBackend {
         fn call(&self, _req: &LlmRequest) -> Result<Value, LlmError> {
+            Err(LlmError::Invocation("not used in this test".into()))
+        }
+
+        async fn call_async(&self, _req: &LlmRequest) -> Result<Value, LlmError> {
             Err(LlmError::Invocation("not used in this test".into()))
         }
 

@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 atlas-analyzers = { path = "../atlas-analyzers" }
 atlas-index = { workspace = true }
 atlas-llm = { path = "../atlas-llm" }
@@ -27,6 +28,7 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
 atlas-csharp-analyzer = { path = "../analyzers/csharp" }
 # Self-dev-dep with the `test-fixtures` feature so integration tests
 # under `crates/atlas-engine/tests/` see `atlas_engine::testing`.

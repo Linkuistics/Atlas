@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use atlas_engine::{Phase, ProgressEvent, ProgressSink, PromptBreakdown};
 use atlas_llm::{
-    AgentEvent, AgentObserver, LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId,
-    TokenCounter,
+    BackendCallEvent, BackendCallObserver, LlmBackend, LlmError, LlmFingerprint, LlmRequest,
+    PromptId, TokenCounter,
 };
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use serde_json::Value;
@@ -43,13 +43,13 @@ pub(crate) struct ReporterState {
     /// build the scrollback line on `IterEnd`.
     iter_live: u64,
     last_iteration: u32,
-    /// Counter incremented per `AgentEvent::ToolUse`, reset on
-    /// `AgentEvent::CallStart`.
+    /// Counter incremented per `BackendCallEvent::ToolUse`, reset on
+    /// `BackendCallEvent::CallStart`.
     agent_tools: u64,
-    /// `(name, summary)` of the most recent `AgentEvent::ToolUse`.
+    /// `(name, summary)` of the most recent `BackendCallEvent::ToolUse`.
     agent_last_tool: Option<(String, String)>,
-    /// Sticky flag set by `AgentEvent::ToolResult { ok: false }`.
-    /// Cleared by the next `AgentEvent::ToolUse` so the `(✗)` marker
+    /// Sticky flag set by `BackendCallEvent::ToolResult { ok: false }`.
+    /// Cleared by the next `BackendCallEvent::ToolUse` so the `(✗)` marker
     /// only persists until the agent moves on.
     agent_last_failed: bool,
     /// Whether the agent bar is currently mounted (between `CallStart`
@@ -97,8 +97,8 @@ impl Reporter {
             activity.enable_steady_tick(Duration::from_millis(120));
         }
         // The agent sub-line is mounted into `multi` only between
-        // `AgentEvent::CallStart` and `AgentEvent::CallEnd` (see the
-        // `AgentObserver` impl). Mutating an individual bar's draw_target
+        // `BackendCallEvent::CallStart` and `BackendCallEvent::CallEnd` (see the
+        // `BackendCallObserver` impl). Mutating an individual bar's draw_target
         // after `multi.add` detaches it from the multi's line-count
         // accounting and lets sibling bars overwrite it; use
         // `insert_after`/`remove` instead.
@@ -351,10 +351,10 @@ impl ProgressSink for Reporter {
     }
 }
 
-impl AgentObserver for Reporter {
-    fn on_event(&self, event: AgentEvent) {
+impl BackendCallObserver for Reporter {
+    fn on_event(&self, event: BackendCallEvent) {
         match event {
-            AgentEvent::CallStart { prompt } => {
+            BackendCallEvent::CallStart { prompt } => {
                 let needs_mount = {
                     let mut s = self.lock();
                     s.agent_tools = 0;
@@ -373,7 +373,7 @@ impl AgentObserver for Reporter {
                     eprintln!("{line}");
                 }
             }
-            AgentEvent::ToolUse { name, summary } => {
+            BackendCallEvent::ToolUse { name, summary } => {
                 let line = {
                     let mut s = self.lock();
                     s.agent_tools = s.agent_tools.saturating_add(1);
@@ -386,7 +386,7 @@ impl AgentObserver for Reporter {
                     eprintln!("{line}");
                 }
             }
-            AgentEvent::ToolResult { ok } => {
+            BackendCallEvent::ToolResult { ok } => {
                 if !ok {
                     let line = {
                         let mut s = self.lock();
@@ -399,7 +399,7 @@ impl AgentObserver for Reporter {
                     }
                 }
             }
-            AgentEvent::CallEnd => {
+            BackendCallEvent::CallEnd => {
                 let was_mounted = {
                     let mut s = self.lock();
                     let prev = s.agent_mounted;
@@ -478,9 +478,17 @@ impl ProgressBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl LlmBackend for ProgressBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         let result = self.inner.call(req);
+        let target = relpath_from_inputs(&req.inputs);
+        self.reporter.on_llm_call(req.prompt_template, target);
+        result
+    }
+
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        let result = self.inner.call_async(req).await;
         let target = relpath_from_inputs(&req.inputs);
         self.reporter.on_llm_call(req.prompt_template, target);
         result
@@ -961,7 +969,7 @@ mod tests {
         assert_eq!(r.agent_tools(), 0);
     }
 
-    // --- Task 9: AgentObserver impl on Reporter ---
+    // --- Task 9: BackendCallObserver impl on Reporter ---
 
     #[test]
     fn reporter_call_start_makes_agent_bar_visible_and_resets_counters() {
@@ -972,9 +980,9 @@ mod tests {
             s.agent_last_tool = Some(("Read".into(), "/x".into()));
             s.agent_last_failed = true;
         }
-        AgentObserver::on_event(
+        BackendCallObserver::on_event(
             r.as_ref(),
-            AgentEvent::CallStart {
+            BackendCallEvent::CallStart {
                 prompt: PromptId::Subcarve,
             },
         );
@@ -988,15 +996,15 @@ mod tests {
     #[test]
     fn reporter_tool_use_increments_counter_and_renders_line() {
         let r = make_stderr_reporter(ProgressMode::Always, None);
-        AgentObserver::on_event(
+        BackendCallObserver::on_event(
             r.as_ref(),
-            AgentEvent::CallStart {
+            BackendCallEvent::CallStart {
                 prompt: PromptId::Subcarve,
             },
         );
-        AgentObserver::on_event(
+        BackendCallObserver::on_event(
             r.as_ref(),
-            AgentEvent::ToolUse {
+            BackendCallEvent::ToolUse {
                 name: "Read".into(),
                 summary: "crates/atlas-engine/src/l8_recurse.rs".into(),
             },
@@ -1011,20 +1019,20 @@ mod tests {
     #[test]
     fn reporter_tool_result_failure_marks_line_with_cross() {
         let r = make_stderr_reporter(ProgressMode::Always, None);
-        AgentObserver::on_event(
+        BackendCallObserver::on_event(
             r.as_ref(),
-            AgentEvent::CallStart {
+            BackendCallEvent::CallStart {
                 prompt: PromptId::Subcarve,
             },
         );
-        AgentObserver::on_event(
+        BackendCallObserver::on_event(
             r.as_ref(),
-            AgentEvent::ToolUse {
+            BackendCallEvent::ToolUse {
                 name: "Read".into(),
                 summary: "/tmp/x".into(),
             },
         );
-        AgentObserver::on_event(r.as_ref(), AgentEvent::ToolResult { ok: false });
+        BackendCallObserver::on_event(r.as_ref(), BackendCallEvent::ToolResult { ok: false });
         assert!(
             r.agent_msg().ends_with("(✗)"),
             "expected (✗) marker; got {:?}",
@@ -1035,44 +1043,44 @@ mod tests {
     #[test]
     fn reporter_tool_result_success_does_not_change_line() {
         let r = make_stderr_reporter(ProgressMode::Always, None);
-        AgentObserver::on_event(
+        BackendCallObserver::on_event(
             r.as_ref(),
-            AgentEvent::CallStart {
+            BackendCallEvent::CallStart {
                 prompt: PromptId::Subcarve,
             },
         );
-        AgentObserver::on_event(
+        BackendCallObserver::on_event(
             r.as_ref(),
-            AgentEvent::ToolUse {
+            BackendCallEvent::ToolUse {
                 name: "Read".into(),
                 summary: "/tmp/x".into(),
             },
         );
         let before = r.agent_msg();
-        AgentObserver::on_event(r.as_ref(), AgentEvent::ToolResult { ok: true });
+        BackendCallObserver::on_event(r.as_ref(), BackendCallEvent::ToolResult { ok: true });
         assert_eq!(r.agent_msg(), before);
     }
 
     #[test]
     fn reporter_subsequent_tool_use_clears_failure_marker() {
         let r = make_stderr_reporter(ProgressMode::Always, None);
-        AgentObserver::on_event(
+        BackendCallObserver::on_event(
             r.as_ref(),
-            AgentEvent::CallStart {
+            BackendCallEvent::CallStart {
                 prompt: PromptId::Subcarve,
             },
         );
-        AgentObserver::on_event(
+        BackendCallObserver::on_event(
             r.as_ref(),
-            AgentEvent::ToolUse {
+            BackendCallEvent::ToolUse {
                 name: "Read".into(),
                 summary: "/x".into(),
             },
         );
-        AgentObserver::on_event(r.as_ref(), AgentEvent::ToolResult { ok: false });
-        AgentObserver::on_event(
+        BackendCallObserver::on_event(r.as_ref(), BackendCallEvent::ToolResult { ok: false });
+        BackendCallObserver::on_event(
             r.as_ref(),
-            AgentEvent::ToolUse {
+            BackendCallEvent::ToolUse {
                 name: "Grep".into(),
                 summary: "foo".into(),
             },
@@ -1083,13 +1091,13 @@ mod tests {
     #[test]
     fn reporter_call_end_hides_agent_bar() {
         let r = make_stderr_reporter(ProgressMode::Always, None);
-        AgentObserver::on_event(
+        BackendCallObserver::on_event(
             r.as_ref(),
-            AgentEvent::CallStart {
+            BackendCallEvent::CallStart {
                 prompt: PromptId::Subcarve,
             },
         );
-        AgentObserver::on_event(r.as_ref(), AgentEvent::CallEnd);
+        BackendCallObserver::on_event(r.as_ref(), BackendCallEvent::CallEnd);
         assert!(!r.agent_visible());
     }
 

@@ -61,6 +61,7 @@ impl LenientStubBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl LlmBackend for LenientStubBackend {
     fn call(&self, req: &LlmRequest) -> Result<serde_json::Value, LlmError> {
         Ok(match req.prompt_template {
@@ -81,6 +82,10 @@ impl LlmBackend for LenientStubBackend {
                 "rationale": "policy declined",
             }),
         })
+    }
+
+    async fn call_async(&self, req: &LlmRequest) -> Result<serde_json::Value, LlmError> {
+        self.call(req)
     }
 
     fn fingerprint(&self) -> LlmFingerprint {

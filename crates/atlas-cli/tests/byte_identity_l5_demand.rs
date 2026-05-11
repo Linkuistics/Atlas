@@ -96,6 +96,7 @@ impl CountingBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl LlmBackend for CountingBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         self.total_calls.fetch_add(1, Ordering::Relaxed);
@@ -103,6 +104,14 @@ impl LlmBackend for CountingBackend {
             self.stage1_calls.fetch_add(1, Ordering::Relaxed);
         }
         self.inner.call(req)
+    }
+
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        self.total_calls.fetch_add(1, Ordering::Relaxed);
+        if matches!(req.prompt_template, PromptId::Stage1Surface) {
+            self.stage1_calls.fetch_add(1, Ordering::Relaxed);
+        }
+        self.inner.call_async(req).await
     }
 
     fn fingerprint(&self) -> LlmFingerprint {

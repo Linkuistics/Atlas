@@ -14,7 +14,7 @@ Each fixture covers one parser branch:
   emits `item.started` and `item.completed` events for a
   `command_execution` (codex's tool-use shape — it shells out via
   `/bin/zsh -lc` rather than calling a typed tool), then a final
-  `agent_message`. Exercises `AgentEvent::ToolUse` / `ToolResult`
+  `agent_message`. Exercises `BackendCallEvent::ToolUse` / `ToolResult`
   extraction from `command_execution` items.
 - `turn-failed.jsonl` — prompt that fails upstream at the OpenAI API
   layer (an `--output-schema` lacking the required

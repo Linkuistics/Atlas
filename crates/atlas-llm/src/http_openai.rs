@@ -25,6 +25,7 @@ pub struct OpenAiHttpBackend {
     /// upstreams across providers.
     provider_label: String,
     client: reqwest::blocking::Client,
+    async_client: reqwest::Client,
 }
 
 impl OpenAiHttpBackend {
@@ -50,6 +51,11 @@ impl OpenAiHttpBackend {
                 .timeout(std::time::Duration::from_secs(60))
                 .build()
                 .expect("default reqwest client should build"),
+            async_client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .expect("default reqwest async client should build"),
         }
     }
 
@@ -99,10 +105,9 @@ pub(crate) fn parse_openai_response(
     Ok(value)
 }
 
-impl LlmBackend for OpenAiHttpBackend {
-    fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+impl OpenAiHttpBackend {
+    fn build_body(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         let rendered = self.render_request(req)?;
-
         let mut body = json!({
             "model": self.model_id,
             "messages": [{ "role": "user", "content": rendered }]
@@ -113,6 +118,14 @@ impl LlmBackend for OpenAiHttpBackend {
                 body_obj.insert(k.clone(), v.clone());
             }
         }
+        Ok(body)
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmBackend for OpenAiHttpBackend {
+    fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        let body = self.build_body(req)?;
 
         let response = self
             .client
@@ -135,6 +148,39 @@ impl LlmBackend for OpenAiHttpBackend {
         }
 
         let resp_json: Value = response.json().map_err(|e| {
+            LlmError::Parse(format!(
+                "failed to parse {} response body: {e}",
+                self.provider_label
+            ))
+        })?;
+        parse_openai_response(&resp_json, &req.schema)
+    }
+
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        let body = self.build_body(req)?;
+
+        let response = self
+            .async_client
+            .post(&self.base_url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                LlmError::Invocation(format!("{} HTTP request failed: {e}", self.provider_label))
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(LlmError::Invocation(format!(
+                "{} API returned {status}: {}",
+                self.provider_label,
+                &body_text[..body_text.len().min(200)]
+            )));
+        }
+
+        let resp_json: Value = response.json().await.map_err(|e| {
             LlmError::Parse(format!(
                 "failed to parse {} response body: {e}",
                 self.provider_label
