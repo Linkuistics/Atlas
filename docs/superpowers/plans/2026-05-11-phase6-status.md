@@ -83,7 +83,7 @@ Final commits (sha → title):
 - PR-3 status: `28efeb2`
 - PR-4: `231d7bd` + `263acca` (PR-4 core + follow-up; fast-forward merged via `phase6-pr4`)
 - PR-4 status: `9a1739b`
-- PR-5: `<PR-5-COMMIT-SHA>` (this commit; closeout + retext)
+- PR-5: `cab2727` (this commit; closeout + retext)
 - PR-5 backfill: `<PR-5-BACKFILL-SHA>` (canonical §10.6 commit-sha backfill)
 - PR-5 status flip: `<PR-5-FLIP-SHA>`
 
