@@ -73,7 +73,8 @@ pub use l2_candidates::candidate_components_at;
 pub use l3_classify::is_component;
 pub use l4_tree::{
     all_components, component_children, component_parent, component_path_segments,
-    rename_map_after_match, try_assemble, try_assemble_with_warnings, TreeAssemblyError,
+    per_component_subsystem_overrides, rename_map_after_match, try_assemble,
+    try_assemble_with_warnings, TreeAssemblyError,
 };
 pub use l5_surface::{
     surface_artefacts_of, surface_of, SurfaceArtefacts, EMBEDDED_STAGE1_SURFACE_PROMPT,
@@ -98,6 +99,7 @@ pub use l9_projections::{
 };
 pub use l9_subsystems::{
     check_subsystem_id_members, check_subsystem_namespace, subsystems_yaml_snapshot,
+    subsystems_yaml_snapshot_with_warnings,
 };
 pub use llm_cache::{LlmCacheKey, LlmResponseCache};
 pub use manifest_patterns::is_manifest_file;

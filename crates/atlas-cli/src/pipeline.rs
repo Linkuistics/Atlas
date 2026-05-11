@@ -25,8 +25,9 @@
 //! untouched.
 
 use std::collections::BTreeSet;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
 
 use anyhow::{Context, Result};
@@ -138,6 +139,13 @@ pub struct IndexConfig {
     /// Fingerprint to stamp onto the workspace input. When `None`,
     /// the backend's `fingerprint()` is installed verbatim.
     pub fingerprint_override: Option<LlmFingerprint>,
+    /// Phase 6 PR-3: optional shared buffer for non-fatal warnings
+    /// emitted by the pipeline (e.g. the new
+    /// `SubsystemOverrideNonExistent` class). When `None`, warnings
+    /// flow to process stderr; tests that need to assert on the
+    /// warning text install an `Arc<Mutex<Vec<u8>>>` here and read
+    /// it after `run_index` returns.
+    pub warnings_buffer: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
 impl IndexConfig {
@@ -156,6 +164,45 @@ impl IndexConfig {
             no_overrides: false,
             prompt_shas: None,
             fingerprint_override: None,
+            warnings_buffer: None,
+        }
+    }
+}
+
+/// Adapter that routes pipeline warnings into either an
+/// [`IndexConfig::warnings_buffer`] (when set, used by tests) or
+/// process `stderr` (default). Constructed once at the top of
+/// [`run_index`] and threaded into the L4/L9 warning sinks.
+enum WarningSink {
+    Stderr,
+    Buffer(Arc<Mutex<Vec<u8>>>),
+}
+
+impl WarningSink {
+    fn from_config(buffer: Option<&Arc<Mutex<Vec<u8>>>>) -> Self {
+        match buffer {
+            Some(b) => WarningSink::Buffer(Arc::clone(b)),
+            None => WarningSink::Stderr,
+        }
+    }
+}
+
+impl Write for WarningSink {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            WarningSink::Stderr => io::stderr().write(buf),
+            WarningSink::Buffer(b) => {
+                let mut guard = b.lock().expect("warnings_buffer mutex poisoned");
+                guard.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            WarningSink::Stderr => io::stderr().flush(),
+            WarningSink::Buffer(_) => Ok(()),
         }
     }
 }
@@ -190,6 +237,7 @@ pub fn run_index(
 ) -> Result<IndexSummary, IndexError> {
     let sentinel = BudgetSentinel::new(backend);
     let backend: Arc<dyn LlmBackend> = sentinel.clone();
+    let mut warnings = WarningSink::from_config(config.warnings_buffer.as_ref());
 
     let started_at = Instant::now();
     reporter.on_event(ProgressEvent::Started {
@@ -397,24 +445,18 @@ pub fn run_index(
         .cloned()
         .collect();
 
-    // Post-L4 subsystem validation: cross-namespace collision and
-    // id-form-member resolution. Both must be checked against the
-    // resolved component tree, so they run after `all_components` is
-    // available. Hard error on either; halt before any writes.
+    // Post-L4 subsystem validation: cross-namespace collision is a
+    // hard error and halts before any writes. The id-form-member
+    // resolution check that used to live here was demoted in Phase 6
+    // PR-3 to a soft warning emitted directly by `resolve_subsystems`
+    // (the `SubsystemOverrideNonExistent` class); a future
+    // `--strict-overrides` flag (PR-4) will optionally re-promote it.
     if let Err(collisions) =
         atlas_engine::check_subsystem_namespace(&subsystems_overrides.subsystems, &live_components)
     {
         return Err(IndexError::Other(anyhow::anyhow!(
             "subsystem id(s) {:?} collide with component ids; rename the subsystem(s)",
             collisions
-        )));
-    }
-    if let Err(bad) =
-        atlas_engine::check_subsystem_id_members(&subsystems_overrides.subsystems, &live_components)
-    {
-        return Err(IndexError::Other(anyhow::anyhow!(
-            "id-form member(s) {:?} do not resolve to any component (use a glob if the path is forward-looking)",
-            bad
         )));
     }
     // surface_of is the run's slowest LLM-driven query on claude-code-only
@@ -465,7 +507,12 @@ pub fn run_index(
     let externals_file = (*external_components_yaml_snapshot(&db)).clone();
     reporter.on_event(ProgressEvent::Phase(Phase::Edges));
     let related_file = (*related_components_yaml_snapshot(&db)).clone();
-    let mut subsystems_file = (*atlas_engine::subsystems_yaml_snapshot(&db)).clone();
+    // PR-3: route the L9 subsystem warning channel into the
+    // session-scoped `WarningSink` so the new
+    // `SubsystemOverrideNonExistent` class is captured for tests and
+    // surfaced on stderr in production.
+    let mut subsystems_file =
+        (*atlas_engine::subsystems_yaml_snapshot_with_warnings(&db, &mut warnings)).clone();
 
     // Preserve generated_at for byte-identity on no-op re-runs: if
     // every other field of the new components file equals the prior

@@ -289,9 +289,11 @@ fn try_assemble_inner(
 ///   vocabulary open and future analysers may add scopes the engine
 ///   binary has not yet learned about, so a hard error here would be
 ///   wrong.
-/// - `subsystem` is captured in the schema for forward
-///   compatibility but has no destination field on
-///   `ComponentEntry`; future PRs will wire it.
+/// - `subsystem` does not flow through `ComponentEntry`. PR-3
+///   threads it instead through L9 subsystem resolution via
+///   [`per_component_subsystem_overrides`]; the per-component file
+///   wins over a central `subsystems.overrides.yaml` entry that
+///   names the same component.
 ///
 /// Applied unconditionally: if the analyser already emitted the same
 /// value, the overwrite is a no-op. If no entry matches `owning_dir`
@@ -348,11 +350,76 @@ fn apply_per_component_field_overrides(
                 );
             }
         }
-        // `subsystem` has no destination field on `ComponentEntry`
-        // yet — see the type-level docstring on
-        // `ComponentFieldOverrides::subsystem`.
-        let _ = fo.subsystem.as_ref();
+        // `subsystem` has no destination field on `ComponentEntry` —
+        // it is consumed downstream by L9 subsystem projection via
+        // [`per_component_subsystem_overrides`], which re-runs this
+        // resolution step against the merged-override map. We
+        // therefore deliberately leave the `subsystem` field alone
+        // here.
     }
+}
+
+/// Phase 6 PR-3: extract per-component subsystem overrides as a map
+/// from `ComponentId` to subsystem name.
+///
+/// For each per-component override file
+/// (`<path>/.atlas/components.overrides.yaml`) discovered during the
+/// override-merge walk, if `field_overrides.subsystem` is set, the
+/// owning directory is resolved against the live component tree and
+/// the resulting `ComponentId` is paired with the authored subsystem
+/// name. Components whose per-component file omits the `subsystem`
+/// field are absent from the map. Directories that match no live
+/// component (e.g. the per-component file sits in a not-yet-recognised
+/// directory) are silently skipped — the existing scoping check
+/// rejected them at discovery time if they were ill-formed.
+///
+/// Used by [`crate::l9_subsystems::subsystems_yaml_snapshot_with_warnings`]
+/// to overlay per-component assignments on top of the central
+/// `subsystems.overrides.yaml`. Per-component overrides take precedence
+/// over the central file (LLM-spine recast spec §4.1 — closer-to-source
+/// authoring).
+///
+/// Panics on the same conditions as [`all_components`].
+pub fn per_component_subsystem_overrides(db: &AtlasDatabase) -> BTreeMap<ComponentId, String> {
+    let workspace = db.workspace();
+    let root = workspace.root(db as &dyn salsa::Database).clone();
+    let primary_overrides = workspace
+        .components_overrides(db as &dyn salsa::Database)
+        .clone();
+    let merged = match merge_overrides_in_discovery_order(
+        std::slice::from_ref(&root),
+        &root,
+        &primary_overrides,
+        &mut io::sink(),
+    ) {
+        Ok(m) => m,
+        Err(e) => panic!("{e}"),
+    };
+
+    let components = all_components(db);
+    let roots = [root];
+    let mut out: BTreeMap<ComponentId, String> = BTreeMap::new();
+    for (dir, fo) in &merged.per_component_field_overrides {
+        let Some(subsystem_name) = fo.subsystem.as_ref() else {
+            continue;
+        };
+        // Mirror the directory→component-id resolution that
+        // `apply_per_component_field_overrides` uses: the first path
+        // segment of the entry, relativised against its owning root,
+        // identifies the component.
+        let owning_root = match roots.iter().find(|r| dir.starts_with(r)) {
+            Some(r) => r.as_path(),
+            None => continue,
+        };
+        let rel = dir.strip_prefix(owning_root).unwrap_or(dir);
+        let entry = components
+            .iter()
+            .find(|e| e.path_segments.first().map(|s| s.path.as_path()) == Some(rel));
+        if let Some(entry) = entry {
+            out.insert(entry.id.clone(), subsystem_name.clone());
+        }
+    }
+    out
 }
 
 /// Parent component id of `id` per the assembled tree, or `None` when
