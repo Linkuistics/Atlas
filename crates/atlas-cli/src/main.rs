@@ -129,6 +129,14 @@ struct IndexArgs {
     /// TTY. The final summary line on stdout is unaffected.
     #[arg(long)]
     no_progress: bool,
+
+    /// Escalate override warnings (edges_suppress no-match,
+    /// edges_add unknown-kind, subsystems.overrides.yaml non-existent
+    /// member) to errors. Outputs are still written; the run exits
+    /// with a non-zero code if any closed-enumeration override
+    /// warning fired.
+    #[arg(long)]
+    strict_overrides: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -226,6 +234,7 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
     index_config.dry_run = args.dry_run;
     index_config.respect_gitignore = !args.no_gitignore;
     index_config.no_overrides = args.no_overrides;
+    index_config.strict_overrides = args.strict_overrides;
     index_config.prompt_shas = Some(atlas_cli::backend::compute_prompt_shas());
 
     let progress_mode = if args.no_progress {
@@ -284,6 +293,19 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
             eprintln!("atlas: LLM backend setup failed: {msg}; no output files were written");
             drop(handles);
             Ok(ExitCode::from(3))
+        }
+        Err(IndexError::StrictOverridesFailed(summary)) => {
+            // PR-4: outputs were still written; this is a strict-mode
+            // exit-code gate on top of an otherwise-successful run.
+            // The collector already echoed every offending warning to
+            // stderr.
+            println!("{}", atlas_cli::pipeline::format_summary(&summary));
+            eprintln!(
+                "atlas: --strict-overrides set; override warnings escalated to errors \
+                 (see warnings above)"
+            );
+            drop(handles);
+            Ok(ExitCode::from(4))
         }
         Err(IndexError::Other(err)) => {
             drop(handles);

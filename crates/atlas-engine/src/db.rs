@@ -42,6 +42,7 @@ use salsa::Setter;
 
 use crate::cache::Sha256Hex;
 use crate::llm_cache::LlmResponseCache;
+use crate::override_warnings::{OverrideWarningCollector, PermissiveCollector};
 
 /// One file known to the engine. Salsa input: content changes via
 /// [`File::set_bytes`] invalidate queries that read the file, without
@@ -135,6 +136,20 @@ pub struct AtlasDatabase {
     /// at run time; mutating it requires a fresh database. Defaults
     /// to [`AnalyzerRegistry::builtin`] when not explicitly supplied.
     analyzer_registry: Arc<AnalyzerRegistry>,
+    /// Closed-enumeration override-warning collector. Defaults to
+    /// [`PermissiveCollector`] (writes to stderr, never sets
+    /// `has_errors`); the CLI substitutes a
+    /// [`crate::StrictCollector`] when `--strict-overrides` is set, and
+    /// tests install a [`crate::CapturingCollector`] to assert on the
+    /// emitted text without going through process stderr.
+    ///
+    /// Lives outside Salsa storage for the same reason as
+    /// `analyzer_registry` and `llm_cache`: it is a per-run handle
+    /// installed by the driver, not a Salsa input. Phase 6 PR-4
+    /// introduced this side channel to retire the transitional
+    /// `IndexConfig.warnings_buffer` + `WarningSink` adapter shipped
+    /// by Phase 6 PR-3.
+    override_warning_collector: Arc<dyn OverrideWarningCollector>,
 }
 
 /// Default value for [`AtlasDatabase::max_depth`]. Mirrors design §8.2.
@@ -203,6 +218,7 @@ impl AtlasDatabase {
             fixedpoint_iterations: Arc::new(Mutex::new(0)),
             map_concurrency: Arc::new(Mutex::new(DEFAULT_MAP_CONCURRENCY)),
             analyzer_registry,
+            override_warning_collector: Arc::new(PermissiveCollector),
         };
         let workspace = Workspace::new(
             &db,
@@ -276,6 +292,22 @@ impl AtlasDatabase {
     /// the replacement.
     pub fn set_llm_cache(&mut self, cache: LlmResponseCache) {
         self.llm_cache = cache;
+    }
+
+    /// Active override-warning collector. L6 (`apply_user_edge_overrides`)
+    /// and L9 (`resolve_subsystems`) read this to route the closed-
+    /// enumeration warnings. Defaults to [`PermissiveCollector`].
+    pub fn override_warning_collector(&self) -> &Arc<dyn OverrideWarningCollector> {
+        &self.override_warning_collector
+    }
+
+    /// Install a non-default override-warning collector — the CLI
+    /// substitutes a [`crate::StrictCollector`] when
+    /// `--strict-overrides` is set; tests install a
+    /// [`crate::CapturingCollector`] to assert on the warning text
+    /// without process stderr capture.
+    pub fn set_override_warning_collector(&mut self, collector: Arc<dyn OverrideWarningCollector>) {
+        self.override_warning_collector = collector;
     }
 
     pub fn workspace(&self) -> Workspace {

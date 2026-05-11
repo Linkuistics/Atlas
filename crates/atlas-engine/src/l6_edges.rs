@@ -39,6 +39,7 @@ use crate::l5_surface::{surface_artefacts_of, surface_of};
 use crate::l6_compose_edges::composition_edges_from_compose;
 use crate::l6_composition::composition_edges_from_dockerfiles;
 use crate::l9_projections::surfaces_yaml_snapshot;
+use crate::override_warnings::{OverrideWarning, OverrideWarningCollector};
 use crate::surface_types::SurfaceRecord;
 
 /// Driver version baked into the L6 stage fingerprint (PR-10). Bump
@@ -274,15 +275,20 @@ fn apply_user_edge_overrides(db: &AtlasDatabase, mut edges: Vec<Edge>) -> Vec<Ed
         return edges;
     }
 
+    let collector: &dyn OverrideWarningCollector = db.override_warning_collector().as_ref();
+
     // Step 1: union with edges_add. Skip entries with an unknown
     // EdgeKind so a typo in the user's overrides surfaces as a
     // missing edge rather than a silent corruption of the edge set.
     for add in edges_add {
         let Some(kind) = EdgeKind::parse(&add.kind) else {
-            eprintln!(
-                "warning: edges_add entry has unknown kind `{}` for [{} -> {}]; entry dropped",
-                add.kind, add.from, add.to,
-            );
+            collector.emit(OverrideWarning::EdgesAddUnknownKind {
+                kind: add.kind.clone(),
+                scope: format!(
+                    "components.overrides.yaml edges_add [{} -> {}]",
+                    add.from, add.to
+                ),
+            });
             continue;
         };
         let mut participants = vec![add.from.clone(), add.to.clone()];
@@ -309,10 +315,13 @@ fn apply_user_edge_overrides(db: &AtlasDatabase, mut edges: Vec<Edge>) -> Vec<Ed
     // kind still matches the analyser-emitted `[A, B]` participants.
     for suppress in edges_suppress {
         let Some(kind) = EdgeKind::parse(&suppress.kind) else {
-            eprintln!(
-                "warning: edges_suppress entry has unknown kind `{}` for [{} -> {}]; entry dropped",
-                suppress.kind, suppress.from, suppress.to,
-            );
+            collector.emit(OverrideWarning::EdgesAddUnknownKind {
+                kind: suppress.kind.clone(),
+                scope: format!(
+                    "components.overrides.yaml edges_suppress [{} -> {}]",
+                    suppress.from, suppress.to
+                ),
+            });
             continue;
         };
         let mut want_participants = vec![suppress.from.clone(), suppress.to.clone()];
@@ -340,14 +349,21 @@ fn apply_user_edge_overrides(db: &AtlasDatabase, mut edges: Vec<Edge>) -> Vec<Ed
         edges.retain(|e| !(e.kind == kind && e.participants == want_participants));
         let removed = initial_len - edges.len();
         if removed == 0 {
-            eprintln!(
-                "warning: edges_suppress entry [{} {} -> {}] matched no analyser-discovered edge",
-                suppress.kind, suppress.from, suppress.to,
-            );
+            collector.emit(OverrideWarning::EdgesSuppressNoMatch {
+                directive: format!("{} {} -> {}", suppress.kind, suppress.from, suppress.to),
+                scope: "components.overrides.yaml edges_suppress".to_string(),
+            });
         } else if !matching_add_reasons.is_empty() {
             // Suppress-after-add: log both reasons for the audit
             // trail. The matching add(s) carry their own reason in
             // the rationale; attach the suppress reason explicitly.
+            //
+            // This is a forensic info line, not a closed-enumeration
+            // warning — `--strict-overrides` does NOT escalate this
+            // because the suppress had its intended effect (matching
+            // edges were removed). The info line stays on stderr via
+            // `eprintln!` because it falls outside the
+            // `OverrideWarning` closed list.
             for add_rationale in &matching_add_reasons {
                 eprintln!(
                     "info: edges_add overridden by edges_suppress for [{} {} -> {}] \

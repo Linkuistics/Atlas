@@ -38,6 +38,7 @@ pub mod l9_subsystems;
 pub mod llm_cache;
 pub mod manifest_parse;
 pub mod manifest_patterns;
+pub mod override_warnings;
 pub mod progress;
 pub mod subcarve_policy;
 pub mod surface_types;
@@ -99,10 +100,13 @@ pub use l9_projections::{
 };
 pub use l9_subsystems::{
     check_subsystem_id_members, check_subsystem_namespace, subsystems_yaml_snapshot,
-    subsystems_yaml_snapshot_with_warnings,
 };
 pub use llm_cache::{LlmCacheKey, LlmResponseCache};
 pub use manifest_patterns::is_manifest_file;
+pub use override_warnings::{
+    CapturingCollector, OverrideWarning, OverrideWarningCollector, PermissiveCollector,
+    StrictCollector,
+};
 pub use progress::{relpath_of, Phase, ProgressEvent, ProgressSink, PromptBreakdown};
 pub use surface_types::{InteractionRoleHint, SurfaceRecord};
 pub use types::{Candidate, Classification, ComponentKind, RationaleBundle};

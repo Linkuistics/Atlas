@@ -25,9 +25,8 @@
 //! untouched.
 
 use std::collections::BTreeSet;
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use anyhow::{Context, Result};
@@ -36,8 +35,9 @@ use atlas_engine::{
     all_components, atomic_write, components_yaml_snapshot_with_prompt_shas,
     ensure_atlas_gitignore, external_components_yaml_snapshot, per_component_yaml_snapshot,
     related_components_yaml_snapshot, run_fixedpoint, seed_filesystem_excluding,
-    surfaces_yaml_snapshot, AtlasDatabase, FixedpointConfig, LlmResponseCache, PersistentCache,
-    Phase, ProgressEvent, ProgressSink,
+    surfaces_yaml_snapshot, AtlasDatabase, FixedpointConfig, LlmResponseCache,
+    OverrideWarningCollector, PermissiveCollector, PersistentCache, Phase, ProgressEvent,
+    ProgressSink, StrictCollector,
 };
 use atlas_index::{
     load_or_default_components, load_or_default_externals, load_or_default_overrides,
@@ -70,6 +70,15 @@ pub enum IndexError {
     /// sentinel observed.
     #[error("LLM backend setup failed: {0}; no output files were written")]
     SetupFailed(String),
+
+    /// Phase 6 PR-4: at least one closed-enumeration override warning
+    /// fired under `--strict-overrides`. Outputs were still written
+    /// (the warning escalation is a post-hoc gate on top of an
+    /// otherwise-successful run); the CLI maps this to exit code 4.
+    /// The contained summary is the run's successful summary so callers
+    /// that want to inspect counts can do so.
+    #[error("--strict-overrides set; override warnings escalated to errors")]
+    StrictOverridesFailed(Box<IndexSummary>),
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),
@@ -114,7 +123,7 @@ impl GitignoreSession {
 
 /// Runtime knobs for [`run_index`]. Constructed by the binary from
 /// parsed command-line flags; tests fill one in by hand.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct IndexConfig {
     pub root: PathBuf,
     pub output_dir: PathBuf,
@@ -139,13 +148,52 @@ pub struct IndexConfig {
     /// Fingerprint to stamp onto the workspace input. When `None`,
     /// the backend's `fingerprint()` is installed verbatim.
     pub fingerprint_override: Option<LlmFingerprint>,
-    /// Phase 6 PR-3: optional shared buffer for non-fatal warnings
-    /// emitted by the pipeline (e.g. the new
-    /// `SubsystemOverrideNonExistent` class). When `None`, warnings
-    /// flow to process stderr; tests that need to assert on the
-    /// warning text install an `Arc<Mutex<Vec<u8>>>` here and read
-    /// it after `run_index` returns.
-    pub warnings_buffer: Option<Arc<Mutex<Vec<u8>>>>,
+    /// Phase 6 PR-4: escalate the closed-enumeration override
+    /// warnings (`EdgesSuppressNoMatch`, `EdgesAddUnknownKind`,
+    /// `SubsystemOverrideNonExistent`) to errors. Permissive runs
+    /// (`false`, the default) echo each warning to stderr and exit
+    /// `0`; strict runs (`true`, set by `--strict-overrides`) echo
+    /// each warning to stderr AND return
+    /// [`IndexError::StrictOverridesFailed`] after the engine
+    /// finishes so the CLI can map to a non-zero exit code.
+    pub strict_overrides: bool,
+    /// Phase 6 PR-4: optional collector override for tests that need
+    /// to assert on the warning text without process-stderr capture.
+    /// When `None`, [`run_index`] builds the appropriate collector
+    /// from `strict_overrides` ([`PermissiveCollector`] or
+    /// [`StrictCollector`]). When `Some`, the supplied collector is
+    /// installed verbatim and `strict_overrides` is ignored — tests
+    /// installing a [`atlas_engine::CapturingCollector`] consult
+    /// `has_errors()` themselves.
+    pub override_warning_collector: Option<Arc<dyn OverrideWarningCollector>>,
+}
+
+impl std::fmt::Debug for IndexConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Elide the `override_warning_collector` field — the trait
+        // object does not implement `Debug` and a runtime collector
+        // identity is not load-bearing for diagnostics.
+        f.debug_struct("IndexConfig")
+            .field("root", &self.root)
+            .field("output_dir", &self.output_dir)
+            .field("max_depth", &self.max_depth)
+            .field("map_concurrency", &self.map_concurrency)
+            .field("recarve", &self.recarve)
+            .field("dry_run", &self.dry_run)
+            .field("respect_gitignore", &self.respect_gitignore)
+            .field("no_overrides", &self.no_overrides)
+            .field("prompt_shas", &self.prompt_shas)
+            .field("fingerprint_override", &self.fingerprint_override)
+            .field("strict_overrides", &self.strict_overrides)
+            .field(
+                "override_warning_collector",
+                &self
+                    .override_warning_collector
+                    .as_ref()
+                    .map(|_| "<installed>"),
+            )
+            .finish()
+    }
 }
 
 impl IndexConfig {
@@ -164,45 +212,8 @@ impl IndexConfig {
             no_overrides: false,
             prompt_shas: None,
             fingerprint_override: None,
-            warnings_buffer: None,
-        }
-    }
-}
-
-/// Adapter that routes pipeline warnings into either an
-/// [`IndexConfig::warnings_buffer`] (when set, used by tests) or
-/// process `stderr` (default). Constructed once at the top of
-/// [`run_index`] and threaded into the L4/L9 warning sinks.
-enum WarningSink {
-    Stderr,
-    Buffer(Arc<Mutex<Vec<u8>>>),
-}
-
-impl WarningSink {
-    fn from_config(buffer: Option<&Arc<Mutex<Vec<u8>>>>) -> Self {
-        match buffer {
-            Some(b) => WarningSink::Buffer(Arc::clone(b)),
-            None => WarningSink::Stderr,
-        }
-    }
-}
-
-impl Write for WarningSink {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match self {
-            WarningSink::Stderr => io::stderr().write(buf),
-            WarningSink::Buffer(b) => {
-                let mut guard = b.lock().expect("warnings_buffer mutex poisoned");
-                guard.extend_from_slice(buf);
-                Ok(buf.len())
-            }
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        match self {
-            WarningSink::Stderr => io::stderr().flush(),
-            WarningSink::Buffer(_) => Ok(()),
+            strict_overrides: false,
+            override_warning_collector: None,
         }
     }
 }
@@ -237,7 +248,20 @@ pub fn run_index(
 ) -> Result<IndexSummary, IndexError> {
     let sentinel = BudgetSentinel::new(backend);
     let backend: Arc<dyn LlmBackend> = sentinel.clone();
-    let mut warnings = WarningSink::from_config(config.warnings_buffer.as_ref());
+
+    // Phase 6 PR-4: install the override-warning collector. Tests
+    // that need to assert on the warning text can override the
+    // default by setting `config.override_warning_collector`;
+    // production callers either leave it `None` (Permissive default)
+    // or set `strict_overrides: true` for the Strict collector.
+    let collector: Arc<dyn OverrideWarningCollector> = match (
+        config.override_warning_collector.as_ref(),
+        config.strict_overrides,
+    ) {
+        (Some(c), _) => Arc::clone(c),
+        (None, true) => Arc::new(StrictCollector::new()),
+        (None, false) => Arc::new(PermissiveCollector),
+    };
 
     let started_at = Instant::now();
     reporter.on_event(ProgressEvent::Started {
@@ -363,6 +387,13 @@ pub fn run_index(
         fingerprint.clone(),
         registry,
     );
+
+    // Phase 6 PR-4: install the override-warning collector as a
+    // side channel on the database so L6 (apply_user_edge_overrides)
+    // and L9 (resolve_subsystems) route their closed-enumeration
+    // warnings through the same instance the CLI consults for
+    // `has_errors()` after `run_index` returns.
+    db.set_override_warning_collector(Arc::clone(&collector));
 
     // PR-10: open the persistent content-addressed cache rooted at
     // `<output>/.atlas/cache/`. The on-disk layout is
@@ -507,12 +538,11 @@ pub fn run_index(
     let externals_file = (*external_components_yaml_snapshot(&db)).clone();
     reporter.on_event(ProgressEvent::Phase(Phase::Edges));
     let related_file = (*related_components_yaml_snapshot(&db)).clone();
-    // PR-3: route the L9 subsystem warning channel into the
-    // session-scoped `WarningSink` so the new
-    // `SubsystemOverrideNonExistent` class is captured for tests and
-    // surfaced on stderr in production.
-    let mut subsystems_file =
-        (*atlas_engine::subsystems_yaml_snapshot_with_warnings(&db, &mut warnings)).clone();
+    // PR-4: the L9 subsystem warning channel reads the collector
+    // off the database (installed above), so the call shape no
+    // longer threads a `&mut dyn Write` warning sink — every emit
+    // routes through the `OverrideWarningCollector` trait object.
+    let mut subsystems_file = (*atlas_engine::subsystems_yaml_snapshot(&db)).clone();
 
     // Preserve generated_at for byte-identity on no-op re-runs: if
     // every other field of the new components file equals the prior
@@ -685,6 +715,15 @@ pub fn run_index(
         elapsed: started_at.elapsed(),
         breakdown: reporter.breakdown_snapshot(),
     });
+
+    // Phase 6 PR-4: under `--strict-overrides`, surface the
+    // strict-mode failure AFTER the writes complete. Outputs land on
+    // disk (run produced valid YAMLs); the strict gate is a post-hoc
+    // exit-code policy on top of an otherwise-successful run. The
+    // collector has already echoed every offending warning to stderr.
+    if collector.has_errors() {
+        return Err(IndexError::StrictOverridesFailed(Box::new(summary)));
+    }
 
     Ok(summary)
 }

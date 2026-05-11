@@ -14,15 +14,23 @@
 //!    per-component wins.
 //! 3. `central_yaml_referencing_nonexistent_component_emits_warning` —
 //!    central `members:` lists an id-form member that does not resolve
-//!    to any extant component; pipeline emits the new
-//!    `SubsystemOverrideNonExistent` warning and the run exits 0.
+//!    to any extant component; pipeline emits the
+//!    `SubsystemOverrideNonExistent` warning (PR-4 closed enumeration)
+//!    and the run exits 0 under the default permissive collector.
+//!
+//! PR-4 retired the Phase 6 PR-3 transitional
+//! `IndexConfig.warnings_buffer` + `WarningSink` adapter. Warning
+//! capture now goes through the
+//! [`atlas_engine::CapturingCollector`] installed on
+//! [`atlas_cli::IndexConfig::override_warning_collector`].
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use atlas_cli::progress::{make_stderr_reporter, ProgressMode};
 use atlas_cli::{run_index, IndexConfig, IndexError, IndexSummary};
 use atlas_engine::testing::LenientBackend;
+use atlas_engine::{CapturingCollector, OverrideWarningCollector};
 use atlas_index::{
     load_or_default_subsystems, save_subsystems_overrides_atomic, SubsystemEntry,
     SubsystemOverride, SubsystemsOverridesFile, SUBSYSTEMS_OVERRIDES_SCHEMA_VERSION,
@@ -41,13 +49,13 @@ fn fingerprint() -> LlmFingerprint {
 }
 
 /// Captures the result of a single `run_index` invocation in a shape
-/// mirroring `std::process::Output` (the plan's reference signature):
-/// `status` is `Ok` on success, `stderr` carries the warning buffer,
-/// `_summary` is the index summary returned by the pipeline (unused by
-/// the current assertions but retained for forward compatibility).
+/// mirroring `std::process::Output`: `status` is `Ok` on success,
+/// `stderr` carries the captured warning text from the
+/// `CapturingCollector`, and `_summary` is the index summary (unused
+/// by current assertions but retained for forward compatibility).
 struct RunOutput {
     status: Result<IndexSummary, IndexError>,
-    stderr: Vec<u8>,
+    stderr: String,
 }
 
 impl RunOutput {
@@ -57,17 +65,18 @@ impl RunOutput {
     }
 }
 
-/// Drive `atlas index` against `root` with the lenient backend and the
-/// session-scoped `warnings_buffer` capture installed. Returns the
-/// `IndexSummary` + the captured warning text — the latter is where
-/// the new `SubsystemOverrideNonExistent` class lands.
+/// Drive `atlas index` against `root` with the lenient backend, with a
+/// permissive `CapturingCollector` installed so the new
+/// `SubsystemOverrideNonExistent` warning text is captured in-memory
+/// instead of going through process stderr.
 fn run_atlas_index(root: &Path) -> RunOutput {
-    let warnings_buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let collector: Arc<CapturingCollector> = Arc::new(CapturingCollector::new_permissive());
     let mut config = IndexConfig::new(root.to_path_buf());
     config.output_dir = root.join(".atlas");
     config.respect_gitignore = false;
     config.fingerprint_override = Some(fingerprint());
-    config.warnings_buffer = Some(Arc::clone(&warnings_buffer));
+    config.override_warning_collector =
+        Some(Arc::clone(&collector) as Arc<dyn OverrideWarningCollector>);
 
     let backend = LenientBackend::new(fingerprint());
     let status = run_index(
@@ -76,7 +85,7 @@ fn run_atlas_index(root: &Path) -> RunOutput {
         None,
         make_stderr_reporter(ProgressMode::Never, None),
     );
-    let stderr = warnings_buffer.lock().unwrap().clone();
+    let stderr = collector.rendered();
     RunOutput { status, stderr }
 }
 
@@ -202,8 +211,9 @@ fn per_component_subsystem_override_wins_over_central_yaml() {
 
 // =============================================================
 // Test 3: central yaml referencing a non-existent component emits
-// the new `SubsystemOverrideNonExistent` warning AND keeps the
-// pipeline successful (PR-3 demotes the prior hard error).
+// the `SubsystemOverrideNonExistent` warning AND keeps the pipeline
+// successful (PR-3 demoted the prior hard error; PR-4 routes the
+// warning through the closed-enumeration collector).
 // =============================================================
 
 #[test]
@@ -241,7 +251,7 @@ fn central_yaml_referencing_nonexistent_component_emits_warning() {
         output.status.as_ref().err()
     );
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = &output.stderr;
     assert!(
         stderr.contains("nonexistent-component"),
         "expected warning mentioning the missing component id; got stderr: {stderr}"

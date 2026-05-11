@@ -18,10 +18,12 @@
 //! pipeline change and the tests do not depend on real LLM output.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use atlas_cli::progress::{make_stderr_reporter, ProgressMode};
 use atlas_cli::{run_index, IndexConfig};
 use atlas_engine::testing::LenientBackend;
+use atlas_engine::{CapturingCollector, OverrideWarningCollector};
 use atlas_index::{
     load_or_default_components, load_or_default_related_components, ComponentsFile,
     PerComponentFile,
@@ -65,6 +67,29 @@ fn run(root: &Path) -> atlas_cli::IndexSummary {
         make_stderr_reporter(ProgressMode::Never, None),
     )
     .expect("run_index succeeds")
+}
+
+/// As `run`, but installs a permissive `CapturingCollector` so the
+/// caller can assert on the closed-enumeration warning text. Returns
+/// the run's summary together with the captured stderr-equivalent
+/// rendering. The summary is always `Ok` here — permissive runs never
+/// return `StrictOverridesFailed`.
+fn run_capturing(root: &Path) -> (atlas_cli::IndexSummary, String) {
+    let collector: Arc<CapturingCollector> = Arc::new(CapturingCollector::new_permissive());
+    let mut config = IndexConfig::new(root.to_path_buf());
+    config.respect_gitignore = false;
+    config.fingerprint_override = Some(fingerprint());
+    config.override_warning_collector =
+        Some(Arc::clone(&collector) as Arc<dyn OverrideWarningCollector>);
+    let backend = LenientBackend::new(fingerprint());
+    let summary = run_index(
+        &config,
+        backend,
+        None,
+        make_stderr_reporter(ProgressMode::Never, None),
+    )
+    .expect("run_index succeeds (permissive mode never returns StrictOverridesFailed)");
+    (summary, collector.rendered())
 }
 
 /// Locate the per-component `cache/component.yaml` for a given
@@ -358,9 +383,9 @@ fn edges_suppress_no_match_leaves_set_unchanged() {
 
     // Suppress an edge that the analyser doesn't emit (the lenient
     // stub returns []). The edge set should be unchanged from the
-    // baseline; the engine logs a warning to stderr (not asserted
-    // here — the warning channel is best-effort and the test
-    // harness does not capture it).
+    // baseline; the engine emits the closed-enumeration
+    // `EdgesSuppressNoMatch` warning (Phase 6 PR-4 routes it through
+    // the `OverrideWarningCollector`; permissive runs still exit 0).
     write_top_level_overrides(
         root,
         "schema_version: 1\n\
@@ -371,7 +396,7 @@ fn edges_suppress_no_match_leaves_set_unchanged() {
            reason: \"belt and braces\"\n",
     );
 
-    let summary = run(root);
+    let (summary, stderr) = run_capturing(root);
     assert!(summary.outputs_written);
 
     let related = read_related(&root.join(".atlas"));
@@ -388,6 +413,19 @@ fn edges_suppress_no_match_leaves_set_unchanged() {
             .any(|e| e.kind == component_ontology::EdgeKind::DependsOn
                 && e.participants == vec!["alpha-lib".to_string(), "beta-lib".to_string()]),
         "edge set must not contain the suppressed (non-existent) triple"
+    );
+
+    // PR-4 + deferred Phase 3 PR-10: assert the closed-enumeration
+    // `EdgesSuppressNoMatch` warning fired on stderr (rendered into
+    // the capturing collector).
+    assert!(
+        stderr.contains("edges_suppress"),
+        "expected EdgesSuppressNoMatch warning text on stderr; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("matched no edges") || stderr.contains("no match"),
+        "expected warning to indicate no-match (substring `matched no edges` \
+         or `no match`); got: {stderr}"
     );
 }
 

@@ -16,17 +16,19 @@
 //!
 //! When the central `subsystems.overrides.yaml` lists an id-form
 //! `members:` entry that does not resolve to any extant component,
-//! [`resolve_subsystems`] emits a warning to the supplied writer and
-//! skips the entry. Per-component overrides cannot trigger this
-//! warning by construction — the override file is co-located with the
-//! component, so the component must exist for the file to be found.
+//! [`resolve_subsystems`] emits a
+//! [`crate::OverrideWarning::SubsystemOverrideNonExistent`] through the
+//! supplied [`OverrideWarningCollector`] and skips the entry.
+//! Per-component overrides cannot trigger this warning by construction
+//! — the override file is co-located with the component, so the
+//! component must exist for the file to be found.
 //!
-//! The warning is currently emitted via `writeln!(&mut dyn Write, ...)`;
-//! Phase 6 PR-4 will refactor that into a structured
-//! `collector.emit()` call.
+//! Phase 6 PR-4 replaced the PR-3 transitional `&mut dyn Write` plumbing
+//! with the closed-enumeration `OverrideWarningCollector` trait. The
+//! collector is read off [`AtlasDatabase::override_warning_collector`]
+//! at the call site so callers do not pass it explicitly.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, Write};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -39,6 +41,7 @@ use globset::{Glob, GlobMatcher};
 
 use crate::db::AtlasDatabase;
 use crate::l4_tree::{all_components, per_component_subsystem_overrides};
+use crate::override_warnings::{OverrideWarning, OverrideWarningCollector};
 
 /// Audit-trail note attached to a [`SubsystemEntry`] when, after override
 /// application, none of its member references resolved to a live
@@ -71,26 +74,21 @@ fn clear_unresolved(entry: &mut SubsystemEntry) {
 /// re-runs.
 ///
 /// Warnings (including the PR-3 `SubsystemOverrideNonExistent` class)
-/// are routed to `io::stderr()` by default; callers that want to capture
-/// the warning stream should use [`subsystems_yaml_snapshot_with_warnings`].
+/// are routed through the collector installed on the database via
+/// [`AtlasDatabase::set_override_warning_collector`]; the default is
+/// [`crate::PermissiveCollector`] which echoes warnings to `stderr`.
 pub fn subsystems_yaml_snapshot(db: &AtlasDatabase) -> Arc<SubsystemsFile> {
-    subsystems_yaml_snapshot_with_warnings(db, &mut io::stderr())
-}
-
-/// As [`subsystems_yaml_snapshot`] but routes warnings to `warnings`
-/// instead of `io::stderr()`. Used by the CLI pipeline so a session-
-/// scoped warning buffer can capture the PR-3
-/// `SubsystemOverrideNonExistent` notes without process plumbing,
-/// and by tests that need to assert on the warning text.
-pub fn subsystems_yaml_snapshot_with_warnings(
-    db: &AtlasDatabase,
-    warnings: &mut dyn Write,
-) -> Arc<SubsystemsFile> {
     let ws = db.workspace();
     let overrides = ws.subsystems_overrides(db as &dyn salsa::Database).clone();
     let components = all_components(db);
     let per_component = per_component_subsystem_overrides(db);
-    let resolved = resolve_subsystems(&overrides.subsystems, &components, &per_component, warnings);
+    let collector = db.override_warning_collector();
+    let resolved = resolve_subsystems(
+        &overrides.subsystems,
+        &components,
+        &per_component,
+        collector.as_ref(),
+    );
     Arc::new(SubsystemsFile {
         schema_version: SUBSYSTEMS_SCHEMA_VERSION,
         generated_at: String::new(),
@@ -107,7 +105,7 @@ pub fn subsystems_yaml_snapshot_with_warnings(
 /// - `per_component_overrides` — map from component id to the subsystem
 ///   name authored in `<path>/.atlas/components.overrides.yaml`'s
 ///   `field_overrides.subsystem` block.
-/// - `warnings` — writer for the PR-3 `SubsystemOverrideNonExistent`
+/// - `collector` — sink for the PR-3 `SubsystemOverrideNonExistent`
 ///   warning class, emitted when a central `members:` entry references
 ///   a non-existent component id.
 ///
@@ -123,7 +121,7 @@ pub(crate) fn resolve_subsystems(
     overrides: &[SubsystemOverride],
     components: &[ComponentEntry],
     per_component_overrides: &BTreeMap<ComponentId, String>,
-    warnings: &mut dyn Write,
+    collector: &dyn OverrideWarningCollector,
 ) -> Vec<SubsystemEntry> {
     let live: Vec<&ComponentEntry> = components.iter().filter(|c| !c.deleted).collect();
     let by_id: BTreeMap<&str, &ComponentEntry> = live.iter().map(|c| (c.id.as_str(), *c)).collect();
@@ -131,7 +129,7 @@ pub(crate) fn resolve_subsystems(
     // 1. Resolve central overrides (lower precedence).
     let mut resolved: Vec<SubsystemEntry> = overrides
         .iter()
-        .map(|sub| resolve_one_subsystem(sub, &live, &by_id, warnings))
+        .map(|sub| resolve_one_subsystem(sub, &live, &by_id, collector))
         .collect();
 
     // 2. Apply per-component overrides on top — closer-to-source wins.
@@ -199,7 +197,7 @@ fn resolve_one_subsystem(
     sub: &SubsystemOverride,
     live: &[&ComponentEntry],
     by_id: &BTreeMap<&str, &ComponentEntry>,
-    warnings: &mut dyn Write,
+    collector: &dyn OverrideWarningCollector,
 ) -> SubsystemEntry {
     let mut resolved_ids: BTreeSet<ComponentId> = BTreeSet::new();
     let mut evidence: Vec<MemberEvidence> = Vec::new();
@@ -245,21 +243,16 @@ fn resolve_one_subsystem(
                 });
             }
         } else {
-            // PR-3: SubsystemOverrideNonExistent warning class. A
-            // central `members:` entry that names an id-form component
-            // which does not exist in the workspace used to be a hard
-            // error in the post-L4 validation pass; PR-3 downgrades it
-            // to a warning so the run can complete (Phase 6 plan
-            // §4 PR-3, plus the warning-channel discipline described
-            // in this module's top-level docstring). Phase 6 PR-4 will
-            // route this through a structured warning collector and add
-            // a `--strict-overrides` flag that turns it back into an
-            // error.
-            let _ = writeln!(
-                warnings,
-                "warning: subsystems.overrides.yaml references component `{}` in subsystem `{}` but no such component exists in the workspace — override entry does not apply (no extant component)",
-                member, sub.id
-            );
+            // PR-4: SubsystemOverrideNonExistent warning class, now
+            // routed through the closed-enumeration
+            // `OverrideWarningCollector` trait. Permissive collectors
+            // log + continue; strict collectors log + flip
+            // `has_errors()` so the CLI exits non-zero after
+            // `run_index` returns.
+            collector.emit(OverrideWarning::SubsystemOverrideNonExistent {
+                name: member.clone(),
+                scope: format!("subsystems.overrides.yaml subsystem `{}`", sub.id),
+            });
             // Preserve the audit-trail entry in evidence so the YAML is
             // still self-describing even when the warning is unseen.
             evidence.push(MemberEvidence {
@@ -337,9 +330,10 @@ pub fn check_subsystem_namespace(
 ///
 /// Phase 6 PR-3 demoted the runtime use of this check from a hard
 /// error to a soft warning emitted directly by [`resolve_subsystems`];
-/// the function itself is retained for the future
-/// `--strict-overrides` flag (Phase 6 PR-4) and for direct
-/// programmatic use by embedders that want pre-flight validation.
+/// PR-4 routed that warning through the closed-enumeration
+/// [`OverrideWarningCollector`] trait. The function itself is retained
+/// for direct programmatic use by embedders that want pre-flight
+/// validation outside the `--strict-overrides` flag.
 pub fn check_subsystem_id_members(
     overrides: &[SubsystemOverride],
     components: &[ComponentEntry],
@@ -368,6 +362,7 @@ pub fn check_subsystem_id_members(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::override_warnings::CapturingCollector;
     use atlas_index::PathSegment;
     use component_ontology::EvidenceGrade;
     use std::path::PathBuf;
@@ -407,15 +402,16 @@ mod tests {
     }
 
     /// Convenience: call `resolve_subsystems` with an empty per-component
-    /// overlay and a sink that discards warnings, mirroring the pre-PR-3
-    /// signature for the suite of existing pure-resolution tests.
+    /// overlay and a permissive capturing collector, mirroring the
+    /// pre-PR-3 signature for the suite of existing pure-resolution
+    /// tests.
     fn resolve(
         overrides: &[SubsystemOverride],
         components: &[ComponentEntry],
     ) -> Vec<SubsystemEntry> {
         let per_component: BTreeMap<ComponentId, String> = BTreeMap::new();
-        let mut sink: Vec<u8> = Vec::new();
-        resolve_subsystems(overrides, components, &per_component, &mut sink)
+        let collector = CapturingCollector::new_permissive();
+        resolve_subsystems(overrides, components, &per_component, &collector)
     }
 
     #[test]
@@ -585,9 +581,9 @@ mod tests {
         let central = vec![override_with_members("beta", vec!["comp-a".into()])];
         let mut per_component: BTreeMap<ComponentId, String> = BTreeMap::new();
         per_component.insert(ComponentId::parse("comp-a").unwrap(), "alpha".into());
-        let mut warnings: Vec<u8> = Vec::new();
+        let collector = CapturingCollector::new_permissive();
 
-        let resolved = resolve_subsystems(&central, &comps, &per_component, &mut warnings);
+        let resolved = resolve_subsystems(&central, &comps, &per_component, &collector);
 
         let alpha = resolved
             .iter()
@@ -616,19 +612,18 @@ mod tests {
 
     #[test]
     fn central_referencing_nonexistent_component_emits_warning() {
-        // PR-3 demotes the id-form-not-found case to a warning. The
-        // resolution still produces a `SubsystemEntry` (with no
-        // members; the existing `"all members unresolved"` note
-        // remains), and the warning channel carries a human-readable
-        // line naming the offending id and its subsystem.
+        // PR-4: the id-form-not-found case is routed through the
+        // closed-enumeration `OverrideWarningCollector`. A permissive
+        // collector still lets the run complete; the warning text
+        // names the offending id and the subsystem.
         let comps: Vec<ComponentEntry> = vec![];
         let central = vec![override_with_members("gamma", vec!["missing-comp".into()])];
         let per_component: BTreeMap<ComponentId, String> = BTreeMap::new();
-        let mut warnings: Vec<u8> = Vec::new();
+        let collector = CapturingCollector::new_permissive();
 
-        let _ = resolve_subsystems(&central, &comps, &per_component, &mut warnings);
+        let _ = resolve_subsystems(&central, &comps, &per_component, &collector);
 
-        let text = String::from_utf8(warnings).unwrap();
+        let text = collector.rendered();
         assert!(
             text.contains("missing-comp"),
             "warning must echo the missing component id: {text}"
@@ -638,8 +633,29 @@ mod tests {
             "warning must reference the subsystem id: {text}"
         );
         assert!(
-            text.contains("no extant"),
-            "warning must indicate non-existence (substring `no extant`): {text}"
+            text.contains("no extant") || text.contains("does not exist"),
+            "warning must indicate non-existence; got: {text}"
+        );
+        assert!(
+            !collector.has_errors(),
+            "permissive capturing collector never flips has_errors"
+        );
+    }
+
+    #[test]
+    fn central_referencing_nonexistent_component_under_strict_flips_has_errors() {
+        // PR-4: the strict capturing collector models the
+        // `--strict-overrides` exit-code contract.
+        let comps: Vec<ComponentEntry> = vec![];
+        let central = vec![override_with_members("gamma", vec!["missing-comp".into()])];
+        let per_component: BTreeMap<ComponentId, String> = BTreeMap::new();
+        let collector = CapturingCollector::new_strict();
+
+        let _ = resolve_subsystems(&central, &comps, &per_component, &collector);
+
+        assert!(
+            collector.has_errors(),
+            "strict capturing collector must flip has_errors after the first emit"
         );
     }
 
@@ -652,9 +668,9 @@ mod tests {
         let central: Vec<SubsystemOverride> = vec![];
         let mut per_component: BTreeMap<ComponentId, String> = BTreeMap::new();
         per_component.insert(ComponentId::parse("comp-z").unwrap(), "zeta".into());
-        let mut warnings: Vec<u8> = Vec::new();
+        let collector = CapturingCollector::new_permissive();
 
-        let resolved = resolve_subsystems(&central, &comps, &per_component, &mut warnings);
+        let resolved = resolve_subsystems(&central, &comps, &per_component, &collector);
 
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].id, "zeta");
