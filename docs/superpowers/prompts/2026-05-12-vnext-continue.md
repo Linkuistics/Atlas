@@ -24,7 +24,7 @@ docs/superpowers/plans/2026-05-11-phase6-status.md; final commit
 9350735 on 2026-05-11). Phase 7 is the current focus — the LLM-spine
 runtime per recast spec §11.1. The Phase 7 brainstorm, plan, status
 file, and continuation prompt all exist on main as of 2026-05-12
-(brainstorm: f4ea770; PR-0 of Phase 7: <PR-0-COMMIT-SHA>). This
+(brainstorm: f4ea770; PR-0 of Phase 7: ddf553b). This
 prompt is idempotent: re-paste it across as many sessions as the
 Phase 7 arc takes; each session detects the current state and either
 drives the next PR or reports Phase 7 complete.
