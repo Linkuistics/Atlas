@@ -13,7 +13,7 @@ Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the
 - [x] PR-2 — Contract rename-match owner-follows (medium)
 - [x] PR-3 — `subsystem` field overlay (medium)
 - [x] PR-4 — `--strict-overrides` + closed enum + dual-mode contract test (medium)
-- [ ] PR-5 — Acceptance + closeout + canonical §10/§4.3/§7/§8 retext (docs + verification)
+- [x] PR-5 — Acceptance + closeout + canonical §10/§4.3/§7/§8 retext (docs + verification)
 
 When PR-2, PR-3, PR-4, and PR-5 are all `[x]` (PR-1 deferred), Phase 6 is complete and the continuation prompt should report success and route to brainstorm/plan for Phase 7 (LLM-spine runtime per canonical §10.7, recast spec §11.1).
 
@@ -58,6 +58,9 @@ Sessions append session-relevant context here as PRs land. Examples of what's wo
 ### PR-4
 2026-05-11 — Commits `231d7bd` (PR-4 core: `--strict-overrides` + closed enum + dual-mode contract test) + `263acca` (PR-4 follow-up: restore CLI binding under test + rename `EdgesAddUnknownKind` → `EdgesOverrideUnknownKind` + fix stale doc link) on main via fast-forward merge of `phase6-pr4`. The closed `OverrideWarning` enum has exactly three variants: `EdgesSuppressNoMatch`, `EdgesOverrideUnknownKind` (covers both `edges_add` and `edges_suppress` unknown-kind sites; scope field disambiguates), `SubsystemOverrideNonExistent`. The `OverrideWarningCollector` trait has three impls in `crates/atlas-engine/src/override_warnings.rs`: `PermissiveCollector` (writes to stderr; never errors), `StrictCollector` (writes to stderr; sets `has_errors` on first emit), `CapturingCollector` (test-only; in-process stderr capture). Collector is plumbed via a DB side-channel on `AtlasDatabase` (mirrors `analyzer_registry`/`llm_cache` patterns), defaulting to `PermissiveCollector`. PR-3's transitional state (`IndexConfig.warnings_buffer`, `WarningSink`, `subsystems_yaml_snapshot_with_warnings`, `&mut dyn Write` parameter on `resolve_subsystems`) all retired. Both `eprintln!` warning sites in `l6_edges.rs` and the `writeln!` in `l9_subsystems.rs` now emit via `collector.emit(...)`. New `cli_args.rs` module extracted from `main.rs` exposes `IndexArgs` + `IndexArgs::apply_to` + `index_error_exit_code`, shared between main.rs and `crates/atlas-cli/tests/strict_overrides_contract.rs` so the dual-mode contract test exercises the real CLI binding (clap parse → config translate → exit-code mapping). The deferred Phase 3 PR-10 stderr-capture test is folded into the updated `phase3_overrides_edges.rs` (concrete stderr + exit-0 assertions). New `IndexError::StrictOverridesFailed` variant maps to exit code 4 (consistent with existing `IndexError` exit-code conventions). `subsystem_overlay.rs` reworked to use `CapturingCollector` (since `warnings_buffer` retired); all three PR-3 test cases preserved. All cargo gates clean; polyglot cold = 40 (no drift). **Deferred to PR-5 closeout:** (a) move `CapturingCollector` from `atlas-engine`'s public surface to `atlas_engine::testing` or behind a `testing` feature flag (currently `pub`-re-exported via `lib.rs`); (b) add a thin contract test that exercises the `(None, true) => StrictCollector::new()` arm in `pipeline.rs:262` end-to-end (currently covered by unit-test triangle only).
 
+### PR-5
+2026-05-11 — Commits `cab2727` (PR-5 closeout + canonical retext: §4.3 inverted to "LLM is the spine"; §7.1/§7.3 marked RETIRED Phase 7 with forward-pointers; §8.1 fingerprint table extended with Phase 7 iteration_number + prior_model_sha note; §10.6 marked SHIPPED; §10.7–§10.11 retexted per recast spec §13.1 — Phase 7 LLM-spine runtime / Phase 8 Cargo retirement / Phase 9 remaining language retirements (waves) / Phase 10 LLM-driven analyses (moved earlier) / Phase 11 server mode + web-app subscriber; §10.11 "Migration from v1" renumbered to §10.12) + `aebaab4` (PR-5 backfill: canonical §10.6 + status closeout block placeholder substitution for the closeout commit sha) + this status-flip commit, on branch `phase6-pr5`. Memory updates: `project_phase4_plus_roadmap.md` advanced (Phase 6 SHIPPED; next-up = Phase 7 LLM-spine runtime); `project_phase6_paused_for_llm_spine.md` marked SUPERSEDED; `MEMORY.md` index entries refreshed. All cargo gates clean at PR-5's HEAD: workspace build + workspace tests (1392 passed; 0 failed across all release tests after analyzer binaries built via `cargo build --release --workspace`); clippy `-D warnings`; fmt --check; `cargo test -p atlas-cli --test phase3_polyglot_fixture --release` passed in 105.44s (cold = 40 LLM calls; warm + reports = 0). Audit greps: `parsed but ignored` zero hits; `eprintln!.*edges_suppress|eprintln!.*edges_add[^_]` zero hits. `TODO.*phase6` grep finds one expected pre-deferred TODO in `l4_tree.rs:384` ("TODO(phase6-pr4 or later): consolidate this walk...") — known follow-up from PR-3 follow-up commit `c0ca23f`, intentionally surviving to Phase 7+ per its "or later" hedge; not a Phase 6 cleanup miss. Phase 6 is complete; the orchestrator may fast-forward `phase6-pr5` to main.
+
 ---
 
 ## Phase 6 — complete
@@ -83,9 +86,9 @@ Final commits (sha → title):
 - PR-3 status: `28efeb2`
 - PR-4: `231d7bd` + `263acca` (PR-4 core + follow-up; fast-forward merged via `phase6-pr4`)
 - PR-4 status: `9a1739b`
-- PR-5: `cab2727` (this commit; closeout + retext)
-- PR-5 backfill: `<PR-5-BACKFILL-SHA>` (canonical §10.6 commit-sha backfill)
-- PR-5 status flip: `<PR-5-FLIP-SHA>`
+- PR-5: `cab2727` (closeout + retext)
+- PR-5 backfill: `aebaab4` (canonical §10.6 commit-sha backfill)
+- PR-5 status flip: this commit
 
 ### Phase 6 → Phase 7 handoff
 
