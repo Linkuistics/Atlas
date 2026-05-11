@@ -29,7 +29,8 @@ pub use analyzers::{
 pub use config::{AtlasConfigFile, ModelRouting, CONFIG_SCHEMA_VERSION};
 pub use per_component::{PerComponentFile, PER_COMPONENT_SCHEMA_VERSION};
 pub use rename_match::{
-    rename_match, RenameMatchInput, RenameMatchOutput, DEFAULT_RENAME_MATCH_THRESHOLD,
+    rename_match, rewrite_contract_owner_prefix, rewrite_participant_owner_prefix, RenameMap,
+    RenameMatchInput, RenameMatchOutput, DEFAULT_RENAME_MATCH_THRESHOLD,
 };
 pub use schema::{
     AlwaysTrue, CacheFingerprints, ComponentEntry, ComponentFieldOverrides, ComponentsFile,

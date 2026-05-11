@@ -22,9 +22,9 @@
 
 use std::sync::Arc;
 
-use atlas_index::{ComponentEntry, Stage, SurfacesFile};
+use atlas_index::{rewrite_participant_owner_prefix, ComponentEntry, Stage, SurfacesFile};
 #[cfg(test)]
-use atlas_index::{EdgeAdd, EdgeSuppress};
+use atlas_index::{EdgeAdd, EdgeSuppress, RenameMap};
 use atlas_llm::{LlmRequest, PromptId, ResponseSchema};
 use component_ontology::{Edge, EdgeKind, EvidenceGrade, LifecycleScope};
 use serde::Serialize;
@@ -32,7 +32,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::db::AtlasDatabase;
-use crate::l4_tree::{all_components, merged_overrides};
+use crate::l4_tree::{all_components, merged_overrides, rename_map_after_match};
 use crate::l5_surface::{surface_artefacts_of, surface_of};
 use crate::l6_compose_edges::composition_edges_from_compose;
 use crate::l6_composition::composition_edges_from_dockerfiles;
@@ -110,6 +110,7 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
         combined.extend(contract_edges);
         combined.extend(composition_edges);
         combined.extend(compose_edges);
+        apply_contract_owner_follows_to_edge_participants(db, &mut combined);
         let canonicalised = canonicalise_edges(combined);
         return Arc::new(apply_user_edge_overrides(db, canonicalised));
     }
@@ -167,6 +168,7 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
             combined.extend(contract_edges);
             combined.extend(composition_edges);
             combined.extend(compose_edges);
+            apply_contract_owner_follows_to_edge_participants(db, &mut combined);
             let canonicalised = canonicalise_edges(combined);
             return Arc::new(apply_user_edge_overrides(db, canonicalised));
         }
@@ -187,8 +189,52 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
     combined.extend(composition_edges);
     combined.extend(compose_edges);
     combined.append(&mut parsed);
+    apply_contract_owner_follows_to_edge_participants(db, &mut combined);
     let canonicalised = canonicalise_edges(combined);
     Arc::new(apply_user_edge_overrides(db, canonicalised))
+}
+
+/// Phase 6 PR-2: apply the contract rename-match owner-follows rewrite
+/// to every edge participant. When the L4 rename-match seam produced a
+/// non-identity `prior_id A → new_id B` entry, participants whose
+/// string begins with `A/` are rewritten to begin with `B/`. The map is
+/// empty in the common case (rename-match preserves the prior id under
+/// the path-derived id allocator), so the helper exits early on the
+/// `rename_map.is_empty()` check inside [`rewrite_participant_owner_prefix`].
+///
+/// The rewrite runs *before* [`canonicalise_edges`] so symmetric-kind
+/// participants get re-sorted as part of canonicalisation. The rewrite
+/// also runs before [`apply_user_edge_overrides`] so user-authored
+/// `edges_add` / `edges_suppress` entries see post-rewrite ids.
+fn apply_contract_owner_follows_to_edge_participants(db: &AtlasDatabase, edges: &mut Vec<Edge>) {
+    let rename_map = rename_map_after_match(db);
+    if rename_map.is_empty() {
+        return;
+    }
+    for edge in edges {
+        for participant in &mut edge.participants {
+            rewrite_participant_owner_prefix(participant, &rename_map);
+        }
+    }
+}
+
+/// Test-only pure form of the participant-rewrite pass — takes the
+/// rename map directly so unit tests can exercise the rewrite without
+/// a database. Kept under `cfg(test)` so it never compiles into the
+/// shipped library.
+#[cfg(test)]
+fn apply_contract_owner_follows_to_edge_participants_for_tests(
+    edges: &mut Vec<Edge>,
+    rename_map: &RenameMap,
+) {
+    if rename_map.is_empty() {
+        return;
+    }
+    for edge in edges {
+        for participant in &mut edge.participants {
+            rewrite_participant_owner_prefix(participant, rename_map);
+        }
+    }
 }
 
 /// Apply hand-authored `edges_add` / `edges_suppress` from the
@@ -1002,6 +1048,49 @@ mod tests {
             got.len(),
             1,
             "malformed entries are dropped, not propagated"
+        );
+    }
+
+    fn defines_contract_edge(component: &str, contract: &str) -> Edge {
+        Edge {
+            kind: EdgeKind::DefinesContract,
+            lifecycle: LifecycleScope::Design,
+            participants: vec![component.to_string(), contract.to_string()],
+            evidence_grade: EvidenceGrade::Strong,
+            evidence_fields: vec!["surfaces.yaml:contracts_defined".to_string()],
+            rationale: format!("test fixture: {component} defines {contract}"),
+        }
+    }
+
+    #[test]
+    fn participant_rewrite_for_tests_noop_under_empty_map() {
+        let mut edges = vec![defines_contract_edge("a", "a/c1")];
+        let map: RenameMap = RenameMap::new();
+        apply_contract_owner_follows_to_edge_participants_for_tests(&mut edges, &map);
+        assert_eq!(
+            edges[0].participants,
+            vec!["a".to_string(), "a/c1".to_string()]
+        );
+    }
+
+    #[test]
+    fn participant_rewrite_for_tests_rewrites_contract_id_prefix_only() {
+        // The owner-follows rewrite cascades only into participants
+        // whose string starts with `<prior_id>/`. Bare component-id
+        // participants (e.g. the component participant of a
+        // defines-contract edge) are NOT rewritten by this pass —
+        // component-id stabilisation is the rename-match's own job in
+        // L4, not the owner-follows pass.
+        let mut edges = vec![defines_contract_edge("a", "a/c1")];
+        let mut map: RenameMap = RenameMap::new();
+        map.insert(cid("a"), cid("b"));
+        apply_contract_owner_follows_to_edge_participants_for_tests(&mut edges, &map);
+        assert_eq!(
+            edges[0].participants,
+            vec!["a".to_string(), "b/c1".to_string()],
+            "the contract participant rewrites to the new owner-prefix; \
+             the bare component participant is left alone because its \
+             string does not match `<prior_id>/` (it has no trailing slash)"
         );
     }
 

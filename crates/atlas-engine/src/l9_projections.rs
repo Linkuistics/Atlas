@@ -23,9 +23,10 @@ use std::sync::Arc;
 
 use atlas_index::BindingRole;
 use atlas_index::{
-    CacheFingerprints, ComponentsFile, ExternalEntry, ExternalsFile, ImplementedContract,
-    PerComponentFile, RelatedComponentsFile, SurfacesFile, COMPONENTS_SCHEMA_VERSION,
-    EXTERNALS_SCHEMA_VERSION, PER_COMPONENT_SCHEMA_VERSION, SURFACES_SCHEMA_VERSION,
+    rewrite_contract_owner_prefix, CacheFingerprints, ComponentsFile, ExternalEntry, ExternalsFile,
+    ImplementedContract, PerComponentFile, RelatedComponentsFile, SurfacesFile,
+    COMPONENTS_SCHEMA_VERSION, EXTERNALS_SCHEMA_VERSION, PER_COMPONENT_SCHEMA_VERSION,
+    SURFACES_SCHEMA_VERSION,
 };
 use component_ontology::{ComponentId, EvidenceGrade, SCHEMA_VERSION as RELATED_SCHEMA_VERSION};
 use sha2::{Digest, Sha256};
@@ -33,7 +34,7 @@ use sha2::{Digest, Sha256};
 use crate::contract_canonicalisation::compute_surfaces_fingerprint;
 use crate::db::{AtlasDatabase, Workspace};
 use crate::l1_queries::manifests_in;
-use crate::l4_tree::{all_component_analyser_identities, all_components};
+use crate::l4_tree::{all_component_analyser_identities, all_components, rename_map_after_match};
 use crate::l5_surface::surface_artefacts_of;
 use crate::l6_edges::all_proposed_edges;
 
@@ -283,6 +284,23 @@ pub fn surfaces_yaml_snapshot(
         contracts_consumed: Vec::new(),
         library_apis,
     };
+
+    // Phase 6 PR-2: apply the contract rename-match owner-follows
+    // rewrite. When the rename-match seam in L4 produced a non-identity
+    // `prior_id A → new_id B` entry for any component, contracts whose
+    // id begins with `A/` are rewritten to begin with `B/` in this
+    // component's surfaces.yaml. The map is empty in the common case
+    // (path-derived id allocator preserves the prior id on rename-match
+    // success), so the loop body executes only when an explicit_id
+    // override or a future allocator change forced an id change.
+    // α implementation (id-embeds-owner); β content-sha-stable is
+    // deferred to Phase 10. Independent fuzzy contract matching is also
+    // out of scope per LLM-spine recast spec §11.4.
+    let rename_map = rename_map_after_match(db);
+    for (prior_id, new_id) in rename_map.iter() {
+        rewrite_contract_owner_prefix(&mut file, prior_id, new_id);
+    }
+
     // Validate every library_api before serialising (PR-1 status
     // note). If validation fails (it shouldn't — the analyser
     // constructs them with `kind: LibraryApi`), surface the error to

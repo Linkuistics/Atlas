@@ -36,7 +36,7 @@ use std::sync::Arc;
 
 use atlas_index::{
     ComponentEntry, ComponentFieldOverrides, ComponentsFile, DocAnchor, OverridesFile, PathSegment,
-    PinValue,
+    PinValue, RenameMap,
 };
 use component_ontology::{ComponentId, LifecycleScope};
 
@@ -126,7 +126,23 @@ pub fn all_components(db: &AtlasDatabase) -> Arc<Vec<ComponentEntry>> {
 /// matching the invariant in [`all_components`].
 pub fn all_component_analyser_identities(db: &AtlasDatabase) -> Arc<AnalyserIdentityMap> {
     match try_assemble_inner(db, &mut io::stderr()) {
-        Ok((_, identities)) => identities,
+        Ok((_, identities, _rename_map)) => identities,
+        Err(e) => panic!("{e}"),
+    }
+}
+
+/// Phase 6 PR-2: return the rename-match-derived `prior_id → final_id`
+/// map for the current run. The map is empty under the path-derived id
+/// allocator's rename-match-preserves-prior-id behaviour; entries
+/// appear only when an explicit_id override (or a future allocator
+/// change) caused the live entry to land on a different id than the
+/// prior it matched. Used by L5 / L9 / L6 to apply the contract
+/// owner-follows rewrite to contract ids and to
+/// related-components.yaml edge participants. Panics on a cycle,
+/// matching the invariant in [`all_components`].
+pub fn rename_map_after_match(db: &AtlasDatabase) -> Arc<RenameMap> {
+    match try_assemble_inner(db, &mut io::stderr()) {
+        Ok((_, _identities, rename_map)) => rename_map,
         Err(e) => panic!("{e}"),
     }
 }
@@ -175,18 +191,32 @@ pub fn try_assemble_with_warnings(
     db: &AtlasDatabase,
     warnings: &mut dyn Write,
 ) -> Result<Arc<Vec<ComponentEntry>>, TreeAssemblyError> {
-    let (components, _identities) = try_assemble_inner(db, warnings)?;
+    let (components, _identities, _rename_map) = try_assemble_inner(db, warnings)?;
     Ok(components)
 }
 
-/// Core assembly implementation used by [`try_assemble_with_warnings`] and
-/// [`all_component_analyser_identities`]. Returns the sorted component
-/// entries AND the per-component analyser identity map in one pass so
-/// callers that need both do not run the assembly twice.
+/// Phase 6 PR-2: triple of artefacts returned by [`try_assemble_inner`].
+/// Bundles the sorted component entries, the per-component analyser
+/// identity map, and the rename-match-derived `prior_id → final_id`
+/// rename map so callers that need any subset do not run the
+/// assembly twice. Factored to a named alias so the function
+/// signature passes `clippy::type_complexity`.
+type AssemblyArtefacts = (
+    Arc<Vec<ComponentEntry>>,
+    Arc<AnalyserIdentityMap>,
+    Arc<RenameMap>,
+);
+
+/// Core assembly implementation used by [`try_assemble_with_warnings`],
+/// [`all_component_analyser_identities`], and [`rename_map_after_match`].
+/// Returns the sorted component entries, the per-component analyser
+/// identity map, and the rename-match-derived `prior_id → final_id`
+/// rename map (Phase 6 PR-2) in one pass so callers that need any
+/// subset do not run the assembly twice.
 fn try_assemble_inner(
     db: &AtlasDatabase,
     warnings: &mut dyn Write,
-) -> Result<(Arc<Vec<ComponentEntry>>, Arc<AnalyserIdentityMap>), TreeAssemblyError> {
+) -> Result<AssemblyArtefacts, TreeAssemblyError> {
     let workspace = db.workspace();
     let root = workspace.root(db as &dyn salsa::Database).clone();
     let primary_overrides = workspace
@@ -215,7 +245,7 @@ fn try_assemble_inner(
 
     let live: Vec<LiveComponent> = gather_live_components(db, workspace, &root, merged_overrides);
     let roots = [root.clone()];
-    let (mut finalised, identities) =
+    let (mut finalised, identities, rename_map) =
         resolve_ids_and_tombstones(&prior, merged_overrides, &roots, live);
 
     // PR-6: apply per-component field overrides on top of the
@@ -238,7 +268,7 @@ fn try_assemble_inner(
 
     let mut out: Vec<ComponentEntry> = finalised;
     out.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok((Arc::new(out), Arc::new(identities)))
+    Ok((Arc::new(out), Arc::new(identities), Arc::new(rename_map)))
 }
 
 /// Apply per-component field overrides (PR-6) to the finalised
@@ -527,7 +557,7 @@ fn resolve_ids_and_tombstones(
     overrides: &OverridesFile,
     roots: &[PathBuf],
     live: Vec<LiveComponent>,
-) -> (Vec<ComponentEntry>, AnalyserIdentityMap) {
+) -> (Vec<ComponentEntry>, AnalyserIdentityMap, RenameMap) {
     // Filter prior to live (non-deleted) entries — tombstones must not
     // feed back into rename-match, or they'd re-emit indefinitely.
     let prior_live: Vec<ComponentEntry> = prior
@@ -679,7 +709,27 @@ fn resolve_ids_and_tombstones(
         out.push(tomb);
     }
 
-    (out, identities)
+    // Phase 6 PR-2: build the rename map (prior_id → final allocated id)
+    // for every rename-match that produced a *different* final id. The
+    // common case under the path-derived id allocator is the identity
+    // map — rename-match preserves the prior id, so the entry is
+    // filtered out at construction. Entries appear only when an
+    // explicit_id override (or a future allocator change) caused the
+    // live entry to land on a different id than the prior it matched.
+    // The map drives the owner-follows rewrite on contract ids and on
+    // related-components.yaml edge participants downstream.
+    let mut rename_map: RenameMap = RenameMap::new();
+    for (prior_idx, live_idx) in &match_out.matches {
+        let prior_id = prior_live[*prior_idx].id.clone();
+        let final_id = allocated_ids[*live_idx]
+            .clone()
+            .expect("every live component has an allocated id");
+        if prior_id != final_id {
+            rename_map.insert(prior_id, final_id);
+        }
+    }
+
+    (out, identities, rename_map)
 }
 
 fn dir_to_live_index(dir: &Path, live: &[LiveComponent]) -> Option<usize> {
