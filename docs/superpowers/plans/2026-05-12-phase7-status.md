@@ -2,7 +2,7 @@
 
 Companion to `docs/superpowers/specs/2026-05-12-atlas-vnext-phase7-plan.md`. This file tracks per-PR completion state across sessions. The continuation prompt at `docs/superpowers/prompts/2026-05-12-vnext-continue.md` (Phase-7-shaped) reads this file (via the `*phase7-plan*` wildcard match) to find the next PR to dispatch.
 
-**Last updated:** 2026-05-12 (PR-6 landed: ratatui TUI subscriber + `--replay-from-cache` mode + four widget modules + drain-handshake-compliant replay test; rebased onto PR-4's tip and fast-forwarded).
+**Last updated:** 2026-05-12 (PR-5 landed: fixed-point iteration loop + LLM-decided dispatch with override-shortcircuit + Lane B cross-provider audit wired into `call_agent`; three code commits + status flip).
 
 ## PR status
 
@@ -13,7 +13,7 @@ Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the
 - [x] PR-2 — Transcript cache + event bus + JSON-Lines subscriber (medium)
 - [x] PR-3 — 22 tool wrappers across three parallel subagents (medium) — revised from 26 per PR-3 user-decided deferral of 5 non-existent manifest parsers
 - [x] PR-4 — Agent runtime (single-iteration) + Lane A schema validation (large)
-- [ ] PR-5 — Fixed-point iteration + LLM-decided dispatch + Lane B cross-provider audit (large)
+- [x] PR-5 — Fixed-point iteration + LLM-decided dispatch + Lane B cross-provider audit (large)
 - [x] PR-6 — `ratatui` TUI subscriber + `--replay-from-cache` mode (medium)
 - [ ] PR-7 — End-to-end wiring + polyglot smoke extension + Atlas-on-Atlas calibration + closeout (large)
 
@@ -266,7 +266,68 @@ Deviations from plan: none material. `cargo fmt --all` applied a one-line import
 - Workspace total: +6 to +10 PR-4-attributable tests across the three commits. Cumulative regression guard unchanged.
 
 ### PR-5
-*(populated when PR-5 lands)*
+
+2026-05-12 — Landed across three code commits, fast-forwarded onto main:
+- `12bbbec` — main PR-5 commit: `run_fixedpoint` wrapping `run_iteration` with content-sha convergence + `IterationBoundary` emission moved here from `run_iteration`; `dispatch_subsystems`/`dispatch_components` override-shortcircuit path (Lane-A-validates + emits `CacheHit { source: DispatchedFromOverride }` + writes synthetic transcript-cache entry framed with `Grade::Strong`); `lane_b_audit` cross-provider auditor module (Anthropic↔OpenAI mapping + same-model fallback emitting `AuditDegraded`) with `AuditVerdict { Accept, RequestRevision, HardFail, Skipped, Degraded(Box<inner>) }` (last variant additive vs spec's 4); `AgentInputFingerprint` extended with `override_content_sha: Option<[u8; 32]>` contributor for the cache-invariant rule; `AgentRuntime::max_iterations` (default 5) + `AgentRuntime::for_provider` injectable closure (approach (c) from PR-5 brief's known-unknown #1 — keeps `Provider` in atlas-agents and avoids advancing the PR-7 `BackendRouter` wiring); `AgentError::FixedpointDiverged { iterations, last_changed_agents }` variant added (last_changed_agents is empty Vec for PR-5 minimum-viable diagnostic per known-unknown #3). 10 files, +1899/-122 LOC. 13 new tests across `tests/{dispatch_shortcircuit,audit_lane_b,fixedpoint_convergence}.rs`.
+- `7f51393` — follow-up addressing two MUST-FIX spec-compliance gaps from spec review: **(A)** the no-override path in `dispatch_subsystems`/`dispatch_components` was raising `OverrideRequired` instead of firing the LLM agent (collapsed PR-5's stated purpose). Wired the LLM-dispatch call via `runtime.call_agent(...)`; canned-response shape matches `SubsystemsOverrideFile`/`ComponentsOverrideFile` so both override and LLM paths converge on the same `*_from_parsed` projectors; stub prompt marked `PR-7-WIRES-REAL-PROMPT`; the spec-required test `dispatch_without_override_file_fires_llm_agent` was renamed from its inverted PR-5 form and asserts (a) backend called, (b) parsed partitions match canned response, (c) no `DispatchedFromOverride` cache-hit emitted, (d) normal `AgentComplete` emitted for `dispatch_subsystem::*`. **(B)** Lane B was defined as primitives in `lane_b.rs` but never reached from `call_agent` — wired `audit::lane_b_audit(...)` into `call_agent` after `run_tool_loop_with_lane_a` returns and before cache write; introduced `ToolLoopOutcome { result, lane_a_retries }` to thread cumulative-retry count; new helper `resolve_audit_verdict(verdict, lane_a_retries)` handles all 5 verdict cases including `Degraded(inner)` recursion and the cumulative-budget rule (`lane_a_retries >= 1` → `RequestRevision` escalates to `HardFail` per recast §4.3); on `HardFail` emits `AgentEvent::HardFail` + returns `AgentError::LaneBFail(reason)`. Audit closure stub returns `AuditVerdict::Accept` (marked `PR-7-WIRES-REAL-AUDITOR`). New wiring test `lane_b_wired_into_call_agent_skips_on_strong_grade` exercises the full `run_workspace` → `call_agent` → `lane_b_audit` path end-to-end. 4 files, +489/-62 LOC.
+- `7ec3da7` — follow-up addressing the single non-deferred MEDIUM from PR-5 code-quality review: removed dead no-op self-assignment `runtime_result.grade = runtime_result.grade.clone();` in the `ResolvedAuditAction::RequestRevision(_)` arm (the arm's intent is to fall through to the cache-write below, which the surrounding multi-line comment already documents); dropped the now-unnecessary `mut` on `let runtime_result = tool_outcome.result;` to keep `-D unused-mut` clean. 1 file, +3/-3 LOC. Zero behaviour change.
+
+**Acceptance gates met (orchestrator-side independent verification on main post-`7ec3da7`):**
+- `cargo build --workspace` clean (2.07s)
+- `cargo fmt --check` clean
+- `cargo clippy --all-targets -- -D warnings` clean (9.23s)
+- `cargo test --workspace --no-fail-fast -- --skip polyglot_phase3` exit 0; zero failures grep'd workspace-wide
+- `cargo build --release --workspace` clean (3.99s)
+- `cargo test -p atlas-cli --test phase3_polyglot_fixture --release --no-fail-fast` — `polyglot_phase3_acceptance ok` in 104.32s on main post-`7ec3da7`. Cumulative regression guard held; cold count stays in loose-bound `0 < cold < 100`. Timing envelope matches PR-4's 104.20s and PR-6's 109.34s — the LLM-dispatch site PR-5 introduced is unreachable from the polyglot smoke because the fixture has full override coverage (the load-bearing protection per plan §2.2 non-negotiable #8).
+
+**Two-stage review (per `superpowers:subagent-driven-development`):**
+- **Spec compliance review v1** (on `12bbbec`): ⚠️ COMPLIANT WITH GAPS — two MUST-FIX issues. Implementer's Deviation A (no-override path raises `OverrideRequired`) directly contradicted plan §2.2 non-negotiable #8 + brainstorm §2 row 2 (locked) + brainstorm §6 (i) pseudocode; the rationale "firing an LLM call without production prompts defeats the polyglot guard" inverted the actual protection mechanism (the *shortcircuit* + full-override polyglot fixture is what keeps the regression guard green, not the absence of the LLM call site). Implementer's Deviation B (Lane B primitives-only, not wired into `call_agent`) made the entire Lane B subsystem unreachable from production code. Both routed to a follow-up fix.
+- **Spec compliance re-review** (on `7f51393`): ✅ COMPLIANT — both gaps fully closed; no regressions in the four pre-existing dispatch tests, four pre-existing lane_b tests, three fixedpoint tests, or the fixedpoint_loop module.
+- **Code quality review** (on `12bbbec + 7f51393`): ⚠️ APPROVED WITH MINORS — strengths called out: clean `fixedpoint_loop.rs` extraction with `IterationBoundary` emission relocated cleanly; `lane_b_audit` design with `AuditorChoice` + `Degraded(Box<inner>)` excellent for testability + verdict preservation; cache-invariant rule enforcement via sentinel-byte `Some`/`None` prefix is rigorous; well-layered test suite (unit tests inside lane_b.rs + integration tests in tests/audit_lane_b.rs). Three MEDIUMs flagged: (1) dead no-op self-assignment at mod.rs:689 (fixed in `7ec3da7`); (2) `OverrideRequired` error variant semantically wrong for LLM output parse failures — explicitly deferred to PR-7 when production prompts make this user-facing; (3) `now_iso` duplicated between mod.rs and dispatch.rs — explicitly deferred to PR-7 with millisecond-precision upgrade. Five LOW nits and four AWARENESS items (none blocking).
+
+**Deferred from PR-5 code-quality review (route into PR-7 cleanup):**
+- **MEDIUM-2 (semantic): `OverrideRequired` is used as the error variant for LLM dispatch output parse failures** in `dispatch.rs` (the two `parse_*_from_output_value` map_err sites). The variant's display text ("override file missing or malformed") will mislead anyone who hits a real LLM output-malformed failure in production. Fix in PR-7: add `AgentError::LlmOutputMalformed(String)` variant; update both map_err sites; add a `// TODO(PR-7)` comment at each site for forensic traceability.
+- **MEDIUM-3 (duplication): `now_iso` duplicated** between `crates/atlas-agents/src/runtime/mod.rs` (~line 995) and `crates/atlas-agents/src/runtime/dispatch.rs` (~line 510). Both have identical bodies and identical "upgrade to milliseconds" TODO comments. Fix in PR-7: hoist to `crate::runtime::util` (or `pub(super)` at top of mod.rs) when the millisecond-precision upgrade happens; dispatch.rs calls the consolidated helper.
+- **AWARENESS-A: `lane_b_wired_into_call_agent_skips_on_strong_grade`** asserts `!saw_audit_fire` — a negative assertion that passes both when Lane B is wired-and-skips AND when Lane B is removed entirely. PR-5's documented constraint (no multi-grade test backend available). Complementary PR-7 test: inject a `Weak`-grading backend and assert `AuditFire` is emitted (positive assertion that closes the gap).
+- **AWARENESS-B: `run_fixedpoint`'s `unwrap_or(l9)` fallback at lines 65-73** is technically unreachable once `effective_max >= 2` (the `effective_max == 1` single-iteration sentinel branch is handled earlier). Not a bug — defensive programming + clear intent — but a future cleanup-class item if the single-iteration sentinel goes away.
+
+**Convergent design choices across PR-5 (accepted):**
+- **Approach (c) for known-unknown #1 (BackendRouter wiring):** `AgentRuntime::for_provider: Option<Arc<ForProviderFn>>` injectable closure rather than (a) extending the `LlmBackend` trait or (b) advancing the PR-7 `BackendRouter` wiring. Mirrors the existing `current_sha_fn` placeholder pattern; keeps `Provider` confined to atlas-agents (no atlas-llm/atlas-agents circular dep); PR-7 plugs in a real `BackendRouter`-backed closure.
+- **Synthetic-transcript shape for dispatch-from-override (known-unknown #2):** override-yaml bytes framed via `frame_transcript_with_grade(Grade::Strong, override_yaml_bytes)`; output bytes are JSON-serialised `Vec<SubsystemPartition>`/`Vec<ComponentPartition>`; cache fingerprint carries `target_input_shas: vec![]` + `override_content_sha: Some(sha)` for cache-invariant enforcement.
+- **`collect_shifted_agents` minimum-viable form (known-unknown #3):** `last_changed_agents: Vec<String> = vec![]` empty stub; PR-7 enriches with per-agent transcript-sha diffs across iterations once those structures are tracked in `AgentRuntime` state.
+- **`max_iterations` on `AgentRuntime` not `IndexConfig` (known-unknown #4):** field with default `5` lives on `AgentRuntime`; PR-7 threads `IndexConfig::max_iterations` through during the `atlas index` wiring.
+- **JSON envelope for LLM dispatch output (Fix 1 follow-up design call):** the LLM emits a JSON object matching `SubsystemsOverrideFile` / `ComponentsOverrideFile` deserialise shape. New helpers `parse_subsystems_from_output_value` / `parse_components_from_output_value` feed parsed structs into the existing `subsystems_from_parsed` / `components_from_parsed` projectors. Same projection step regardless of whether the source is YAML-override or JSON-LLM-output.
+
+**Deviations from plan §4 Task 5 (all documented in commit messages + status notes):**
+- `AuditVerdict` has 5 variants instead of plan's 4 (`Degraded(Box<inner>)` additive) — distinguishes cross-provider audit from same-model-fallback audit without an extra field.
+- 13 spec-mandated tests landed in `12bbbec`; +1 wiring test in `7f51393` (`lane_b_wired_into_call_agent_skips_on_strong_grade`); +1 symmetry test in `12bbbec` (`dispatch_components_shortcircuit_emits_dispatched_from_override`). Total: 15 new tests (12 mandated + 3 additive).
+- `AgentError::LaneBFail(String)` kept as stringified variant rather than `#[from]` on a structured Lane B error type — the audit verdict already carries structured failure detail via `AuditVerdict::HardFail(String)`, and the wiring at `call_agent`'s HardFail arm threads the reason string directly.
+- The `RequestRevision` retry harness fires the `AuditVerdict` event but accepts the producer result on the non-escalation branch (`lane_a_retries == 0`). The cumulative-budget rule IS enforced (`lane_a_retries >= 1` → `HardFail` escalation). Full prompt-revision-retry mechanism marked `PR-7-ENRICHES-PROMPT-WITH-REVISION-REASON`.
+- Lane B's audit closure stub returns `AuditVerdict::Accept` regardless of producer output (marked `PR-7-WIRES-REAL-AUDITOR`). PR-7 wires the real cross-provider audit prompt round-trip; PR-5's wiring is the spec deliverable, not the audit's empirical firing frequency.
+
+**Forward-pointers to PR-7 (Wave 5 — end-to-end wiring + polyglot smoke extension + Atlas-on-Atlas calibration + closeout):**
+- The runtime is NOT wired into `atlas index` yet. PR-7's Step 7.x: `Handle::block_on(runtime.run_workspace(workspace))` at the CLI entry point (single sync→async boundary).
+- `AgentRuntime::for_provider` needs a real wired closure delegating to a `BackendRouter`-shaped per-provider lookup. Closure shape: `Fn(Provider) -> Option<Arc<dyn LlmBackend>>`. PR-7 either (a) un-gates `BackendRouter::from_dispatch_table` from `#[cfg(test)]` so production code can build one, or (b) writes a small helper that maps the default `claude_code + codex` dispatch table to per-provider backends.
+- `dispatch_subsystems` / `dispatch_components`'s no-override path needs the production LLM-dispatch prompt template; PR-5 stubs are marked `PR-7-WIRES-REAL-PROMPT`. Until PR-7, the test backend's canned-response shape keyed on the `"dispatch subsystems"` / `"dispatch components"` substring is the only way to exercise the no-override path.
+- Lane B's audit closure needs the production cross-provider audit prompt; PR-5 stub is marked `PR-7-WIRES-REAL-AUDITOR`. The audit transcript on-disk layout (`.atlas/audit/<stage>/<target>.yaml` per brainstorm §6 (iii)) is NOT yet implemented — PR-5 only emits the events; PR-7 materialises the on-disk artefacts.
+- `AgentRuntime::max_iterations` should be threaded from `IndexConfig::max_iterations`; PR-5 hardcodes default `5`.
+- `AgentError::FixedpointDiverged.last_changed_agents` is currently empty `Vec<String>`; PR-7 enriches once per-agent transcript shas are tracked in `AgentRuntime` state across iterations.
+- The two deferred MEDIUMs from code-quality review (`OverrideRequired` semantic misuse on LLM output-parse failures; `now_iso` duplication between mod.rs and dispatch.rs) are PR-7 cleanup-class items.
+- The `AWARENESS-A` positive-assertion Lane B test (inject `Weak`-grading backend → assert `AuditFire` emitted) is the complementary test PR-7 should add when production prompts can emit non-Strong grades.
+
+**Polyglot regression behaviour:** unchanged. The fixture has full override coverage for every L2 candidate, so the LLM-decided dispatch site PR-5 introduced is unreachable from the smoke. Cold count stays in loose-bound `0 < cold < 100` (calibrated ~40 per Phase 6 PR-5 closeout); warm + reports = 0. PR-7's Atlas-on-Atlas calibration (no overrides → dispatch fires) produces a *separate* baseline that is NOT comparable to the polyglot baseline.
+
+**Test count deltas in PR-5:**
+- `atlas-agents` lib: +5 unit tests in `fixedpoint_loop.rs` (content_sha determinism, order invariance, distinct payloads, default-max constant, equal-projections short-circuit) + ~10 unit tests in `dispatch.rs` (parser symmetry, fingerprint hashing, override-content-sha sensitivity, Lane A validation paths) + ~12 unit tests in `audit/lane_b.rs` (provider mapping, verdict resolution, AuditDegraded emission, recursion on Degraded).
+- `atlas-agents` integration: +6 in `tests/dispatch_shortcircuit.rs` + +4+1 in `tests/audit_lane_b.rs` (4 original + 1 wiring) + +3 in `tests/fixedpoint_convergence.rs` = +14 integration tests.
+- `atlas-engine` lib: +1 in `llm_cache.rs` (override_content_sha sensitivity in `AgentInputFingerprint::to_cache_key`).
+- Workspace total: ~+42 PR-5-attributable tests across the three commits, all green. Cumulative regression guard unchanged.
+
+**LOC totals:**
+- `12bbbec`: +1899 / -122 (10 files)
+- `7f51393`: +489 / -62 (4 files; modifies dispatch.rs + mod.rs + 2 test files)
+- `7ec3da7`: +3 / -3 (1 file; mod.rs cleanup)
+- Net PR-5 lineage: ~+2391 LOC / -187 LOC. Roughly 1.5× the brief's implicit envelope (~700-1200 LOC predicted from the 5 task steps + 3 test files) — within the brief's "stop and surface at 2×" threshold; not flagged by implementer at any checkpoint.
 
 ### PR-6
 
