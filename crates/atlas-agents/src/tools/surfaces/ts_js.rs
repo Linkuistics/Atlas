@@ -30,7 +30,7 @@ fn schema() -> &'static ToolSchema {
                 },
                 "component_dir": {
                     "type": "string",
-                    "description": "workspace-relative path to the component directory (src/ subdirectory is walked for .ts/.tsx/.js/.jsx source files)"
+                    "description": "workspace-relative path to the component directory"
                 },
                 "is_typescript": {
                     "type": "boolean",
@@ -44,50 +44,38 @@ fn schema() -> &'static ToolSchema {
             "required": ["component_id", "component_dir", "is_typescript"]
         }),
         description: "Extract the TypeScript/JavaScript public-API surface of a component. \
-                      Parses src/**/*.ts/tsx/js/jsx with swc and returns bindings and library_apis."
+                      Probes the engine's fixed allowlist of well-known entry-point filenames \
+                      (src/index.{ts,tsx,js,jsx} + src/main.{ts,tsx,js,jsx}) and returns \
+                      bindings and library_apis."
             .into(),
     })
 }
 
-/// Source file extensions recognised by the TS/JS surface analyser.
-const TS_JS_EXTENSIONS: &[&str] = &["ts", "tsx", "mts", "cts", "js", "mjs", "cjs", "jsx"];
+/// Fixed allowlist of well-known entry-point filenames, mirroring
+/// `crates/atlas-engine/src/l5_surface.rs:439-456`.
+const WELL_KNOWN_ENTRY_POINTS: &[&str] = &[
+    "src/index.ts",
+    "src/index.tsx",
+    "src/index.js",
+    "src/index.jsx",
+    "src/main.ts",
+    "src/main.tsx",
+    "src/main.js",
+    "src/main.jsx",
+];
 
-fn is_ts_js_source(path: &std::path::Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|ext| TS_JS_EXTENSIONS.contains(&ext))
-        .unwrap_or(false)
-}
-
-/// Walk a directory recursively and collect all TS/JS source files as
-/// `(relative_path, bytes)` pairs.  `relative_to` is used to strip the
-/// component directory prefix so paths are component-relative.
-fn collect_sources(
-    dir: &std::path::Path,
-    relative_to: &std::path::Path,
-) -> Result<Vec<(PathBuf, Vec<u8>)>, ToolError> {
+/// Probe the fixed allowlist of well-known entry-point filenames under
+/// `absolute_dir`.  Returns `(relative_path, bytes)` pairs for every
+/// file that exists; silently skips missing or unreadable files, matching
+/// the engine's `file_content(db, &candidate)` returning `None` behaviour.
+fn probe_entry_points(absolute_dir: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
     let mut sources = Vec::new();
-    let Ok(read_dir) = std::fs::read_dir(dir) else {
-        // Directory may not exist (e.g. no `src/` yet). Return empty.
-        return Ok(sources);
-    };
-    for entry in read_dir.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            sources.extend(collect_sources(&path, relative_to)?);
-        } else if is_ts_js_source(&path) {
-            let rel = path
-                .strip_prefix(relative_to)
-                .unwrap_or(&path)
-                .to_path_buf();
-            let bytes = std::fs::read(&path)
-                .map_err(|e| ToolError::Filesystem(format!("read {}: {e}", path.display())))?;
-            sources.push((rel, bytes));
+    for filename in WELL_KNOWN_ENTRY_POINTS {
+        if let Ok(bytes) = std::fs::read(absolute_dir.join(filename)) {
+            sources.push((PathBuf::from(filename), bytes));
         }
     }
-    // Sort deterministically so the output is stable across runs.
-    sources.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(sources)
+    sources
 }
 
 #[async_trait]
@@ -124,17 +112,21 @@ impl Tool for TsJsSurfaceTool {
             .map(|p| ctx.workspace_root.join(p));
 
         let output = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, ToolError> {
-            // Walk the src/ subdirectory for source files; if it doesn't
-            // exist, fall back to the component dir itself.
-            let src_dir = abs_dir.join("src");
-            let walk_root = if src_dir.is_dir() { src_dir.clone() } else { abs_dir.clone() };
-            let sources = collect_sources(&walk_root, &abs_dir)?;
+            // Probe the fixed allowlist of well-known entry-point filenames,
+            // mirroring l5_surface.rs:439-456. Missing files are silently skipped.
+            let sources = probe_entry_points(&abs_dir);
 
-            let package_json = abs_pkg
-                .map(|p| std::fs::read(&p).map_err(|e| {
-                    ToolError::Filesystem(format!("read {}: {e}", p.display()))
-                }))
-                .transpose()?;
+            // Read package.json: use the explicitly provided path if given;
+            // otherwise fall back to probing `<component_dir>/package.json`,
+            // mirroring l5_surface.rs:458-464. Errors on an explicit path are
+            // surfaced; absence of the implicit path is silently ignored.
+            let package_json = if let Some(p) = abs_pkg {
+                std::fs::read(&p)
+                    .map(Some)
+                    .map_err(|e| ToolError::Filesystem(format!("read {}: {e}", p.display())))?
+            } else {
+                std::fs::read(abs_dir.join("package.json")).ok()
+            };
 
             let inputs = TsJsSourceInputs { sources, package_json, is_typescript };
             let surface = extract_ts_js_surface(&component_id, &inputs);
@@ -200,7 +192,16 @@ mod tests {
         let ts_content = "export function greet(name: string): string { return `Hello ${name}`; }\nexport type Greeting = string;\n";
         std::fs::write(tempdir.path().join("src/index.ts"), ts_content).unwrap();
 
-        // Direct call — mirrors what the wrapper does
+        // Plant a file that is NOT in the allowlist.  A recursive-walk
+        // implementation would include it; the fixed-probe must not.
+        std::fs::write(
+            tempdir.path().join("src/helpers.ts"),
+            "export function helper(): void {}\n",
+        )
+        .unwrap();
+
+        // Direct call — feeds only the allowlist hit (src/index.ts), matching
+        // what the engine's fixed-filename probe produces.
         let direct = {
             let inputs = TsJsSourceInputs {
                 sources: vec![(
@@ -225,6 +226,9 @@ mod tests {
         };
         let result = tool.invoke(args, &ctx).await.unwrap();
 
+        // The wrapper's output must match the direct call that only fed
+        // src/index.ts.  If the wrapper had walked src/ recursively it would
+        // also include src/helpers.ts and produce a different result.
         let expected = serde_json::json!({
             "contracts": serde_json::to_value(&direct.contracts).unwrap(),
             "bindings": serde_json::to_value(&direct.bindings).unwrap(),
