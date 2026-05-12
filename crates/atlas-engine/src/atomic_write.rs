@@ -101,6 +101,116 @@ fn write_then_rename(temp_path: &Path, dest_path: &Path, bytes: &[u8]) -> io::Re
     Ok(())
 }
 
+/// Atomically write two related files. Either both land or neither
+/// does (modulo the residual half-pair window between the two
+/// renames). Used by the transcript cache (Phase 7 PR-2), where
+/// `<sha>.transcript` and `<sha>.output` must move together; a crash
+/// between the two single-file writes would leave a transcript without
+/// its output and corrupt the cache.
+///
+/// Sequence:
+///
+/// 1. Create the parent directory chain of each path (if missing).
+///    The two paths are allowed to live in different parents; the
+///    helper does not enforce a shared parent because the cache layout
+///    happens to colocate them but the primitive itself is general.
+/// 2. Open `<path_a>.tmp.<pid>.<rand-u64>` and `<path_b>.tmp...` —
+///    independent nonces so concurrent writers on the same target pair
+///    do not collide.
+/// 3. `write_all` + `sync_all` both temp files.
+/// 4. Rename `path_a` first, then `path_b`. A crash between the two
+///    renames is the residual failure mode — the cache eviction path
+///    detects half-pair entries via the recorded-fingerprint spot
+///    check (recast §6.3) on read and triggers re-run, not corruption.
+///
+/// Forensic value of the two-file primitive over an envelope-wrapper:
+/// transcripts remain debuggable side-by-side even if the output is
+/// corrupt. The half-pair window (post-a-rename / pre-b-rename) is
+/// detectable on next read via fingerprint mismatch and triggers
+/// re-run, not corruption.
+///
+/// On any error mid-write both temp files are best-effort cleaned up
+/// before returning the original error.
+pub fn atomic_write_pair(
+    path_a: &Path,
+    bytes_a: &[u8],
+    path_b: &Path,
+    bytes_b: &[u8],
+) -> io::Result<()> {
+    let parent_a = path_a.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "atomic_write_pair: path_a has no parent directory: {}",
+                path_a.display()
+            ),
+        )
+    })?;
+    if !parent_a.as_os_str().is_empty() {
+        fs::create_dir_all(parent_a)?;
+    }
+    let parent_b = path_b.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "atomic_write_pair: path_b has no parent directory: {}",
+                path_b.display()
+            ),
+        )
+    })?;
+    if !parent_b.as_os_str().is_empty() {
+        fs::create_dir_all(parent_b)?;
+    }
+
+    let temp_a = temp_path_for(path_a);
+    let temp_b = temp_path_for(path_b);
+
+    // Both temps must be written + fsynced before either rename. A
+    // failure at any of the four steps best-effort cleans up both
+    // temps.
+    let result = write_pair_then_rename(&temp_a, &temp_b, path_a, path_b, bytes_a, bytes_b);
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_a);
+        let _ = fs::remove_file(&temp_b);
+    }
+    result
+}
+
+fn write_pair_then_rename(
+    temp_a: &Path,
+    temp_b: &Path,
+    dest_a: &Path,
+    dest_b: &Path,
+    bytes_a: &[u8],
+    bytes_b: &[u8],
+) -> io::Result<()> {
+    {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(temp_a)?;
+        f.write_all(bytes_a)?;
+        f.sync_all()?;
+    }
+    {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(temp_b)?;
+        f.write_all(bytes_b)?;
+        f.sync_all()?;
+    }
+
+    // Rename a, then b. A crash between renames leaves a fully-new
+    // path_a + still-old path_b; the cache's recorded-fingerprint
+    // spot-check evicts the half-pair on next read (recast §6.3).
+    fs::rename(temp_a, dest_a)?;
+    fs::rename(temp_b, dest_b)?;
+    Ok(())
+}
+
 /// Compose the temp-file path: `<dest>.tmp.<pid>.<rand-u64>`. The temp
 /// lives in the same directory as `dest` so the final rename stays on
 /// one filesystem (cross-fs rename is not atomic on POSIX).
@@ -344,5 +454,126 @@ mod tests {
 
         let got = std::fs::read(&dest).unwrap();
         assert_eq!(got, b"data");
+    }
+
+    // ---------- atomic_write_pair --------------------------------------
+
+    #[test]
+    fn atomic_pair_both_files_present_after_success() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let a = tmp.path().join("agents/l3/abc.transcript");
+        let b = tmp.path().join("agents/l3/abc.output");
+
+        atomic_write_pair(&a, b"TRANSCRIPT", &b, b"OUTPUT").unwrap();
+
+        assert!(a.exists(), "transcript file must exist after success");
+        assert!(b.exists(), "output file must exist after success");
+        assert_eq!(std::fs::read(&a).unwrap(), b"TRANSCRIPT");
+        assert_eq!(std::fs::read(&b).unwrap(), b"OUTPUT");
+
+        // No .tmp* leftovers in the stage directory.
+        let stage_dir = a.parent().unwrap();
+        let leftovers: Vec<_> = std::fs::read_dir(stage_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no .tmp.* siblings should outlive a successful pair write"
+        );
+    }
+
+    #[test]
+    fn atomic_pair_neither_partial_on_first_write_failure() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Force the first temp-file write to fail by pointing path_a
+        // at a path whose parent cannot be created — on POSIX, creating
+        // a subdirectory under an existing *file* fails with NotADirectory.
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, b"this is a file, not a directory").unwrap();
+        let a = blocker.join("nested/abc.transcript");
+        let b = tmp.path().join("ok/abc.output");
+
+        let result = atomic_write_pair(&a, b"T", &b, b"O");
+        assert!(
+            result.is_err(),
+            "pair write must fail when path_a's parent cannot be created"
+        );
+
+        // Neither destination exists.
+        assert!(!a.exists(), "path_a must not be created on failure");
+        assert!(!b.exists(), "path_b must not be created on failure");
+
+        // No .tmp* leftover anywhere — best-effort cleanup ran. Walk
+        // both target parents (the failure was before path_b's parent
+        // was even tried, but the path_b parent dir created earlier
+        // could still have a stray tmp if create_dir_all happened
+        // before the failure; ensure neither dir holds a tmp).
+        let ok_dir = tmp.path().join("ok");
+        if ok_dir.exists() {
+            let leftovers: Vec<_> = std::fs::read_dir(&ok_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+                .collect();
+            assert!(
+                leftovers.is_empty(),
+                "no .tmp.* leftovers under path_b parent on failure"
+            );
+        }
+    }
+
+    #[test]
+    fn atomic_pair_concurrent_writers_disjoint_temp_paths() {
+        // Two threads call atomic_write_pair on the same target paths
+        // concurrently. Both must complete without an ENOENT-on-rename
+        // collision; the temp paths the helper picks must be disjoint
+        // via the pid/nonce composition. Last writer wins on the final
+        // contents (content-addressed store semantics — see PersistentCache).
+        let tmp = tempfile::TempDir::new().unwrap();
+        let a = tmp.path().join("agents/l3/concurrent.transcript");
+        let b = tmp.path().join("agents/l3/concurrent.output");
+
+        let a1 = a.clone();
+        let b1 = b.clone();
+        let a2 = a.clone();
+        let b2 = b.clone();
+
+        let h1 = std::thread::spawn(move || {
+            for _ in 0..10 {
+                atomic_write_pair(&a1, b"T1", &b1, b"O1").unwrap();
+            }
+        });
+        let h2 = std::thread::spawn(move || {
+            for _ in 0..10 {
+                atomic_write_pair(&a2, b"T2", &b2, b"O2").unwrap();
+            }
+        });
+        h1.join().expect("writer 1");
+        h2.join().expect("writer 2");
+
+        // Both destinations exist; final bytes are one of the two
+        // winners (we cannot predict which).
+        assert!(a.exists());
+        assert!(b.exists());
+        let got_a = std::fs::read(&a).unwrap();
+        assert!(got_a == b"T1" || got_a == b"T2", "got_a = {got_a:?}");
+        let got_b = std::fs::read(&b).unwrap();
+        assert!(got_b == b"O1" || got_b == b"O2", "got_b = {got_b:?}");
+
+        // No .tmp* leftovers — every pair write either succeeded
+        // (renaming both temps) or cleaned up on failure.
+        let stage_dir = a.parent().unwrap();
+        let leftovers: Vec<_> = std::fs::read_dir(stage_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no .tmp.* siblings should outlive concurrent pair writes; got {leftovers:?}"
+        );
     }
 }

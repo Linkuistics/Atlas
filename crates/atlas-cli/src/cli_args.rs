@@ -86,6 +86,21 @@ pub struct IndexArgs {
     /// warning fired.
     #[arg(long)]
     pub strict_overrides: bool,
+
+    /// Disable the TUI subscriber for the LLM-spine runtime (Phase 7);
+    /// route events to stdout as JSON-Lines. The TUI subscriber itself
+    /// lands in PR-6; PR-2 ships the flag plumbing and the JSON-Lines
+    /// fallback. Implied when stdout is not a terminal.
+    #[arg(long)]
+    pub no_tui: bool,
+
+    /// In addition to TUI or stdout JSON-Lines, log every LLM-spine
+    /// event to this file as JSON-Lines (one event per line). Active
+    /// in parallel with the other subscribers — useful for post-hoc
+    /// analysis without disrupting the user-facing surface. PR-4+
+    /// consumes the flag; PR-2 ships the plumbing.
+    #[arg(long, value_name = "PATH")]
+    pub log_events: Option<PathBuf>,
 }
 
 impl IndexArgs {
@@ -186,6 +201,34 @@ mod tests {
         let mut config = IndexConfig::new(PathBuf::from("/tmp/x"));
         args.apply_to(&mut config);
         assert!(!config.strict_overrides);
+    }
+
+    #[test]
+    fn no_tui_default_is_false() {
+        let args = parse_index(&["atlas", "index", "/tmp/x"]);
+        assert!(!args.no_tui);
+        assert!(args.log_events.is_none());
+    }
+
+    #[test]
+    fn no_tui_flag_binds_to_true() {
+        let args = parse_index(&["atlas", "index", "--no-tui", "/tmp/x"]);
+        assert!(args.no_tui);
+    }
+
+    #[test]
+    fn log_events_flag_captures_path() {
+        let args = parse_index(&[
+            "atlas",
+            "index",
+            "--log-events",
+            "/tmp/events.jsonl",
+            "/tmp/x",
+        ]);
+        assert_eq!(
+            args.log_events.as_deref(),
+            Some(std::path::Path::new("/tmp/events.jsonl"))
+        );
     }
 
     #[test]
