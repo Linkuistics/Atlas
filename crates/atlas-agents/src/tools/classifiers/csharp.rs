@@ -62,8 +62,10 @@ impl Tool for CsharpClassifyTool {
         let component_dir = require_string(&args, "component_dir")?;
         let manifest_path = require_string(&args, "manifest_path")?;
 
-        let abs_dir = ctx.workspace_root.join(&component_dir);
-        let abs_manifest = ctx.workspace_root.join(&manifest_path);
+        let abs_dir =
+            crate::tools::path_utils::require_within_root(&ctx.workspace_root, &component_dir)?;
+        let abs_manifest =
+            crate::tools::path_utils::require_within_root(&ctx.workspace_root, &manifest_path)?;
 
         let manifest_basename = std::path::Path::new(&manifest_path)
             .file_name()

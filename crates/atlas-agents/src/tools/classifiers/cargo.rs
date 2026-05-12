@@ -62,8 +62,10 @@ impl Tool for CargoClassifyTool {
     async fn invoke(&self, args: ToolArgs, ctx: &ToolContext) -> Result<ToolResult, ToolError> {
         let component_dir = require_string(&args, "component_dir")?;
         let cargo_toml_path = require_string(&args, "cargo_toml_path")?;
-        let abs_dir = ctx.workspace_root.join(&component_dir);
-        let abs_manifest = ctx.workspace_root.join(&cargo_toml_path);
+        let abs_dir =
+            crate::tools::path_utils::require_within_root(&ctx.workspace_root, &component_dir)?;
+        let abs_manifest =
+            crate::tools::path_utils::require_within_root(&ctx.workspace_root, &cargo_toml_path)?;
 
         let output =
             tokio::task::spawn_blocking(move || -> Result<CargoClassificationOutput, ToolError> {
@@ -159,6 +161,96 @@ fn hex_sha256(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::{ToolArgs, ToolContext};
+
+    #[tokio::test]
+    async fn cargo_classify_tool_matches_direct_call_rust_library() {
+        let tempdir = tempfile::TempDir::new().unwrap();
+        let content = "[package]\nname = \"foo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\npath = \"src/lib.rs\"\n";
+        std::fs::write(tempdir.path().join("Cargo.toml"), content).unwrap();
+
+        // Direct call
+        let direct = {
+            let bytes = std::fs::read(tempdir.path().join("Cargo.toml")).unwrap();
+            let target = Target {
+                dir: tempdir.path().to_path_buf(),
+                languages: BTreeSet::from(["rust".to_string()]),
+                manifests: vec![TargetFile {
+                    name: "Cargo.toml".into(),
+                    relpath: PathBuf::from("Cargo.toml"),
+                    bytes,
+                    content_sha: "ignored".into(),
+                }],
+                top_level_files: vec![],
+            };
+            let analyser = CargoClassifier::new();
+            match analyser.analyse(&AnalysisContext::deterministic_only(), &target) {
+                AnalyzerResult::Confident(boxed) => boxed
+                    .as_any()
+                    .downcast_ref::<CargoClassificationOutput>()
+                    .unwrap()
+                    .clone(),
+                other => panic!("expected Confident, got {other:?}"),
+            }
+        };
+
+        // Wrapper call
+        let tool = CargoClassifyTool;
+        let args = ToolArgs(serde_json::json!({
+            "component_dir": "",
+            "cargo_toml_path": "Cargo.toml"
+        }));
+        let ctx = ToolContext {
+            workspace_root: tempdir.path().to_path_buf(),
+        };
+        let result = tool.invoke(args, &ctx).await.unwrap();
+
+        assert_eq!(result.output, serde_json::to_value(&direct).unwrap());
+    }
+
+    #[tokio::test]
+    async fn cargo_classify_tool_matches_direct_call_rust_cli() {
+        let tempdir = tempfile::TempDir::new().unwrap();
+        let content = "[package]\nname = \"foo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[[bin]]\nname = \"foo\"\npath = \"src/main.rs\"\n";
+        std::fs::write(tempdir.path().join("Cargo.toml"), content).unwrap();
+
+        // Direct call
+        let direct = {
+            let bytes = std::fs::read(tempdir.path().join("Cargo.toml")).unwrap();
+            let target = Target {
+                dir: tempdir.path().to_path_buf(),
+                languages: BTreeSet::from(["rust".to_string()]),
+                manifests: vec![TargetFile {
+                    name: "Cargo.toml".into(),
+                    relpath: PathBuf::from("Cargo.toml"),
+                    bytes,
+                    content_sha: "ignored".into(),
+                }],
+                top_level_files: vec![],
+            };
+            let analyser = CargoClassifier::new();
+            match analyser.analyse(&AnalysisContext::deterministic_only(), &target) {
+                AnalyzerResult::Confident(boxed) => boxed
+                    .as_any()
+                    .downcast_ref::<CargoClassificationOutput>()
+                    .unwrap()
+                    .clone(),
+                other => panic!("expected Confident, got {other:?}"),
+            }
+        };
+
+        // Wrapper call
+        let tool = CargoClassifyTool;
+        let args = ToolArgs(serde_json::json!({
+            "component_dir": "",
+            "cargo_toml_path": "Cargo.toml"
+        }));
+        let ctx = ToolContext {
+            workspace_root: tempdir.path().to_path_buf(),
+        };
+        let result = tool.invoke(args, &ctx).await.unwrap();
+
+        assert_eq!(result.output, serde_json::to_value(&direct).unwrap());
+    }
 
     #[tokio::test]
     async fn cargo_classify_tool_matches_direct_call() {

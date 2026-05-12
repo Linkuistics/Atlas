@@ -62,8 +62,10 @@ impl Tool for ComposeClassifyTool {
     async fn invoke(&self, args: ToolArgs, ctx: &ToolContext) -> Result<ToolResult, ToolError> {
         let component_dir = require_string(&args, "component_dir")?;
         let compose_file_path = require_string(&args, "compose_file_path")?;
-        let abs_dir = ctx.workspace_root.join(&component_dir);
-        let abs_manifest = ctx.workspace_root.join(&compose_file_path);
+        let abs_dir =
+            crate::tools::path_utils::require_within_root(&ctx.workspace_root, &component_dir)?;
+        let abs_manifest =
+            crate::tools::path_utils::require_within_root(&ctx.workspace_root, &compose_file_path)?;
 
         let output = tokio::task::spawn_blocking(
             move || -> Result<ComposeClassificationOutput, ToolError> {

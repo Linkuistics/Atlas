@@ -71,7 +71,12 @@ impl Tool for PythonSurfaceTool {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let abs_dir = ctx.workspace_root.join(&component_dir);
+        let abs_dir =
+            crate::tools::path_utils::require_within_root(&ctx.workspace_root, &component_dir)?;
+        // Validate the optional manifest path eagerly before moving into the blocking task.
+        if let Some(ref rel) = manifest_path {
+            crate::tools::path_utils::require_within_root(&ctx.workspace_root, rel)?;
+        }
         let workspace_root = ctx.workspace_root.clone();
 
         let output =
@@ -91,22 +96,25 @@ impl Tool for PythonSurfaceTool {
                 })?;
 
                 // Build the Target. Load the manifest bytes if a path was given.
+                // When the caller explicitly supplied a path, propagate read errors
+                // rather than silently dropping the manifest.
                 let mut manifests = Vec::new();
                 if let Some(ref rel_path) = manifest_path {
                     let abs_manifest = workspace_root.join(rel_path);
-                    if let Ok(bytes) = std::fs::read(&abs_manifest) {
-                        let content_sha = hex_sha256(&bytes);
-                        let basename = std::path::Path::new(rel_path)
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| rel_path.clone());
-                        manifests.push(TargetFile {
-                            name: basename,
-                            relpath: PathBuf::from(rel_path),
-                            bytes,
-                            content_sha,
-                        });
-                    }
+                    let bytes = std::fs::read(&abs_manifest).map_err(|e| {
+                        ToolError::Filesystem(format!("read {}: {e}", abs_manifest.display()))
+                    })?;
+                    let content_sha = hex_sha256(&bytes);
+                    let basename = std::path::Path::new(rel_path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| rel_path.clone());
+                    manifests.push(TargetFile {
+                        name: basename,
+                        relpath: PathBuf::from(rel_path),
+                        bytes,
+                        content_sha,
+                    });
                 }
 
                 let target = Target {

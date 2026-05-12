@@ -72,9 +72,14 @@ impl Tool for TsJsClassifyTool {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let abs_dir = ctx.workspace_root.join(&component_dir);
-        let abs_pkg = ctx.workspace_root.join(&package_json_path);
-        let abs_tsconfig = tsconfig_path.as_deref().map(|p| ctx.workspace_root.join(p));
+        let abs_dir =
+            crate::tools::path_utils::require_within_root(&ctx.workspace_root, &component_dir)?;
+        let abs_pkg =
+            crate::tools::path_utils::require_within_root(&ctx.workspace_root, &package_json_path)?;
+        let abs_tsconfig = tsconfig_path
+            .as_deref()
+            .map(|p| crate::tools::path_utils::require_within_root(&ctx.workspace_root, p))
+            .transpose()?;
 
         let output =
             tokio::task::spawn_blocking(move || -> Result<TsJsClassificationOutput, ToolError> {

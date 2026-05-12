@@ -16,4 +16,7 @@
 
 pub mod classifiers;
 pub mod manifests;
+pub mod path_utils;
 pub mod surfaces;
+
+pub use path_utils::{require_path_arg, require_within_root};

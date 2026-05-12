@@ -58,7 +58,8 @@ impl Tool for RustSurfaceTool {
     async fn invoke(&self, args: ToolArgs, ctx: &ToolContext) -> Result<ToolResult, ToolError> {
         let component_id = require_string(&args, "component_id")?;
         let component_dir = require_string(&args, "component_dir")?;
-        let abs_dir = ctx.workspace_root.join(&component_dir);
+        let abs_dir =
+            crate::tools::path_utils::require_within_root(&ctx.workspace_root, &component_dir)?;
 
         let output = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, ToolError> {
             let candidates = [

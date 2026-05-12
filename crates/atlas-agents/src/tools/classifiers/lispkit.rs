@@ -65,8 +65,13 @@ impl Tool for LispKitClassifyTool {
                 "`sld_files` must contain at least one path".into(),
             ));
         }
-        let abs_dir = ctx.workspace_root.join(&component_dir);
+        let abs_dir =
+            crate::tools::path_utils::require_within_root(&ctx.workspace_root, &component_dir)?;
         let workspace_root = ctx.workspace_root.clone();
+        // Validate all sld_files paths before moving into the blocking task.
+        for rel_path in &sld_files {
+            crate::tools::path_utils::require_within_root(&workspace_root, rel_path)?;
+        }
 
         let output = tokio::task::spawn_blocking(
             move || -> Result<LispKitClassificationOutput, ToolError> {

@@ -50,7 +50,8 @@ impl Tool for ParseComposeTool {
             .get("path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("missing or non-string `path`".into()))?;
-        let abs_path = ctx.workspace_root.join(path_str);
+        let abs_path =
+            crate::tools::path_utils::require_within_root(&ctx.workspace_root, path_str)?;
 
         let output = tokio::task::spawn_blocking({
             let abs_path = abs_path.clone();

@@ -66,8 +66,10 @@ impl Tool for ElixirSurfaceTool {
     async fn invoke(&self, args: ToolArgs, ctx: &ToolContext) -> Result<ToolResult, ToolError> {
         let component_dir = require_string(&args, "component_dir")?;
         let mix_exs_path = require_string(&args, "mix_exs_path")?;
-        let abs_dir = ctx.workspace_root.join(&component_dir);
-        let abs_manifest = ctx.workspace_root.join(&mix_exs_path);
+        let abs_dir =
+            crate::tools::path_utils::require_within_root(&ctx.workspace_root, &component_dir)?;
+        let abs_manifest =
+            crate::tools::path_utils::require_within_root(&ctx.workspace_root, &mix_exs_path)?;
 
         let output =
             tokio::task::spawn_blocking(move || -> Result<serde_json::Value, ToolError> {
@@ -175,12 +177,17 @@ mod tests {
     use super::*;
 
     /// Verifies the "binary missing" error path without requiring the
-    /// elixir-analyzer binary to be built.
+    /// elixir-analyzer binary to be built. The manifest must be present because
+    /// the tool reads it before (or after) the binary lookup depending on
+    /// environment — writing it makes the test deterministic across all builds.
     #[tokio::test]
     async fn elixir_surface_tool_returns_error_when_binary_missing() {
         let tempdir = tempfile::TempDir::new().unwrap();
-        // Write a mix.exs so the tool doesn't fail on filesystem read first
-        // (binary lookup happens before the read, so no file is required).
+        std::fs::write(
+            tempdir.path().join("mix.exs"),
+            "defmodule Foo.MixProject do\n  use Mix.Project\n  def project, do: [app: :foo, version: \"0.1.0\"]\nend\n",
+        )
+        .unwrap();
         let tool = ElixirSurfaceTool;
         let ctx = ToolContext {
             workspace_root: tempdir.path().to_path_buf(),

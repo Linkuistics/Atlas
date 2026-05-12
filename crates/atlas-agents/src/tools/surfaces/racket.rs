@@ -65,8 +65,10 @@ impl Tool for RacketSurfaceTool {
     async fn invoke(&self, args: ToolArgs, ctx: &ToolContext) -> Result<ToolResult, ToolError> {
         let component_dir = require_string(&args, "component_dir")?;
         let info_rkt_path = require_string(&args, "info_rkt_path")?;
-        let abs_dir = ctx.workspace_root.join(&component_dir);
-        let abs_manifest = ctx.workspace_root.join(&info_rkt_path);
+        let abs_dir =
+            crate::tools::path_utils::require_within_root(&ctx.workspace_root, &component_dir)?;
+        let abs_manifest =
+            crate::tools::path_utils::require_within_root(&ctx.workspace_root, &info_rkt_path)?;
 
         let output =
             tokio::task::spawn_blocking(move || -> Result<serde_json::Value, ToolError> {
@@ -175,6 +177,15 @@ mod tests {
     #[tokio::test]
     async fn racket_surface_tool_returns_error_when_binary_missing() {
         let tempdir = tempfile::TempDir::new().unwrap();
+        // Write info.rkt so the test is deterministic across environments
+        // where the binary may or may not be built. The tool reads the manifest
+        // regardless of binary presence; without it a Filesystem error fires
+        // instead of the expected Invocation error.
+        std::fs::write(
+            tempdir.path().join("info.rkt"),
+            "#lang info\n(define name \"foo\")\n",
+        )
+        .unwrap();
         let tool = RacketSurfaceTool;
         let ctx = ToolContext {
             workspace_root: tempdir.path().to_path_buf(),
