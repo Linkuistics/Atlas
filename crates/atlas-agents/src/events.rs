@@ -173,14 +173,6 @@ impl Default for EventBus {
 }
 
 #[cfg(test)]
-// Clippy's `disallowed_methods` lint (set crate-wide to block
-// `Runtime::block_on` / `Handle::block_on`) misfires inside the
-// `#[tokio::test]` async-fn expansion — the macro wires the test
-// body through internal runtime plumbing that the lint sees as a
-// block_on call. Tests do not actually call `block_on`; they run on
-// the multi-threaded runtime via the same path the production
-// runtime uses.
-#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

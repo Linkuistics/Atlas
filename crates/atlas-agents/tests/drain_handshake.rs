@@ -1,11 +1,3 @@
-// Clippy's `disallowed_methods` lint (set crate-wide to block
-// `Runtime::block_on` / `Handle::block_on`) misfires on
-// `JoinHandle::await` inside `#[tokio::test]` async fns — the `.await`
-// operator expansion looks like an internal runtime block_on call but
-// is a normal Future::poll. The lint is meant to block synchronous
-// blocking inside the async runtime, which this test does not do.
-#![allow(clippy::disallowed_methods)]
-
 //! Drain-handshake integration test for the agent runtime event bus.
 //!
 //! Asserts that `RuntimeComplete` is a proper sentinel: a slow

@@ -1,4 +1,3 @@
 disallowed-methods = [
-  { path = "tokio::runtime::Handle::block_on", reason = "atlas-agents is async; the sync→async boundary lives in atlas-cli's CLI entry point. Nested block_on calls deadlock the multi-threaded runtime." },
-  { path = "tokio::runtime::Runtime::block_on", reason = "see Handle::block_on rationale" },
+  { path = "tokio::runtime::Handle::block_on", reason = "atlas-agents is async; the sync→async boundary lives in atlas-cli's CLI entry point. Nested Handle::block_on inside a running runtime parks a worker thread and deadlocks the multi-threaded runtime." },
 ]

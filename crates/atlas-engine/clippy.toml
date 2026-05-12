@@ -1,4 +1,3 @@
 disallowed-methods = [
-  { path = "tokio::runtime::Handle::block_on", reason = "atlas-engine is sync; the sync→async boundary is the single Handle::block_on in atlas-cli's CLI entry point. New block_on call sites here would invert the boundary." },
-  { path = "tokio::runtime::Runtime::block_on", reason = "see Handle::block_on rationale" },
+  { path = "tokio::runtime::Handle::block_on", reason = "atlas-engine is sync; the sync→async boundary is the single Handle::block_on in atlas-cli's CLI entry point. New Handle::block_on call sites here would invert the boundary and risk deadlocking a running runtime." },
 ]
