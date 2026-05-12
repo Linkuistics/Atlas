@@ -431,6 +431,21 @@ pub struct AgentInputFingerprint {
     pub target_input_shas: Vec<[u8; 32]>,
     pub iteration_number: u32,
     pub prior_model_sha: Option<[u8; 32]>,
+    /// PR-5: SHA-256 over the contents of the dispatch override file
+    /// (`subsystems.overrides.yaml` / `components.overrides.yaml`) used
+    /// to short-circuit the dispatch agent. `None` when no override is
+    /// present (LLM-decided dispatch) or when the stage is not a
+    /// dispatch stage. Including this field in the cache key enforces
+    /// the PR-5 cache-invariant rule (recast §6.1):
+    ///
+    /// - Adding an override invalidates any prior LLM-decided dispatch
+    ///   transcript (the override changed `None` -> `Some(sha)`).
+    /// - Removing an override invalidates any prior synthetic-from-
+    ///   override dispatch transcript (the override changed
+    ///   `Some(sha)` -> `None`).
+    /// - Editing the override changes `sha` and invalidates both
+    ///   shapes.
+    pub override_content_sha: Option<[u8; 32]>,
 }
 
 impl AgentInputFingerprint {
@@ -465,6 +480,16 @@ impl AgentInputFingerprint {
         if let Some(prior) = self.prior_model_sha {
             hasher.update(b"1");
             hasher.update(prior);
+        } else {
+            hasher.update(b"0");
+        }
+        // PR-5: override-file content sha contributes to the cache key.
+        // Sentinel byte (`1` vs `0`) distinguishes "override present /
+        // sha X" from "no override" so empty-bytes overrides cannot
+        // collide with the no-override case.
+        if let Some(override_sha) = self.override_content_sha {
+            hasher.update(b"1");
+            hasher.update(override_sha);
         } else {
             hasher.update(b"0");
         }
@@ -1176,6 +1201,7 @@ mod tests {
             target_input_shas: vec![target_sha],
             iteration_number: 0,
             prior_model_sha: None,
+            override_content_sha: None,
         }
     }
 

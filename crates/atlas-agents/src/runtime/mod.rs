@@ -23,6 +23,7 @@
 pub mod agent;
 pub mod audit;
 pub mod dispatch;
+pub mod fixedpoint_loop;
 pub mod semaphores;
 pub mod tool_loop_http;
 pub mod tool_loop_mcp;
@@ -110,7 +111,7 @@ pub enum AgentError {
     OverrideRequired(String),
     #[error("lane A schema validation failed: {0}")]
     LaneAFail(#[from] SchemaError),
-    #[error("lane B audit failed: {0} (PR-5)")]
+    #[error("lane B audit failed: {0}")]
     LaneBFail(String),
     #[error("tool invocation failed: {0}")]
     ToolFailure(String),
@@ -122,6 +123,20 @@ pub enum AgentError {
     Backend(String),
     #[error("transcript-cache error: {0}")]
     Cache(String),
+    /// PR-5: fixed-point loop ran `iterations` times without
+    /// converging. `last_changed_agents` is the diagnostic-only set of
+    /// agent ids whose transcript sha changed between iteration K-1
+    /// and iteration K. PR-5 ships the variant with an empty
+    /// diagnostic vec (the plan's `collect_shifted_agents` is hand-
+    /// wavy, see implementer-brief known-unknown #3); PR-7 enriches.
+    #[error(
+        "fixed-point loop diverged after {iterations} iterations \
+         (last_changed_agents={last_changed_agents:?})"
+    )]
+    FixedpointDiverged {
+        iterations: u32,
+        last_changed_agents: Vec<String>,
+    },
 }
 
 impl AgentError {
@@ -305,7 +320,31 @@ pub struct AgentRuntime {
     /// Default max-steps cap for the HTTP tool-use loop. PR-4 ships
     /// 8; PR-5 may make this per-stage.
     pub default_max_steps: u32,
+    /// PR-5: max fixed-point iterations before
+    /// [`AgentError::FixedpointDiverged`] surfaces. Default `5` per
+    /// brainstorm §2 row 7; tunable. Plumbed through `IndexConfig` in
+    /// PR-7.
+    pub max_iterations: u32,
+    /// PR-5 (known-unknown #1, approach (c)): cross-provider backend
+    /// lookup. When `Some`, Lane B (`runtime/audit/lane_b.rs`) calls
+    /// this closure with the auditor provider to obtain a sibling
+    /// `LlmBackend`. When `None`, Lane B falls back to the same-model
+    /// auditor (the `backend_router` field) and emits an
+    /// `AuditDegraded` event.
+    ///
+    /// Approach rationale: a closure carries the same shape as the
+    /// existing `current_sha_fn` placeholder pattern, costs no
+    /// `LlmBackend`-trait surgery, and keeps `Provider` confined to
+    /// `atlas-agents`. PR-7 plugs in a closure that delegates to the
+    /// real `BackendRouter::backend_for_provider` (which PR-7 adds);
+    /// tests inject simpler mocks via [`AgentRuntime::with_for_provider`].
+    pub for_provider: Option<Arc<ForProviderFn>>,
 }
+
+/// Type alias for the Lane B cross-provider lookup closure. Boxed
+/// dyn-`Fn` so the trait object is `Send + Sync` (required because
+/// `AgentRuntime` is shared across Tokio tasks via `Arc`).
+pub type ForProviderFn = dyn Fn(Provider) -> Option<Arc<dyn LlmBackend>> + Send + Sync + 'static;
 
 /// PR-4 internal: one agent invocation request. Distinct from
 /// `atlas_engine::llm_cache::AgentRequest` (which is the cache
@@ -338,34 +377,42 @@ pub struct AgentResult {
 }
 
 impl AgentRuntime {
-    /// PR-4 entry point. Single-iteration; PR-5 wraps in `run_fixedpoint`.
+    /// Top-level entry point. PR-5 wraps PR-4's `run_iteration` in
+    /// `run_fixedpoint` so the runtime drives the iteration loop to
+    /// convergence (recast §4.4).
     ///
     /// `AgentEvent::RuntimeComplete` is the drain-handshake sentinel —
     /// every subscriber waits for it before flushing. Emit
-    /// unconditionally on both Ok and Err paths so subscribers always
-    /// drain even when the iteration fails; the body is wrapped in a
-    /// `let result = ...await;` binding to guarantee a single emit site.
+    /// unconditionally on both Ok and Err paths (including
+    /// [`AgentError::FixedpointDiverged`]) so subscribers always drain
+    /// even when the loop fails; the body is wrapped in a `let result
+    /// = ...await;` binding to guarantee a single emit site.
     pub async fn run_workspace(&self, workspace: &Workspace) -> Result<L9Projection, AgentError> {
-        let result = self.run_iteration(workspace, 1, None).await;
+        let result =
+            crate::runtime::fixedpoint_loop::run_fixedpoint(self, workspace, self.max_iterations)
+                .await;
         self.event_bus.emit(AgentEvent::RuntimeComplete);
         result
     }
 
     /// One iteration of the LLM-spine loop. PR-4: deterministic
     /// dispatch via override files; per-component Classify; reduce;
-    /// project.
+    /// project. PR-5: dispatch may also be LLM-decided when no
+    /// override file is present.
+    ///
+    /// `AgentEvent::IterationBoundary` emission lives in
+    /// [`crate::runtime::fixedpoint_loop::run_fixedpoint`] — the loop
+    /// owns the iteration counter and the prior-iteration sha — so
+    /// this function does not emit it. Calling `run_iteration`
+    /// directly (e.g. from a test that bypasses `run_workspace`) is
+    /// fine but will not produce an `IterationBoundary` event.
     pub async fn run_iteration(
         &self,
         workspace: &Workspace,
         iter: u32,
         prior_model_sha: Option<ContentSha>,
     ) -> Result<L9Projection, AgentError> {
-        self.event_bus.emit(AgentEvent::IterationBoundary {
-            iter,
-            prior_model_sha: prior_model_sha.as_ref().map(ContentSha::to_hex),
-        });
-
-        let subsystems = dispatch_subsystems(workspace.root()).await?;
+        let subsystems = dispatch_subsystems(self, workspace).await?;
         let mut projection = L9Projection::default();
         let mut all_component_ids: HashSet<String> = HashSet::new();
 
@@ -375,7 +422,7 @@ impl AgentRuntime {
         let mut subsystem_components: Vec<(SubsystemPartition, Vec<ComponentPartition>)> =
             Vec::with_capacity(subsystems.len());
         for subsystem in subsystems {
-            let components = dispatch_components(workspace.root(), &subsystem).await?;
+            let components = dispatch_components(self, workspace, &subsystem).await?;
             for c in &components {
                 all_component_ids.insert(c.id.clone());
             }
@@ -484,6 +531,12 @@ impl AgentRuntime {
             target_input_shas: input_shas,
             iteration_number: request.iteration,
             prior_model_sha: prior_sha_bytes,
+            // PR-5: non-dispatch agents never short-circuit via override
+            // files, so the override-content-sha contributor is `None`
+            // here. The dispatch path constructs its own fingerprint
+            // with `override_content_sha: Some(...)` when the override
+            // file is present.
+            override_content_sha: None,
         };
 
         let fingerprint_hex = fingerprint.to_cache_key();

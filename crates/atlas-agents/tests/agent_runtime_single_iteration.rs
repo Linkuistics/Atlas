@@ -152,6 +152,13 @@ async fn agent_runtime_runs_a_workspace_end_to_end_single_iteration() {
         semaphores: Semaphores::defaults(),
         default_transport: TransportFlavour::HttpAnthropic,
         default_max_steps: 4,
+        // PR-5: fixed-point loop's `max_iterations == 1` is the
+        // single-iteration-mode sentinel — equivalent to PR-4's
+        // direct call to `run_iteration`. The PR-4 smoke fixture
+        // exercises this mode so its assertions on backend call
+        // count and one-shot consumption stay valid under PR-5.
+        max_iterations: 1,
+        for_provider: None,
     };
     let workspace = AgentsWorkspace::new(root);
 
@@ -222,6 +229,13 @@ async fn lane_a_retry_fires_exactly_once_on_classify_schema_fail() {
         semaphores: Semaphores::defaults(),
         default_transport: TransportFlavour::HttpAnthropic,
         default_max_steps: 4,
+        // PR-5: fixed-point loop's `max_iterations == 1` is the
+        // single-iteration-mode sentinel — equivalent to PR-4's
+        // direct call to `run_iteration`. The PR-4 smoke fixture
+        // exercises this mode so its assertions on backend call
+        // count and one-shot consumption stay valid under PR-5.
+        max_iterations: 1,
+        for_provider: None,
     };
     let workspace = AgentsWorkspace::new(root);
 

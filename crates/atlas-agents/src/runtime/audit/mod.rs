@@ -7,9 +7,19 @@
 //! responses that emit zero surfaces. Schema-fail incurs exactly one
 //! retry; a second fail is a hard fail.
 //!
-//! Lane B — cross-provider audit — lands in PR-5. Scaffolding is
-//! deliberately omitted here; do not pre-create `lane_b.rs`.
+//! Lane B — **cross-provider audit** — fires only when the producer's
+//! `confidence_grade` is `Weak` or `Declines`. Pairs Anthropic-produced
+//! output with an OpenAI auditor and vice-versa. Single-provider
+//! configs fall back to a same-model auditor and emit
+//! [`crate::events::AgentEvent::AuditDegraded`]. PR-5 ships the audit
+//! decision + event emission scaffold; the actual auditor prompt is a
+//! placeholder pending PR-7 wiring.
 
 pub mod lane_a;
+pub mod lane_b;
 
 pub use lane_a::{lane_a_validate, requires_at_least_one_surface, AgentOutput, SchemaError, Stage};
+pub use lane_b::{
+    auditor_provider_for, lane_b_audit, provider_label, select_auditor_backend, should_audit,
+    AuditVerdict, AuditorChoice,
+};
