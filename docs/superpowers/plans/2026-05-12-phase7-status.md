@@ -2,7 +2,7 @@
 
 Companion to `docs/superpowers/specs/2026-05-12-atlas-vnext-phase7-plan.md`. This file tracks per-PR completion state across sessions. The continuation prompt at `docs/superpowers/prompts/2026-05-12-vnext-continue.md` (Phase-7-shaped) reads this file (via the `*phase7-plan*` wildcard match) to find the next PR to dispatch.
 
-**Last updated:** 2026-05-12 (PR-1 landed: atlas-agents crate + Tool trait + MCP server + async LlmBackend).
+**Last updated:** 2026-05-12 (PR-2 landed: transcript cache + event bus + JSON-Lines subscriber).
 
 ## PR status
 
@@ -10,7 +10,7 @@ Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the
 
 - [x] PR-0 — Plan + status + continuation prompt (docs only)
 - [x] PR-1 — `atlas-agents` crate + `Tool` trait + MCP server + async `LlmBackend` (large)
-- [ ] PR-2 — Transcript cache + event bus + JSON-Lines subscriber (medium)
+- [x] PR-2 — Transcript cache + event bus + JSON-Lines subscriber (medium)
 - [ ] PR-3 — 26 tool wrappers across three parallel subagents (medium)
 - [ ] PR-4 — Agent runtime (single-iteration) + Lane A schema validation (large)
 - [ ] PR-5 — Fixed-point iteration + LLM-decided dispatch + Lane B cross-provider audit (large)
@@ -103,7 +103,64 @@ Notes for PR-2:
 Deviations from plan: none material. `cargo fmt --all` applied a one-line import wrap fix in `crates/atlas-cli/src/progress.rs:15` (legitimate cascade from the long `BackendCallEvent` name pushing the import block past rustfmt's column threshold). Fixture-README docstrings in `crates/atlas-llm/tests/fixtures/{codex-stream,stream}/README.md` updated to reference `BackendCallEvent::ToolUse`/`ToolResult` instead of the pre-rename name; doc-only, no test-behaviour change.
 
 ### PR-2
-*(populated when PR-2 lands)*
+
+2026-05-12 — Landed across three commits: `faa5fd9` (main PR-2 code), `4123011` (clippy::disallowed_methods narrowing follow-up), `87a193c` (contract polish + diagnostics follow-up). The two follow-ups are PR-2-scope; together they constitute the PR-2 code release, and this status-flip is the orchestrator's final commit per the two-commit pattern.
+
+**What landed (main commit `faa5fd9`):**
+- `crates/atlas-agents/src/events.rs` — `AgentEvent` enum (11 variants per recast §9.1: `IterationBoundary`, `AgentStart`, `ToolCall`, `ToolResult`, `AgentComplete`, `AuditFire`, `AuditVerdict`, `AuditDegraded`, `HardFail`, `CacheHit`, `RuntimeComplete`), `EventBus` (`tokio::broadcast` capacity 1024 per brainstorm §2 row 10), `Subscriber` type alias, helper enums `Grade` + `CacheHitSource`.
+- `crates/atlas-agents/src/transport.rs` — `TransportFlavour` enum (`ClaudeCode`/`Codex`/`HttpAnthropic`/`HttpOpenai`) with stable `as_str()` wire form (`claude_code`/`codex`/`http_anthropic`/`http_openai`) + `Provider` rollup (`Anthropic`/`OpenAi`). Lock-down test `as_str_is_stable_snake_case` prevents a future enum rename from silently invalidating on-disk transcript caches.
+- `crates/atlas-agents/src/agent_cache_writer.rs` — async subscriber stub that consumes `AgentComplete` and signals drain-handshake on `RuntimeComplete`. Lagged-receiver logs via `tracing::error!` (NOT silent drop, per recast §6.4 cache-corruption hazard). PR-4 wires the actual cache-write call site at the `// TODO(PR-4):` marker.
+- `crates/atlas-engine/src/atomic_write.rs` — `atomic_write_pair` two-file primitive (rename a then rename b; half-pair window is detectable on next read via fingerprint-spot-check eviction, never panics). Three unit tests: both-files-present-after-success, neither-partial-on-first-write-failure (uses `NotADirectory` injection via a regular-file-masquerading-as-parent-directory trick rather than a flaky `chmod`), concurrent-writers-disjoint-temp-paths (20-write contention stress).
+- `crates/atlas-engine/src/llm_cache.rs` — `call_agent_cached` multi-shot extension + `AgentInputFingerprint` carrying every recast §6.1 cache-key contributor (`stage_id`, `agent_id`, `agent_version`, `prompt_template_sha`, `tool_catalog_sha`, `model_id`, `backend_version`, **`transport_flavour: String`**, `target_input_shas`, `iteration_number`, `prior_model_sha`). Two-tier L1 + L2 write-through; on L2 hit, spot-check recorded fingerprint inputs against current file shas; evict on mismatch (recast §6.3). Six unit tests (4 plan-required + 1 cache-hit short-circuit + 1 half-pair-treated-as-miss from `87a193c`'s M8). `AgentRequest` and `AgentResult` are `#[non_exhaustive]` placeholders with `new(...)` constructors — additive contract locked in for PR-4+ extension. `frame_transcript_with_grade` + `parse_transcript_grade` are both `pub`, share `TRANSCRIPT_FRAME_PREFIX: &[u8] = b"# grade: "` and private `grade_label`/`grade_from_label` helpers (one source of truth for the four grade labels).
+- `crates/atlas-engine/src/cache/layout.rs` — `agents_transcript_path` + `agents_output_path` helpers under `<root>/cache/agents/<stage>/`, isolated from the single-shot `<root>/cache/<stage>/` layout (no key collision).
+- `crates/atlas-cli/src/jsonl_subscriber.rs` — JSON-Lines event-stream subscriber (stdout when `--no-tui`; file when `--log-events`). One event per line, drain-handshake-compliant. Lagged-receiver emits an in-band sentinel line `{"event":"LaggedReceiver","dropped":N}` (NOT silent drop).
+- `crates/atlas-cli/src/cli_args.rs` — `--no-tui` (default false; PR-4+ implies it when stdout is not a terminal) and `--log-events PATH` (parallel to other subscribers) wired into `IndexArgs`. Three new parse tests.
+- `crates/atlas-agents/tests/drain_handshake.rs` — integration test asserting `try_join!(wait_a, wait_b)` returns only after both slow subscribers flush past `RuntimeComplete`.
+- New workspace dep: `tracing = "0.1"` (added per PR-1 handoff's explicit recommendation for telemetry consistency; consumed in `agent_cache_writer.rs` for the lagged-receiver error log).
+
+**What landed (follow-up `4123011`):** Narrowed `clippy::disallowed_methods` in both `crates/atlas-agents/clippy.toml` and `crates/atlas-engine/clippy.toml` to keep only `tokio::runtime::Handle::block_on` forbidden (the actual nested-call deadlock vector). Removed `tokio::runtime::Runtime::block_on` from the disallowed list because the `#[tokio::test]` macro expands to `Runtime::new()...block_on(async {...})` and clippy attributes inner `.await` desugarings to the enclosing `Runtime::block_on`, which forced every async test file to `#![allow(clippy::disallowed_methods)]`. The PR-1 follow-up (`55131de`) added the rule with the claim "no existing block_on call sites in either crate" — but at commit time, `mcp_multiplex.rs` already had `.await` patterns that the over-broad rule flagged. PR-2 surfaced the misfire and the orchestrator chose the root-cause fix (narrow the rule) over the symptom suppression (scatter `#![allow]` across test files). All three test-side allow directives the implementer had added (in `drain_handshake.rs`, `mcp_multiplex.rs`, and `events.rs::tests`) were removed in the same commit.
+
+**What landed (follow-up `87a193c`):** Four code-quality-review minor fixes — M1 (transcript-frame symmetry: shared `TRANSCRIPT_FRAME_PREFIX` constant + private `grade_label`/`grade_from_label` helpers; `parse_transcript_grade` made `pub`; M7 capacity-guess fix folded in), M3 (one paragraph added to `EventBus::emit` doc explaining that "Subscriber health is not monitored here" and the runtime owns liveness via the drain-handshake `try_join!` on `done_rx`), M6 (`#[non_exhaustive]` on `AgentRequest` and `AgentResult` + `new(...)` constructors + all 6 in-crate construction sites converted to `::new`; M9 vestigial-binding shed in the same sweep), M8 (`read_agent_pair` half-pair branch emits `tracing::warn!` with stage + key + which-half-present, then returns `None` to trigger recompute; new unit test plants a half-pair on disk and asserts the recompute path replaces the residue). Six code-quality minor items deferred (M2 Stage lock-down test; M4 `Arc<LlmResponseCache>` placeholder in `agent_cache_writer`; M5 typed `LaggedReceiver` variant; M10 `debug_assert_ne!` on `atomic_write_pair` paths) — none are blocking; PR-4 will absorb M4 naturally and M2/M5/M10 are cleanup-class.
+
+**Acceptance gates met (orchestrator-side independent verification on `main` post-`87a193c`):**
+- `cargo build --workspace` clean (2.57s)
+- `cargo fmt --check` clean (empty output)
+- `cargo clippy --all-targets -- -D warnings` clean (exit 0)
+- `cargo test --workspace --no-fail-fast` exit 0 (isolated re-run; the first attempt hit a 20+-minute slowdown on dev-mode `phase3_polyglot_fixture` because I had launched it concurrently with the release-mode polyglot smoke — they don't share a cargo lock but do share the system process table and subprocess fan-out; lesson logged for PR-3+ orchestration to keep heavy-subprocess tests serial)
+- `cargo build --release --workspace` clean (3.21s)
+- `cargo test -p atlas-cli --test phase3_polyglot_fixture --release --no-fail-fast` — `polyglot_phase3_acceptance ok` in 104.72s. Cumulative regression guard held; cold count stays in loose-bound `0 < cold < 100`.
+
+**Concerns triaged at orchestration time (all accepted; documented for forensic context):**
+
+1. **`agent_cache_writer.rs` relocated from `crates/atlas-engine/src/` (plan) to `crates/atlas-agents/src/` (landed).** Plan placement would have inverted the workspace dependency direction — atlas-agents already depends on atlas-engine, and the subscriber needs `atlas_agents::events::{AgentEvent, EventBus}`. Cycle fix; cache writer reaches into atlas-engine via `Arc<LlmResponseCache>` parameter. Documented in the file header (`crates/atlas-agents/src/agent_cache_writer.rs:1-15`).
+
+2. **`AgentInputFingerprint.transport_flavour` stored as `String`** (the `as_str()` wire form), not as the `TransportFlavour` enum. Same cycle reason — `crates/atlas-engine/src/llm_cache.rs` cannot import from `atlas-agents`. Cache-key contribution invariant is preserved: the wire form is hashed into the key, and the `agent_cache_key_includes_transport_flavour` test exercises `"claude_code"` vs `"codex"` producing different keys.
+
+3. **`AgentRequest` / `AgentResult` minimal placeholder shape** — `AgentRequest { payload: Vec<u8> }`, `AgentResult { transcript_bytes, output_bytes, confidence_grade }`. Both `#[non_exhaustive]` with `new(...)` constructors. PR-4 will extend additively.
+
+4. **5th cache-hit short-circuit test** added beyond the plan's 4 required (`agent_cache_hit_short_circuits_compute_when_spot_check_clean`). Legitimate completeness addition — the plan's 4 tests cover key+eviction+write+no-write-on-fail; none cover the positive cache-hit path with a clean spot-check.
+
+5. **`tracing` added to workspace deps.** Per PR-1 handoff explicit recommendation; consumed only in `agent_cache_writer.rs:81` (lagged-receiver error log) and `llm_cache.rs::read_agent_pair` (half-pair warn).
+
+6. **`AuditDegraded { reason: String }`** matches the plan literal; brainstorm §4 wrote `&'static str` but that's incompatible with serde round-trip (no owned storage). Plan implicitly overrode the impractical brainstorm form. The `jsonl_subscriber` golden-file test round-trips this variant; `&'static str` would have failed `Deserialize`.
+
+**Forward-pointers to PR-3 (parallel tool wrappers) and PR-4 (runtime + Lane A):**
+
+- **PR-3 (Wave 2, three parallel subagents):** Depends on PR-2's `Tool` trait (PR-1) + nothing PR-2 added. PR-3 subagents own disjoint module sets under `crates/atlas-agents/src/tools/`. Use pre-created worktrees per memory `feedback_worktree_base_verification`; wrapper count is **27 not 26** (PR-0 forward-pointer #4). The shared re-export list in `crates/atlas-agents/src/tools/mod.rs` is the conflict surface during the integration merge.
+- **PR-4 (runtime single-iteration + Lane A):** Consumes `AgentRuntime` + `Tool` + `EventBus` + `AgentEvent` + `call_agent_cached` + the `AgentRequest`/`AgentResult` shape. Specific contract obligations to PR-2:
+  - Construct `AgentRequest`/`AgentResult` via `AgentRequest::new(...)` and `AgentResult::new(...)` — the `#[non_exhaustive]` is enforced from outside the crate.
+  - Produce transcript bytes through `frame_transcript_with_grade(grade, body)` and validate inbound transcripts (e.g., on cache-hit replay) via `parse_transcript_grade`. Both are `pub`; `TRANSCRIPT_FRAME_PREFIX` is the shared constant.
+  - Wire `agent_cache_writer::run(bus, Arc<LlmResponseCache>, done_tx)` and `jsonl_subscriber::run(bus, dest, done_tx)` as subscribers; runtime owns subscriber liveness via `try_join!(done_rx_a, done_rx_b, ...)` after emitting `RuntimeComplete`. The `EventBus::emit` doc explicitly warns that send-side errors are silent — subscriber health is the runtime's responsibility.
+  - The TUI subscriber (PR-6) is parallel; `--log-events PATH` is parallel to TUI; `--no-tui` is the runtime's "stdout JSON-Lines" toggle. PR-2 ships the flag plumbing only; PR-4+ activates them.
+- **Cumulative regression guard:** PR-3+ must re-run `cargo test -p atlas-cli --test phase3_polyglot_fixture --release --no-fail-fast` before flipping its checkbox. Cold is calibrated to ~40; the test self-asserts the loose bound `0 < cold < 100`. **Do NOT run dev-mode workspace tests concurrently with release-mode polyglot smoke** — they share the system process table and subprocess-spawn capacity, and the dev polyglot can stall for 20+ minutes under contention. Run heavy-subprocess tests serially.
+
+**Deviations from plan:** All accepted concerns above are deviations; each is documented inline at the relevant call site. No iterator stubs for singletons; workspace path-deps carry path only; no hand-rolled TOML/YAML parsing. The agents_layout helpers landed in `cache/layout.rs` (plan said "or wherever the persistent-cache layout helpers live" — `layout.rs` is the canonical location).
+
+**Test count deltas in PR-2:**
+- `atlas-agents` lib: +5 (events) + +2 (transport) = +7 lib tests; +1 drain_handshake integration; mcp_multiplex unchanged at 4.
+- `atlas-engine` lib: +4 (atomic_write_pair) + +6 (agent_cache: 4 plan + 1 short-circuit + 1 half-pair from M8) + +3 (cache::layout agents helpers) = +13 lib tests.
+- `atlas-cli` lib: +3 (cli_args for `--no-tui`/`--log-events`); +1 jsonl_subscriber integration.
+- Workspace total: +25 PR-2-attributable tests, all green. Cumulative regression guard unchanged.
 
 ### PR-3
 *(populated when PR-3 lands)*
