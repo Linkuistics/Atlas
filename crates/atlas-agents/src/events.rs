@@ -161,6 +161,20 @@ impl EventBus {
     /// ignored — the runtime emits events unconditionally, and a missing
     /// subscriber is the caller's choice (e.g. `--no-tui` without
     /// `--log-events`).
+    ///
+    /// **Subscriber health is not monitored here.** A failed send only
+    /// signals "no live receivers"; it does NOT distinguish "subscriber
+    /// never attached" from "subscriber panicked mid-run". The runtime
+    /// owns subscriber liveness via the drain-handshake `try_join!` on
+    /// each subscriber's `done_rx` (see [`AgentEvent::RuntimeComplete`]
+    /// and module-level docs); if a subscriber panics mid-run, that
+    /// join — not this emit call site — surfaces the panic.
+    ///
+    /// Lagged receivers surface as
+    /// [`tokio::sync::broadcast::error::RecvError::Lagged`] on the
+    /// recv side, not on the send side. Subscribers are responsible for
+    /// logging / re-emitting on lag; silent drop is forbidden because
+    /// `AgentComplete` events drive transcript-cache writes downstream.
     pub fn emit(&self, event: AgentEvent) {
         let _ = self.tx.send(event);
     }

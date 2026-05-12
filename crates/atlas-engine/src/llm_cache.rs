@@ -493,7 +493,13 @@ pub struct FingerprintInputSpotCheck {
 /// PR-2 the cache only needs *some* payload to thread through the
 /// compute closure, and the fingerprint carries the cache-key inputs
 /// directly.
+///
+/// `#[non_exhaustive]` locks in additive-compatibility for PR-4+: new
+/// fields can be added without breaking downstream construction sites,
+/// provided every construction site goes through [`AgentRequest::new`]
+/// rather than a struct literal.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AgentRequest {
     /// Opaque payload (e.g. serialised request body). Not hashed into
     /// the cache key — the fingerprint already carries every cache-key
@@ -504,17 +510,49 @@ pub struct AgentRequest {
     pub payload: Vec<u8>,
 }
 
+impl AgentRequest {
+    /// Construct an `AgentRequest` with `payload`. The only construction
+    /// path; struct literals are forbidden by `#[non_exhaustive]` for
+    /// out-of-crate callers, and by convention within the crate too.
+    pub fn new(payload: Vec<u8>) -> Self {
+        Self { payload }
+    }
+}
+
 /// Minimal placeholder shape for the multi-shot agent result. The
 /// production runtime (PR-4+) extends this with the actual evidence /
 /// transcript-handle fields; for PR-2 the cache only needs to
 /// round-trip `transcript_bytes` + `output_bytes` (the two artefacts
 /// the atomic-pair write commits) plus the confidence grade so the
 /// audit-fire decision (PR-4+) can read it back.
+///
+/// `#[non_exhaustive]` locks in additive-compatibility for PR-4+: new
+/// fields can be added without breaking downstream construction sites,
+/// provided every construction site goes through [`AgentResult::new`]
+/// rather than a struct literal.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AgentResult {
     pub transcript_bytes: Vec<u8>,
     pub output_bytes: Vec<u8>,
     pub confidence_grade: AgentGrade,
+}
+
+impl AgentResult {
+    /// Construct an `AgentResult`. The only construction path; struct
+    /// literals are forbidden by `#[non_exhaustive]` for out-of-crate
+    /// callers, and by convention within the crate too.
+    pub fn new(
+        transcript_bytes: Vec<u8>,
+        output_bytes: Vec<u8>,
+        confidence_grade: AgentGrade,
+    ) -> Self {
+        Self {
+            transcript_bytes,
+            output_bytes,
+            confidence_grade,
+        }
+    }
 }
 
 /// Error type for the multi-shot agent path. Wraps any backend error
@@ -624,24 +662,47 @@ impl LlmResponseCache {
 /// transcript decodes its `confidence_grade` header. Half-pairs
 /// (one file present, the other missing — the residual atomic-pair
 /// window) are treated as a miss so the recompute path takes over.
+///
+/// The asymmetric-present case (exactly one of the two files exists)
+/// is rare — it is the post-rename-a / pre-rename-b crash residue from
+/// `atomic_write_pair` — but when it does occur, downstream debugging
+/// needs the signal, so we emit a `tracing::warn!` on detection. The
+/// extra two `path.exists()` syscalls on the cold path are negligible
+/// next to the diagnostic value.
 fn read_agent_pair(root: &Path, stage: Stage, key: &Sha256Hex) -> Option<AgentResult> {
     let transcript_path = agents_transcript_path(root, stage, key);
     let output_path = agents_output_path(root, stage, key);
-    let transcript_bytes = std::fs::read(&transcript_path).ok()?;
-    let output_bytes = std::fs::read(&output_path).ok()?;
+    let transcript_exists = transcript_path.exists();
+    let output_exists = output_path.exists();
+    match (transcript_exists, output_exists) {
+        (true, true) => {
+            let transcript_bytes = std::fs::read(&transcript_path).ok()?;
+            let output_bytes = std::fs::read(&output_path).ok()?;
 
-    // The confidence grade is stored as a one-line header at the top
-    // of the transcript blob: `# grade: <variant>\n<rest...>`. PR-2
-    // ships the simplest possible framing; PR-4 can swap to a richer
-    // wire format (e.g. JSON envelope) without invalidating prior
-    // entries by gating the framing version on `backend_version`,
-    // which is already in the cache key.
-    let (grade, body) = parse_transcript_grade(&transcript_bytes)?;
-    Some(AgentResult {
-        transcript_bytes: body,
-        output_bytes,
-        confidence_grade: grade,
-    })
+            // The confidence grade is stored as a one-line header at the
+            // top of the transcript blob: `# grade: <variant>\n<rest...>`.
+            // PR-2 ships the simplest possible framing; PR-4 can swap to
+            // a richer wire format (e.g. JSON envelope) without
+            // invalidating prior entries by gating the framing version on
+            // `backend_version`, which is already in the cache key.
+            let (grade, body) = parse_transcript_grade(&transcript_bytes)?;
+            Some(AgentResult::new(body, output_bytes, grade))
+        }
+        (false, false) => None,
+        // Half-pair: post-rename-a / pre-rename-b crash residue. Emit a
+        // diagnostic so callers can chase the missing rename, then
+        // return `None` so the recompute path overwrites the residue.
+        (_, _) => {
+            tracing::warn!(
+                stage = ?stage,
+                key = %key,
+                transcript_present = transcript_exists,
+                output_present = output_exists,
+                "half-pair transcript-cache entry detected; treating as miss and recomputing"
+            );
+            None
+        }
+    }
 }
 
 /// Best-effort half-pair eviction. Removes both files; ignores
@@ -663,36 +724,60 @@ fn evict_agent_pair(root: &Path, stage: Stage, key: &Sha256Hex) {
     }
 }
 
-/// Parse the one-line grade header `# grade: <variant>\n` and return
-/// `(grade, body_without_header)`. Returns `None` on malformed input
-/// so the read path treats it as a miss.
-fn parse_transcript_grade(transcript_bytes: &[u8]) -> Option<(AgentGrade, Vec<u8>)> {
-    const PREFIX: &[u8] = b"# grade: ";
-    let bytes = transcript_bytes.strip_prefix(PREFIX)?;
-    let newline = bytes.iter().position(|&b| b == b'\n')?;
-    let grade_str = std::str::from_utf8(&bytes[..newline]).ok()?;
-    let grade = match grade_str {
+/// Wire prefix for the transcript-grade framing. The frame is
+/// `<PREFIX><label>\n<body>`; encode and decode both go through this
+/// constant + the [`grade_label`] / [`grade_from_label`] helpers so the
+/// label list lives in exactly one place. PR-4+ subscribers that need
+/// to validate the framing import this constant + the public
+/// [`parse_transcript_grade`] / [`frame_transcript_with_grade`] pair.
+pub const TRANSCRIPT_FRAME_PREFIX: &[u8] = b"# grade: ";
+
+/// Wire label for `grade`. Inverse of [`grade_from_label`]. Single
+/// source of truth for the on-disk label set.
+fn grade_label(grade: &AgentGrade) -> &'static str {
+    match grade {
+        AgentGrade::Strong => "strong",
+        AgentGrade::Moderate => "moderate",
+        AgentGrade::Weak => "weak",
+        AgentGrade::Declines => "declines",
+    }
+}
+
+/// Parse a wire `label` back into an [`AgentGrade`]. Inverse of
+/// [`grade_label`]. Returns `None` for any unknown label so callers
+/// can treat malformed input as a cache miss rather than a hard fail.
+fn grade_from_label(label: &str) -> Option<AgentGrade> {
+    Some(match label {
         "strong" => AgentGrade::Strong,
         "moderate" => AgentGrade::Moderate,
         "weak" => AgentGrade::Weak,
         "declines" => AgentGrade::Declines,
         _ => return None,
-    };
+    })
+}
+
+/// Parse the one-line grade header `<TRANSCRIPT_FRAME_PREFIX><variant>\n`
+/// and return `(grade, body_without_header)`. Returns `None` on
+/// malformed input so the read path treats it as a miss.
+///
+/// Public so PR-4+ subscribers can validate transcript framing
+/// symmetrically with [`frame_transcript_with_grade`].
+pub fn parse_transcript_grade(transcript_bytes: &[u8]) -> Option<(AgentGrade, Vec<u8>)> {
+    let bytes = transcript_bytes.strip_prefix(TRANSCRIPT_FRAME_PREFIX)?;
+    let newline = bytes.iter().position(|&b| b == b'\n')?;
+    let grade_str = std::str::from_utf8(&bytes[..newline]).ok()?;
+    let grade = grade_from_label(grade_str)?;
     Some((grade, bytes[newline + 1..].to_vec()))
 }
 
-/// Inverse of `parse_transcript_grade` — frames a transcript body
+/// Inverse of [`parse_transcript_grade`] — frames a transcript body
 /// with the grade header so the read path can recover the grade.
 /// Public so PR-4+ (the runtime) can produce conformant transcripts.
 pub fn frame_transcript_with_grade(grade: &AgentGrade, body: &[u8]) -> Vec<u8> {
-    let label = match grade {
-        AgentGrade::Strong => "strong",
-        AgentGrade::Moderate => "moderate",
-        AgentGrade::Weak => "weak",
-        AgentGrade::Declines => "declines",
-    };
-    let mut out = Vec::with_capacity(11 + label.len() + body.len());
-    out.extend_from_slice(b"# grade: ");
+    let label = grade_label(grade);
+    // PREFIX + label + '\n' + body. The `+ 1` is the trailing newline.
+    let mut out = Vec::with_capacity(TRANSCRIPT_FRAME_PREFIX.len() + label.len() + 1 + body.len());
+    out.extend_from_slice(TRANSCRIPT_FRAME_PREFIX);
     out.extend_from_slice(label.as_bytes());
     out.push(b'\n');
     out.extend_from_slice(body);
@@ -1060,14 +1145,12 @@ mod tests {
     }
 
     fn agent_result_ok() -> AgentResult {
-        let body = br#"{"kind":"library"}"#.to_vec();
         let transcript = frame_transcript_with_grade(&AgentGrade::Strong, b"sample transcript");
-        let _ = body;
-        AgentResult {
-            transcript_bytes: transcript,
-            output_bytes: br#"{"kind":"library"}"#.to_vec(),
-            confidence_grade: AgentGrade::Strong,
-        }
+        AgentResult::new(
+            transcript,
+            br#"{"kind":"library"}"#.to_vec(),
+            AgentGrade::Strong,
+        )
     }
 
     #[test]
@@ -1131,17 +1214,14 @@ mod tests {
                 &fp,
                 &recorded,
                 |_| Some([2u8; 32]), // current sha differs from recorded
-                AgentRequest { payload: vec![] },
+                AgentRequest::new(vec![]),
                 |_req| {
                     computed.set(computed.get() + 1);
-                    Ok(AgentResult {
-                        transcript_bytes: frame_transcript_with_grade(
-                            &AgentGrade::Moderate,
-                            b"new-transcript",
-                        ),
-                        output_bytes: b"new-output".to_vec(),
-                        confidence_grade: AgentGrade::Moderate,
-                    })
+                    Ok(AgentResult::new(
+                        frame_transcript_with_grade(&AgentGrade::Moderate, b"new-transcript"),
+                        b"new-output".to_vec(),
+                        AgentGrade::Moderate,
+                    ))
                 },
             )
             .unwrap();
@@ -1178,7 +1258,7 @@ mod tests {
                 &fp,
                 &[],
                 |_| None,
-                AgentRequest { payload: vec![] },
+                AgentRequest::new(vec![]),
                 |_| Ok(agent_result_ok()),
             )
             .unwrap();
@@ -1206,7 +1286,7 @@ mod tests {
                 &fp,
                 &[],
                 |_| None,
-                AgentRequest { payload: vec![] },
+                AgentRequest::new(vec![]),
                 |_| Err(AgentError::BackendFailed("simulated".into())),
             )
             .unwrap_err();
@@ -1259,7 +1339,7 @@ mod tests {
                 &fp,
                 &recorded,
                 |_| Some([1u8; 32]), // matches recorded
-                AgentRequest { payload: vec![] },
+                AgentRequest::new(vec![]),
                 |_| {
                     computed.set(computed.get() + 1);
                     Ok(agent_result_ok())
@@ -1274,5 +1354,63 @@ mod tests {
         );
         assert_eq!(result.confidence_grade, AgentGrade::Strong);
         assert_eq!(result.output_bytes, b"{\"kind\":\"library\"}");
+    }
+
+    #[test]
+    fn agent_cache_half_pair_is_treated_as_miss_and_overwritten() {
+        // Simulate the post-rename-a / pre-rename-b crash residue:
+        // a `<sha>.transcript` exists, but the corresponding
+        // `<sha>.output` does not. `read_agent_pair` must:
+        //   1. return `None` (so `call_agent_cached` falls through to
+        //      compute);
+        //   2. emit a `tracing::warn!` for the asymmetric-present case
+        //      (signal for downstream debugging);
+        //   3. let the subsequent atomic-pair write replace the residue.
+        let (persistent, _dir) = temp_persistent();
+        let cache = LlmResponseCache::new_with_persistent(persistent.clone());
+
+        let target = [9u8; 32];
+        let fp = agent_fp("claude_code", target);
+        let key = fp.to_cache_key();
+        let transcript_path = agents_transcript_path(persistent.root(), Stage::L3, &key);
+        let output_path = agents_output_path(persistent.root(), Stage::L3, &key);
+
+        // Plant only the transcript half on disk. The directory must
+        // exist for the write to land — `agents_transcript_path`
+        // returns a path under `cache/agents/L3/`; create it here so
+        // the bare `fs::write` succeeds.
+        if let Some(parent) = transcript_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let framed = frame_transcript_with_grade(&AgentGrade::Strong, b"orphan transcript");
+        std::fs::write(&transcript_path, &framed).unwrap();
+        assert!(transcript_path.exists());
+        assert!(!output_path.exists());
+
+        let computed = std::cell::Cell::new(0u32);
+        let result = cache
+            .call_agent_cached(
+                Stage::L3,
+                &fp,
+                &[],
+                |_| None,
+                AgentRequest::new(vec![]),
+                |_| {
+                    computed.set(computed.get() + 1);
+                    Ok(agent_result_ok())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            computed.get(),
+            1,
+            "half-pair residue must be treated as a miss and recomputed"
+        );
+        assert_eq!(result.confidence_grade, AgentGrade::Strong);
+
+        // Atomic-pair write overwrites the residue: both files exist.
+        assert!(transcript_path.exists());
+        assert!(output_path.exists());
     }
 }
