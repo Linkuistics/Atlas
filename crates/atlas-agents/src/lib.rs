@@ -23,6 +23,7 @@ pub mod events;
 pub mod mcp;
 pub mod runtime;
 pub mod tool;
+pub mod tools;
 pub mod transport;
 
 pub use events::{AgentEvent, CacheHitSource, EventBus, Grade, Subscriber};
