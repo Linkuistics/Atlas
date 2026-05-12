@@ -1,11 +1,16 @@
 //! PR-5 dispatch-shortcircuit acceptance tests (plan §4 Task 5.5).
 //!
-//! Verifies the override-file shortcircuit in `dispatch_subsystems` /
-//! `dispatch_components`:
+//! Verifies the override-file shortcircuit AND the LLM-decided
+//! dispatch path in `dispatch_subsystems` / `dispatch_components`:
 //!
 //! - With an override present: `CacheHit { source:
 //!   DispatchedFromOverride }` fires; the parsed partitions match the
 //!   override file; the LLM dispatch agent does NOT fire.
+//! - Without an override: the LLM dispatch agent fires via
+//!   `runtime.call_agent`; the returned partitions match the backend's
+//!   canned response; no `DispatchedFromOverride` cache hit is emitted
+//!   (the path went through `call_agent`, not the synthetic
+//!   shortcircuit).
 //! - With an invalid override: Lane A surfaces `OverrideRequired` (PR-5
 //!   treats override parse + structural failures as `OverrideRequired`
 //!   rather than `LaneAFail` so users see a clearer authoring error;
@@ -30,11 +35,12 @@ use atlas_agents::{
 };
 use atlas_engine::llm_cache::LlmResponseCache;
 use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest};
+use serde_json::{json, Value};
 
 /// Test stub backend. The dispatch shortcircuit path never invokes
-/// the backend — every test asserts the backend's call counter stays
+/// the backend — those tests assert the backend's call counter stays
 /// at zero. Constructing a real `StagedBackend` would be misleading
-/// since the PR-5 dispatch never reaches it under override-present.
+/// since the override-present path never reaches it.
 struct CountingBackend {
     call_count: std::sync::atomic::AtomicU32,
 }
@@ -71,6 +77,61 @@ impl LlmBackend for CountingBackend {
             template_sha: [0u8; 32],
             ontology_sha: [0u8; 32],
             model_id: "dispatch-shortcircuit-test".to_string(),
+            backend_version: "v0".to_string(),
+        }
+    }
+}
+
+/// Substring-keyed async backend for the LLM-dispatch firing test.
+/// Mirrors the `StagedBackend` shape used by the PR-4 single-iteration
+/// smoke, scoped down to what `tests/dispatch_shortcircuit.rs` needs.
+struct DispatchStagedBackend {
+    by_substring: Vec<(String, Value)>,
+    call_count: std::sync::atomic::AtomicU32,
+}
+
+impl DispatchStagedBackend {
+    fn new(canned: Vec<(String, Value)>) -> Self {
+        Self {
+            by_substring: canned,
+            call_count: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+    fn calls(&self) -> u32 {
+        self.call_count.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmBackend for DispatchStagedBackend {
+    fn call(&self, _req: &LlmRequest) -> Result<Value, LlmError> {
+        Err(LlmError::Invocation(
+            "DispatchStagedBackend is async-only".into(),
+        ))
+    }
+    async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        self.call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let conversation = req
+            .inputs
+            .get("conversation")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        for (substring, value) in &self.by_substring {
+            if conversation.contains(substring.as_str()) {
+                return Ok(value.clone());
+            }
+        }
+        Err(LlmError::TestBackendMiss(format!(
+            "no canned response matched dispatch conversation: {}",
+            &conversation[..conversation.len().min(160)]
+        )))
+    }
+    fn fingerprint(&self) -> LlmFingerprint {
+        LlmFingerprint {
+            template_sha: [0u8; 32],
+            ontology_sha: [0u8; 32],
+            model_id: "dispatch-staged-test".to_string(),
             backend_version: "v0".to_string(),
         }
     }
@@ -140,27 +201,77 @@ async fn dispatch_with_override_file_emits_synthetic_cache_hit() {
 }
 
 #[tokio::test]
-async fn dispatch_without_override_file_surfaces_override_required_in_pr5() {
-    // PR-5 ships the override-shortcircuit + the cache-invariant
-    // fingerprint contributor; PR-7 wires the production
-    // LLM-dispatch agent. In PR-5 the no-override path surfaces
-    // `OverrideRequired` rather than firing an LLM call (per the
-    // module doc rationale).
+async fn dispatch_without_override_file_fires_llm_agent() {
+    // PR-5 follow-up (plan §4 Task 5.5): when no override file is
+    // present, the dispatcher routes through `runtime.call_agent`
+    // (Lane A + cache + per-agent fingerprint). This test asserts:
+    // (a) the backend was called at least once with a dispatch
+    //     stage-matching request,
+    // (b) the returned partitions match the canned response,
+    // (c) no `CacheHit { source: DispatchedFromOverride }` event fires
+    //     (the path is the LLM agent path, not the synthetic
+    //     override-shortcircuit),
+    // (d) a normal `AgentComplete` event WAS emitted for the dispatch
+    //     agent's `agent_id` shape.
     let dir = tempfile::tempdir().unwrap();
     // Intentionally no override files.
-    let backend = Arc::new(CountingBackend::new());
+    let canned = json!({
+        "content": [{
+            "type": "text",
+            "text": "{\"schema_version\":1,\"subsystems\":[{\"id\":\"agents\",\"members\":[\"foo\"]}]}"
+        }]
+    });
+    let backend = Arc::new(DispatchStagedBackend::new(vec![(
+        "dispatch subsystems".to_string(),
+        canned,
+    )]));
     let runtime = make_runtime(backend.clone() as Arc<dyn LlmBackend>);
     let workspace = AgentsWorkspace::new(dir.path());
 
-    let err = dispatch_subsystems(&runtime, &workspace).await.unwrap_err();
+    let mut rx = runtime.event_bus.subscribe();
+
+    let partitions = dispatch_subsystems(&runtime, &workspace)
+        .await
+        .expect("LLM-dispatch path must succeed when backend returns a valid envelope");
+
+    // (b) — returned partitions match canned response.
+    assert_eq!(partitions.len(), 1);
+    assert_eq!(partitions[0].id, "agents");
+    assert_eq!(partitions[0].members, vec!["foo".to_string()]);
+
+    // (a) — backend was actually invoked.
     assert!(
-        matches!(err, AgentError::OverrideRequired(_)),
-        "expected OverrideRequired, got {err:?}"
+        backend.calls() >= 1,
+        "LLM-dispatch path must invoke backend at least once; calls={}",
+        backend.calls()
     );
-    assert_eq!(
-        backend.calls(),
-        0,
-        "no backend call should fire on the OverrideRequired path"
+
+    // (c) + (d) — drain the bus and inspect emitted events.
+    let mut saw_dispatched_from_override = false;
+    let mut saw_dispatch_agent_complete = false;
+    while let Ok(ev) = rx.try_recv() {
+        match ev {
+            AgentEvent::CacheHit {
+                source: CacheHitSource::DispatchedFromOverride,
+                ..
+            } => {
+                saw_dispatched_from_override = true;
+            }
+            AgentEvent::AgentComplete { agent_id, .. }
+                if agent_id.starts_with("dispatch_subsystem::") =>
+            {
+                saw_dispatch_agent_complete = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        !saw_dispatched_from_override,
+        "no `DispatchedFromOverride` cache-hit may fire on the LLM-dispatch path"
+    );
+    assert!(
+        saw_dispatch_agent_complete,
+        "expected at least one AgentComplete for the dispatch_subsystem agent"
     );
 }
 

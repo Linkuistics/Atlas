@@ -36,7 +36,7 @@
 //! validated for structural sanity (non-empty id, etc.) before being
 //! handed to `AgentRuntime`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
 use atlas_engine::llm_cache::{
@@ -44,12 +44,13 @@ use atlas_engine::llm_cache::{
 };
 use atlas_index::Stage as IndexStage;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::events::{AgentEvent, CacheHitSource};
 
 use super::audit::Stage;
-use super::{AgentError, AgentRuntime, Workspace};
+use super::{AgentError, AgentRequest, AgentRuntime, Workspace};
 
 /// File name for the subsystems override pin.
 pub const SUBSYSTEMS_OVERRIDE_FILENAME: &str = "subsystems.overrides.yaml";
@@ -144,9 +145,9 @@ pub struct ComponentOverrideEntry {
 }
 
 /// PR-5: dispatch the workspace into subsystem partitions. Short-circuits
-/// to the override file when present; otherwise (PR-5 minimum-viable)
-/// fires the deterministic-default LLM-dispatch synthetic path documented
-/// below.
+/// to the override file when present; otherwise fires the LLM-decided
+/// dispatch agent through [`AgentRuntime::call_agent`] (which threads
+/// Lane A + cache + Lane B per the standard agent contract).
 ///
 /// **Override path:** when `subsystems.overrides.yaml` is present, the
 /// dispatcher reads + Lane-A-validates the file, emits a
@@ -154,16 +155,14 @@ pub struct ComponentOverrideEntry {
 /// synthetic transcript-cache entry keyed on the override's content sha,
 /// and returns the parsed partitions.
 ///
-/// **LLM path (PR-5 placeholder):** when no override is present, this
-/// function surfaces `AgentError::OverrideRequired`. The full
-/// LLM-dispatch agent is wired in PR-7 alongside the production prompt
-/// templates; PR-5 ships the override-shortcircuit plus the
-/// cache-invariant fingerprint and the Lane A / Lane B retry harness
-/// (plus the dispatch-agent entry point's shape via the fingerprint
-/// contributor and the cache short-circuit), but does not yet drive an
-/// LLM round-trip for dispatch. The polyglot regression guard depends
-/// on the override path always firing; emitting a placeholder LLM call
-/// without a backend would defeat that guard.
+/// **LLM path (PR-5 follow-up):** when no override is present, the
+/// dispatcher constructs an `AgentRequest` for
+/// `Stage::DispatchSubsystem` and routes it through `call_agent`. The
+/// returned `AgentOutput.value` must be a JSON object matching the
+/// in-memory `SubsystemsOverrideFile` shape (`schema_version` +
+/// `subsystems: [...]`) — wire envelope chosen for symmetry with the
+/// override file. PR-7 replaces the prompt-template placeholder with
+/// the production prompt template; the parser/cache path is final.
 pub async fn dispatch_subsystems(
     runtime: &AgentRuntime,
     workspace: &Workspace,
@@ -192,19 +191,33 @@ pub async fn dispatch_subsystems(
         );
         return Ok(projected);
     }
-    // PR-5: LLM-dispatch path is intentionally not driven from this
-    // function. The override-shortcircuit is the load-bearing path for
-    // PR-5's polyglot regression guard; PR-7 wires the LLM agent.
-    Err(AgentError::OverrideRequired(format!(
-        "no override file at {} and PR-5 does not yet drive the LLM \
-         dispatch agent (PR-7 wires it). Author a {} pin.",
-        path.display(),
-        SUBSYSTEMS_OVERRIDE_FILENAME,
-    )))
+    // No override file: fire the LLM-dispatch agent via `call_agent`.
+    // Lane A's candidate-id check is skipped here (`candidate_ids` is
+    // empty) because the dispatch agent decides the candidate set rather
+    // than consult one — `lane_a_validate` documents this behaviour. The
+    // resulting fingerprint carries `override_content_sha: None` per
+    // `call_agent`'s non-dispatch wiring; cache-invariant rule (recast
+    // §6.1) still holds because the override-shortcircuit path produces
+    // `Some(sha)` for the same `(stage, target_id, iteration=0)` tuple.
+    //
+    // PR-7-WIRES-REAL-PROMPT: the initial prompt is a stub; PR-7
+    // replaces it with the production dispatch prompt template.
+    let request = AgentRequest {
+        stage: Stage::DispatchSubsystem,
+        target_id: "_workspace".to_string(),
+        iteration: 0,
+        transport: runtime.default_transport,
+        initial_prompt: build_dispatch_subsystems_prompt(workspace.root()),
+        fingerprint_inputs: Vec::new(),
+        candidate_ids: HashSet::new(),
+        prior_model_sha: None,
+    };
+    let result = runtime.call_agent(request).await?;
+    parse_subsystems_from_output_value(&result.output.value)
 }
 
 /// PR-5: dispatch a subsystem's components. Same shortcircuit shape as
-/// `dispatch_subsystems`.
+/// `dispatch_subsystems`; LLM-decided path on absent override.
 pub async fn dispatch_components(
     runtime: &AgentRuntime,
     workspace: &Workspace,
@@ -234,12 +247,86 @@ pub async fn dispatch_components(
         );
         return Ok(partitions);
     }
-    Err(AgentError::OverrideRequired(format!(
-        "no override file at {} and PR-5 does not yet drive the LLM \
-         dispatch agent (PR-7 wires it). Author a {} pin.",
-        path.display(),
-        COMPONENTS_OVERRIDE_FILENAME,
-    )))
+    // No override file: fire the LLM-dispatch agent. The envelope shape
+    // mirrors `ComponentsOverrideFile` so the same `components_from_parsed`
+    // helper projects to `ComponentPartition`.
+    //
+    // PR-7-WIRES-REAL-PROMPT: the initial prompt is a stub; PR-7
+    // replaces it with the production dispatch prompt template.
+    let request = AgentRequest {
+        stage: Stage::DispatchComponent,
+        target_id: subsystem.id.clone(),
+        iteration: 0,
+        transport: runtime.default_transport,
+        initial_prompt: build_dispatch_components_prompt(workspace.root(), subsystem),
+        fingerprint_inputs: Vec::new(),
+        candidate_ids: HashSet::new(),
+        prior_model_sha: None,
+    };
+    let result = runtime.call_agent(request).await?;
+    parse_components_from_output_value(&result.output.value, subsystem)
+}
+
+/// PR-5: dispatch-subsystems prompt stub. PR-7 replaces this with the
+/// production prompt template (with full ontology + workspace listing).
+/// The test backend keys canned responses on the `"dispatch subsystems"`
+/// substring.
+fn build_dispatch_subsystems_prompt(root: &Path) -> String {
+    format!(
+        "dispatch subsystems for workspace at {} (PR-5 stub; PR-7 wires production prompt). \
+         Emit a JSON object: {{\"schema_version\": 1, \"subsystems\": [{{\"id\": \"...\", \"members\": [...]}}]}}.",
+        root.display()
+    )
+}
+
+/// PR-5: dispatch-components prompt stub. PR-7 replaces this with the
+/// production prompt template. The test backend keys canned responses
+/// on the `"dispatch components"` substring.
+fn build_dispatch_components_prompt(root: &Path, subsystem: &SubsystemPartition) -> String {
+    format!(
+        "dispatch components for subsystem `{}` (members={:?}) in workspace at {} \
+         (PR-5 stub; PR-7 wires production prompt). \
+         Emit a JSON object: {{\"schema_version\": 1, \"components\": {{\"<id>\": {{\"subsystem\": \"...\"}}}}}}.",
+        subsystem.id,
+        subsystem.members,
+        root.display()
+    )
+}
+
+/// Parse the LLM dispatch agent's output JSON value into
+/// `Vec<SubsystemPartition>`. The wire envelope mirrors
+/// [`SubsystemsOverrideFile`] for symmetry with the override-shortcircuit
+/// path (both shapes feed [`subsystems_from_parsed`]).
+fn parse_subsystems_from_output_value(
+    value: &Value,
+) -> Result<Vec<SubsystemPartition>, AgentError> {
+    let parsed: SubsystemsOverrideFile = serde_json::from_value(value.clone()).map_err(|e| {
+        AgentError::OverrideRequired(format!(
+            "dispatch agent emitted output that did not match \
+             SubsystemsOverrideFile shape: {e}; raw value = {value}"
+        ))
+    })?;
+    // The override path uses a `Path` for diagnostics; the LLM path
+    // passes a synthetic `"<dispatch-agent-output>"` so structural-fail
+    // messages are still readable.
+    subsystems_from_parsed(parsed, Path::new("<dispatch-agent-output>"))
+}
+
+/// Parse the LLM dispatch agent's output JSON value into
+/// `Vec<ComponentPartition>`, filtered to `subsystem`. Mirrors
+/// [`ComponentsOverrideFile`] for parser symmetry with the override
+/// path.
+fn parse_components_from_output_value(
+    value: &Value,
+    subsystem: &SubsystemPartition,
+) -> Result<Vec<ComponentPartition>, AgentError> {
+    let parsed: ComponentsOverrideFile = serde_json::from_value(value.clone()).map_err(|e| {
+        AgentError::OverrideRequired(format!(
+            "dispatch agent emitted output that did not match \
+             ComponentsOverrideFile shape: {e}; raw value = {value}"
+        ))
+    })?;
+    Ok(components_from_parsed(parsed, subsystem))
 }
 
 /// PR-5 helper: parse `subsystems.overrides.yaml` into the raw on-disk
@@ -480,12 +567,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_subsystems_returns_override_required_when_missing() {
+    async fn dispatch_subsystems_fires_llm_agent_when_override_missing() {
+        // PR-5 follow-up: with no override file, dispatch routes through
+        // `call_agent`. The `StubBackend` declines every call, so the
+        // result surfaces as `AgentError::Backend` (the lifted LlmError)
+        // — *not* `AgentError::OverrideRequired`. This unit-level test
+        // asserts the routing happened (we hit the backend) rather than
+        // the success path; the integration test in
+        // `tests/dispatch_shortcircuit.rs` exercises a wired backend.
         let dir = tempfile::tempdir().unwrap();
         let runtime = make_runtime();
         let workspace = Workspace::new(dir.path());
         let err = dispatch_subsystems(&runtime, &workspace).await.unwrap_err();
-        assert!(matches!(err, AgentError::OverrideRequired(_)));
+        assert!(
+            !matches!(err, AgentError::OverrideRequired(_)),
+            "no override path must NOT short-circuit to OverrideRequired; got {err:?}"
+        );
     }
 
     #[tokio::test]

@@ -48,7 +48,7 @@ use crate::transport::{Provider, TransportFlavour};
 use crate::ToolHandle;
 
 pub use agent::Agent;
-pub use audit::{lane_a_validate, AgentOutput, SchemaError, Stage};
+pub use audit::{lane_a_validate, AgentOutput, AuditVerdict, SchemaError, Stage};
 pub use dispatch::{
     dispatch_components, dispatch_subsystems, ComponentPartition, SubsystemPartition,
 };
@@ -376,6 +376,17 @@ pub struct AgentResult {
     pub output_bytes: Vec<u8>,
 }
 
+/// PR-5 follow-up: per-call retry accounting threaded through
+/// `run_tool_loop_with_lane_a` so the Lane B retry harness can apply
+/// the cumulative-budget rule (recast §4.3: combined max 2 retries per
+/// agent across Lane A + Lane B).
+#[derive(Debug, Clone)]
+struct ToolLoopOutcome {
+    result: AgentResult,
+    /// Number of Lane A retries that actually fired (0 or 1).
+    lane_a_retries: u32,
+}
+
 impl AgentRuntime {
     /// Top-level entry point. PR-5 wraps PR-4's `run_iteration` in
     /// `run_fixedpoint` so the runtime drives the iteration loop to
@@ -609,10 +620,76 @@ impl AgentRuntime {
             });
         }
 
-        // Cache miss: drive the async tool loop, write back on success.
-        let runtime_result = self
+        // Cache miss: drive the async tool loop, run Lane B audit
+        // (skipped on Strong/Moderate grades), then write back on
+        // success. The order is deliberate: a producer whose output is
+        // Lane-A-clean but Lane-B-rejected must never land in the
+        // transcript cache — replay would otherwise resurrect rejected
+        // output.
+        let tool_outcome = self
             .run_tool_loop_with_lane_a(&request, &fingerprint_hex)
             .await?;
+        let lane_a_retries = tool_outcome.lane_a_retries;
+        let mut runtime_result = tool_outcome.result;
+
+        // Lane B audit (recast §4.3, brainstorm §6 (iii)). The current
+        // tool-loop always produces `Grade::Strong` on success, so
+        // `lane_b_audit` returns `Skipped` under the existing PR-4 test
+        // backend — the wiring is the spec deliverable; empirical
+        // firing depends on the producer's grade, which is a PR-7+
+        // concern (the production prompt template lets the model emit
+        // `Grade::Weak`/`Grade::Declines` self-grades).
+        let producer_provider = request.transport.provider();
+        let producer_backend = self.backend_router.clone();
+        let for_provider_fn = self.for_provider.clone();
+        let bus_ref = self.event_bus.as_ref();
+        let producer_agent_id = agent_id(&request);
+        let verdict = audit::lane_b_audit(
+            bus_ref,
+            &producer_agent_id,
+            &runtime_result.grade,
+            producer_provider,
+            &producer_backend,
+            for_provider_fn
+                .as_deref()
+                .map(|f| f as &(dyn Fn(Provider) -> Option<Arc<dyn LlmBackend>> + Send + Sync)),
+            // PR-7-WIRES-REAL-AUDITOR: the auditor closure is a stub;
+            // PR-7 plumbs the real audit-prompt round-trip against
+            // the chosen backend. Under PR-5 the closure returns
+            // `Accept` so when Lane B fires (Weak/Declines grade) the
+            // producer result stands; this is the documented
+            // minimum-viable wiring (FIX 2 step 2).
+            |_auditor_backend| async { audit::AuditVerdict::Accept },
+        )
+        .await;
+        match resolve_audit_verdict(&verdict, lane_a_retries) {
+            ResolvedAuditAction::Proceed => {
+                // Lane B accepted (or skipped). Fall through to cache
+                // write + AgentComplete with the original result.
+            }
+            ResolvedAuditAction::HardFail(reason) => {
+                self.event_bus.emit(AgentEvent::HardFail {
+                    agent_id: producer_agent_id.clone(),
+                    error_kind: "lane_b".to_string(),
+                    error_summary: reason.clone(),
+                    retry_count: lane_a_retries,
+                });
+                return Err(AgentError::LaneBFail(reason));
+            }
+            ResolvedAuditAction::RequestRevision(_reason) => {
+                // PR-7-ENRICHES-PROMPT-WITH-REVISION-REASON: full
+                // revision-retry harness is a PR-7 deliverable; PR-5's
+                // minimum-viable Lane B wiring records the verdict
+                // (via the `AuditVerdict` event already emitted
+                // inside `lane_b_audit`) and accepts the producer's
+                // result. Cumulative-retry budget is honoured here:
+                // if Lane A already retried, the resolver above maps
+                // `RequestRevision` → `HardFail` rather than
+                // falling through to this branch.
+                runtime_result.grade = runtime_result.grade.clone();
+            }
+        }
+
         self.cache.write_agent_pair(
             IndexStage::L8,
             &fingerprint,
@@ -647,14 +724,17 @@ impl AgentRuntime {
 
     /// Drive the inner tool loop (HTTP or MCP by transport flavour),
     /// run Lane A on the result, retry once on schema-fail, otherwise
-    /// hard-fail.
+    /// hard-fail. Returns the [`AgentResult`] plus the per-call Lane A
+    /// retry count so the caller's Lane B harness can apply the
+    /// cumulative-budget rule (recast §4.3).
     async fn run_tool_loop_with_lane_a(
         &self,
         request: &AgentRequest,
         fingerprint_hex: &str,
-    ) -> Result<AgentResult, AgentError> {
+    ) -> Result<ToolLoopOutcome, AgentError> {
         let mut conversation = request.initial_prompt.clone();
         let mut last_err: Option<SchemaError> = None;
+        let mut lane_a_retries: u32 = 0;
         for attempt in 0..2 {
             let mut transcript = Transcript::new();
             let backend: &dyn LlmBackend = self.backend_router.as_ref();
@@ -711,11 +791,14 @@ impl AgentRuntime {
                     let transcript_bytes = transcript.into_bytes(grade_engine);
                     let output_bytes = serde_json::to_vec(&output.value)
                         .map_err(|e| AgentError::Backend(format!("output encode failed: {e}")))?;
-                    return Ok(AgentResult {
-                        output,
-                        grade,
-                        transcript_bytes,
-                        output_bytes,
+                    return Ok(ToolLoopOutcome {
+                        result: AgentResult {
+                            output,
+                            grade,
+                            transcript_bytes,
+                            output_bytes,
+                        },
+                        lane_a_retries,
                     });
                 }
                 Err(err) => {
@@ -728,6 +811,7 @@ impl AgentRuntime {
                             "\n\n[lane_a_retry] previous response failed schema validation: {err}. \
                              Emit a valid response.\n"
                         ));
+                        lane_a_retries = 1;
                         continue;
                     }
                     // Second fail — hard fail.
@@ -758,6 +842,50 @@ impl AgentRuntime {
 /// formatter is `Agent::id()` (see `crate::runtime::agent`).
 fn agent_id(req: &AgentRequest) -> String {
     Agent::from(req).id()
+}
+
+/// PR-5 follow-up: Lane B verdict → caller action mapping.
+///
+/// `Skipped` / `Accept` → `Proceed`. `HardFail(reason)` → `HardFail`.
+/// `RequestRevision(reason)` → either `RequestRevision` (room left in
+/// the cumulative budget) or `HardFail` (Lane A already retried — the
+/// agent has spent its quota per recast §4.3). The `Degraded` wrapper
+/// is unwrapped and resolved recursively.
+fn resolve_audit_verdict(verdict: &AuditVerdict, lane_a_retries: u32) -> ResolvedAuditAction {
+    match verdict {
+        AuditVerdict::Skipped | AuditVerdict::Accept => ResolvedAuditAction::Proceed,
+        AuditVerdict::HardFail(reason) => ResolvedAuditAction::HardFail(reason.clone()),
+        AuditVerdict::RequestRevision(reason) => {
+            if lane_a_retries >= 1 {
+                // Cumulative budget exhausted (Lane A burned the only
+                // retry slot). Escalate to a hard fail.
+                ResolvedAuditAction::HardFail(format!(
+                    "lane_b request_revision after lane_a retry exhausted budget: {reason}"
+                ))
+            } else {
+                ResolvedAuditAction::RequestRevision(reason.clone())
+            }
+        }
+        AuditVerdict::Degraded(inner) => resolve_audit_verdict(inner, lane_a_retries),
+    }
+}
+
+/// Caller-facing action shape produced by [`resolve_audit_verdict`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResolvedAuditAction {
+    /// Audit accepted (or skipped) — continue with the producer's
+    /// result unchanged.
+    Proceed,
+    /// Audit asked for a revision — caller may fire one Lane B retry.
+    /// PR-5's minimum-viable wiring observes this branch but does not
+    /// yet drive the prompt-revision retry harness (see the
+    /// `PR-7-ENRICHES-PROMPT-WITH-REVISION-REASON` comment in
+    /// `call_agent`).
+    #[allow(dead_code)]
+    RequestRevision(String),
+    /// Audit hard-failed — caller must propagate
+    /// [`AgentError::LaneBFail`].
+    HardFail(String),
 }
 
 /// Build a `ToolContext` for `request`. PR-4: workspace_root is the

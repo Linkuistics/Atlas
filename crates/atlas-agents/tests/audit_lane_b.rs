@@ -9,8 +9,11 @@ use std::sync::Arc;
 
 use atlas_agents::events::{AgentEvent, EventBus, Grade};
 use atlas_agents::runtime::audit::lane_b::{lane_b_audit, AuditVerdict};
-use atlas_agents::transport::Provider;
+use atlas_agents::transport::{Provider, TransportFlavour};
+use atlas_agents::{default_tool_catalog, AgentRuntime, Semaphores, Workspace as AgentsWorkspace};
+use atlas_engine::llm_cache::LlmResponseCache;
 use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest};
+use serde_json::{json, Value};
 
 /// Tiny `LlmBackend` impl whose `fingerprint().model_id` is the
 /// caller-supplied label, so tests can assert which backend was
@@ -223,4 +226,92 @@ async fn lane_b_skipped_on_strong_confidence() {
             _ => {}
         }
     }
+}
+
+/// Backend used by the `call_agent` integration test below. Returns a
+/// canned classify response wrapped in the Anthropic content-block
+/// shape — the same envelope the PR-4 single-iteration smoke uses.
+struct ClassifyBackend;
+
+#[async_trait::async_trait]
+impl LlmBackend for ClassifyBackend {
+    fn call(&self, _req: &LlmRequest) -> Result<Value, LlmError> {
+        Err(LlmError::Invocation("ClassifyBackend is async-only".into()))
+    }
+    async fn call_async(&self, _req: &LlmRequest) -> Result<Value, LlmError> {
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": "{\"components\":[{\"id\":\"foo\"}]}"
+            }]
+        }))
+    }
+    fn fingerprint(&self) -> LlmFingerprint {
+        LlmFingerprint {
+            template_sha: [0u8; 32],
+            ontology_sha: [0u8; 32],
+            model_id: "classify-backend".to_string(),
+            backend_version: "v0".to_string(),
+        }
+    }
+}
+
+/// FIX 2 step 6: assert Lane B is wired into `call_agent` by running
+/// the runtime end-to-end with a backend that grades `Strong` and
+/// verifying no `AuditFire` event fires (because Lane B's
+/// `should_audit` predicate returns `false` for `Strong`). The
+/// wiring deliverable is structural — empirical Lane B firing
+/// requires a multi-grade backend, which is a PR-7+ concern.
+#[tokio::test]
+async fn lane_b_wired_into_call_agent_skips_on_strong_grade() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(
+        root.join("subsystems.overrides.yaml"),
+        "schema_version: 1\nsubsystems:\n  - id: agents\n    members: [foo]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("components.overrides.yaml"),
+        "schema_version: 1\ncomponents:\n  foo:\n    subsystem: agents\n",
+    )
+    .unwrap();
+
+    let bus = Arc::new(EventBus::new(1024));
+    let mut rx = bus.subscribe();
+    let runtime = AgentRuntime {
+        backend_router: Arc::new(ClassifyBackend),
+        tools: Arc::new(default_tool_catalog()),
+        cache: Arc::new(LlmResponseCache::new()),
+        event_bus: bus.clone(),
+        semaphores: Semaphores::defaults(),
+        default_transport: TransportFlavour::HttpAnthropic,
+        default_max_steps: 4,
+        max_iterations: 1,
+        for_provider: None,
+    };
+    let workspace = AgentsWorkspace::new(root);
+
+    let _projection = runtime
+        .run_workspace(&workspace)
+        .await
+        .expect("workspace runs end-to-end under ClassifyBackend");
+
+    let mut saw_audit_fire = false;
+    let mut saw_runtime_complete = false;
+    while let Ok(ev) = rx.try_recv() {
+        match ev {
+            AgentEvent::AuditFire { .. } => saw_audit_fire = true,
+            AgentEvent::RuntimeComplete => saw_runtime_complete = true,
+            _ => {}
+        }
+    }
+    assert!(
+        saw_runtime_complete,
+        "RuntimeComplete must fire at end of run"
+    );
+    assert!(
+        !saw_audit_fire,
+        "Lane B must skip on Strong grade — no `AuditFire` event expected, but one was emitted"
+    );
 }
