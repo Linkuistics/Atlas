@@ -14,7 +14,7 @@
 //! design (recast §5.5: "no external surfaces").
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
@@ -30,9 +30,23 @@ pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 /// `McpServer` holds a shared, read-only tool catalog and a per-server
 /// `ToolContext`. Instances are wrapped in `Arc` and shared across
 /// every concurrent client task.
+///
+/// PR-4 added a per-client transcript recorder: every successful
+/// `tools/call` dispatch appends a record to a per-client vector,
+/// drained by `drain_client_transcript`. The agent runtime's MCP
+/// tool-loop (`crate::runtime::tool_loop_mcp`) uses this to merge the
+/// subprocess-driven tool-use traffic into the transcript-cache blob.
+/// Recording is best-effort — a poisoned mutex degrades to empty
+/// drains rather than panicking (the runtime call site still succeeds).
 pub struct McpServer {
     tools: HashMap<&'static str, ToolHandle>,
     ctx: ToolContext,
+    /// Per-client recorder. Keyed by `ClientId`; values are the
+    /// accumulated `tool_use` / `tool_result` records since the last
+    /// `drain_client_transcript`. Behind `Mutex` rather than
+    /// `RwLock` because every dispatch path needs write access; the
+    /// hold-time is bounded by one Value::clone per call.
+    transcript: Mutex<HashMap<ClientId, Vec<Value>>>,
 }
 
 impl McpServer {
@@ -42,12 +56,47 @@ impl McpServer {
     /// catalog assembled in PR-3 and wired in PR-7).
     pub fn new(tools: Vec<ToolHandle>, ctx: ToolContext) -> Self {
         let map = tools.into_iter().map(|t| (t.id(), t)).collect();
-        Self { tools: map, ctx }
+        Self {
+            tools: map,
+            ctx,
+            transcript: Mutex::new(HashMap::new()),
+        }
     }
 
     /// How many tools are registered. Useful for tests and diagnostics.
     pub fn tool_count(&self) -> usize {
         self.tools.len()
+    }
+
+    /// Drain (and clear) the per-client transcript recorder. Returns
+    /// the records accumulated since the last drain — one entry per
+    /// successful `tools/call` dispatch the client issued.
+    ///
+    /// PR-4 entry point for `crate::runtime::tool_loop_mcp`. The
+    /// runtime calls this once after `backend.call_async` returns, so
+    /// every tool call the subprocess emitted during its agent loop
+    /// lands in the transcript-cache blob.
+    ///
+    /// Returns an empty vector if `client_id` has no recorded events
+    /// (the typical "subprocess returned immediately with the final
+    /// answer" case). A poisoned mutex also yields the empty result
+    /// rather than panicking.
+    pub fn drain_client_transcript(&self, client_id: ClientId) -> Vec<Value> {
+        match self.transcript.lock() {
+            Ok(mut guard) => guard.remove(&client_id).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Append one transcript record for `client_id`. Best-effort —
+    /// a poisoned mutex is logged via `tracing` but does not abort
+    /// the dispatch (we'd rather replay an incomplete transcript than
+    /// drop a successful tool call on the floor).
+    fn record(&self, client_id: ClientId, event: Value) {
+        match self.transcript.lock() {
+            Ok(mut guard) => guard.entry(client_id).or_default().push(event),
+            Err(_) => tracing::warn!(?client_id, "mcp transcript mutex poisoned; dropping event"),
+        }
     }
 
     /// Drive one client's dispatch loop until EOF on `reader`. Each
@@ -125,7 +174,7 @@ impl McpServer {
     async fn dispatch_tool_call(
         &self,
         id: Value,
-        _client_id: ClientId,
+        client_id: ClientId,
         params: Option<Value>,
     ) -> JsonRpcResponse {
         let params = match params {
@@ -159,19 +208,45 @@ impl McpServer {
                 );
             }
         };
-        match tool.invoke(ToolArgs(arguments), &self.ctx).await {
-            Ok(result) => JsonRpcResponse::ok(
-                id,
-                json!({
-                    "content": [{"type": "json", "json": result.output}],
-                    "isError": false,
-                }),
-            ),
-            Err(err) => JsonRpcResponse::err(
-                id,
-                error_codes::TOOL_INVOCATION_FAILED,
-                format!("tool `{name}` failed: {err}"),
-            ),
+        match tool.invoke(ToolArgs(arguments.clone()), &self.ctx).await {
+            Ok(result) => {
+                // PR-4: record per-client transcript so the agent
+                // runtime's MCP tool-loop can drain it post-call.
+                self.record(
+                    client_id,
+                    json!({
+                        "kind": "tool_call",
+                        "tool_name": name,
+                        "args": arguments,
+                        "output": result.output,
+                        "bytes": result.bytes,
+                    }),
+                );
+                JsonRpcResponse::ok(
+                    id,
+                    json!({
+                        "content": [{"type": "json", "json": result.output}],
+                        "isError": false,
+                    }),
+                )
+            }
+            Err(err) => {
+                let err_text = err.to_string();
+                self.record(
+                    client_id,
+                    json!({
+                        "kind": "tool_error",
+                        "tool_name": name,
+                        "args": arguments,
+                        "error": err_text,
+                    }),
+                );
+                JsonRpcResponse::err(
+                    id,
+                    error_codes::TOOL_INVOCATION_FAILED,
+                    format!("tool `{name}` failed: {err}"),
+                )
+            }
         }
     }
 }

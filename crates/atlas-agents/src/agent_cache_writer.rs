@@ -50,18 +50,21 @@ pub async fn run(bus: &EventBus, cache: Arc<LlmResponseCache>, done_tx: oneshot:
                 output_sha,
                 ..
             }) => {
-                // TODO(PR-4): materialise the transcript-cache entry
-                // for this agent invocation. PR-2 ships the subscriber
-                // shape only; the runtime that emits `AgentComplete`
-                // with a correlated transcript-accumulator handle
-                // lands in PR-4. At that point the writer correlates
-                // by `agent_id`, retrieves the accumulated
-                // `(transcript_bytes, output_bytes)`, builds the
-                // `AgentInputFingerprint` from the prior `AgentStart`,
-                // and calls `LlmResponseCache::call_agent_cached` with
-                // a `compute` closure that returns the already-known
-                // result (so the cache layer writes the pair on the
-                // success arm).
+                // PR-4 wiring: the runtime calls
+                // `LlmResponseCache::call_agent_cached` inline at
+                // `crate::runtime::AgentRuntime::call_agent`, so the
+                // cache write already happens on the runtime side
+                // before this subscriber sees the event. The
+                // subscriber's role narrowed accordingly: it observes
+                // the completion for cross-cutting telemetry only.
+                //
+                // Two-phase rationale: doing the write inline (rather
+                // than dispatching here) keeps the cache lookup and
+                // write on the same task that produced the bytes,
+                // avoiding a correlator that would have to thread an
+                // accumulator handle through every transcript record.
+                // PR-5 may revisit if a use-case for out-of-band
+                // cache writes arises (e.g. async background sync).
                 let _ = (agent_id, output_sha);
             }
             Ok(AgentEvent::RuntimeComplete) => {

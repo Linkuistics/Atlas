@@ -28,6 +28,12 @@ pub mod transport;
 
 pub use events::{AgentEvent, CacheHitSource, EventBus, Grade, Subscriber};
 pub use mcp::server::McpServer;
+pub use mcp::ClientId;
+pub use runtime::{
+    default_tool_catalog, AgentError, AgentOutput, AgentRequest, AgentResult, AgentRuntime,
+    ContentSha, L9Projection, SchemaError, Semaphores, Stage, ToolCatalog, Transcript,
+    TranscriptRecord, Workspace,
+};
 pub use tool::{
     FingerprintInput, Tool, ToolArgs, ToolContext, ToolError, ToolHandle, ToolResult, ToolSchema,
 };
