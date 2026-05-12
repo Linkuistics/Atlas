@@ -2,7 +2,7 @@
 
 Companion to `docs/superpowers/specs/2026-05-12-atlas-vnext-phase7-plan.md`. This file tracks per-PR completion state across sessions. The continuation prompt at `docs/superpowers/prompts/2026-05-12-vnext-continue.md` (Phase-7-shaped) reads this file (via the `*phase7-plan*` wildcard match) to find the next PR to dispatch.
 
-**Last updated:** 2026-05-12 (PR-5 landed: fixed-point iteration loop + LLM-decided dispatch with override-shortcircuit + Lane B cross-provider audit wired into `call_agent`; three code commits + status flip).
+**Last updated:** 2026-05-12 (PR-7 landed: end-to-end AgentRuntime wiring via `--agent-runtime` flag + single `Handle::block_on` boundary + cross-transport parity test + deferred MEDIUMs from PR-5/PR-6 cleanup + AWARENESS-A positive Lane B test; three code commits — Steps 7.4 Atlas-on-Atlas calibration and 7.6 subprocess `--disallowedTools` probe DEFERRED to a follow-up production-prompt sprint; documented in PR-7 closeout note below; the orchestrator's final status-flip commit pending).
 
 ## PR status
 
@@ -373,10 +373,87 @@ Deviations from plan: none material. `cargo fmt --all` applied a one-line import
 **Rebase note:** PR-6 was implemented off the same base as PR-4 (`3259bdd`). After PR-4 fast-forwarded to main at `7f61e94`/`a006955`, PR-6 was rebased onto current main and the two PR-6 commits replayed cleanly — no file conflicts (PR-4 and PR-6 touched disjoint file sets per the wave-design intent) and only a trivial `Cargo.lock` regeneration. Post-rebase: `9618040` + `f2ce6d5`. Pre-rebase SHAs (`d1d9039`, `267c60d`) survive in the worktree's reflog for forensic interest but the canonical lineage on main is the rebased pair.
 
 ### PR-7
-*(populated when PR-7 lands)*
+
+2026-05-12 — Landed across four code commits, all fast-forwarded onto main. Plan §4 Task 7 Steps 7.1, 7.2, 7.3, 7.5, 7.7, 7.8 fully shipped; Steps 7.4 (Atlas-on-Atlas calibration) and 7.6 (subprocess `--disallowedTools` probe) explicitly DEFERRED with documented rationale and follow-up pointers.
+
+**Code commits:**
+- `b83a49e` — deferred MEDIUMs from PR-5/PR-6 + AWARENESS-A positive Lane B test. Adds `AgentError::LlmOutputMalformed(String)` variant; switches the two `parse_*_from_output_value` map_err sites in `dispatch.rs` from `OverrideRequired` (semantically wrong for LLM output parse failures) to `LlmOutputMalformed`. Hoists `now_iso` to `pub(super) fn` in `runtime/mod.rs` and deletes the duplicate in `dispatch.rs`. Replay drain `done_rx.await` wrapped in `tokio::time::timeout(30s)` (PR-6 MEDIUM-1). Canonicalize moved AFTER suffix-filter in replay walker (PR-6 MEDIUM-2). TUI `select!` event arm now drains all immediately-ready events via `rx.try_recv()` before yielding to the sleep tick (PR-6 MEDIUM-3). Two new positive-assertion tests in `tests/audit_lane_b.rs` (`lane_b_audit_fires_audit_fire_event_on_weak_grade` + `lane_b_audit_fires_audit_fire_event_on_declines_grade`) — the AWARENESS-A complement to the negative `lane_b_wired_into_call_agent_skips_on_strong_grade`. 5 files, +176/-25 LOC.
+- `88cbad7` — wire AgentRuntime into atlas index via single `block_on`. New `pipeline::run_index_agent_runtime` (~205 LOC) gated behind a new `--agent-runtime` CLI flag (default false). Opens `PersistentCache` at `<output_dir>/cache/`; constructs `EventBus`; spawns subscribers (always agent_cache_writer; conditionally `--log-events PATH` JSON-Lines; then TUI when stdout is a TTY AND !`--no-tui` else JSON-Lines-to-stdout); builds `AgentRuntime` with `for_provider: None` (Lane B falls back to same-model auditor with `AuditDegraded`); runs `tokio_rt.block_on(runtime.run_workspace(&workspace))` as the SINGLE sync→async boundary; joins each subscriber's handle (drain handshake); serialises the returned `L9Projection` to `<output_dir>/cache/agent-runtime-projection.json`. 3 files, +312/-6 LOC.
+- `5473abc` — cross-transport parity test in polyglot smoke. New `polyglot_smoke_cross_transport_parity_claude_code_vs_codex`: materialises the fixture twice, runs the deterministic engine pipeline with two `LabeledTransportBackend` instances (`pr13-test-backend-claude-code` vs `pr13-test-backend-codex`), asserts cold-call counts match, component_id sets match, edge_kind multisets match. 1 file, +267/-0 LOC.
+- `(closeout)` — memory updates + status closeout note + Phase 7 final summary. *(populated by the orchestrator's status-flip commit alongside PR-7's checkbox; this list will be backfilled with the final SHA.)*
+
+**Decisions taken (vs deferred) — Step-by-step:**
+
+- ✅ **Step 7.1 Verify polyglot fixture has full override coverage** — Both `subsystems.overrides.yaml` and `components.overrides.yaml` present at `crates/atlas-cli/tests/fixtures/phase3_polyglot/.atlas/`; cold count remains in loose bound `0 < cold < 100` (~40 calibrated). No mutations required.
+- ✅ **Step 7.2 Wire AgentRuntime into atlas index** — Implemented as opt-in `--agent-runtime` flag rather than as default `run_index_cmd` path. Rationale: the production prompt templates (`PR-7-WIRES-REAL-PROMPT` stubs in dispatch.rs; `PR-7-WIRES-REAL-AUDITOR` stub in mod.rs) are NOT replaced in PR-7. Flipping the binary's default would break `atlas index` for real users. The wiring is the load-bearing PR-7 deliverable; production prompts are a follow-up sprint.
+- ✅ **Step 7.3 Cross-transport parity test** — New test in `tests/phase3_polyglot_fixture.rs` passes alongside the existing cumulative regression guard. Asserts cold-call count parity, component_id set parity, edge_kind multiset parity.
+- ⚠️ **Step 7.4 Atlas-on-Atlas baseline calibration — DEFERRED.** The brief's invocation (`cargo run --release --package atlas-cli -- index --workspace-root .`) requires three preconditions not yet met: (a) `<atlas-root>/.atlas/config.yaml` populated with a real claude_code + codex backend pair, (b) production dispatch prompt templates that emit valid JSON envelopes (`SubsystemsOverrideFile` / `ComponentsOverrideFile` shape), (c) Lane B auditor closure wired through to a cross-provider audit prompt. Each preconditions is a focused engineering item; together they exceed the brief's "stop and surface at 1 hour" threshold. Follow-up sprint should: (1) author the production dispatch + classify + reduce + project prompt templates, (2) replace the `PR-7-WIRES-REAL-AUDITOR` stub with a real audit prompt round-trip, (3) wire per-provider `for_provider` closure to the `BackendRouter` (un-gate `from_dispatch_table` or add `BackendRouter::backend_for_provider`), (4) run the calibration and record baseline numbers in this status file.
+- ✅ **Step 7.5 Final verification suite** — All six cargo gates clean. See "Cargo gates" section below.
+- ⚠️ **Step 7.6 Subprocess `--disallowedTools` probe — DEFERRED.** PR-7 has no production code path that drives a live subprocess + MCP server end-to-end. The runtime's subprocess-transport branch in `tool_loop_http.rs` returns a clean error ("PR-4 runtime does not drive subprocess transports directly; PR-7 wires the MCP `serve_client` task"). Authoring the live probe requires: (a) implementing the subprocess MCP `serve_client` task driver, (b) running an actual `claude-code` or `codex` subprocess with the Atlas-internal MCP server attached over stdio, (c) provoking a `Read` tool call and asserting the upstream's "tool not available" error shape. All three are non-trivial. Follow-up sprint should ship this probe as a `crates/atlas-agents/tests/mcp_disallowed_tools.rs` integration test once the subprocess driver lands.
+- ✅ **Step 7.7 Update memory** — `.claude/memory/project_phase4_plus_roadmap.md` updated: Phase 7 SHIPPED 2026-05-12 with explicit "calibration-pending follow-up" framing; Phase 8 (Cargo retirement) now next-up. `.claude/memory/MEMORY.md` roadmap hook line refreshed.
+- ✅ **Step 7.8 Append closeout note** — *(this section)*.
+
+**Deferred MEDIUMs from PR-5 / PR-6 reviews — all addressed in `b83a49e`:**
+- ✅ PR-5 MEDIUM-2: `OverrideRequired` misuse for LLM output parse failures → `LlmOutputMalformed(String)` variant added; both map_err sites updated.
+- ✅ PR-5 MEDIUM-3: `now_iso` duplication → hoisted to `pub(super) fn` in `runtime/mod.rs`; dispatch.rs's copy deleted.
+- ✅ PR-5 AWARENESS-A: positive-assertion Lane B test → two new tests in `tests/audit_lane_b.rs` cover Weak and Declines grades.
+- ✅ PR-6 MEDIUM-1: replay drain `done_rx.await` unbounded → wrapped in 30s timeout.
+- ✅ PR-6 MEDIUM-2: canonicalize before suffix-filter → reordered to filter first.
+- ✅ PR-6 MEDIUM-3: TUI event-per-tick latency → event arm drains all immediately-ready events via `rx.try_recv()`.
+
+**Deferred from PR-4 / PR-5 reviews — not addressed in PR-7:**
+- PR-4 MEDIUM-1 (semaphore acquisition order — document fixed order + consider merged acquire helper) and PR-4 MEDIUM-2 (Lane A retry `call_count == 2` assertion) carry forward to the production-prompt follow-up sprint. Neither is load-bearing for the PR-7 wiring deliverable.
+
+**Acceptance gates met (PR-7 implementer-side verification on main post-`5473abc`):**
+- `cargo build --workspace` clean
+- `cargo fmt --check` clean
+- `cargo clippy --all-targets -- -D warnings` clean
+- `cargo test --workspace --no-fail-fast -- --skip polyglot_phase3` — all green workspace-wide; `atlas-agents` lib 101 passed; `atlas-cli` lib 95 passed; `audit_lane_b` integration 7 passed (+2 PR-7); `replay` integration 3 passed
+- `cargo build --release --workspace` clean
+- `cargo test -p atlas-cli --test phase3_polyglot_fixture --release --no-fail-fast` — **2 tests passed in 108.71s**: `polyglot_smoke_cross_transport_parity_claude_code_vs_codex` (new; PR-7) AND `polyglot_phase3_acceptance` (cumulative regression guard; cold count in loose bound `0 < cold < 100`)
+
+**Convergent design choices accepted across PR-7:**
+- **Default-false `--agent-runtime` flag (vs. default-replacement of `run_index_cmd`):** documented above. The PR-7 wiring deliverable is structural; the binary's default behavior remains the deterministic engine pipeline until production prompts are validated.
+- **`for_provider: None` MVP for Lane B:** Lane B emits `AuditDegraded` and falls back to the same-model auditor. The `Option<Arc<ForProviderFn>>` closure shape is preserved so a follow-up can plug in a `BackendRouter`-backed lookup additively.
+- **Projection write target:** `<output_dir>/cache/agent-runtime-projection.json` (JSON, not the engine's canonical YAMLs). The deterministic pipeline's `components.yaml` / `related-components.yaml` / `subsystems.yaml` are NOT written by the `--agent-runtime` path. A projection-to-ontology shim ships with the production-prompt sprint.
+
+**LOC totals (PR-7 lineage):**
+- `b83a49e`: +176 / -25 (5 files; deferred MEDIUMs + AWARENESS-A)
+- `88cbad7`: +312 / -6 (3 files; AgentRuntime wiring)
+- `5473abc`: +267 / -0 (1 file; cross-transport parity test)
+- Net PR-7 lineage: +755 / -31 LOC.
 
 ---
 
 ## Phase 7 — complete
 
-*(populated when all eight PRs are `[x]`; the PR-7 implementer appends a Phase 7 closeout note here with cumulative LOC, Atlas-on-Atlas baseline numbers, list of plan-time decisions taken vs deferred, and the Phase 7 → Phase 8 handoff per plan §4 Task 7 Step 7.8.)*
+2026-05-12. All eight PRs merged to main:
+
+- **PR-0** (plan + status + continuation prompt; docs only): `ddf553b` + status flip `4d7e75c`
+- **PR-1** (atlas-agents + Tool trait + MCP server + async LlmBackend): `0ec69f3` + status flip
+- **PR-2** (transcript cache + event bus + JSON-Lines subscriber): `faa5fd9` + `4123011` + `87a193c` + status flip
+- **PR-3** (22 tool wrappers via three parallel subagents): `6317da6` + `420d6bf` + `eb6a19a` + `87ffacf` + `e5a74c8` + `7a11a8b` + `b09919c` + `fed0da2` + `b6f4b3d` + status flip
+- **PR-4** (agent runtime single-iteration + Lane A): `80dac2f` + `3a5c986` + `7f61e94` + status flip `a006955`
+- **PR-5** (fixed-point + LLM dispatch + Lane B): `12bbbec` + `7f51393` + `7ec3da7` + status flip `888ef13`
+- **PR-6** (TUI + replay-from-cache): `9618040` + `f2ce6d5` + status flip `6c326e1`
+- **PR-7** (end-to-end wiring + cross-transport parity + closeout): `b83a49e` + `88cbad7` + `5473abc` + closeout-status-flip *(SHA backfilled by orchestrator)*
+
+**Polyglot smoke cumulative regression guard:** cold = ~40 LLM calls (calibrated codebase baseline since Phase 6 PR-5; loose-bound `0 < cold < 100`); warm + reports = 0; cross-transport parity (claude_code vs codex labels) holds. No drift across the seven code PRs.
+
+**Atlas-on-Atlas cold token total baseline:** DEFERRED (Step 7.4). The Atlas-on-Atlas baseline number is the regression detector for future Phase 7+ changes; it is RECORDED IN A FOLLOW-UP SPRINT once production prompt templates ship. Tracked as the headline follow-up item.
+
+### Phase 7 → Phase 8 handoff
+
+Phase 7 ships the LLM-spine runtime *wiring*; no language analyser retires. Phase 8 (Cargo retirement, recast §11.2) is next — the Cargo classifier retires first because it has the cleanest deterministic baseline (Phase 6 PR-3 overlay discipline; well-bounded manifest parsing) for empirical cold-token-budget calibration.
+
+**Phase 8 prerequisites (the production-prompt sprint blocks Phase 8):**
+
+1. **Production dispatch prompt templates** — replace `PR-7-WIRES-REAL-PROMPT` stubs in `crates/atlas-agents/src/runtime/dispatch.rs::build_dispatch_subsystems_prompt` + `build_dispatch_components_prompt` with real prompt templates that consume the workspace's L1 candidates + ontology + per-component file listing. JSON envelope shape (`SubsystemsOverrideFile` / `ComponentsOverrideFile`) is locked.
+2. **Production classify / reduce / project prompts** — replace `build_classify_prompt` and `build_reduce_prompt` (~lines 910 / 920 of `runtime/mod.rs`) with the canonical templates. Output must satisfy `lane_a_validate` for each stage; the existing four-stage Lane A check pins the shape.
+3. **Cross-provider auditor wiring** — replace `PR-7-WIRES-REAL-AUDITOR` stub closure in `runtime/mod.rs::call_agent` with a real audit-prompt round-trip. The closure shape is `|auditor_backend| async { ... auditor_backend.call_async(audit_request).await ... }`.
+4. **`for_provider` closure wired through `BackendRouter`** — either un-gate `BackendRouter::from_dispatch_table` from `#[cfg(test)]` so production code can construct one, or add `BackendRouter::backend_for_provider(provider: Provider) -> Option<&Arc<dyn LlmBackend>>` and pass an `Arc::new(move |p| router.backend_for_provider(p).cloned())` closure into the runtime.
+5. **Subprocess MCP `serve_client` driver** — the runtime's `tool_loop_http.rs` subprocess-transport branch currently errors out; the production driver spawns `claude-code` / `codex` subprocesses with the Atlas-internal MCP server attached over stdio per brainstorm §4.
+6. **Atlas-on-Atlas calibration (Step 7.4)** — once 1–5 land, run `atlas index --agent-runtime --workspace-root . --log-events /tmp/atlas-on-atlas-events.jsonl` against the Atlas repo itself; record cold token total + per-provider split + wall time + iteration count; update this status file's "Atlas-on-Atlas cold token total baseline" line above.
+7. **Subprocess `--disallowedTools` probe (Step 7.6)** — once item 5 lands, author `crates/atlas-agents/tests/mcp_disallowed_tools.rs` that drives a live subprocess + MCP server, provokes a `Read` tool call, and asserts the upstream's "tool not available" error.
+
+Brainstorm Phase 8 via `superpowers:brainstorming` only after items 1–4 are validated (the production prompt + cross-provider audit are PR-8 prerequisites; the subprocess driver and live probe can ship in parallel with PR-8 work).
