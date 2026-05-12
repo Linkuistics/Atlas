@@ -630,7 +630,7 @@ impl AgentRuntime {
             .run_tool_loop_with_lane_a(&request, &fingerprint_hex)
             .await?;
         let lane_a_retries = tool_outcome.lane_a_retries;
-        let mut runtime_result = tool_outcome.result;
+        let runtime_result = tool_outcome.result;
 
         // Lane B audit (recast §4.3, brainstorm §6 (iii)). The current
         // tool-loop always produces `Grade::Strong` on success, so
@@ -682,11 +682,11 @@ impl AgentRuntime {
                 // minimum-viable Lane B wiring records the verdict
                 // (via the `AuditVerdict` event already emitted
                 // inside `lane_b_audit`) and accepts the producer's
-                // result. Cumulative-retry budget is honoured here:
+                // result by falling through to the cache-write
+                // below. Cumulative-retry budget is honoured here:
                 // if Lane A already retried, the resolver above maps
                 // `RequestRevision` → `HardFail` rather than
                 // falling through to this branch.
-                runtime_result.grade = runtime_result.grade.clone();
             }
         }
 
