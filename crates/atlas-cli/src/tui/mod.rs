@@ -201,15 +201,16 @@ async fn drain_to_complete(rx: &mut Subscriber, state: &Arc<Mutex<TuiState>>) {
 /// Compose the four widgets into a single frame.
 ///
 /// Layout: `[ tree | tokens-iteration | health ]`
-/// stacked vertically with `[ Min(0), Length(3), Length(4) ]`. The
-/// token + iteration panels share the middle row 50/50.
+/// stacked vertically with `[ Min(0), Length(3), Length(2) ]` (plan §4
+/// Task 6 Step 6.2). The token + iteration panels share the middle
+/// row 50/50.
 pub fn render_frame(frame: &mut Frame, state: &TuiState, config: TuiConfig) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(0),
             Constraint::Length(3),
-            Constraint::Length(4),
+            Constraint::Length(2),
         ])
         .split(frame.area());
 
