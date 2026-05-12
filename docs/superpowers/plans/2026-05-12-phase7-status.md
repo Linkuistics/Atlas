@@ -2,7 +2,7 @@
 
 Companion to `docs/superpowers/specs/2026-05-12-atlas-vnext-phase7-plan.md`. This file tracks per-PR completion state across sessions. The continuation prompt at `docs/superpowers/prompts/2026-05-12-vnext-continue.md` (Phase-7-shaped) reads this file (via the `*phase7-plan*` wildcard match) to find the next PR to dispatch.
 
-**Last updated:** 2026-05-12 (PR-2 landed: transcript cache + event bus + JSON-Lines subscriber).
+**Last updated:** 2026-05-12 (PR-3 landed: 22 pure pass-through tool wrappers across mature/mid-tier/weak-tooling tiers).
 
 ## PR status
 
@@ -11,7 +11,7 @@ Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the
 - [x] PR-0 — Plan + status + continuation prompt (docs only)
 - [x] PR-1 — `atlas-agents` crate + `Tool` trait + MCP server + async `LlmBackend` (large)
 - [x] PR-2 — Transcript cache + event bus + JSON-Lines subscriber (medium)
-- [ ] PR-3 — 26 tool wrappers across three parallel subagents (medium)
+- [x] PR-3 — 22 tool wrappers across three parallel subagents (medium) — revised from 26 per PR-3 user-decided deferral of 5 non-existent manifest parsers
 - [ ] PR-4 — Agent runtime (single-iteration) + Lane A schema validation (large)
 - [ ] PR-5 — Fixed-point iteration + LLM-decided dispatch + Lane B cross-provider audit (large)
 - [ ] PR-6 — `ratatui` TUI subscriber + `--replay-from-cache` mode (medium)
@@ -163,7 +163,57 @@ Deviations from plan: none material. `cargo fmt --all` applied a one-line import
 - Workspace total: +25 PR-2-attributable tests, all green. Cumulative regression guard unchanged.
 
 ### PR-3
-*(populated when PR-3 lands)*
+
+2026-05-12 — Landed: 22 pure pass-through Tool wrappers across three subagent-owned tiers, merged into main via a `phase7-pr3` integration branch and fast-forwarded. Final tip on main: `b6f4b3d`.
+
+**Scope deviation from plan §4 Task 3 (user-decided Option A):** Plan and brainstorm both enumerated 9 manifest parsers (4 of which existed, 5 of which did not). The 5 non-existent parsers (`parse_pyproject`, `parse_csproj`, `parse_k8s_manifest`, `parse_helm_chart`, `parse_release_toml`) were deferred to a later phase rather than authored as net-new tools under a "pure pass-through" charter (which they violated by construction). Revised wrapper count: 22 (10 classifiers + 8 surface analysers + 4 manifest parsers) — the 8/6/8 subagent distribution was preserved.
+
+**Per-subagent commits (pre-integration):**
+- `6317da6` — PR-3a initial: 8 wrappers (mature tier: 4 manifest parsers, 2 classifiers, 2 in-process surface analysers)
+- `420d6bf` — PR-3a follow-up: `TsJsSurfaceTool` fixed-filename probe (replaced recursive `src/` walk with the engine's 8-entry-point allowlist per `crates/atlas-engine/src/l5_surface.rs:439-456`, restoring pass-through invariant)
+- `eb6a19a` — PR-3b: 6 wrappers (mid-tier: 3 classifiers + 3 subprocess surface analysers for Python/C#/Dart)
+- `87ffacf` — PR-3c: 8 wrappers (weak-tooling tier: 5 classifiers including Compose/Dockerfile-as-classifier — distinct from PR-3a's `parse_compose`/`parse_dockerfile` manifest parsers — + 3 subprocess surface analysers for Elixir/Racket/LispKit)
+
+**Integration commits:**
+- `e5a74c8` — merge phase7-pr3a (clean)
+- `7a11a8b` — merge phase7-pr3b (resolved 3 expected `mod.rs` conflicts: top-level + classifiers + surfaces)
+- `b09919c` — merge phase7-pr3c (resolved same 3 `mod.rs` conflicts after concatenation)
+- `fed0da2` — review-feedback follow-up (4 fixes — see below)
+- `b6f4b3d` — Cargo.lock update (atlas-agents → atlas-analyzers path-dep edge)
+
+**Two-stage review (per `superpowers:subagent-driven-development`):**
+- Spec compliance review (3 parallel subagents, one per branch): PR-3b ✅, PR-3c ✅, PR-3a flagged one MEDIUM issue — `TsJsSurfaceTool::collect_sources` did a recursive `src/` walk producing inputs the engine's analyser never sees. Fixed in `420d6bf`. Re-verified ✅.
+- Code quality review (3 parallel `feature-dev:code-reviewer` subagents): four MEDIUM issues flagged + one fix-on-merge test issue. All resolved in `fed0da2`:
+  1. **Path-traversal guard (cross-cutting, all 22 wrappers):** new shared helper `crates/atlas-agents/src/tools/path_utils.rs` exposing `require_within_root` + `require_path_arg`. Lexical check (no FS round-trip, no symlink resolution); rejects absolute paths and `..` components. Honours the `ToolContext` doc requirement ("Tools must reject paths that escape this root") that no wrapper enforced. 5 unit tests added.
+  2. **CargoClassifyTool parity coverage:** added `rust-library` and `rust-cli` parity tests. The prior single test only exercised `[workspace]`; the other two classifier rules were not pinned.
+  3. **PR-3b surface wrapper silent-drop:** python/csharp/dart surface wrappers' optional explicit `manifest_path` arg was being silently dropped on read failure via `if let Ok(bytes) = ...`. Changed to propagate the `ToolError::Filesystem` so callers see real failures when a path they explicitly named is unreadable.
+  4. **PR-3c surface test robustness (test bug):** `elixir_surface_tool_returns_error_when_binary_missing` and `racket_surface_tool_returns_error_when_binary_missing` failed when `locate_*_analyzer_binary()` found a sibling-target binary (e.g. after a prior workspace build); the wrapper proceeded past the binary check and hit the un-written manifest. Fixed by writing the manifest to the tempdir before invoking the tool.
+
+**Deferred (with rationale; not blocking PR-3):**
+- Code quality reviewer flagged `fingerprint_inputs` returning `FingerprintInput { path, sha: [0u8; 32] }` zero-sentinel as HIGH. The `Tool` trait doc (`tool.rs:108-113`) says "Returned before `invoke` runs (so the runtime can pre-compute SHAs)" — the runtime fills shas, not the tool. The zero sentinel is consistent with the implementer brief I shipped to subagents. The contract ambiguity (struct doc says "SHA-256 of the file's bytes at the moment of the read") will be resolved by PR-4 when it wires the actual runtime. If PR-4 chooses tool-side sha computation, this becomes a tightening sweep; if runtime-side, the sentinel was correct.
+
+**Convergent design choices across all three subagents (accepted):**
+- `std::sync::OnceLock` (Rust 1.70+) replaced the brief's `once_cell::sync::Lazy`. Stdlib equivalent; one fewer dep.
+- Subprocess surface wrappers (PR-3b + PR-3c) forward `SubprocessOutput.payload` (raw `serde_json::Value`) rather than typing it as a per-language `*SurfaceOutput`. The subprocess wire protocol is JSON-native — re-deserializing into a typed struct would round-trip with no value. Consequently no path-deps to the per-language analyzer crates (atlas-{python,csharp,dart,elixir,racket,lispkit}-analyzer) were needed.
+- PR-3a surface wrappers (Rust + TS/JS) call `extract_rust_surface` / `extract_ts_js_surface` directly rather than `Analyzer::analyse()`. The trait `.analyse()` impls intentionally return `Declines` for these in-process analysers (they're driven by the engine via the direct functions); the wrappers mirror that engine driver pattern.
+
+**Acceptance gates met (orchestrator-side independent verification on `phase7-pr3` post-`b6f4b3d`):**
+- `cargo build --workspace` clean (3.68s)
+- `cargo fmt --check` clean
+- `cargo clippy --all-targets -- -D warnings` clean
+- `cargo test --workspace --no-fail-fast` — all atlas-agents lib tests pass (38+ tests including 22 wrapper parity/error tests + 5 new path_utils tests + 2 added cargo parity tests); all other workspace tests pass (atlas-engine, atlas-llm, atlas-reports, atlas-index, atlas-cli, component-ontology, analyzer crates). Lesson: dev-mode `phase3_polyglot_fixture` was killed mid-run after ~13min — it's redundant with the release-mode cumulative regression guard run separately and adds no signal not covered by the release run. Recommend future PRs use `cargo test --workspace -- --skip phase3_polyglot` to elide it.
+- `cargo build --release --workspace` clean (5.62s on incremental)
+- `cargo test -p atlas-cli --test phase3_polyglot_fixture --release --no-fail-fast` — `polyglot_phase3_acceptance ok` in 104.34s. Cumulative regression guard held; cold count remains in loose-bound `0 < cold < 100`. The 22 wrappers added are dormant code in this PR — PR-4 wires them — so cold count by construction does not change.
+
+**Forward-pointers to PR-4 (Wave 3 — runtime single-iteration + Lane A):**
+- The 22 wrappers are all `Tool` impls at `atlas_agents::tools::{classifiers,manifests,surfaces}::*`. Re-exports at `atlas_agents::tools::{classifiers,surfaces}::{ToolStructName}` for ergonomic access; manifest parser wrappers are accessible via `atlas_agents::tools::manifests::{parse_cargo_toml::ParseCargoTomlTool, ...}`.
+- The `path_utils` module is public (`atlas_agents::tools::path_utils`) and re-exports `require_within_root` + `require_path_arg` from `atlas_agents::tools` for convenience. PR-4's `AgentRuntime` should use these when constructing `ToolContext` (the workspace root) and when validating runtime-supplied paths that flow into tools.
+- Tool catalog: PR-3 ships individual `Tool` impls but no `ToolCatalog` (the plan's "ToolCatalog registration" framing in §4 Task 3 was interpreted as just the module re-exports). PR-4's `AgentRuntime` is the natural home for a `BTreeMap<String, Arc<dyn Tool>>` keyed on `id()` if it needs central dispatch.
+- `fingerprint_inputs` returns paths with zero-sha sentinels. PR-4 must decide whether to (a) keep the sentinel and have the runtime fill in shas via `tokio::fs::read` + `sha2::Sha256::digest`, or (b) modify the `Tool` trait to make `fingerprint_inputs` async + reading. Either path is small; (a) keeps `Tool` simpler.
+- **No new LLM call sites.** PR-3 wrappers do not call into LLM backends — they're pure pass-throughs. PR-4's runtime + PR-5's LLM-decided dispatch are where LLM calls first land.
+- **Compose-classifier + Dockerfile-classifier** (PR-3c) coexist with **parse_compose + parse_dockerfile** (PR-3a). Distinct tools producing distinct outputs (classifier kind+evidence vs parser structural shape). Both are useful to the LLM-spine; PR-4 catalogues both.
+
+**Pre-merge cleanup performed:** worktrees `/tmp/atlas-phase7-pr3{a,b,c}` and branches `phase7-pr3{a,b,c}` + `phase7-pr3` (the integration branch) to be removed by the status-flip's housekeeping step.
 
 ### PR-4
 *(populated when PR-4 lands)*
