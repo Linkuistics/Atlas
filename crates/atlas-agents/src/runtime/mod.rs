@@ -32,8 +32,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use atlas_engine::llm_cache::{
-    AgentGrade, AgentInputFingerprint, AgentRequest as CacheAgentRequest,
-    AgentResult as CacheAgentResult, FingerprintInputSpotCheck, LlmResponseCache,
+    AgentGrade, AgentInputFingerprint, FingerprintInputSpotCheck, LlmResponseCache,
     TRANSCRIPT_FRAME_PREFIX,
 };
 use atlas_index::Stage as IndexStage;
@@ -43,7 +42,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::events::{AgentEvent, EventBus, Grade};
+use crate::events::{AgentEvent, CacheHitSource, EventBus, Grade};
 use crate::transport::{Provider, TransportFlavour};
 use crate::ToolHandle;
 
@@ -338,21 +337,18 @@ pub struct AgentResult {
     pub output_bytes: Vec<u8>,
 }
 
-/// Sidecar struct used to smuggle precomputed runtime-side bytes into
-/// the cache layer's `compute` closure. Named rather than a tuple so
-/// the runtime's complex compute-closure binding stays at the simple
-/// `Option<PrecomputedAgentBytes>` type that clippy's
-/// `type_complexity` lint is satisfied with.
-struct PrecomputedAgentBytes {
-    transcript: Vec<u8>,
-    output: Vec<u8>,
-    grade: AgentGrade,
-}
-
 impl AgentRuntime {
     /// PR-4 entry point. Single-iteration; PR-5 wraps in `run_fixedpoint`.
+    ///
+    /// `AgentEvent::RuntimeComplete` is the drain-handshake sentinel —
+    /// every subscriber waits for it before flushing. Emit
+    /// unconditionally on both Ok and Err paths so subscribers always
+    /// drain even when the iteration fails; the body is wrapped in a
+    /// `let result = ...await;` binding to guarantee a single emit site.
     pub async fn run_workspace(&self, workspace: &Workspace) -> Result<L9Projection, AgentError> {
-        self.run_iteration(workspace, 1, None).await
+        let result = self.run_iteration(workspace, 1, None).await;
+        self.event_bus.emit(AgentEvent::RuntimeComplete);
+        result
     }
 
     /// One iteration of the LLM-spine loop. PR-4: deterministic
@@ -501,13 +497,15 @@ impl AgentRuntime {
             transport: request.transport,
         });
 
-        // Two-tier transcript cache lookup. PR-4 uses a sync `compute`
-        // closure that returns a *pre-computed* result — the actual
-        // backend call happens above the cache layer because it's
-        // async and the cache layer is sync. This means: if the cache
-        // misses, we drive the tool loop ourselves and then ask the
-        // cache to write the result. If it hits, the closure is never
-        // invoked.
+        // Two-tier transcript cache lookup, probe-first. The engine
+        // exposes a sync `call_agent_cached` whose compute closure is
+        // also sync; the runtime's tool loop is async, which means a
+        // pre-PR-4-follow-up implementation that drove the loop above
+        // `call_agent_cached` ran the loop *unconditionally*, defeating
+        // the cache short-circuit. Instead we split the engine API into
+        // [`LlmResponseCache::probe_agent_pair`] +
+        // [`LlmResponseCache::write_agent_pair`] and orchestrate
+        // probe → async compute on miss → write here.
         //
         // The "no concrete current_sha_fn" decision matches PR-2's
         // forward-pointer comment: PR-4 wires a const-`None` lookup
@@ -517,60 +515,65 @@ impl AgentRuntime {
         // `AtlasDatabase`-backed sha lookup.
         let current_sha_fn = |_path: &str| None;
 
-        // Probe the cache via a closure that records when it fires.
-        // Cache-hit short-circuits everything; cache-miss runs the
-        // tool loop + Lane A.
-        //
-        // Use a cell so the inner closure (which is `FnOnce`) can
-        // smuggle the produced bytes back to us — we need them for
-        // the `AgentComplete` emit + the in-memory `AgentResult`.
-        use std::cell::RefCell;
-        let cached_bytes: RefCell<Option<PrecomputedAgentBytes>> = RefCell::new(None);
-
-        let runtime_result = self
-            .run_tool_loop_with_lane_a(&request, &fingerprint_hex)
-            .await?;
-        let runtime_grade_engine = grade_to_engine(&runtime_result.grade);
-        let runtime_transcript = runtime_result.transcript_bytes.clone();
-        let runtime_output = runtime_result.output_bytes.clone();
-
-        cached_bytes.replace(Some(PrecomputedAgentBytes {
-            transcript: runtime_transcript.clone(),
-            output: runtime_output.clone(),
-            grade: runtime_grade_engine.clone(),
-        }));
-
-        let cache_outcome = self.cache.call_agent_cached(
+        if let Some(cached) = self.cache.probe_agent_pair(
             IndexStage::L8,
             &fingerprint,
             &recorded_inputs,
             current_sha_fn,
-            CacheAgentRequest::new(Vec::new()),
-            |_req| {
-                let take = cached_bytes.borrow_mut().take();
-                let precomputed = take.ok_or_else(|| {
-                    atlas_engine::llm_cache::AgentError::BackendFailed(
-                        "PR-4 cache compute closure called without precomputed bytes".to_string(),
-                    )
-                })?;
-                Ok(CacheAgentResult::new(
-                    precomputed.transcript,
-                    precomputed.output,
-                    precomputed.grade,
-                ))
-            },
-        );
-        let cache_result = match cache_outcome {
-            Ok(r) => r,
-            Err(e) => return Err(AgentError::Cache(e.to_string())),
-        };
+        ) {
+            // Cache hit: emit CacheHit + AgentComplete from the cached
+            // transcript/output and return without invoking the backend
+            // or running Lane A. The cached entry was Lane-A-clean at
+            // the time it was written (recast §6.4 gates writes on the
+            // `Ok` arm), so it remains so on replay.
+            let output = decode_output_bytes(&cached.output_bytes)?;
+            let grade = engine_to_grade(&cached.confidence_grade);
+            let provider_label = self.backend_router.fingerprint().model_id;
+            let output_sha = sha256_hex(&cached.output_bytes);
+            self.event_bus.emit(AgentEvent::CacheHit {
+                agent_id: agent_id(&request),
+                fingerprint: fingerprint_hex.clone(),
+                replayed_at: now_iso(),
+                source: CacheHitSource::AgentCache,
+            });
+            self.event_bus.emit(AgentEvent::AgentComplete {
+                agent_id: agent_id(&request),
+                output_sha,
+                confidence_grade: grade.clone(),
+                // Cache hit: no backend tokens spent, no wall-clock
+                // budget consumed. Subscribers can disambiguate via the
+                // preceding `CacheHit` event.
+                tokens_in: 0,
+                tokens_out: 0,
+                ms: 0,
+                provider: provider_label,
+            });
+            return Ok(AgentResult {
+                output,
+                grade,
+                transcript_bytes: cached.transcript_bytes,
+                output_bytes: cached.output_bytes,
+            });
+        }
 
-        // Decode the cache-returned bytes back into an AgentOutput.
-        let output = decode_output_bytes(&cache_result.output_bytes)?;
-        let grade = engine_to_grade(&cache_result.confidence_grade);
+        // Cache miss: drive the async tool loop, write back on success.
+        let runtime_result = self
+            .run_tool_loop_with_lane_a(&request, &fingerprint_hex)
+            .await?;
+        self.cache.write_agent_pair(
+            IndexStage::L8,
+            &fingerprint,
+            &runtime_result.transcript_bytes,
+            &runtime_result.output_bytes,
+        );
+
+        let output = runtime_result.output;
+        let grade = runtime_result.grade;
+        let transcript_bytes = runtime_result.transcript_bytes;
+        let output_bytes = runtime_result.output_bytes;
 
         let provider_label = self.backend_router.fingerprint().model_id;
-        let output_sha = sha256_hex(&cache_result.output_bytes);
+        let output_sha = sha256_hex(&output_bytes);
         self.event_bus.emit(AgentEvent::AgentComplete {
             agent_id: agent_id(&request),
             output_sha,
@@ -584,8 +587,8 @@ impl AgentRuntime {
         Ok(AgentResult {
             output,
             grade,
-            transcript_bytes: cache_result.transcript_bytes,
-            output_bytes: cache_result.output_bytes,
+            transcript_bytes,
+            output_bytes,
         })
     }
 

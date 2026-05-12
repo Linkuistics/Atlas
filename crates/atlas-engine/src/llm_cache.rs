@@ -602,58 +602,93 @@ impl LlmResponseCache {
         request: AgentRequest,
         compute: impl FnOnce(&AgentRequest) -> Result<AgentResult, AgentError>,
     ) -> Result<AgentResult, AgentError> {
-        let key = fingerprint.to_cache_key();
+        // Backward-compat convenience: delegates to the two narrower
+        // sync APIs the async runtime uses directly. Preserved so any
+        // existing callers (and the engine self-tests) keep their
+        // signature. New call sites should prefer the probe/write pair
+        // when the compute step is async — see the PR-4 follow-up that
+        // split this method for rationale (cache-bypass fix).
+        if let Some(hit) =
+            self.probe_agent_pair(stage, fingerprint, recorded_inputs, current_sha_fn)
+        {
+            return Ok(hit);
+        }
+        let result = compute(&request)?;
+        self.write_agent_pair(
+            stage,
+            fingerprint,
+            &result.transcript_bytes,
+            &result.output_bytes,
+        );
+        Ok(result)
+    }
 
-        // L2 persistent lookup. The in-memory layer is intentionally
-        // not consulted here: the multi-shot cache holds raw bytes
-        // (transcript + output), not `serde_json::Value`s, so the
-        // single-shot in-memory map's value type doesn't fit. A future
-        // PR can introduce a parallel multi-shot in-memory layer if
-        // profiling proves the L2-only path is too slow; for now the
-        // L2 alone is the de-dup boundary.
-        if let Some(persistent) = self.persistent.as_ref() {
-            if let Some(hit) = read_agent_pair(persistent.root(), stage, &key) {
-                // Spot-check recorded fingerprint inputs against the
-                // current file_sha view (recast §6.3). On mismatch,
-                // evict the half-pair and fall through to recompute.
-                let mut stale = false;
-                for entry in recorded_inputs {
-                    match current_sha_fn(&entry.path) {
-                        Some(current) if current == entry.recorded_sha => {}
-                        _ => {
-                            stale = true;
-                            break;
-                        }
-                    }
+    /// Probe the persistent cache for `(stage, fingerprint)`. Returns
+    /// `Some(hit)` on a clean hit (file pair present and every recorded
+    /// fingerprint input still matches the current view); returns `None`
+    /// on miss OR on a stale spot-check (in which case the half-pair is
+    /// evicted in place). The async caller orchestrates the
+    /// compute-on-miss + [`Self::write_agent_pair`] write-back.
+    ///
+    /// Split out of [`Self::call_agent_cached`] so an async runtime can
+    /// probe-then-await-compute-then-write without smuggling pre-computed
+    /// bytes through the sync compute closure (which defeated the cache
+    /// short-circuit). The in-memory layer is intentionally not
+    /// consulted: the multi-shot cache holds raw bytes (transcript +
+    /// output), not `serde_json::Value`s, so the single-shot in-memory
+    /// map's value type doesn't fit.
+    pub fn probe_agent_pair(
+        &self,
+        stage: AgentCacheStage,
+        fingerprint: &AgentInputFingerprint,
+        recorded_inputs: &[FingerprintInputSpotCheck],
+        current_sha_fn: impl Fn(&str) -> Option<[u8; 32]>,
+    ) -> Option<AgentResult> {
+        let key = fingerprint.to_cache_key();
+        let persistent = self.persistent.as_ref()?;
+        let hit = read_agent_pair(persistent.root(), stage, &key)?;
+        // Spot-check recorded fingerprint inputs against the current
+        // file_sha view (recast §6.3). On mismatch, evict the half-pair
+        // and report miss so the caller re-runs compute.
+        for entry in recorded_inputs {
+            match current_sha_fn(&entry.path) {
+                Some(current) if current == entry.recorded_sha => {}
+                _ => {
+                    evict_agent_pair(persistent.root(), stage, &key);
+                    return None;
                 }
-                if !stale {
-                    return Ok(hit);
-                }
-                evict_agent_pair(persistent.root(), stage, &key);
             }
         }
+        Some(hit)
+    }
 
-        // Backend / compute path.
-        let result = compute(&request)?;
-
-        // Write the pair atomically on success only (recast §6.4).
+    /// Write-back counterpart to [`Self::probe_agent_pair`]. Mirrors the
+    /// write-on-success arm of [`Self::call_agent_cached`]; gated behind
+    /// the persistent layer being `Some(_)` (in-memory-only configs are
+    /// silent no-ops on write). On atomic-write failure emits a warning
+    /// but does not surface an error to the caller — the half-pair
+    /// eviction in the next [`Self::probe_agent_pair`] call will retry.
+    /// The transcript-cache writer is a fire-and-forget surface.
+    pub fn write_agent_pair(
+        &self,
+        stage: AgentCacheStage,
+        fingerprint: &AgentInputFingerprint,
+        transcript_bytes: &[u8],
+        output_bytes: &[u8],
+    ) {
         if let Some(persistent) = self.persistent.as_ref() {
+            let key = fingerprint.to_cache_key();
             let transcript = agents_transcript_path(persistent.root(), stage, &key);
             let output = agents_output_path(persistent.root(), stage, &key);
-            if let Err(err) = atomic_write_pair(
-                &transcript,
-                &result.transcript_bytes,
-                &output,
-                &result.output_bytes,
-            ) {
+            if let Err(err) =
+                atomic_write_pair(&transcript, transcript_bytes, &output, output_bytes)
+            {
                 eprintln!(
                     "warning: transcript cache write for ({stage:?}, {key}) failed ({err}); \
                      the run still completes but the next run will re-compute"
                 );
             }
         }
-
-        Ok(result)
     }
 }
 

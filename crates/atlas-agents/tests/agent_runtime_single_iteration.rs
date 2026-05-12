@@ -229,7 +229,10 @@ async fn lane_a_retry_fires_exactly_once_on_classify_schema_fail() {
         .run_workspace(&workspace)
         .await
         .expect("workspace runs ok after lane A retry");
-    bus.emit(AgentEvent::RuntimeComplete);
+    // `run_workspace` owns the `RuntimeComplete` emit (the drain-
+    // handshake sentinel) as of the PR-4 follow-up; no manual emit
+    // here. Emitting twice would surface a second sentinel to the
+    // collector, which would already have returned on the first one.
     let events = collector.await.expect("collector finished");
 
     assert!(
