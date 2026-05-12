@@ -168,12 +168,67 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
         };
     }
 
-    // TODO(PR-7): wire the LLM-spine `AgentRuntime` here. PR-6 keeps
-    // `atlas index` on the deterministic dispatcher; the TUI
-    // subscriber is reachable only through `--replay-from-cache`
-    // above. PR-7's wiring step replaces the body below with the
-    // single `Handle::block_on(runtime.run_workspace(...))` legal
-    // sync→async boundary (plan §7.1).
+    // PR-7: route through the LLM-spine `AgentRuntime` when
+    // `--agent-runtime` is set. The single `tokio::block_on` boundary
+    // lives inside `run_index_agent_runtime` per plan §7.1 (the only
+    // legal sync→async crossover in atlas-cli; the disallowed_methods
+    // lint forbids `block_on` in atlas-engine and
+    // atlas-agents/src/runtime/). The deterministic-engine path below
+    // remains the default — the wiring is the load-bearing PR-7
+    // deliverable; production prompts that actually emit ontology-
+    // shaped outputs are a follow-up sprint.
+    if args.agent_runtime {
+        if args.budget.is_none() && !args.no_budget {
+            anyhow::bail!(
+                "`atlas index --agent-runtime` requires `--budget <N-tokens>` to fail loudly on \
+                 runaway LLM usage. Pass `--no-budget` for local development if you understand \
+                 the risk."
+            );
+        }
+        let root = args
+            .root
+            .canonicalize()
+            .with_context(|| format!("failed to resolve root path {}", args.root.display()))?;
+        let output_dir = args
+            .output_dir
+            .clone()
+            .unwrap_or_else(|| root.join(atlas_cli::DEFAULT_OUTPUT_SUBDIR));
+        let config_path = output_dir.join("config.yaml");
+        let atlas_config = atlas_llm::AtlasConfig::load(&config_path)
+            .with_context(|| format!("failed to load {}", config_path.display()))?;
+
+        let mut index_config = atlas_cli::IndexConfig::new(root);
+        index_config.output_dir = output_dir;
+        args.apply_to(&mut index_config);
+        index_config.prompt_shas = Some(atlas_cli::backend::compute_prompt_shas());
+
+        let counter = args
+            .budget
+            .map(|b| Arc::new(atlas_llm::TokenCounter::new(b)));
+
+        let handles = atlas_cli::backend::build_production_backend_with_counter(
+            &atlas_config,
+            &index_config.root,
+            counter.clone(),
+            None,
+        )
+        .context("failed to build LLM backend for --agent-runtime")?;
+
+        match atlas_cli::pipeline::run_index_agent_runtime(
+            &index_config,
+            &atlas_config,
+            handles,
+            &args,
+        ) {
+            Ok(()) => return Ok(ExitCode::SUCCESS),
+            Err(IndexError::Other(err)) => return Err(err),
+            Err(err) => {
+                eprintln!("atlas: --agent-runtime failed: {err}");
+                let code = index_error_exit_code(&err);
+                return Ok(ExitCode::from(code));
+            }
+        }
+    }
 
     if args.budget.is_none() && !args.no_budget {
         anyhow::bail!(

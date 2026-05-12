@@ -116,6 +116,24 @@ pub struct IndexArgs {
     /// `--replay-from-cache` path that lands in PR-6.
     #[arg(long)]
     pub tui_show_providers: bool,
+
+    /// PR-7: route `atlas index` through the LLM-spine `AgentRuntime`
+    /// instead of the deterministic engine pipeline. The runtime drives
+    /// dispatch via `subsystems.overrides.yaml` /
+    /// `components.overrides.yaml` (short-circuit) or via the LLM
+    /// dispatch agent (no-override); fires per-component Classify +
+    /// per-subsystem Reduce + workspace Project via the configured
+    /// backend; runs Lane A schema validation and Lane B cross-provider
+    /// audit; emits the full `AgentEvent` stream onto the bus. Subscribers
+    /// are wired per `--no-tui` / `--log-events` / TTY detection.
+    ///
+    /// Default (false): keep today's deterministic engine pipeline
+    /// (Phase 6 spine; PR-7 introduces the runtime path as opt-in so the
+    /// cumulative regression guard and existing users remain on the
+    /// validated path until production prompt templates ship in a
+    /// follow-up phase).
+    #[arg(long)]
+    pub agent_runtime: bool,
 }
 
 impl IndexArgs {
@@ -268,6 +286,18 @@ mod tests {
     fn tui_show_providers_flag_binds_to_true() {
         let args = parse_index(&["atlas", "index", "--tui-show-providers", "/tmp/x"]);
         assert!(args.tui_show_providers);
+    }
+
+    #[test]
+    fn agent_runtime_default_is_false() {
+        let args = parse_index(&["atlas", "index", "/tmp/x"]);
+        assert!(!args.agent_runtime);
+    }
+
+    #[test]
+    fn agent_runtime_flag_binds_to_true() {
+        let args = parse_index(&["atlas", "index", "--agent-runtime", "/tmp/x"]);
+        assert!(args.agent_runtime);
     }
 
     #[test]

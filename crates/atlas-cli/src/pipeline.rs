@@ -975,6 +975,227 @@ pub fn build_engine_database_for_reports(
     Ok(db)
 }
 
+/// PR-7 entry: drive `atlas index` through the LLM-spine
+/// [`atlas_agents::AgentRuntime`] instead of the deterministic engine
+/// pipeline. The single `tokio::runtime::Handle::block_on` boundary
+/// lives here — the only legal sync→async crossover in the atlas-cli
+/// crate (`clippy::disallowed_methods` forbids `block_on` in the
+/// engine and agents-runtime crates per plan §7.1).
+///
+/// Wiring shape:
+///
+/// 1. Build the production backend stack via
+///    [`crate::backend::build_production_backend_with_counter`] (same
+///    `BackendRouter` + sentinel + budget the deterministic path uses).
+/// 2. Open a `PersistentCache` under `<output_dir>/cache/` and wrap it
+///    with `LlmResponseCache::new_with_persistent` so the runtime's
+///    transcript-cache writes survive across runs.
+/// 3. Construct the `EventBus`; spawn the agent-cache-writer subscriber;
+///    spawn the JSON-Lines log subscriber if `--log-events PATH` was set;
+///    spawn the TUI subscriber when stdout is a TTY and `--no-tui` is
+///    not set, else spawn the JSON-Lines-to-stdout subscriber.
+/// 4. Construct the `AgentRuntime` and drive `run_workspace` via the
+///    single `block_on`.
+/// 5. On runtime return, the `RuntimeComplete` event has already been
+///    emitted (the runtime owns that contract); `block_on` each
+///    subscriber's join handle to apply the drain handshake.
+/// 6. Serialise the returned `L9Projection` to
+///    `<output_dir>/cache/agent-runtime-projection.json` so the wiring
+///    deliverable has a verifiable artefact even before production
+///    prompt templates emit ontology-shaped output. The deterministic
+///    pipeline's canonical YAMLs are NOT written by this path — that
+///    requires a projection-to-ontology shim that ships with the
+///    production-prompt sprint.
+///
+/// `for_provider` is intentionally `None` for PR-7's MVP: Lane B will
+/// emit `AuditDegraded` and fall back to the same-model auditor (the
+/// `BackendRouter`). PR-7's brief explicitly calls out per-provider
+/// auditor wiring as a follow-up; the closure shape is preserved
+/// (`Option<Arc<ForProviderFn>>`) so the wiring grows additively.
+pub fn run_index_agent_runtime(
+    config: &IndexConfig,
+    atlas_config: &atlas_llm::AtlasConfig,
+    backend_handles: crate::backend::BackendHandles,
+    args: &crate::cli_args::IndexArgs,
+) -> Result<(), IndexError> {
+    use std::sync::Arc;
+
+    use atlas_agents::{
+        agent_cache_writer, default_tool_catalog, AgentRuntime, EventBus, Semaphores, ToolCatalog,
+        TransportFlavour, Workspace as AgentsWorkspace,
+    };
+    use atlas_engine::LlmResponseCache;
+
+    let _ = atlas_config; // reserved for future Provider-aware wiring
+
+    // ---- runtime ---------------------------------------------------
+    let tokio_rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| {
+            IndexError::Other(anyhow::anyhow!(
+                "failed to build tokio runtime for --agent-runtime: {e}"
+            ))
+        })?;
+
+    // ---- persistent cache -----------------------------------------
+    // PR-2 layout: `<atlas_dir>/cache/agents/<stage>/` per
+    // `atlas_engine::cache::layout`. We open the `PersistentCache` at
+    // `<atlas_dir>/cache/` so the same root the engine pipeline uses
+    // is shared, and the agents-tier writes coexist with engine-tier
+    // entries under `cache/<stage>/`.
+    let cache_root = config.output_dir.join("cache");
+    let persistent = atlas_engine::PersistentCache::open(&cache_root).map_err(|e| {
+        IndexError::Other(anyhow::anyhow!(
+            "failed to open persistent cache at {}: {e}",
+            cache_root.display()
+        ))
+    })?;
+    let cache = Arc::new(LlmResponseCache::new_with_persistent(persistent));
+
+    // ---- event bus + subscribers ----------------------------------
+    let event_bus = Arc::new(EventBus::with_default_capacity());
+
+    let mut subscriber_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+    // Agent-cache-writer subscriber: always wired.
+    {
+        let bus = event_bus.clone();
+        let cache_for_sub = cache.clone();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        subscriber_handles.push(tokio_rt.spawn(async move {
+            agent_cache_writer::run(&bus, cache_for_sub, done_tx).await;
+        }));
+        // Track each subscriber's done_rx so the drain handshake can
+        // join them on shutdown. We wrap each in a tokio task that
+        // simply awaits the rx and discards the result, then push
+        // those into subscriber_handles for a uniform join shape.
+        subscriber_handles.push(tokio_rt.spawn(async move {
+            let _ = done_rx.await;
+        }));
+    }
+
+    // JSON-Lines log-events subscriber (parallel to TUI / stdout).
+    if let Some(path) = args.log_events.clone() {
+        let bus = event_bus.clone();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        subscriber_handles.push(tokio_rt.spawn(async move {
+            crate::jsonl_subscriber::run(
+                &bus,
+                crate::jsonl_subscriber::JsonlDest::File(path),
+                done_tx,
+            )
+            .await;
+        }));
+        subscriber_handles.push(tokio_rt.spawn(async move {
+            let _ = done_rx.await;
+        }));
+    }
+
+    // TUI vs JSON-Lines-stdout: TUI when stdout is a TTY AND `--no-tui`
+    // is not set (PR-6 closeout forward-pointer; brief §"From PR-6").
+    use crossterm::tty::IsTty;
+    let use_tui = !args.no_tui && std::io::stdout().is_tty();
+    if use_tui {
+        let bus = event_bus.clone();
+        let tui_config = crate::tui::TuiConfig {
+            show_providers: args.tui_show_providers,
+        };
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let state = Arc::new(tokio::sync::Mutex::new(crate::tui::TuiState::default()));
+        let rx = bus.subscribe();
+        subscriber_handles.push(tokio_rt.spawn(async move {
+            let _ = crate::tui::run_with_subscriber(rx, state, tui_config, done_tx).await;
+        }));
+        subscriber_handles.push(tokio_rt.spawn(async move {
+            let _ = done_rx.await;
+        }));
+    } else {
+        let bus = event_bus.clone();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        subscriber_handles.push(tokio_rt.spawn(async move {
+            crate::jsonl_subscriber::run(&bus, crate::jsonl_subscriber::JsonlDest::Stdout, done_tx)
+                .await;
+        }));
+        subscriber_handles.push(tokio_rt.spawn(async move {
+            let _ = done_rx.await;
+        }));
+    }
+
+    // ---- runtime construction -------------------------------------
+    let tools: Arc<ToolCatalog> = Arc::new(default_tool_catalog());
+    let runtime = AgentRuntime {
+        backend_router: backend_handles.backend.clone(),
+        tools,
+        cache: cache.clone(),
+        event_bus: event_bus.clone(),
+        semaphores: Semaphores::defaults(),
+        // PR-7: default transport reflects the typical Atlas backend
+        // pair (claude_code + codex per memory
+        // `project_atlas_common_backend_config`). When subprocess
+        // transports route, the runtime currently surfaces a clean
+        // error (the MCP `serve_client` task wiring is a follow-up);
+        // for HTTP routes Lane A + Lane B fire normally.
+        default_transport: TransportFlavour::ClaudeCode,
+        default_max_steps: 8,
+        max_iterations: 5,
+        // PR-7 MVP: `for_provider: None` → Lane B falls back to the
+        // same-model auditor with `AuditDegraded`. Per-provider auditor
+        // wiring requires un-gating `BackendRouter::from_dispatch_table`
+        // or adding a per-provider lookup helper to `atlas-llm`;
+        // documented as a follow-up in the closeout note.
+        for_provider: None,
+    };
+
+    let workspace = AgentsWorkspace::new(config.root.clone());
+
+    // ---- SINGLE sync→async boundary -------------------------------
+    let projection_result = tokio_rt.block_on(runtime.run_workspace(&workspace));
+
+    // ---- drain handshake ------------------------------------------
+    // run_workspace emits RuntimeComplete unconditionally on both Ok
+    // and Err paths (the runtime owns that invariant via the
+    // `let result = ...await; emit(RuntimeComplete); result` shape).
+    // Block on each subscriber join handle to apply the handshake.
+    for handle in subscriber_handles {
+        let _ = tokio_rt.block_on(handle);
+    }
+
+    // ---- write artefact -------------------------------------------
+    let projection = match projection_result {
+        Ok(p) => p,
+        Err(err) => {
+            return Err(IndexError::Other(anyhow::anyhow!(
+                "atlas index --agent-runtime failed: {err}"
+            )));
+        }
+    };
+    if !config.dry_run {
+        let out_path = config
+            .output_dir
+            .join("cache")
+            .join("agent-runtime-projection.json");
+        if let Some(parent) = out_path.parent() {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                return Err(IndexError::Other(anyhow::anyhow!(
+                    "failed to create {}: {err}",
+                    parent.display()
+                )));
+            }
+        }
+        let bytes = serde_json::to_vec_pretty(&projection).map_err(|e| {
+            IndexError::Other(anyhow::anyhow!("failed to serialise projection: {e}"))
+        })?;
+        atomic_write(&out_path, &bytes).map_err(|e| {
+            IndexError::Other(anyhow::anyhow!(
+                "failed to write {}: {e}",
+                out_path.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 /// Resolve a component's absolute on-disk directory from its
 /// `path_segments[0].path` against the workspace `roots`. Same logic
 /// as the private helper used by [`write_per_component_files`]: walk
