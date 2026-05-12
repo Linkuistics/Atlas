@@ -20,6 +20,7 @@
 //! rule in `crates/atlas-agents/clippy.toml` enforces this). The
 //! sync→async boundary lives at the CLI entry point (PR-7).
 
+pub mod agent;
 pub mod audit;
 pub mod dispatch;
 pub mod semaphores;
@@ -46,6 +47,7 @@ use crate::events::{AgentEvent, EventBus, Grade};
 use crate::transport::{Provider, TransportFlavour};
 use crate::ToolHandle;
 
+pub use agent::Agent;
 pub use audit::{lane_a_validate, AgentOutput, SchemaError, Stage};
 pub use dispatch::{
     dispatch_components, dispatch_subsystems, ComponentPartition, SubsystemPartition,
@@ -695,15 +697,11 @@ impl AgentRuntime {
     }
 }
 
-/// PR-4: opaque agent-id formatter. Joins stage + target + iteration
-/// into a stable string. PR-5 may switch to a typed `AgentId(String)`.
+/// PR-4: agent-id formatter delegating to `Agent::id()`. The free
+/// function is preserved as a one-call-site convenience; the canonical
+/// formatter is `Agent::id()` (see `crate::runtime::agent`).
 fn agent_id(req: &AgentRequest) -> String {
-    format!(
-        "{}::{}#i{}",
-        req.stage.as_str(),
-        req.target_id,
-        req.iteration
-    )
+    Agent::from(req).id()
 }
 
 /// Build a `ToolContext` for `request`. PR-4: workspace_root is the
