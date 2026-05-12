@@ -142,19 +142,44 @@ pub async fn run_with_subscriber(
     'outer: loop {
         tokio::select! {
             event = rx.recv() => {
-                match event {
+                // PR-7 (PR-6 closeout MEDIUM-3): drain every
+                // immediately-ready event before yielding back to
+                // the sleep arm. On a large replay burst (200+
+                // agents), the prior one-event-per-50ms-tick shape
+                // serialised to ~10s of busy spinning while the
+                // TUI lagged behind reality. With the drain, the
+                // sleep arm fires once events drain; the redraw
+                // sees the up-to-date state.
+                let drained = match event {
                     Ok(AgentEvent::RuntimeComplete) => {
-                        // Apply RuntimeComplete so snapshot.runtime_complete is true.
                         state.lock().await.apply(AgentEvent::RuntimeComplete);
                         break 'outer;
                     }
                     Ok(e) => {
-                        state.lock().await.apply(e);
+                        let mut guard = state.lock().await;
+                        guard.apply(e);
+                        // Drain non-blocking-ready events; loop
+                        // breaks on `RuntimeComplete` so the
+                        // redraw arm cannot starve.
+                        let mut should_break = false;
+                        while let Ok(extra) = rx.try_recv() {
+                            if matches!(extra, AgentEvent::RuntimeComplete) {
+                                guard.apply(AgentEvent::RuntimeComplete);
+                                should_break = true;
+                                break;
+                            }
+                            guard.apply(extra);
+                        }
+                        should_break
                     }
                     Err(RecvError::Lagged(n)) => {
                         state.lock().await.note_lag(n);
+                        false
                     }
                     Err(RecvError::Closed) => break 'outer,
+                };
+                if drained {
+                    break 'outer;
                 }
             }
             _ = tokio::time::sleep(Duration::from_millis(50)) => {

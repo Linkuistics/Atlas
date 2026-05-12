@@ -50,7 +50,7 @@ use sha2::{Digest, Sha256};
 use crate::events::{AgentEvent, CacheHitSource};
 
 use super::audit::Stage;
-use super::{AgentError, AgentRequest, AgentRuntime, Workspace};
+use super::{now_iso, AgentError, AgentRequest, AgentRuntime, Workspace};
 
 /// File name for the subsystems override pin.
 pub const SUBSYSTEMS_OVERRIDE_FILENAME: &str = "subsystems.overrides.yaml";
@@ -300,8 +300,11 @@ fn build_dispatch_components_prompt(root: &Path, subsystem: &SubsystemPartition)
 fn parse_subsystems_from_output_value(
     value: &Value,
 ) -> Result<Vec<SubsystemPartition>, AgentError> {
+    // PR-7: LLM-output-parse failures surface as `LlmOutputMalformed`
+    // (semantically distinct from user-authored-override-file parse
+    // failures, which use `OverrideRequired`). PR-5 closeout MEDIUM-2.
     let parsed: SubsystemsOverrideFile = serde_json::from_value(value.clone()).map_err(|e| {
-        AgentError::OverrideRequired(format!(
+        AgentError::LlmOutputMalformed(format!(
             "dispatch agent emitted output that did not match \
              SubsystemsOverrideFile shape: {e}; raw value = {value}"
         ))
@@ -320,8 +323,9 @@ fn parse_components_from_output_value(
     value: &Value,
     subsystem: &SubsystemPartition,
 ) -> Result<Vec<ComponentPartition>, AgentError> {
+    // PR-7: LLM-output-parse failures surface as `LlmOutputMalformed`.
     let parsed: ComponentsOverrideFile = serde_json::from_value(value.clone()).map_err(|e| {
-        AgentError::OverrideRequired(format!(
+        AgentError::LlmOutputMalformed(format!(
             "dispatch agent emitted output that did not match \
              ComponentsOverrideFile shape: {e}; raw value = {value}"
         ))
@@ -505,16 +509,9 @@ fn write_synthetic_dispatch_transcript(
     );
 }
 
-/// PR-5 ISO-8601 timestamp helper. Duplicated from `runtime/mod.rs` to
-/// keep the dispatch module standalone for testability; a future
-/// consolidation can centralise these.
-fn now_iso() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{}", now.as_secs())
-}
+// PR-7 (PR-5 closeout MEDIUM-3): `now_iso` consolidated to
+// `runtime::mod::now_iso` (visible as `pub(super)`). One source of
+// truth for the event-timestamp shape.
 
 #[cfg(test)]
 mod tests {

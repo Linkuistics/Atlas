@@ -109,6 +109,15 @@ impl L9Projection {
 pub enum AgentError {
     #[error("override file missing or malformed: {0}")]
     OverrideRequired(String),
+    /// PR-7: dispatch agent output failed to deserialise into the
+    /// expected envelope shape (`SubsystemsOverrideFile` /
+    /// `ComponentsOverrideFile`). Distinct from
+    /// [`AgentError::OverrideRequired`], which is reserved for
+    /// user-authored override-file load/parse errors; this variant
+    /// surfaces *LLM* output that did not conform to the wire envelope.
+    /// PR-5 closeout MEDIUM-2 follow-up.
+    #[error("LLM dispatch agent emitted malformed output: {0}")]
+    LlmOutputMalformed(String),
     #[error("lane A schema validation failed: {0}")]
     LaneAFail(#[from] SchemaError),
     #[error("lane B audit failed: {0}")]
@@ -992,7 +1001,11 @@ fn hex_nibble(b: u8) -> Result<u8, ()> {
 /// PR-4 ISO-8601 timestamp helper (UTC, second precision). PR-5 may
 /// add millisecond precision for clearer trace ordering; PR-4 keeps
 /// the format dependency-free.
-fn now_iso() -> String {
+///
+/// PR-7 hoisted to `pub(super)` to consolidate the duplicated copy in
+/// [`crate::runtime::dispatch`] (PR-5 closeout MEDIUM-3). One source of
+/// truth for the event-timestamp shape.
+pub(super) fn now_iso() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

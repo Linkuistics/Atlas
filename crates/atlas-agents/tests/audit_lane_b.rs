@@ -315,3 +315,104 @@ async fn lane_b_wired_into_call_agent_skips_on_strong_grade() {
         "Lane B must skip on Strong grade — no `AuditFire` event expected, but one was emitted"
     );
 }
+
+/// PR-7 (PR-5 closeout AWARENESS-A): positive-assertion complement to
+/// `lane_b_wired_into_call_agent_skips_on_strong_grade`. The negative
+/// assertion above passes both when Lane B is wired-and-skips AND when
+/// Lane B is removed entirely; this positive test pins the wiring by
+/// invoking `lane_b_audit` directly with a `Weak` grade and asserting
+/// that an `AuditFire` event lands on the bus. (Synthesising a
+/// non-Strong grade through `call_agent` would require modifying the
+/// runtime's hardcoded `Grade::Strong` post-Lane-A — not load-bearing
+/// for PR-7's scope; the direct invocation closes the wiring gap.)
+#[tokio::test]
+async fn lane_b_audit_fires_audit_fire_event_on_weak_grade() {
+    let producer = LabelBackend::arc("anthropic-producer");
+    let auditor = LabelBackend::arc("openai-auditor");
+    let bus = EventBus::new(64);
+    let mut rx = bus.subscribe();
+    let for_provider = for_provider_returning(Provider::OpenAi, auditor.clone());
+
+    let verdict = lane_b_audit(
+        &bus,
+        "classify::foo#i1",
+        &Grade::Weak,
+        Provider::Anthropic,
+        &producer,
+        Some(&for_provider),
+        |_chosen_backend| async { AuditVerdict::Accept },
+    )
+    .await;
+
+    assert!(matches!(verdict, AuditVerdict::Accept));
+
+    let mut saw_audit_fire = false;
+    let mut saw_audit_verdict = false;
+    while let Ok(ev) = rx.try_recv() {
+        match ev {
+            AgentEvent::AuditFire {
+                agent_id,
+                audit_reason,
+                auditor_provider,
+            } => {
+                saw_audit_fire = true;
+                assert_eq!(agent_id, "classify::foo#i1");
+                assert!(
+                    audit_reason.contains("weak"),
+                    "audit_reason should mention `weak` grade, got: {audit_reason}"
+                );
+                assert_eq!(auditor_provider, "openai");
+            }
+            AgentEvent::AuditVerdict { .. } => saw_audit_verdict = true,
+            _ => {}
+        }
+    }
+    assert!(
+        saw_audit_fire,
+        "Lane B must emit `AuditFire` on Weak grade — positive assertion"
+    );
+    assert!(
+        saw_audit_verdict,
+        "Lane B must emit `AuditVerdict` after the audit closure resolves"
+    );
+}
+
+/// PR-7 (PR-5 closeout AWARENESS-A): same positive-assertion shape for
+/// the `Declines` grade. Locks in that both `should_audit` truthy
+/// grades produce `AuditFire`.
+#[tokio::test]
+async fn lane_b_audit_fires_audit_fire_event_on_declines_grade() {
+    let producer = LabelBackend::arc("anthropic-producer");
+    let auditor = LabelBackend::arc("openai-auditor");
+    let bus = EventBus::new(64);
+    let mut rx = bus.subscribe();
+    let for_provider = for_provider_returning(Provider::OpenAi, auditor.clone());
+
+    let verdict = lane_b_audit(
+        &bus,
+        "classify::bar#i1",
+        &Grade::Declines,
+        Provider::Anthropic,
+        &producer,
+        Some(&for_provider),
+        |_chosen_backend| async { AuditVerdict::Accept },
+    )
+    .await;
+
+    assert!(matches!(verdict, AuditVerdict::Accept));
+
+    let mut saw_audit_fire = false;
+    while let Ok(ev) = rx.try_recv() {
+        if let AgentEvent::AuditFire { audit_reason, .. } = ev {
+            saw_audit_fire = true;
+            assert!(
+                audit_reason.contains("declines"),
+                "audit_reason should mention `declines` grade, got: {audit_reason}"
+            );
+        }
+    }
+    assert!(
+        saw_audit_fire,
+        "Lane B must emit `AuditFire` on Declines grade"
+    );
+}

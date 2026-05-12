@@ -163,8 +163,15 @@ async fn run_with_tui(
     // applying `RuntimeComplete` and restoring the terminal. Even
     // when raw-mode entry fails (headless test env), `run_with_subscriber`
     // signals done_tx before returning the Err.
-    match done_rx.await {
-        Ok(()) => {}
+    //
+    // PR-7 (PR-6 closeout MEDIUM-1): wrap the `done_rx.await` in a
+    // 30s timeout so a wedged subscriber (e.g. broken pipe to
+    // redirected stdout in `atlas index --replay-from-cache | head`)
+    // cannot block forever. The timeout maps to the same
+    // `DrainFailed` variant the subscriber-dropped path produces.
+    match tokio::time::timeout(Duration::from_secs(30), done_rx).await {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => return Err(ReplayError::DrainFailed),
         Err(_) => return Err(ReplayError::DrainFailed),
     }
     let tui_outcome = tui_handle.await;
@@ -217,6 +224,20 @@ pub(crate) fn collect_replay_events(
             let entry = entry.map_err(ReplayError::Io)?;
             let entry_path = entry.path();
 
+            // PR-7 (PR-6 closeout MEDIUM-2): apply the cheap suffix
+            // filter BEFORE the (expensive, IO-touching) canonicalize.
+            // A broken-symlink `.meta.json` or a stray non-transcript
+            // file in the stage directory would otherwise produce a
+            // misleading `PathTraversal` message when the real cause
+            // is an unrelated IO error. Canonicalising only the
+            // transcript half makes the error attribution sharp.
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // Process the `.transcript` half. The paired `.output`
+            // is loaded via `agents_output_path`.
+            let Some(sha) = name.strip_suffix(PUB_TRANSCRIPT_SUFFIX) else {
+                continue;
+            };
+
             // Path-traversal guard (defence-in-depth): refuse any
             // entry whose canonical form escapes the canonical
             // agents root. A symlink inside the agents directory
@@ -236,12 +257,6 @@ pub(crate) fn collect_replay_events(
                 )));
             }
 
-            let name = entry.file_name().to_string_lossy().into_owned();
-            // Process the `.transcript` half. The paired `.output`
-            // is loaded via `agents_output_path`.
-            let Some(sha) = name.strip_suffix(PUB_TRANSCRIPT_SUFFIX) else {
-                continue;
-            };
             let transcript_path = entry_path;
             let output_path = agents_output_path(atlas_root, stage, &sha.to_string());
 
