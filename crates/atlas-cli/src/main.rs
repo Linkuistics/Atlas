@@ -130,6 +130,51 @@ fn run_validate_overrides_cmd(args: ValidateOverridesArgs) -> Result<ExitCode> {
 }
 
 fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
+    // Phase 7 PR-6: short-circuit the entire `atlas index` deterministic
+    // pipeline when `--replay-from-cache` is set. The replay path
+    // spawns a local tokio runtime (the only legal sync→async
+    // boundary, per plan §7.1) and exits without touching the budget,
+    // backend, or the deterministic dispatcher. PR-7 will replace the
+    // deterministic-dispatcher path below with the
+    // `AgentRuntime::run_workspace` path; PR-6 leaves that
+    // unmodified.
+    if args.replay_from_cache {
+        let root = args
+            .root
+            .canonicalize()
+            .with_context(|| format!("failed to resolve root path {}", args.root.display()))?;
+        let tui_config = atlas_cli::tui::TuiConfig {
+            show_providers: args.tui_show_providers,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("failed to build single-thread tokio runtime for --replay-from-cache")?;
+        let atlas_root = root.join(atlas_cli::DEFAULT_OUTPUT_SUBDIR);
+        // Replay defaults to the ClaudeCode transport. PR-7 surfaces
+        // an explicit `--replay-transport` flag if the cross-transport
+        // calibration story needs it; PR-6 ships the simplest shape.
+        let outcome = runtime.block_on(atlas_cli::replay::replay_into_tui(
+            &atlas_root,
+            atlas_agents::TransportFlavour::ClaudeCode,
+            tui_config,
+        ));
+        return match outcome {
+            Ok(_snapshot) => Ok(ExitCode::SUCCESS),
+            Err(err) => {
+                eprintln!("atlas: --replay-from-cache failed: {err}");
+                Ok(ExitCode::from(1))
+            }
+        };
+    }
+
+    // TODO(PR-7): wire the LLM-spine `AgentRuntime` here. PR-6 keeps
+    // `atlas index` on the deterministic dispatcher; the TUI
+    // subscriber is reachable only through `--replay-from-cache`
+    // above. PR-7's wiring step replaces the body below with the
+    // single `Handle::block_on(runtime.run_workspace(...))` legal
+    // sync→async boundary (plan §7.1).
+
     if args.budget.is_none() && !args.no_budget {
         anyhow::bail!(
             "`atlas index` requires `--budget <N-tokens>` to fail loudly on runaway LLM usage. \

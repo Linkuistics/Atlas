@@ -46,7 +46,11 @@ pub mod types;
 
 mod prompt_token_coverage;
 
-pub use atomic_write::atomic_write;
+pub use atomic_write::{atomic_write, atomic_write_pair};
+pub use cache::layout::{
+    agents_output_path, agents_stage_dir_path, agents_transcript_path, PUB_OUTPUT_SUFFIX,
+    PUB_TRANSCRIPT_SUFFIX,
+};
 pub use cache::{FingerprintBuilder, GcReport, PersistentCache, Sha256Hex};
 pub use contract_canonicalisation::{
     canonicalise_yaml, code_derived_content_sha, compute_surfaces_fingerprint,

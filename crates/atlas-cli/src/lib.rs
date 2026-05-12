@@ -13,8 +13,10 @@ pub mod jsonl_subscriber;
 pub mod pipeline;
 pub mod progress;
 pub mod prompts;
+pub mod replay;
 pub mod reports;
 pub mod timestamp;
+pub mod tui;
 pub mod validate;
 
 pub use cli_args::{index_error_exit_code, IndexArgs};

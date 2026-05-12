@@ -59,7 +59,11 @@ impl TransportFlavour {
 
 /// LLM provider identity. The cross-provider audit rule (Anthropic↔OpenAi
 /// pairings only) is enforced one layer up in the runtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// `Ord` is derived so the PR-6 TUI's per-provider token breakdown
+/// can hold a deterministic key order via `BTreeMap`. Alphabetical
+/// variant order suffices for the rendering purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Provider {
     Anthropic,
     OpenAi,

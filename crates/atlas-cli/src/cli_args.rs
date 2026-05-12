@@ -101,6 +101,21 @@ pub struct IndexArgs {
     /// consumes the flag; PR-2 ships the plumbing.
     #[arg(long, value_name = "PATH")]
     pub log_events: Option<PathBuf>,
+
+    /// Replay a cached run via the TUI without invoking any backend.
+    /// Walks `<root>/.atlas/cache/agents/` and emits a synthetic
+    /// `AgentEvent` sequence so the TUI renders the prior run
+    /// identically. See `crates/atlas-cli/src/replay.rs` for the
+    /// transport-mismatch behaviour (plan §7.4).
+    #[arg(long)]
+    pub replay_from_cache: bool,
+
+    /// In TUI mode, show per-provider token breakdown alongside the
+    /// running total. Dormant until PR-7 wires the TUI into
+    /// `atlas index`; the flag is plumbed today for the
+    /// `--replay-from-cache` path that lands in PR-6.
+    #[arg(long)]
+    pub tui_show_providers: bool,
 }
 
 impl IndexArgs {
@@ -229,6 +244,30 @@ mod tests {
             args.log_events.as_deref(),
             Some(std::path::Path::new("/tmp/events.jsonl"))
         );
+    }
+
+    #[test]
+    fn replay_from_cache_default_is_false() {
+        let args = parse_index(&["atlas", "index", "/tmp/x"]);
+        assert!(!args.replay_from_cache);
+    }
+
+    #[test]
+    fn replay_from_cache_flag_binds_to_true() {
+        let args = parse_index(&["atlas", "index", "--replay-from-cache", "/tmp/x"]);
+        assert!(args.replay_from_cache);
+    }
+
+    #[test]
+    fn tui_show_providers_default_is_false() {
+        let args = parse_index(&["atlas", "index", "/tmp/x"]);
+        assert!(!args.tui_show_providers);
+    }
+
+    #[test]
+    fn tui_show_providers_flag_binds_to_true() {
+        let args = parse_index(&["atlas", "index", "--tui-show-providers", "/tmp/x"]);
+        assert!(args.tui_show_providers);
     }
 
     #[test]

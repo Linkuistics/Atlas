@@ -124,11 +124,11 @@ pub(crate) const OUTPUT_SUFFIX: &str = ".output";
 
 /// Resolve the transcript-cache file path:
 /// `<root>/cache/agents/<stage>/<sha>.transcript`.
-pub(crate) fn agents_transcript_path(
-    root: &Path,
-    stage: Stage,
-    fingerprint: &Sha256Hex,
-) -> PathBuf {
+///
+/// `pub` so the PR-6 `--replay-from-cache` walker in `atlas-cli` can
+/// derive the canonical path for an `(stage, sha)` pair without
+/// duplicating the layout constants.
+pub fn agents_transcript_path(root: &Path, stage: Stage, fingerprint: &Sha256Hex) -> PathBuf {
     root.join(CACHE_DIRNAME)
         .join(AGENTS_DIRNAME)
         .join(stage_dir_name(stage))
@@ -137,7 +137,9 @@ pub(crate) fn agents_transcript_path(
 
 /// Resolve the transcript-cache output path:
 /// `<root>/cache/agents/<stage>/<sha>.output`.
-pub(crate) fn agents_output_path(root: &Path, stage: Stage, fingerprint: &Sha256Hex) -> PathBuf {
+///
+/// `pub` for the same reason as [`agents_transcript_path`].
+pub fn agents_output_path(root: &Path, stage: Stage, fingerprint: &Sha256Hex) -> PathBuf {
     root.join(CACHE_DIRNAME)
         .join(AGENTS_DIRNAME)
         .join(stage_dir_name(stage))
@@ -145,12 +147,20 @@ pub(crate) fn agents_output_path(root: &Path, stage: Stage, fingerprint: &Sha256
 }
 
 /// Resolve the per-stage directory under the transcript-cache root.
-#[allow(dead_code)] // wired into PR-4+ when the runtime GCs orphan entries.
-pub(crate) fn agents_stage_dir_path(root: &Path, stage: Stage) -> PathBuf {
+/// `pub` so the PR-6 replay walker can enumerate entries.
+pub fn agents_stage_dir_path(root: &Path, stage: Stage) -> PathBuf {
     root.join(CACHE_DIRNAME)
         .join(AGENTS_DIRNAME)
         .join(stage_dir_name(stage))
 }
+
+/// Suffix for transcript files. `pub` so the PR-6 replay walker can
+/// classify directory entries without re-encoding the constant.
+pub const PUB_TRANSCRIPT_SUFFIX: &str = TRANSCRIPT_SUFFIX;
+
+/// Suffix for output files. `pub` so the PR-6 replay walker can
+/// classify directory entries without re-encoding the constant.
+pub const PUB_OUTPUT_SUFFIX: &str = OUTPUT_SUFFIX;
 
 #[cfg(test)]
 mod tests {
