@@ -2,7 +2,7 @@
 
 Companion to `docs/superpowers/specs/2026-05-12-atlas-vnext-phase7-plan.md`. This file tracks per-PR completion state across sessions. The continuation prompt at `docs/superpowers/prompts/2026-05-12-vnext-continue.md` (Phase-7-shaped) reads this file (via the `*phase7-plan*` wildcard match) to find the next PR to dispatch.
 
-**Last updated:** 2026-05-12 (PR-7 landed: end-to-end AgentRuntime wiring via `--agent-runtime` flag + single `Handle::block_on` boundary + cross-transport parity test + deferred MEDIUMs from PR-5/PR-6 cleanup + AWARENESS-A positive Lane B test; three code commits — Steps 7.4 Atlas-on-Atlas calibration and 7.6 subprocess `--disallowedTools` probe DEFERRED to a follow-up production-prompt sprint; documented in PR-7 closeout note below; the orchestrator's final status-flip commit pending).
+**Last updated:** 2026-05-13 (Phase 7 SHIPPED — PR-7 status-flip commit lands the final checkbox; all 8 Phase 7 PRs are now `[x]`. Two-stage review verdict: spec compliance COMPLIANT-WITH-ACCEPTABLE-DEFERRALS; code quality APPROVED-WITH-MINORS. Orchestrator-side cargo gates re-verified clean: 6/6 gates green; release polyglot smoke 2-tests-passed in 106.81s — same envelope as PR-5's 104.32s and PR-6's 109.34s. Steps 7.4 Atlas-on-Atlas calibration + 7.6 subprocess `--disallowedTools` probe explicitly DEFERRED to a follow-up production-prompt sprint with documented preconditions in the Phase 7 → Phase 8 handoff section below).
 
 ## PR status
 
@@ -15,7 +15,7 @@ Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the
 - [x] PR-4 — Agent runtime (single-iteration) + Lane A schema validation (large)
 - [x] PR-5 — Fixed-point iteration + LLM-decided dispatch + Lane B cross-provider audit (large)
 - [x] PR-6 — `ratatui` TUI subscriber + `--replay-from-cache` mode (medium)
-- [ ] PR-7 — End-to-end wiring + polyglot smoke extension + Atlas-on-Atlas calibration + closeout (large)
+- [x] PR-7 — End-to-end wiring + polyglot smoke extension + Atlas-on-Atlas calibration + closeout (large) — Steps 7.4 + 7.6 DEFERRED (see PR-7 notes)
 
 When every box is `[x]`, Phase 7 is complete and the continuation prompt should report success and route to "brainstorm Phase 8 (Cargo retirement per recast spec §11.2)?".
 
@@ -380,7 +380,7 @@ Deviations from plan: none material. `cargo fmt --all` applied a one-line import
 - `b83a49e` — deferred MEDIUMs from PR-5/PR-6 + AWARENESS-A positive Lane B test. Adds `AgentError::LlmOutputMalformed(String)` variant; switches the two `parse_*_from_output_value` map_err sites in `dispatch.rs` from `OverrideRequired` (semantically wrong for LLM output parse failures) to `LlmOutputMalformed`. Hoists `now_iso` to `pub(super) fn` in `runtime/mod.rs` and deletes the duplicate in `dispatch.rs`. Replay drain `done_rx.await` wrapped in `tokio::time::timeout(30s)` (PR-6 MEDIUM-1). Canonicalize moved AFTER suffix-filter in replay walker (PR-6 MEDIUM-2). TUI `select!` event arm now drains all immediately-ready events via `rx.try_recv()` before yielding to the sleep tick (PR-6 MEDIUM-3). Two new positive-assertion tests in `tests/audit_lane_b.rs` (`lane_b_audit_fires_audit_fire_event_on_weak_grade` + `lane_b_audit_fires_audit_fire_event_on_declines_grade`) — the AWARENESS-A complement to the negative `lane_b_wired_into_call_agent_skips_on_strong_grade`. 5 files, +176/-25 LOC.
 - `88cbad7` — wire AgentRuntime into atlas index via single `block_on`. New `pipeline::run_index_agent_runtime` (~205 LOC) gated behind a new `--agent-runtime` CLI flag (default false). Opens `PersistentCache` at `<output_dir>/cache/`; constructs `EventBus`; spawns subscribers (always agent_cache_writer; conditionally `--log-events PATH` JSON-Lines; then TUI when stdout is a TTY AND !`--no-tui` else JSON-Lines-to-stdout); builds `AgentRuntime` with `for_provider: None` (Lane B falls back to same-model auditor with `AuditDegraded`); runs `tokio_rt.block_on(runtime.run_workspace(&workspace))` as the SINGLE sync→async boundary; joins each subscriber's handle (drain handshake); serialises the returned `L9Projection` to `<output_dir>/cache/agent-runtime-projection.json`. 3 files, +312/-6 LOC.
 - `5473abc` — cross-transport parity test in polyglot smoke. New `polyglot_smoke_cross_transport_parity_claude_code_vs_codex`: materialises the fixture twice, runs the deterministic engine pipeline with two `LabeledTransportBackend` instances (`pr13-test-backend-claude-code` vs `pr13-test-backend-codex`), asserts cold-call counts match, component_id sets match, edge_kind multisets match. 1 file, +267/-0 LOC.
-- `(closeout)` — memory updates + status closeout note + Phase 7 final summary. *(populated by the orchestrator's status-flip commit alongside PR-7's checkbox; this list will be backfilled with the final SHA.)*
+- `0820844` — memory updates + status closeout note + Phase 7 final summary (implementer's fourth code commit, written before the orchestrator's status-flip).
 
 **Decisions taken (vs deferred) — Step-by-step:**
 
@@ -421,7 +421,26 @@ Deviations from plan: none material. `cargo fmt --all` applied a one-line import
 - `b83a49e`: +176 / -25 (5 files; deferred MEDIUMs + AWARENESS-A)
 - `88cbad7`: +312 / -6 (3 files; AgentRuntime wiring)
 - `5473abc`: +267 / -0 (1 file; cross-transport parity test)
-- Net PR-7 lineage: +755 / -31 LOC.
+- `0820844`: +86 / -6 (3 files; closeout note + memory)
+- Net PR-7 lineage: +841 / -37 LOC.
+
+**Two-stage review — orchestrator-side (subagent-driven-development skill):**
+
+- **Spec compliance review** verdict: **COMPLIANT WITH ACCEPTABLE DEFERRALS**. No blocking issues. All 5 deferred MEDIUMs from PR-5 / PR-6 reviews verified closed. Two deviations flagged for user ratification (not code fixes): (A) `--agent-runtime` gated default-false vs spec text "atlas index runs end-to-end through AgentRuntime"; (B) cross-transport parity test exercises the deterministic engine path with two transport labels rather than `AgentRuntime` through two real transports (B is a consequence of A). The implementer's rationale on A is sound — production prompts aren't ready; flipping the default would break `atlas index` for real users — and the spec acceptance text "atlas index runs end-to-end through AgentRuntime via single Handle::block_on" is ambiguous about whether the default must be on. User adjudicates.
+- **Code quality review** verdict: **APPROVED WITH MINORS**. No HIGH issues. Three MEDIUMs all deferrable per the reviewer's recommendation: (1) drain-handshake-no-timeout in `run_index_agent_runtime` — symmetric to PR-6's `replay.rs` 30s timeout fix; should land in the first Phase 8 PR; (2) `now_iso()` returns epoch-integer string, not actual ISO-8601 — cosmetic naming mismatch; rename or fix when MCP subprocess wiring lands; (3) `default_transport: ClaudeCode` + canonical Atlas backend = `atlas index --agent-runtime` immediately hard-errors at first `call_agent` against the canonical user config — see "User-visible note" below.
+
+**Orchestrator-side independent verification (post-`0820844`, 2026-05-13):**
+
+- `cargo fmt --check` clean
+- `cargo build --workspace` clean (4.50s)
+- `cargo clippy --all-targets -- -D warnings` clean (8.14s)
+- `cargo test --workspace --no-fail-fast -- --skip polyglot_phase3` exit 0; zero failures grep'd
+- `cargo build --release --workspace` clean (3.81s)
+- `cargo test -p atlas-cli --test phase3_polyglot_fixture --release --no-fail-fast` — **2 passed in 106.81s** (`polyglot_phase3_acceptance` + `polyglot_smoke_cross_transport_parity_claude_code_vs_codex`). Cumulative regression guard held; cold count stays in loose bound `0 < cold < 100`. Timing envelope matches PR-5 (104.32s) and PR-6 (109.34s) — the LLM-dispatch site PR-5 introduced remains unreachable from the polyglot smoke because the fixture has full override coverage (the load-bearing protection per plan §2.2 non-negotiable #8).
+
+**User-visible note for the post-shipping ratification check (code-quality MEDIUM-3):**
+
+The `--agent-runtime` flag, as wired in PR-7, will **immediately hard-error** when invoked against the canonical Atlas backend configuration (`claude_code` + `codex` per memory `project_atlas_common_backend_config`). The runtime's `run_tool_loop_with_lane_a` returns `Err(AgentError::Backend("PR-4 runtime does not drive subprocess transports directly; PR-7 wires the MCP serve_client task"))` for `TransportFlavour::ClaudeCode | Codex`. This is intentional — subprocess MCP `serve_client` is item #5 of the Phase 7 → Phase 8 handoff prerequisites — but it means an early adopter who follows the canonical Atlas setup and tries `atlas index --agent-runtime` today will see an immediate failure rather than a degraded-but-functional partial run. The HTTP transports (`http_anthropic` / `http_openai`) work fully. Two remediation options for the production-prompt sprint: (a) a CLI pre-flight check that detects subprocess backends + emits a clear "subprocess wiring is a follow-up" error before entering the runtime loop, or (b) ship the subprocess MCP `serve_client` driver (prerequisite item #5) so `--agent-runtime` works against the canonical config out-of-box. Option (b) is the proper fix; option (a) is the one-week mitigation.
 
 ---
 
@@ -436,7 +455,7 @@ Deviations from plan: none material. `cargo fmt --all` applied a one-line import
 - **PR-4** (agent runtime single-iteration + Lane A): `80dac2f` + `3a5c986` + `7f61e94` + status flip `a006955`
 - **PR-5** (fixed-point + LLM dispatch + Lane B): `12bbbec` + `7f51393` + `7ec3da7` + status flip `888ef13`
 - **PR-6** (TUI + replay-from-cache): `9618040` + `f2ce6d5` + status flip `6c326e1`
-- **PR-7** (end-to-end wiring + cross-transport parity + closeout): `b83a49e` + `88cbad7` + `5473abc` + closeout-status-flip *(SHA backfilled by orchestrator)*
+- **PR-7** (end-to-end wiring + cross-transport parity + closeout): `b83a49e` + `88cbad7` + `5473abc` + `0820844` + status flip *(this commit; SHA at HEAD post-merge)*
 
 **Polyglot smoke cumulative regression guard:** cold = ~40 LLM calls (calibrated codebase baseline since Phase 6 PR-5; loose-bound `0 < cold < 100`); warm + reports = 0; cross-transport parity (claude_code vs codex labels) holds. No drift across the seven code PRs.
 
