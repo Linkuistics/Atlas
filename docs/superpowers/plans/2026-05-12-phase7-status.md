@@ -2,7 +2,7 @@
 
 Companion to `docs/superpowers/specs/2026-05-12-atlas-vnext-phase7-plan.md`. This file tracks per-PR completion state across sessions. The continuation prompt at `docs/superpowers/prompts/2026-05-12-vnext-continue.md` (Phase-7-shaped) reads this file (via the `*phase7-plan*` wildcard match) to find the next PR to dispatch.
 
-**Last updated:** 2026-05-12 (PR-3 landed: 22 pure pass-through tool wrappers across mature/mid-tier/weak-tooling tiers).
+**Last updated:** 2026-05-12 (PR-4 landed: AgentRuntime single-iteration + deterministic-only dispatch + Lane A + HTTP/MCP tool loops + semaphores + single-iteration smoke).
 
 ## PR status
 
@@ -12,7 +12,7 @@ Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the
 - [x] PR-1 — `atlas-agents` crate + `Tool` trait + MCP server + async `LlmBackend` (large)
 - [x] PR-2 — Transcript cache + event bus + JSON-Lines subscriber (medium)
 - [x] PR-3 — 22 tool wrappers across three parallel subagents (medium) — revised from 26 per PR-3 user-decided deferral of 5 non-existent manifest parsers
-- [ ] PR-4 — Agent runtime (single-iteration) + Lane A schema validation (large)
+- [x] PR-4 — Agent runtime (single-iteration) + Lane A schema validation (large)
 - [ ] PR-5 — Fixed-point iteration + LLM-decided dispatch + Lane B cross-provider audit (large)
 - [ ] PR-6 — `ratatui` TUI subscriber + `--replay-from-cache` mode (medium)
 - [ ] PR-7 — End-to-end wiring + polyglot smoke extension + Atlas-on-Atlas calibration + closeout (large)
@@ -216,7 +216,54 @@ Deviations from plan: none material. `cargo fmt --all` applied a one-line import
 **Pre-merge cleanup performed:** worktrees `/tmp/atlas-phase7-pr3{a,b,c}` and branches `phase7-pr3{a,b,c}` + `phase7-pr3` (the integration branch) to be removed by the status-flip's housekeeping step.
 
 ### PR-4
-*(populated when PR-4 lands)*
+
+2026-05-12 — Landed across three commits, fast-forwarded onto main:
+- `80dac2f` — main PR-4 commit: `AgentRuntime` struct + deterministic-only dispatch (mandatory `subsystems.overrides.yaml` + `components.overrides.yaml` inputs; PR-5 relaxes), HTTP tool-use loop with byte-for-byte transcript recording, MCP tool-loop observation via per-client drain, Lane A schema validation with one-retry-then-hard-fail, per-transport + per-stage semaphores (HTTP=8, subprocess=2, per-stage=8), and a single-iteration smoke test against `test_backend` with canned responses. 12 files, +2666/-42 LOC.
+- `3a5c986` — follow-up addressing spec-compliance review feedback: created `crates/atlas-agents/src/runtime/agent.rs` carrying the `Agent` value-object (stage, target_id, iteration) + `Agent::id()` formatter + `impl From<&AgentRequest>` that plan §4 file list required. The existing free `agent_id(req)` now delegates to `Agent::from(req).id()`; the dozen call sites in `mod.rs` are unchanged. 2 files, +108/-8 LOC. atlas-agents lib test count 84 → 87.
+- `7f61e94` — follow-up addressing two HIGH issues from code-quality review:
+  - **HIGH-1 (cache bypass):** `call_agent` ran the async tool loop unconditionally before consulting the transcript cache, defeating the cache's purpose. Root cause: `LlmResponseCache::call_agent_cached` is a sync probe-or-compute API; the implementer pre-computed and injected via `RefCell`. Fix: split the engine cache API into `probe_agent_pair` (sync probe) + `write_agent_pair` (sync write); restructured `call_agent` to **probe-first → async compute on miss → write**. The engine's `call_agent_cached` survives as a backward-compatible delegating wrapper so engine-side tests (5 cache tests in `llm_cache.rs`) keep working without modification. The `PrecomputedAgentBytes` struct + `RefCell` smuggling are gone.
+  - **HIGH-2 (drain handshake):** `run_workspace` never emitted `AgentEvent::RuntimeComplete` on any exit path. The integration test masked this with a manual emit after `run_workspace` returned. Fix: wrap `run_workspace`'s body so `RuntimeComplete` fires unconditionally before returning (`let result = run_iteration(...).await; emit(RuntimeComplete); result`); removed the test workaround.
+  - 3 files, +147/-108 LOC.
+
+**Acceptance gates met (orchestrator-side independent verification on main post-`7f61e94`):**
+- `cargo build --workspace` clean
+- `cargo fmt --check` clean (one trivial PR-3-era drift was already fixed; no PR-4 drift)
+- `cargo clippy --all-targets -- -D warnings` clean
+- `cargo test --workspace --no-fail-fast -- --skip polyglot_phase3` — 1498 tests across 85 result blocks all green. **Lesson re-confirmed:** the `--skip` substring pattern for cargo test is literal — PR-3 closeout's recommendation `--skip phase3_polyglot` does NOT match the actual test function name `polyglot_phase3_acceptance`; the correct substring is `polyglot_phase3`. Memory recommendation: update `feedback_atlas_test_subprocess_concurrency` or add a sibling memory for the cargo `--skip` substring gotcha so future PR briefs use the working pattern.
+- `cargo build --release --workspace` clean
+- `cargo test -p atlas-cli --test phase3_polyglot_fixture --release --no-fail-fast` — `polyglot_phase3_acceptance ok` in 104.20s on the post-`80dac2f` worktree (the cumulative regression guard for the main PR-4 commit). The follow-ups (`3a5c986` + `7f61e94`) are additive in atlas-agents/engine only and don't affect the polyglot smoke's deterministic-dispatcher path; re-running was triaged as not required.
+
+**Two-stage review (per `superpowers:subagent-driven-development`):**
+- Spec compliance review (background `feature-dev:code-reviewer` subagent): flagged the missing `agent.rs` file from plan §4 file list as the single load-bearing issue. Fixed in `3a5c986`. Re-review implicit (file existence + spec match was the entire delta). ✅
+- Code quality review (background subagent on the post-`3a5c986` tip): flagged two HIGH issues (cache bypass + RuntimeComplete missing) and two MEDIUMs deferred to PR-5/PR-7 (see below). HIGHs fixed in `7f61e94`. Re-review on `7f61e94` ✅ APPROVED — both HIGHs correctly fixed, no regressions introduced, deferred MEDIUMs confirmed absent.
+
+**Deferred from PR-4 code-quality review (route into PR-5 or PR-7 cleanup as appropriate):**
+- **MEDIUM-1: Semaphore acquisition-order invariant.** `call_agent` acquires the transport permit first; `run_tool_loop_http` acquires the stage permit inside. Both held across the `backend.call_async` await. Under defaults (HTTP=8, per-stage=8) this is fine, but `Semaphores::with_caps` lets callers create asymmetric configs where two concurrent tasks holding transport permits could deadlock waiting on stage permits. Fix: document the fixed acquisition order on `Semaphores` and consider merging both acquire calls into a single `acquire_for_agent(transport, stage)` method that enforces order. Track in PR-5 or PR-7.
+- **MEDIUM-2: Lane A retry test doesn't assert `call_count == 2`.** The `lane_a_retry_fires_exactly_once_on_classify_schema_fail` test asserts the final projection but doesn't pin "exactly one retry" at the call-count level. An accidental retry-count regression (zero retries OR two retries) could pass undetected. Fix: add `assert_eq!(backend.call_count_for_stage("classify"), 2)` after `run_workspace`. Track as a PR-5 / PR-7 test-suite hardening item.
+
+**Forward-pointers to PR-5 (LLM-decided dispatch + fixed-point iteration + Lane B):**
+- `AgentError::LaneBFail(String)` variant is **already present** as a PR-5 placeholder (added in `80dac2f`) so PR-5's pattern matches don't need to grow. PR-5 fills in the real error type via `#[from]` when Lane B lands.
+- PR-4's logical `Stage` enum (`DispatchSubsystem`, `DispatchComponent`, `Classify`, `Surface`, `Reduce`, `Project`) is in `crates/atlas-agents/src/runtime/audit/lane_a.rs`. PR-5's `dispatch_subsystems` and `dispatch_components` need to handle the override-shortcircuit case (override-file present → emit synthetic CacheHit transcript; absent → call the LLM dispatch agent). PR-4 hard-errors with `AgentError::OverrideRequired` when the file is missing; PR-5 relaxes this.
+- `AgentRuntime::backend_router` is `Arc<dyn LlmBackend>` not `Arc<BackendRouter>` — PR-7 wiring will plug a real `BackendRouter` instance there (which implements `LlmBackend`).
+- The runtime emits 11 of the 11 `AgentEvent` variants (PR-2's full enumeration) — except `AuditDegraded`, `AuditFire`, `AuditVerdict` which are PR-5's responsibility (Lane B).
+
+**Forward-pointers to PR-7 (end-to-end wiring + closeout):**
+- The runtime's sync→async boundary moves to `atlas-cli/src/main.rs` in PR-7 via a single `Handle::block_on(runtime.run_workspace(workspace))`. PR-4's clippy::disallowed_methods rule forbids `block_on` in atlas-engine and atlas-agents/runtime/, so the boundary is structurally enforced.
+- `fingerprint_inputs` zero-sentinel resolution: PR-4 chose path (a) — keep the sentinel + runtime fills SHAs via `tokio::fs::read` + `sha2::Sha256::digest` at the `call_agent` call site (mod.rs:455–471). This works correctly with the `Tool` trait's sync surface; no Trait modification needed.
+- PR-4 defines its own logical `Stage` enum (DispatchSubsystem..Project) distinct from `atlas_index::Stage` (L1..L9 engine cache layout). PR-6 uses `atlas_index::Stage` for replay. PR-7 will reconcile if the divergence proves load-bearing; today the two stages live on different axes (logical agent stage vs. on-disk cache layout) and don't need to unify.
+- **`AgentRuntime::run_workspace` is NOT wired into `atlas index`** — PR-7 adds the wiring + the Atlas-on-Atlas baseline calibration + the cross-transport parity test extension to the polyglot smoke. The runtime is exercised only by the single-iteration smoke test in PR-4.
+
+**Deviations from plan §4 Task 4 (all documented inline at the relevant call sites):**
+- `AgentRuntime::backend_router: Arc<dyn LlmBackend>` (plan said `Arc<BackendRouter>`). `BackendRouter::from_dispatch_table` is `#[cfg(test)]`-gated on the producer crate; the integration test couldn't construct one without an upstream lift. PR-7 will wire a real `BackendRouter` (which implements `LlmBackend`).
+- `AgentInputFingerprint.transport_flavour: String` (the wire form) rather than the `TransportFlavour` enum, because `atlas-engine::llm_cache` cannot import from `atlas-agents` (would invert dep direction). Round-trip invariant preserved.
+- `current_sha_fn = |_path: &str| None` in the cache probe — PR-4's placeholder. PR-7 wires the real `AtlasDatabase`-backed sha lookup.
+- Cache write happens on `IndexStage::L8` (a fixed stage axis for now). PR-5 may parameterise this if subsequent stages need distinct cache namespaces.
+
+**Test count deltas in PR-4:**
+- `atlas-agents` lib: +3 (agent.rs) + +5+ (lane_a.rs + dispatch.rs + tool_loop_http.rs + semaphores.rs unit tests) = atlas-agents lib went from 72 to 87 (cumulative across the three commits).
+- `atlas-agents` integration: +3 in `agent_runtime_single_iteration.rs` (end-to-end + retry + staged-backend pop).
+- `atlas-engine` lib: probe/write split tested via the existing `call_agent_cached` tests (no new tests needed — the back-compat wrapper exercises both new methods).
+- Workspace total: +6 to +10 PR-4-attributable tests across the three commits. Cumulative regression guard unchanged.
 
 ### PR-5
 *(populated when PR-5 lands)*
