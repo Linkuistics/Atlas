@@ -2,7 +2,7 @@
 
 Companion to `docs/superpowers/specs/2026-05-12-atlas-vnext-phase7-plan.md`. This file tracks per-PR completion state across sessions. The continuation prompt at `docs/superpowers/prompts/2026-05-12-vnext-continue.md` (Phase-7-shaped) reads this file (via the `*phase7-plan*` wildcard match) to find the next PR to dispatch.
 
-**Last updated:** 2026-05-12 (PR-4 landed: AgentRuntime single-iteration + deterministic-only dispatch + Lane A + HTTP/MCP tool loops + semaphores + single-iteration smoke).
+**Last updated:** 2026-05-12 (PR-6 landed: ratatui TUI subscriber + `--replay-from-cache` mode + four widget modules + drain-handshake-compliant replay test; rebased onto PR-4's tip and fast-forwarded).
 
 ## PR status
 
@@ -14,7 +14,7 @@ Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the
 - [x] PR-3 — 22 tool wrappers across three parallel subagents (medium) — revised from 26 per PR-3 user-decided deferral of 5 non-existent manifest parsers
 - [x] PR-4 — Agent runtime (single-iteration) + Lane A schema validation (large)
 - [ ] PR-5 — Fixed-point iteration + LLM-decided dispatch + Lane B cross-provider audit (large)
-- [ ] PR-6 — `ratatui` TUI subscriber + `--replay-from-cache` mode (medium)
+- [x] PR-6 — `ratatui` TUI subscriber + `--replay-from-cache` mode (medium)
 - [ ] PR-7 — End-to-end wiring + polyglot smoke extension + Atlas-on-Atlas calibration + closeout (large)
 
 When every box is `[x]`, Phase 7 is complete and the continuation prompt should report success and route to "brainstorm Phase 8 (Cargo retirement per recast spec §11.2)?".
@@ -269,7 +269,47 @@ Deviations from plan: none material. `cargo fmt --all` applied a one-line import
 *(populated when PR-5 lands)*
 
 ### PR-6
-*(populated when PR-6 lands)*
+
+2026-05-12 — Landed as two commits, dispatched in parallel with PR-4 (per plan §3 Wave-4 || Wave-3 lane), implemented in worktree `/tmp/atlas-phase7-pr6`, then rebased onto PR-4's tip and fast-forwarded to main. Post-rebase SHAs:
+- `9618040` — main PR-6 commit (pre-rebase was `d1d9039`): TUI subscriber rendering `AgentEvent` stream into a four-widget frame (tree view, token panel, iteration bar, stuck detector at 90s); `--replay-from-cache` mode that re-emits cached transcript pairs onto the bus so the TUI renders identically against recorded runs (without invoking any backend); CLI flags `--replay-from-cache` + `--tui-show-providers` added to `IndexArgs`; `TerminalGuard` RAII restores raw mode + leaves alternate screen even on panic. 16 files, +2058/-20 LOC.
+- `f2ce6d5` — follow-up (pre-rebase was `267c60d`): restored spec-mandated `Constraint::Length(2)` bottom slot per plan §4 Task 6.2 (main commit shipped `Length(4)` without spec-traceable rationale; flagged by spec-compliance reviewer as the single literal deviation). 1 file, +4/-3 LOC. Purely cosmetic — affects rendered pixel rows only; the replay test's `TuiSnapshot` byte-equality assertion remained green.
+
+**Acceptance gates met (orchestrator-side independent verification on the rebased worktree):**
+- `cargo build --workspace` clean
+- `cargo fmt --check` clean (one trailing-newline drift in `replay.rs:442` fixed via `cargo fmt --all` before initial commit)
+- `cargo clippy --all-targets -- -D warnings` clean
+- `cargo test --workspace --no-fail-fast -- --skip polyglot_phase3` — 1484 tests across 85 result blocks all green
+- `cargo build --release --workspace` clean
+- `cargo test -p atlas-cli --test phase3_polyglot_fixture --release --no-fail-fast` — `polyglot_phase3_acceptance ok` in 109.34s on the pre-rebase tip. The follow-up rebase touched only the doc-comment + numeric constants in `tui/mod.rs`'s layout — non-load-bearing for the polyglot smoke's deterministic-dispatcher path; re-running was triaged as not required.
+- Post-rebase verification: workspace build clean (8.80s); `cargo test -p atlas-cli --lib --test replay` — 93 lib + 3 replay = 96 tests green.
+
+**Two-stage review (per `superpowers:subagent-driven-development`):**
+- Spec compliance review (background `feature-dev:code-reviewer` subagent on `d1d9039`): flagged the layout deviation (`Length(4)` vs spec-mandated `Length(2)`) as the single literal issue. Fixed in `267c60d` (post-rebase `f2ce6d5`). All other §6.1–§6.4 checks PASS — TUI subscriber skeleton, state model + four widgets, replay-from-cache with `TransportMismatch` clean-cache invariant, CLI flag wiring, PR-2 surface preservation, PR-7 scope containment.
+- Code quality review (background subagent on `267c60d`): ⚠️ APPROVED WITH MINORS — three MEDIUMs flagged as deferrable to PR-7 (see below) plus one awareness note on `Length(2)` border-clipping (a stuck_detect line rendered inside a bordered Block needs Length(3); Length(2) clips the content row — but Length(2) is spec-mandated, so this is the spec's design choice not a code-quality bug).
+
+**Deferred from PR-6 code-quality review (route into PR-7 wiring as appropriate):**
+- **MEDIUM-1: Drain handshake `done_rx.await` is unbounded.** If the TUI subscriber hangs (e.g. broken pipe to redirected stdout in `atlas index . --replay-from-cache | head`), `replay_from_cache` blocks forever and the CLI hangs. PR-7 should either (a) treat persistent draw `io::Error` as a `break 'outer` condition in the TUI select loop, or (b) wrap `done_rx.await` with `tokio::time::timeout(Duration::from_secs(30), ...)`. Source: `crates/atlas-cli/src/replay.rs:166`.
+- **MEDIUM-2: `canonicalize` called before suffix-filter in replay walker.** A broken-symlink `.meta.json` file produces a misleading `ReplayError::PathTraversal` message when the real cause is an unrelated IO error. Fix: reorder to skip non-transcript entries (`strip_suffix(PUB_TRANSCRIPT_SUFFIX)` check) before calling `canonicalize`, or map the canonicalize error to `ReplayError::Io` for non-traversal failures. Source: `crates/atlas-cli/src/replay.rs:225`.
+- **MEDIUM-3: TUI `select!` event-per-tick latency.** The select processes exactly one event per 50ms tick. On a large replay burst (200+ agents) this serialises to ~10s of busy spinning while the TUI lags behind reality. Fix: drain all immediately-ready events in the event arm via `while let Ok(ev) = rx.try_recv()` inside the sleep tick, or switch to `biased` select with the event arm first. Source: `crates/atlas-cli/src/tui/mod.rs:142`. Not load-bearing for PR-6 (TUI unwired from live `atlas index`) but worth fixing before PR-7 lights up the live path.
+- **LOW awareness:** `atlas index . --replay-from-cache --no-tui` silently ignores `--no-tui` (replay arm short-circuits before consulting `no_tui`). Not a bug in PR-6 since the flag is dormant until PR-7, but a future footgun. Either error out on the conflict or route `--no-tui` to a TUI-less replay subscriber.
+
+**Convergent design choices accepted across PR-6:**
+- Used `atlas_index::Stage` (L1..L9 engine cache layout) for replay rather than PR-4's logical `Stage` enum (DispatchSubsystem..Project per recast §6.1). These are different axes — engine cache stages vs logical agent stages — and PR-7 will reconcile if it proves useful. Documented in the file header of `crates/atlas-cli/src/replay.rs`.
+- Single-transport invariant (plan §7.4) enforced via a sibling `.meta.json` file carrying `transport_flavour`; on mismatch with the requested transport, `ReplayError::TransportMismatch` is returned **before** any events are emitted on the bus (so the bus is clean — subscribers don't see a partial sequence).
+- `TerminalGuard` RAII newtype (`crates/atlas-cli/src/tui/mod.rs`) — strictly better than the spec pseudocode's inline `disable_raw_mode` because raw-mode cleanup runs on panic as well as normal exit.
+- `TuiSnapshot` excludes `Instant`-typed fields from serde round-trip, making the byte-equality assertion deterministic across live vs replay (the spec's load-bearing acceptance criterion).
+
+**Forward-pointers to PR-7 (end-to-end wiring + closeout):**
+- The TUI is NOT wired into `atlas index`. PR-6 leaves an explicit `// TODO(PR-7): wire the LLM-spine AgentRuntime here. PR-6 keeps atlas index on the deterministic dispatcher; the TUI subscriber is reachable only through --replay-from-cache above.` marker at `crates/atlas-cli/src/main.rs:171-176`.
+- TUI activation logic for non-replay `atlas index` invocations is PR-7's call: use `crossterm::tty::IsTty::is_tty(&std::io::stdout())` AND `!args.no_tui` to decide TUI vs JSON-Lines fallback. `--log-events PATH` is always-parallel regardless of mode.
+- The three deferred MEDIUMs (drain timeout, canonicalize ordering, event-per-tick latency) should be addressed in PR-7 before lighting up the live runtime, OR captured as Phase 8+ follow-on items if PR-7 scope is already at the brief's "stop and surface" threshold.
+
+**Test count deltas in PR-6:**
+- `atlas-cli` lib: +21 unit tests (TuiState apply/note_lag/snapshot, four widget render unit tests, ReplayError variants, TerminalGuard drop test, CLI flag parse tests).
+- `atlas-cli` integration: +3 in `crates/atlas-cli/tests/replay.rs` (`replay_snapshot_matches_synthetic_live_snapshot`, `transport_mismatch_error_path`, `no_cache_error_path`).
+- Workspace total: +24 PR-6-attributable tests. Cumulative regression guard unchanged.
+
+**Rebase note:** PR-6 was implemented off the same base as PR-4 (`3259bdd`). After PR-4 fast-forwarded to main at `7f61e94`/`a006955`, PR-6 was rebased onto current main and the two PR-6 commits replayed cleanly — no file conflicts (PR-4 and PR-6 touched disjoint file sets per the wave-design intent) and only a trivial `Cargo.lock` regeneration. Post-rebase: `9618040` + `f2ce6d5`. Pre-rebase SHAs (`d1d9039`, `267c60d`) survive in the worktree's reflog for forensic interest but the canonical lineage on main is the rebased pair.
 
 ### PR-7
 *(populated when PR-7 lands)*
