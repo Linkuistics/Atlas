@@ -14,15 +14,26 @@ disabled when the LLM tries to call them).
 
 ## claude-code
 
-`--disallowedTools=Read,Grep,Glob,Bash,Write,Edit`
+**Binary name:** `claude` (the Claude Code CLI). Earlier sprint drafts
+assumed `claude-code`; PR-B validated against `claude --version`
+output `2.1.140 (Claude Code)` (verified 2026-05-13) and corrected
+the preset in `claude_code_config`.
 
-Targeted upstream versions: claude-code ≥ 2.0 (current daily-driver).
-
-Source of truth for the flag name + accepted value shape:
-[`claude-code` CLI reference](https://docs.claude.com/en/docs/claude-code).
-The accepted value is a comma-separated tool-name list. The named tools
-match `claude-code`'s built-in tool registry IDs (`Read`, `Grep`,
+**Flag:** `--disallowedTools=Read,Grep,Glob,Bash,Write,Edit`
+(equivalently `--disallowed-tools`). Per `claude --help`, the accepted
+value is a comma- OR space-separated tool-name list. The named tools
+match Claude Code's built-in tool registry IDs (`Read`, `Grep`,
 `Glob`, `Bash`, `Write`, `Edit`).
+
+**Companion flags:** `--mcp-config <configs...>` accepts JSON files or
+strings; `-p`/`--print` runs non-interactively for pipe-friendly
+operation; `--strict-mcp-config` forces MCP sourcing exclusively from
+`--mcp-config` (ignores per-user MCP config).
+
+Targeted upstream version: `claude` 2.1.140 (current daily-driver).
+Source of truth for the flag set + accepted shapes: `claude --help`
+on the targeted version + [Claude Code CLI
+reference](https://docs.claude.com/en/docs/claude-code).
 
 ## codex
 

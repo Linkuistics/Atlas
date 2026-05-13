@@ -830,6 +830,7 @@ impl AgentRuntime {
                         config,
                     )
                     .await
+                    .map(|(output, _subprocess_mcp_transcript)| output)
                 }
             };
             let output = outcome?;

@@ -30,6 +30,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
@@ -57,14 +58,15 @@ pub struct SubprocessConfig {
 /// recast §5.4 (single-trait sourcing — Atlas's `Tool` impls are the
 /// only tools available; the unified envelope requires this).
 ///
-/// **PR-B follow-up:** verify the exact prompt-passing flag against
-/// the targeted claude-code upstream version. Today's shape uses
-/// `--print <prompt>` which several recent versions accept; older
-/// versions read from stdin in `claude --print` mode. Pin the version
-/// in `restrictions.md` when PR-B validates against the live binary.
+/// PR-B validated against upstream version `2.1.140 (Claude Code)`:
+/// the binary name is `claude` (not `claude-code`); `--print <prompt>`
+/// is the non-interactive entry; `--disallowedTools <tools...>`
+/// accepts a comma- (or space-) separated tool list; `--mcp-config
+/// <configs...>` accepts JSON files or strings. See
+/// `crates/atlas-agents/src/mcp/restrictions.md`.
 pub fn claude_code_config(mcp_config_path: &Path, prompt: &str) -> SubprocessConfig {
     SubprocessConfig {
-        executable_path: "claude-code".into(),
+        executable_path: "claude".into(),
         subprocess_args: vec![
             "--mcp-config".into(),
             mcp_config_path.to_string_lossy().into_owned(),
@@ -107,7 +109,10 @@ fn next_client_id() -> ClientId {
 
 /// Drive one subprocess LLM agent invocation to completion. Spawns
 /// the subprocess, conveys the prompt to it, waits for exit, drains
-/// the per-client MCP transcript, returns the final output.
+/// the per-client MCP transcript, returns the final output **and** the
+/// drained transcript so the caller can inspect the per-client MCP
+/// traffic (PR-B's `--disallowedTools` probe relies on this hook to
+/// assert that no `Read` tool calls reached Atlas's MCP server).
 ///
 /// `_transport` selects between claude-code and codex semantics for
 /// future wire-shape decisions; today the caller passes the matching
@@ -118,7 +123,7 @@ pub async fn serve_client(
     _transport: TransportFlavour,
     initial_prompt: String,
     config: SubprocessConfig,
-) -> Result<AgentOutput, AgentError> {
+) -> Result<(AgentOutput, Vec<Value>), AgentError> {
     let mut child = Command::new(&config.executable_path)
         .args(&config.subprocess_args)
         .stdin(Stdio::piped())
@@ -178,21 +183,27 @@ pub async fn serve_client(
     let stdout_bytes = stdout_task.await.unwrap_or_default();
     let stderr_bytes = stderr_task.await.unwrap_or_default();
 
+    // Drain the per-client MCP transcript **before** the exit-status
+    // check so non-zero-exit subprocesses don't leak transcript entries
+    // in `McpServer.transcript` (the per-`ClientId` `HashMap` entry is
+    // otherwise never removed). Empty under stub subprocesses (cat,
+    // false); populated once a real MCP wire flows through
+    // `server.serve_client`. Returned to the caller alongside the
+    // parsed AgentOutput so PR-B's probe can assert on tool-call shape.
+    let transcript = server.drain_client_transcript(client_id);
+
     if !exit_status.success() {
         tracing::warn!(
             ?exit_status,
             stderr = %String::from_utf8_lossy(&stderr_bytes),
+            transcript_entries = transcript.len(),
             "subprocess MCP client exited non-zero"
         );
         return Err(AgentError::SubprocessFailed { exit_status });
     }
 
-    // Drain the per-client MCP transcript. Empty under stub
-    // subprocesses (cat, false); populated once PR-B wires real MCP
-    // traffic through `server.serve_client`.
-    let transcript = server.drain_client_transcript(client_id);
-
-    parse_subprocess_final_output(&stdout_bytes, &transcript)
+    let output = parse_subprocess_final_output(&stdout_bytes, &transcript)?;
+    Ok((output, transcript))
 }
 
 /// Parse the subprocess's final output. The production contract per
@@ -202,7 +213,7 @@ pub async fn serve_client(
 /// canonical envelope-deserialisation logic.
 fn parse_subprocess_final_output(
     stdout_bytes: &[u8],
-    _transcript: &[serde_json::Value],
+    _transcript: &[Value],
 ) -> Result<AgentOutput, AgentError> {
     if stdout_bytes.is_empty() {
         return Err(AgentError::NoFinalOutput);
