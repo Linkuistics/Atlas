@@ -243,7 +243,7 @@ PR-1 is small, structural, and unblocks every downstream PR in the sprint. **PR-
 
 **Pre-flight constraint:** PR-1 introduces no new workspace dependencies. `serde_yaml` is already in the workspace (Phase 7); `regex` is already pulled by some sub-crate (verify at plan-time; if absent, use shell-style `${VAR}` substitution via `std::env::var` calls rather than introducing `regex` just for this feature).
 
-- [ ] **Step 1.1: Add `BackendRouter::backend_for_provider` to `crates/atlas-llm/src/router.rs`**
+- [x] **Step 1.1: Add `BackendRouter::backend_for_provider` to `crates/atlas-llm/src/router.rs`**
 
 In `crates/atlas-llm/src/router.rs`, add a new (non-test-gated) impl block sibling to the existing one at router.rs:14:
 
@@ -268,7 +268,7 @@ impl BackendRouter {
 
 Sweep: `git grep -nE 'atlas_agents::transport::Provider|use .*transport::Provider' crates/` to find import sites that need updating to `atlas_llm::Provider`.
 
-- [ ] **Step 1.2: Verify `transport.provider()` method exists**
+- [x] **Step 1.2: Verify `transport.provider()` method exists**
 
 The new method assumes `TransportFlavour::provider() -> Provider`. Phase 7 PR-2 shipped this at `crates/atlas-agents/src/transport.rs` (the `Provider` rollup of `Anthropic` / `OpenAi`). After the Step 1.1 hoist, it lives in `atlas-llm`. Verify:
 
@@ -278,7 +278,7 @@ grep -n "fn provider" /Users/antony/Development/Atlas/crates/atlas-llm/src/*.rs 
 
 Expected: `TransportFlavour::provider(&self) -> Provider` definition exists post-hoist. If it's still in `atlas-agents` after the hoist, the hoist is incomplete.
 
-- [ ] **Step 1.3: Add `Arc<ForProviderFn>` construction in `atlas-cli/src/pipeline.rs::run_index_agent_runtime`**
+- [x] **Step 1.3: Add `Arc<ForProviderFn>` construction in `atlas-cli/src/pipeline.rs::run_index_agent_runtime`**
 
 In `crates/atlas-cli/src/pipeline.rs` around line 1037-1080 (the `AgentRuntime` construction block; verify exact range at plan-time — PR-7's `88cbad7` commit shape may have drifted), replace `for_provider: None` with:
 
@@ -306,7 +306,7 @@ pub type ForProviderFn = dyn Fn(Provider) -> Option<Arc<dyn LlmBackend>> + Send 
 
 Lane B routes cross-provider out-of-box. `AuditDegraded` event fires only when the requested provider isn't configured (e.g., user runs with `http_anthropic` only); this preserves PR-7's existing single-provider fallback.
 
-- [ ] **Step 1.4: Add `--config <PATH>` flag to CLI args**
+- [x] **Step 1.4: Add `--config <PATH>` flag to CLI args**
 
 In `crates/atlas-cli/src/main.rs` (or the central CLI args module — verify which file owns the universal-flags definition; in PR-7 era, `crates/atlas-cli/src/cli_args.rs` is the canonical home), add a clap-level `--config <PATH>` argument:
 
@@ -321,7 +321,7 @@ pub config: Option<PathBuf>,
 
 The argument is **universal** (`global = true` in clap; applies to all subcommands, not just `index`). Default resolution stays at `<workspace_root>/.atlas/config.yaml` when the flag is absent.
 
-- [ ] **Step 1.5: Implement config loader with env-var substitution**
+- [x] **Step 1.5: Implement config loader with env-var substitution**
 
 In `crates/atlas-cli/src/config.rs` (or wherever `AtlasConfig::load` lives — verify at plan-time):
 
@@ -360,7 +360,7 @@ fn substitute_env_vars(text: &str) -> Result<String, ConfigError> {
 
 Missing env-var → `ConfigError::MissingEnvVar { var_name }` with the variable name in the error message. **Not** silent empty string. Test in Step 1.8 below.
 
-- [ ] **Step 1.6: Create the checked-in sprint example config**
+- [x] **Step 1.6: Create the checked-in sprint example config**
 
 Create `.atlas/config.sprint.example.yaml`:
 
@@ -392,7 +392,7 @@ default_transport: http_anthropic
 
 All string values that could collide with YAML implicit-typing (`http_anthropic`, model names, env-var placeholders) are explicitly quoted as a discipline example for the production prompts that follow.
 
-- [ ] **Step 1.7: Extend `.gitignore` with the sprint config exception**
+- [x] **Step 1.7: Extend `.gitignore` with the sprint config exception**
 
 Current `.gitignore` excludes `.atlas/` wholesale. Add an exception for the example file:
 
@@ -403,7 +403,7 @@ Current `.gitignore` excludes `.atlas/` wholesale. Add an exception for the exam
 
 Pattern matches the existing `!.claude/memory/` exception structure used to track project memory. The working file `.atlas/config.sprint.yaml` remains gitignored; developers `cp .atlas/config.sprint.example.yaml .atlas/config.sprint.yaml` and supply real keys.
 
-- [ ] **Step 1.8: Author HTTP-backend smoke test**
+- [x] **Step 1.8: Author HTTP-backend smoke test**
 
 Create `crates/atlas-cli/tests/agent_runtime_http_smoke.rs`:
 
@@ -491,7 +491,7 @@ fn config_loader_errors_on_missing_env_var() {
 
 The first two tests exercise the wiring end-to-end; the last two are unit tests for the env-var substitution. Synthetic helpers (`build_synthetic_workspace_with_overrides`, `build_test_backend_router_*`, `run_index_agent_runtime_with_router`) live in the same test file or in a `tests/common/` module per Phase 7 PR-4's precedent.
 
-- [ ] **Step 1.9: Verify the workspace builds and tests pass**
+- [x] **Step 1.9: Verify the workspace builds and tests pass**
 
 ```bash
 cargo build --workspace
@@ -504,7 +504,7 @@ cargo test -p atlas-cli --test phase3_polyglot_fixture --release --no-fail-fast
 
 Expected: all clean. The polyglot smoke is unchanged (full override coverage means LLM dispatch sites are unreachable from it). Cumulative regression guard held: cold count in loose-bound `0 < cold < 100`.
 
-- [ ] **Step 1.10: Commit PR-1 + status flip (two-commit pattern)**
+- [x] **Step 1.10: Commit PR-1 + status flip (two-commit pattern)**
 
 ```bash
 git add crates/atlas-llm/src/router.rs \

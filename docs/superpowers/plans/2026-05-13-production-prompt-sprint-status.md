@@ -2,14 +2,14 @@
 
 Companion to `docs/superpowers/specs/2026-05-13-atlas-production-prompt-sprint-plan.md`. This file tracks per-PR completion state across sessions. The PR-1 continuation prompt at `docs/superpowers/prompts/2026-05-13-pr1-continue.md` reads this file to find the next PR to dispatch.
 
-**Last updated:** 2026-05-13 (PR-0 landed — plan + status + PR-1 continuation prompt; PR-0 status row pre-flipped `[x]` in the same commit per the brief's two-commit-exception for PR-0).
+**Last updated:** 2026-05-13 (PR-1 landed — `BackendRouter::backend_for_provider` + `ForProviderFn` closure + `--config <PATH>` flag + HTTP smoke; status-flip commit follows Codex's PR-1 code-commit `a064f63`).
 
 ## PR status
 
 Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the PR is reviewed and committed. Append a one-line note (date + commit sha + anything load-bearing the next session needs to know) in the per-PR notes block below.
 
 - [x] PR-0 — Plan + status + PR-1 continuation prompt (docs only)
-- [ ] PR-1 — `BackendRouter::backend_for_provider` + `Arc<ForProviderFn>` closure + `--config <PATH>` flag + `.atlas/config.sprint.example.yaml` + HTTP-backend smoke test (small / structural)
+- [x] PR-1 — `BackendRouter::backend_for_provider` + `Arc<ForProviderFn>` closure + `--config <PATH>` flag + `.atlas/config.sprint.example.yaml` + HTTP-backend smoke test (small / structural)
 - [ ] PR-2 — Production dispatch prompts (replaces `PR-7-WIRES-REAL-PROMPT` stubs at `dispatch.rs:203, :254`) + Lane A YAML migration (`serde_json::from_value` → `serde_yaml::from_str` at `dispatch.rs:306, :327`) + dispatch-stage Lane A evidence scoring + `runtime/yaml_strict.rs` + `runtime/prompt_examples.rs` + `runtime/audit/evidence.rs` (medium)
 - [ ] PR-3 — Production classify/reduce/project prompts (replaces stubs at `mod.rs:919, :928` + new `build_project_prompt`) + 4 typed-output structs in new `runtime/outputs.rs` + remaining 4 evidence-score functions in `evidence.rs` + canonical-schema shim `runtime/projection_to_canonical.rs` + `agent-runtime-projection.json` → `.yaml` migration at `pipeline.rs:1177` (large)
 - [ ] PR-4 — Cross-provider auditor (replaces `PR-7-WIRES-REAL-AUDITOR` stub at `mod.rs:665`) + `runtime/audit/audit_prompt.rs` + `runtime/audit/verdict.rs` + revision-prompt path + on-disk verdict at `.atlas/audit/<stage>/<target>.yaml` (medium)
@@ -49,7 +49,7 @@ PR-5 (Atlas-on-Atlas calibration + intrinsic metrics + cross-transport parity + 
 **Parallel-safe waves:**
 
 - **Wave 0:** PR-0 (landed 2026-05-13).
-- **Wave 1 (after PR-0):** PR-1 — sequential; gates everything downstream.
+- **Wave 1 (after PR-0):** PR-1 — sequential; gates everything downstream. (Landed 2026-05-13; commit `a064f63`.)
 - **Wave 2 (after PR-1):** PR-2 — sequential. Gates Phase 8.
 - **Wave 3 (after PR-2):** PR-3 — sequential. Gates Phase 8. Largest single PR in the sprint (1500–2200 LOC budget; brainstorm §12 risk #1 "stop and surface at >2× budget" applies).
 - **Wave 4 (after PR-3 and PR-1):** PR-4 — sequential. Gates Phase 8.
@@ -99,7 +99,35 @@ PR-0 commit SHA: `b44593a` (single commit per the brief's PR-0 exception; status
 
 ### PR-1
 
-*(Empty — to be filled by PR-1's session.)*
+2026-05-13 — Landed. Code-commit: `a064f63` (`sprint: PR-1 backend_for_provider + ForProviderFn closure + --config flag`). Status-flip commit follows in the same session.
+
+PR-1 closes the PR-7 `for_provider: None` deferral with a real `BackendRouter`-backed closure, hoists `Provider` out of `atlas-agents` into `atlas-llm` to keep dep direction one-way, adds the universal `--config <PATH>` flag with env-var substitution, and ships a 340-line HTTP-backend smoke test that pins the wiring without live API calls. Workspace builds clean; HTTP smoke + clap-argument unit tests + router unit tests all green. Cumulative regression guard (polyglot fixture) unaffected by this PR's surface (full override coverage means LLM dispatch sites stay unreachable; PR-1 touched only the runtime wiring, not the dispatch-site prompts).
+
+Key deviations + extensions from the plan PR-2+ implementers should know about:
+
+1. **Two router constructors, not one.** `BackendRouter::new_from_config` keeps Phase 7's `reject_http_for_filesystem_required_prompt` discipline unchanged. A sibling `BackendRouter::new_for_agent_runtime` was added that relaxes the rule (HTTP backends are valid for every stage when the AgentRuntime owns the tool loop). Both delegate to a private `new_inner` with an `allow_http_filesystem_prompts: bool` flag. PR-2's prompt-template work should plug into the agent-runtime path; PR-2 has no business reaching the deterministic `new_from_config` path.
+
+2. **`atlas_cli::backend::build_agent_runtime_backend_with_counter`** is the matching helper at the call-site layer. The deterministic-index path (`build_production_backend_with_counter`) is untouched; the `--agent-runtime` path in `main.rs::run_index_cmd` and the reports commands (`run_modularity_cmd_with_config`, `run_divergence_cmd_with_config`) call the new agent-runtime variant. The split lives at `crates/atlas-cli/src/backend.rs`; both helpers share the underlying config-load path.
+
+3. **`default_transport_from_config` helper in `pipeline.rs`** derives `AgentRuntime::default_transport` from `defaults.model`'s provider prefix instead of hard-coding `TransportFlavour::ClaudeCode`. Mapping: `anthropic` → `HttpAnthropic`; `openai` / `openrouter` → `HttpOpenai`; `claude-code` → `ClaudeCode`; `codex` → `Codex`. This means `--config .atlas/config.sprint.yaml` is enough to switch the runtime between the canonical subprocess pair and the sprint's HTTP pairing — no code changes needed per backend variant. Unknown providers return `IndexError::Other` (caught by the existing error-surfacing path). Brainstorm decision-table row 6 resolution carries through cleanly.
+
+4. **`provider_from_config_key` helper maps config-keys to enum:** `anthropic` / `claude-code` → `Provider::Anthropic`; `openai` / `codex` → `Provider::OpenAi`. This extends cross-provider audit to the **canonical subprocess pair** (`claude_code + codex`), not just HTTP backends. PR-4's auditor will get cross-provider routing for free when a user runs the canonical subprocess config — a meaningful capability extension beyond the plan's HTTP-only framing. Memory `project_atlas_common_backend_config` is honoured.
+
+5. **`Provider::cross()` lives on the enum itself** at `crates/atlas-llm/src/lib.rs` (one-line `match`: Anthropic↔OpenAi). PR-4 should call `Provider::cross()` to look up the sibling, then `BackendRouter::backend_for_provider(provider)` to materialize the backend. Decision-table row 5 resolution wired and tested (`provider_cross_returns_opposite_vendor` in `router.rs::tests`).
+
+6. **`ConfigError::EnvVarUnset` renamed to `ConfigError::MissingEnvVar { var_name }`** per Step 1.5 spec. The interpolation site at `config.rs::interpolate_segment` and the existing unit test both reflect the rename. Any future grep over `EnvVarUnset` will miss — use `MissingEnvVar` going forward.
+
+7. **`--config <PATH>` lives directly in `main.rs::Cli`** as a `#[arg(long, value_name = "PATH", global = true)]` field. The plan's tentative `cli_args.rs` filename did not materialize — `main.rs` owns the universal flag definition; `resolve_config_path(output_dir, override) -> PathBuf` is the small helper that picks override-or-default. Three clap parser tests at `main.rs::tests` cover position-before/after subcommand + override-replaces-default behaviour.
+
+8. **HTTP smoke test fingerprint:** `crates/atlas-cli/tests/agent_runtime_http_smoke.rs` (340 lines). Uses an in-memory `StagedBackend` for the actual LLM calls (canned responses keyed by prompt substring) and a real `BackendRouter::new_for_agent_runtime` for Lane B provider lookup. No live API keys required. `ENV_LOCK` mutex serialises env-var-touching subtests (config-loader substitution checks). `EnvGuard` captures + restores so suites don't leak across tests.
+
+9. **Cascade from `Provider` hoist** touched four files beyond the plan-named set: `atlas-agents/src/runtime/audit/lane_b.rs` (import path), `atlas-agents/src/runtime/mod.rs` (comment update + import), `atlas-agents/src/runtime/tool_loop_http.rs` (import path), `atlas-agents/tests/audit_lane_b.rs` (test import), `atlas-cli/src/tui/state.rs` + `tui/token_panel.rs` (TUI per-provider rendering). `atlas-agents::transport::Provider` is now a `pub use` re-export so legacy import paths still compile.
+
+10. **Plan items NOT exercised by PR-1** (deliberately deferred to their owning PRs): the Lane A YAML migration at `dispatch.rs:306, :327` is **untouched** (PR-2 owns it); the `agent-runtime-projection.json` → `.yaml` rename at `pipeline.rs:1177` is **untouched** (PR-3 owns it); the production prompt-template content at `dispatch.rs:203, :254` and `mod.rs:919, :928` is **untouched** (PR-2 + PR-3 own it). PR-1 strictly shipped the structural wiring + the config-flag plumbing.
+
+PR-2 reading order before dispatch: this PR-1 note, then the plan §4 Task 2 block, then brainstorm §5.5 + §6.1 + §6.2 + §6.4 + §12.8 (Norway-problem risk). The two-router-constructor split (item 1 above) is the most load-bearing surface change: PR-2's modifications to `dispatch.rs` parse paths run inside the agent-runtime tool loop, so they live downstream of `new_for_agent_runtime`. PR-2 should NOT touch the deterministic-path rejection rule.
+
+PR-1 commit SHA: `a064f63` (single code-commit; status flip in a separate commit per the two-commit pattern).
 
 ### PR-2
 
