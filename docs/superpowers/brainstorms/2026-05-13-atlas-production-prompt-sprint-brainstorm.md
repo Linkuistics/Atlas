@@ -30,18 +30,22 @@ table, 15 rows) → §3 (wave structure: 5 sequential + 2 parallel + PR-0 plan) 
 The sprint replaces the three `PR-7-WIRES-REAL-*` stubs that PR-7 left in
 place (`runtime/dispatch.rs:203`, `runtime/dispatch.rs:254`,
 `runtime/mod.rs:665`) plus the classify/reduce/project prompts at
-`runtime/mod.rs:~910/~920` with **production prompts**. It wires the
-**cross-provider auditor** (Anthropic↔OpenAI per memory
-`feedback_cross_provider_llm_audit`) by populating PR-7's deferred
-`for_provider: None` with a real closure backed by `BackendRouter`. It
-extends **Lane A** beyond schema validation to a two-layer validator that
-also computes a **per-stage deterministic evidence score** against the
-producer's transcript and clamps the LLM's self-graded confidence
-(`Strong | Moderate | Weak | Declines`) to what the evidence supports. It
-ships a **canonical-schema shim** that maps the runtime's `L9Projection`
-into the canonical `components.yaml` / `subsystems.yaml` /
-`related-components.yaml` artifacts that downstream Atlas consumers (other
-LLM tools) read. It migrates PR-1's hand-rolled MCP JSON-RPC framing to the
+`runtime/mod.rs:~910/~920` with **production prompts** emitted in **YAML**
+(canonical Atlas interchange format per memory
+`feedback_yaml_canonical_interchange`). It wires the **cross-provider
+auditor** (Anthropic↔OpenAI per memory `feedback_cross_provider_llm_audit`)
+by populating PR-7's deferred `for_provider: None` with a real closure
+backed by `BackendRouter`. It extends **Lane A** beyond schema validation
+to a two-layer validator that also computes a **per-stage deterministic
+evidence score** against the producer's transcript and clamps the LLM's
+self-graded confidence (`Strong | Moderate | Weak | Declines`) to what the
+evidence supports. It ships a **canonical-schema shim** that maps the
+runtime's `L9Projection` into the canonical `components.yaml` /
+`subsystems.yaml` / `related-components.yaml` artifacts that downstream
+Atlas consumers (other LLM tools) read; the runtime's intermediate
+projection file moves from PR-7's `agent-runtime-projection.json` to
+`agent-runtime-projection.yaml` as part of the canonical-format
+migration. It migrates PR-1's hand-rolled MCP JSON-RPC framing to the
 `rmcp` crate (per memory `feedback_prefer_existing_crates`) and ships the
 subprocess MCP `serve_client` driver so `atlas index --agent-runtime` works
 against the canonical `claude_code + codex` config (today it hard-errors).
@@ -103,12 +107,28 @@ condition every row below.
    Lane A's job). The audit prompt receives the producer's output + the
    producer's transcript rendered as ordered tool-call tuples.
 
+5. **YAML is the canonical interchange format.** All Atlas-controlled
+   interchange — LLM final-output envelopes, internal projection files,
+   audit verdicts, future Atlas-emitted artifacts — defaults to YAML.
+   Empirically YAML is more reliable for free-text-heavy LLM outputs:
+   block scalars (`|` and `>`) make multi-sentence fields natural; no
+   quoting overhead for most strings; indentation is visually preserved
+   across the emit (LLMs handle indentation better than invisible
+   brace-matching). YAML's failure modes (Norway problem, implicit
+   typing) are mitigable via per-field deserialization adapters; JSON's
+   quoting failures (under-escaping, trailing commas, multi-line-string
+   confusion) are not. JSON survives only where the wire format mandates
+   it: LLM tool-use APIs (Anthropic Messages + OpenAI chat-completions
+   tool calls are JSON-native), JSONL event streams (`--log-events
+   events.jsonl`), and inter-process protocols (MCP, gRPC). Source:
+   memory `feedback_yaml_canonical_interchange`.
+
 ### 2.2 Decision table (15 rows)
 
 | # | Dimension | Resolution | Locked in / by |
 |---|---|---|---|
-| 1 | Final-output envelope for production prompts | **JSON-in-text.** Prompts emit one fenced ```json block whose body deserializes to the target struct via existing `serde_json::from_value` scaffolding at `runtime/dispatch.rs:306, :327`. Lane A retries on `LlmOutputMalformed`. Symmetric across HTTP and (future) subprocess transports. | PR-2 + PR-3 prompt template body |
-| 2 | Schema advertisement inside prompt | **Schema-in-prompt for all four stages.** Each prompt embeds a Rust-style type definition or JSON schema fragment of the target struct (`SubsystemsOverrideFile`, `ComponentsOverrideFile`, plus new typed shapes for classify / reduce / project). Unit test asserts each `build_*_prompt` site's embedded schema matches the live `schema_for!(TargetStruct)` (drift catcher). | PR-2 + PR-3 prompt templates + drift tests |
+| 1 | Final-output envelope for production prompts | **YAML-in-text** (revised from JSON 2026-05-13). Prompts emit one fenced ```yaml block whose body deserializes to the target struct via `serde_yaml::from_str`. Lane A retries on `LlmOutputMalformed`. Symmetric across HTTP and (future) subprocess transports. Existing PR-5 scaffolding at `runtime/dispatch.rs:306, :327` (which uses `serde_json::from_value` against an LLM-emitted text-block) migrates to `serde_yaml::from_str` as part of PR-2. Norway-problem mitigation: see §12.8. | PR-2 + PR-3 prompt template body; Lane A deserializer swap |
+| 2 | Schema advertisement inside prompt | **YAML-shaped example-in-prompt for all four stages.** Each prompt embeds a YAML-shaped worked example of the target struct (`SubsystemsOverrideFile`, `ComponentsOverrideFile`, plus new typed shapes for classify / reduce / project) with field-by-field comments. More LLM-readable than JSON-schema text; matches the format the LLM is asked to emit. Unit test asserts the embedded example deserializes via the target struct's `serde::Deserialize` (drift catcher: if the struct changes shape, the embedded example fails to parse). | PR-2 + PR-3 prompt templates + drift tests |
 | 3 | Tool catalog scope per agent call | **Per-stage catalog.** Dispatch agents see `query_l1_index`, `list_dir`, `query_existing_overrides`, `read_file`. Classify agents see `read_file`, `parse_<all-manifests>`, `classify_<all-languages>`. Surface agents see `read_file` + `surface_<all-languages>` + (where applicable) `find_pub_items`, `find_imports`. Reduce/project agents see `lookup_neighbour_surface`, `query_l1_index`. Per-stage catalog sha is the per-stage `tool_catalog_sha` discriminator in the transcript-cache fingerprint (recast §6.1). | PR-2 + PR-3 catalog construction; one-line "applicable when:" docstring discipline on every `Tool::json_schema().description` |
 | 4 | Per-agent iteration budget | **Per-stage hard caps + soft guidance in prompts.** Initial values (calibrated upward in PR-5): dispatch=30, classify=12, surface=25, reduce/project=8. Soft caps in prompts ≈ half of hard. `MaxStepsExceeded` is hard fail (not retry). The `build_*_prompt` functions accept the cap as a parameter so prompt text and `AgentRequest::max_steps` cannot drift. | PR-2 + PR-3 prompt construction; PR-5 calibration |
 | 5 | Confidence rubric + Lane A evidence-score floor | **Outcome-driven rubric with deterministic floor.** Each stage's prompt embeds an evidence rubric (§5.4, §6.4 specifics). Lane A computes a per-stage evidence score from `transcript.tool_calls[]` (e.g., classify: `1.0 if read_file(primary_manifest) else 0.5 if classify_tool_called else 0.0`; surface: `items_inspected / items_declared`). The deterministic floor *clamps* the LLM's self-grade: claimed `Strong` with evidence score `<0.9` downgrades to `Moderate`, etc. The LLM may grade *lower* than the deterministic max (legitimately uncertain despite full evidence), but never higher. Threshold ladder: ≥0.9 max Strong; ≥0.5 max Moderate; ≥0.1 max Weak; <0.1 max Declines. | PR-2 (dispatch scoring) + PR-3 (classify/reduce/project scoring) |
@@ -259,11 +279,11 @@ introduces the dispatch-stage half of Lane A evidence scoring.
 ### 5.1 Workspace → subsystems prompt (`build_dispatch_subsystems_prompt`)
 
 The dispatch agent reads the workspace, identifies subsystem partitions,
-and emits a JSON object deserializable to `SubsystemsOverrideFile`
-(`dispatch.rs:103`). The producer's job is to discover natural
-subsystem boundaries — typically aligned to top-level directory structure,
-crate / package boundaries, or domain coherence — and partition all L1
-candidates into them.
+and emits a YAML object deserializable to `SubsystemsOverrideFile`
+(`dispatch.rs:103`) via `serde_yaml::from_str`. The producer's job is to
+discover natural subsystem boundaries — typically aligned to top-level
+directory structure, crate / package boundaries, or domain coherence —
+and partition all L1 candidates into them.
 
 Prompt template skeleton (concrete text is plan-time work; this captures
 the shape):
@@ -283,8 +303,27 @@ purpose.
 {per-stage_tool_catalog — read_file, list_dir, query_l1_index,
  query_existing_overrides; with one-line "applicable when:" descriptions}
 
-# Output shape (emit one ```json block containing exactly this struct)
-{schema for SubsystemsOverrideFile, embedded inline}
+# Output shape
+Emit ONE fenced ```yaml block. The body must deserialize into the struct
+shown below. All string fields must be quoted if the value could look
+like YAML's reserved scalars (true/false/yes/no/on/off/null/numbers).
+
+```yaml
+schema_version: 1
+subsystems:
+  - id: "<kebab-case subsystem id>"
+    purpose: |
+      <one to three sentences describing the subsystem's coherent purpose.
+      Block scalar (|) is encouraged for multi-sentence prose.>
+    components:
+      - "<component_id from the L1 candidate set>"
+      # ...
+  # ...
+confidence_grade: "Strong"   # one of: Strong | Moderate | Weak | Declines
+evidence_pointers:
+  - path: "<workspace-relative file path>"
+    line_range: [<start>, <end>]
+```
 
 # Soft budget
 You should normally complete in {soft_cap} tool calls; if you need more,
@@ -374,17 +413,31 @@ Similar shape for `dispatch_components_evidence` scoped to the subsystem.
 ### 5.4 Tests
 
 - `tests/dispatch_prompt_shape.rs` — assert each `build_dispatch_*_prompt`
-  emits a string containing the schema definition string for the target
-  struct (drift catcher from row 2 of §2.2).
+  emits a string containing a fenced ```yaml block, AND that block
+  deserializes (via `serde_yaml::from_str`) into the target struct
+  (`SubsystemsOverrideFile` / `ComponentsOverrideFile`). Drift catcher
+  from row 2 of §2.2.
 - `tests/lane_a_dispatch_evidence_floor.rs` — assert that an agent claiming
   `Strong` with an empty transcript gets clamped to `Declines`; a `Strong`
   claim with all manifests read stays `Strong`.
+- `tests/yaml_envelope_norway_problem.rs` — assert that
+  `component_id: NO` (Norway) round-trips as the *string* `"NO"`, not
+  the bool `false`. Catches accidental removal of per-field strict
+  deserialization adapters (§12.8 Risk 1 mitigation).
+- Lane A deserializer migration: existing PR-5 sites at
+  `runtime/dispatch.rs:306, :327` (currently `serde_json::from_value`)
+  migrate to `serde_yaml::from_str`. Existing tests in
+  `tests/audit_lane_b.rs` and `tests/dispatch_shortcircuit.rs` that
+  feed canned JSON outputs through the LLM path become YAML fixtures.
 
 ### 5.5 PR-2 acceptance
 
 - Both dispatch stub markers removed from `dispatch.rs`.
+- Lane A deserializer migrated from `serde_json::from_value` to
+  `serde_yaml::from_str`; existing test fixtures updated.
 - Schema-drift test green for both dispatch prompts.
 - Evidence-floor test green for both dispatch stages.
+- Norway-problem regression test green.
 - Cargo gates clean.
 - Polyglot smoke cold ≈ today's reference (dispatch agents short-circuit on
   the polyglot fixture's full override coverage; cold count stays in the
@@ -584,6 +637,17 @@ pub fn project_l9_to_canonical(
     Ok(CanonicalArtifactSet { components: components_yaml, subsystems: subsystems_yaml,
                               related: related_yaml })
 }
+```
+
+Adjacent canonical-format migration in PR-3: the runtime's
+intermediate `L9Projection` serialization (PR-7 commit `88cbad7` wrote it
+to `<output_dir>/cache/agent-runtime-projection.json`) moves to
+`agent-runtime-projection.yaml` using `serde_yaml::to_string`. The shim's
+input becomes the YAML file. No external consumers of the JSON path exist
+yet, so this is a free migration with no compatibility shim required.
+
+```rust
+// (rest of shim implementation)
 
 fn build_components_yaml(l9: &L9Projection) -> Result<ComponentsYaml, ShimError> {
     // Walk l9.subsystem_catalog → per-subsystem components.
@@ -615,10 +679,14 @@ canonical fields, the prompt is wrong, not the shim.
 ### 6.7 PR-3 acceptance
 
 - All three producer-prompt stubs replaced (classify / reduce / project).
-- Schema-drift tests green for all three.
+- Schema-drift tests green for all three (YAML-example deserializes via
+  target struct's `serde::Deserialize`).
 - Evidence-floor tests green for all four non-dispatch stages.
 - `projection_to_canonical.rs` exists; round-trip test green; missing-field
   test green.
+- `agent-runtime-projection.json` → `agent-runtime-projection.yaml`
+  migration landed; serializer in `pipeline.rs::run_index_agent_runtime`
+  uses `serde_yaml::to_string`.
 - `--agent-runtime` against a synthetic workspace now runs end-to-end
   through all stages and emits canonical YAMLs.
 - Cargo gates clean; polyglot smoke unchanged.
@@ -653,11 +721,16 @@ trail*, not its coverage (coverage is verified separately).
 # Producer's evidence trail (ordered tool calls + their results)
 {transcript_rendered_as_tuples}
 
-# Verdict shape (emit one ```json block)
-{
-  "verdict": "accept" | "request_revision" | "hard_fail",
-  "reason": "<one-paragraph rationale>"
-}
+# Verdict shape
+Emit ONE fenced ```yaml block in this shape:
+
+```yaml
+verdict: "accept"            # one of: accept | request_revision | hard_fail
+reason: |
+  <one-paragraph rationale; block scalar is encouraged for multi-sentence
+  prose. State explicitly which evidence in the producer's transcript
+  supports or contradicts the producer's output.>
+```
 
 # Verdict rubric
 - accept: output is consistent with the evidence; reasoning is sound
@@ -1019,7 +1092,8 @@ PR-B LOC budget: 100–200 LOC (single test file).
 
 | Layer | What | Where |
 |---|---|---|
-| Schema-drift tests | Each `build_*_prompt` site's embedded schema matches `schema_for!(TargetStruct)` | `crates/atlas-agents/tests/{dispatch_prompt_shape,classify_prompt_shape,reduce_prompt_shape,project_prompt_shape,audit_prompt_shape}.rs` |
+| Schema-drift tests | Each `build_*_prompt` site's embedded YAML example deserializes via `serde_yaml::from_str::<TargetStruct>` | `crates/atlas-agents/tests/{dispatch_prompt_shape,classify_prompt_shape,reduce_prompt_shape,project_prompt_shape,audit_prompt_shape}.rs` |
+| YAML Norway-problem regression | `component_id: NO` deserializes as string `"NO"`, not bool `false`; similar for `language`, `kind`, version-shaped strings | `crates/atlas-agents/tests/yaml_envelope_norway_problem.rs` |
 | Evidence-floor tests | Per-stage: claimed Strong with empty transcript → clamped to Declines; claimed Strong with full evidence → stays Strong | `crates/atlas-agents/tests/lane_a_{dispatch,classify,surface,reduce,project}_evidence_floor.rs` |
 | Audit round-trip tests | Auditor emits `request_revision` → producer retry sees reason in system prompt | `crates/atlas-agents/tests/audit_revision_round_trip.rs` |
 | On-disk audit verdict tests | Atomic write; deserializes correctly; re-run replay logic | `crates/atlas-agents/tests/audit_verdict_atomic_write.rs` |
@@ -1156,17 +1230,49 @@ regression detector. PR-A records the exact `claude-code` and `codex`
 upstream versions targeted, in code comments next to the
 `subprocess_args` constants. Memory note as Phase 8+ ongoing concern.
 
-### 12.8 Schema-drift test framing
+### 12.8 YAML-specific risks (Norway problem + indentation drift)
 
-**Risk:** the schema-drift test asserts that a *string* (the prompt
-template's embedded schema text) matches `schema_for!(T).to_string()`.
-Whitespace + ordering differences in serde_json's output could break
-this even when the schemas are semantically identical.
+**Risk 1 — Norway problem and implicit typing.** YAML's default schema
+implicitly coerces certain strings to non-string types: `country: NO`
+parses as `false`; `version: 1.10` parses as `1.1` (float); strings like
+`yes`, `on`, `null` similarly coerce. For Atlas's outputs, this could
+silently corrupt `component_id` strings ("no-frills-cli" is safe;
+"on-call-rotation" parses as `{ "on": null, "call-rotation": null }`
+if not quoted), `language` fields, version-like literals, and enum-shaped
+strings like `kind`.
 
-**Mitigation:** Use `serde_json::Value` equality (semantic equality), not
-string equality, in the assertion. Parse both the embedded prompt
-fragment and the live `schema_for!()` output as `Value` and compare. Plan
-PR-2 to ship this assertion shape; subsequent prompt PRs reuse it.
+**Mitigation 1:** Two layers of defense.
+  (a) **Prompt convention.** Every YAML schema example in §5/§6 explicitly
+      quotes string fields whose values could be ambiguous. The prompt's
+      "Output shape" section states: *"All string fields must be quoted
+      if the value could look like YAML's reserved scalars."*
+  (b) **Per-field strict deserialization.** For fields where the
+      ambiguity could bite (e.g., `component_id`, `language`, `kind`),
+      use `#[serde(deserialize_with = "deserialize_string_strict")]`
+      adapters that reject non-string YAML values with a clear error.
+      Lane A retries on the resulting `LlmOutputMalformed`.
+  (c) **Drift test.** PR-2 adds `tests/yaml_envelope_norway_problem.rs`
+      asserting that `component_id: NO` deserializes as the string
+      `"NO"`, not the bool `false`. Catches accidental adapter removal.
+
+**Risk 2 — Indentation drift.** YAML is indentation-sensitive. An LLM
+that emits one tab where two spaces are expected, or mixes spaces and
+tabs, produces unparseable YAML. Probability: low (LLMs handle visible
+indentation well when shown a worked example), but consequences are
+hard-to-debug parse failures.
+
+**Mitigation 2:** Each prompt's "Output shape" section shows a worked
+YAML example with 2-space indentation; the prompt explicitly states
+*"use 2-space indentation; do not mix tabs and spaces"*. Lane A's
+malformed-output error message names the line + column of the parse
+failure when known, so retries see useful feedback.
+
+**Risk 3 — Schema-example drift catcher.** The drift catcher from §2.2
+row 2 ("the embedded example deserializes via the target struct's
+`serde::Deserialize`") is the simplest possible test shape — parse the
+embedded YAML fragment with `serde_yaml::from_str::<TargetStruct>`. No
+JSON-schema-string-comparison nuance. If the struct's shape changes,
+the embedded example fails to parse and the test fails fast.
 
 ---
 
@@ -1203,6 +1309,9 @@ PR-2 to ship this assertion shape; subsequent prompt PRs reuse it.
 - `.claude/memory/feedback_prefer_existing_crates.md` — framing #3:
   prefer maintained crates; PR-A migrates PR-1's hand-rolled MCP framing
   to `rmcp` (or fallback).
+- `.claude/memory/feedback_yaml_canonical_interchange.md` — framing #5:
+  YAML for all Atlas-controlled interchange; JSON reserved for wire
+  formats (LLM tool-use APIs, JSONL event streams).
 - `.claude/memory/project_phase4_plus_roadmap.md` — phase-ordering state;
   Phase 8 (Cargo retirement) unblocked by this sprint's items 1–4.
 - `crates/atlas-agents/src/runtime/dispatch.rs` — `SubsystemsOverrideFile`
