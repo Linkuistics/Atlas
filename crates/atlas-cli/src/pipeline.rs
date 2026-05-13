@@ -1149,6 +1149,11 @@ pub fn run_index_agent_runtime(
         // populate this when the subprocess transport is actively
         // exercised.
         mcp_server: None,
+        // PR-4: on-disk audit verdicts land at
+        // `<output_dir>/audit/<stage>/<target_id>.yaml`. The runtime
+        // creates the directory on first write via `atomic_write_pair`'s
+        // `create_dir_all`.
+        audit_dir: config.output_dir.join("audit"),
     };
 
     let workspace = AgentsWorkspace::new(config.root.clone());

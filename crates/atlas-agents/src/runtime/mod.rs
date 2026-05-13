@@ -41,7 +41,7 @@ use atlas_engine::llm_cache::{
     TRANSCRIPT_FRAME_PREFIX,
 };
 use atlas_index::Stage as IndexStage;
-use atlas_llm::{LlmBackend, LlmError, Provider};
+use atlas_llm::{LlmBackend, LlmError, LlmRequest, Provider};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -367,6 +367,13 @@ pub struct AgentRuntime {
     /// runtime can only service HTTP transports; selecting a subprocess
     /// transport under that condition returns a clear error.
     pub mcp_server: Option<Arc<crate::mcp::server::McpServer>>,
+    /// PR-4: filesystem root for on-disk audit verdicts. The runtime
+    /// writes each Lane B verdict to
+    /// `<audit_dir>/<stage>/<target_id>.yaml` via
+    /// [`crate::runtime::audit::write_verdict_pair`] and replays from
+    /// disk on agent re-run. The CLI pipeline constructs this as
+    /// `<workspace_root>/.atlas/audit/`; tests pass a `TempDir` path.
+    pub audit_dir: std::path::PathBuf,
 }
 
 /// Type alias for the Lane B cross-provider lookup closure. Boxed
@@ -389,6 +396,14 @@ pub struct AgentRequest {
     pub fingerprint_inputs: Vec<crate::FingerprintInput>,
     pub candidate_ids: HashSet<String>,
     pub prior_model_sha: Option<ContentSha>,
+    /// PR-4: how many Lane B revisions have already fired against
+    /// *this* agent target. Starts at 0 on a fresh `call_agent`; the
+    /// revision-prompt path increments this when re-invoking
+    /// `call_agent` recursively so the cumulative-budget rule
+    /// (`lane_a_retries + lane_b_revisions >= 1` → escalate next
+    /// `RequestRevision` to `HardFail`) fires at the right time.
+    #[doc(hidden)]
+    pub lane_b_revisions: u32,
 }
 
 /// PR-4 internal: one agent invocation result.
@@ -413,6 +428,12 @@ struct ToolLoopOutcome {
     result: AgentResult,
     /// Number of Lane A retries that actually fired (0 or 1).
     lane_a_retries: u32,
+    /// PR-4: a clone of the producer's `Transcript` made before
+    /// `into_bytes` consumed the original. Lane B's audit closure
+    /// renders this via
+    /// [`crate::runtime::audit::render_transcript_for_audit`] to
+    /// supply the auditor with the producer's tool-call trail.
+    transcript: Transcript,
 }
 
 impl AgentRuntime {
@@ -500,6 +521,7 @@ impl AgentRuntime {
                     fingerprint_inputs: Vec::new(),
                     candidate_ids: all_component_ids.clone(),
                     prior_model_sha: prior_model_sha.clone(),
+                    lane_b_revisions: 0,
                 };
                 let classify_res = self.call_agent(classify_req).await?;
                 let kind = classify_res
@@ -537,6 +559,7 @@ impl AgentRuntime {
                 fingerprint_inputs: Vec::new(),
                 candidate_ids: all_component_ids.clone(),
                 prior_model_sha: prior_model_sha.clone(),
+                lane_b_revisions: 0,
             };
             let reduce_res = self.call_agent(reduce_req).await?;
             let subsystem_purpose = reduce_res
@@ -576,6 +599,7 @@ impl AgentRuntime {
             fingerprint_inputs: Vec::new(),
             candidate_ids: all_component_ids.clone(),
             prior_model_sha: prior_model_sha.clone(),
+            lane_b_revisions: 0,
         };
         let project_res = self.call_agent(project_req).await?;
         projection.project = Some(project_res.output);
@@ -721,19 +745,32 @@ impl AgentRuntime {
             .await?;
         let lane_a_retries = tool_outcome.lane_a_retries;
         let runtime_result = tool_outcome.result;
+        let producer_transcript = tool_outcome.transcript;
 
-        // Lane B audit (recast §4.3, brainstorm §6 (iii)). The current
-        // tool-loop always produces `Grade::Strong` on success, so
-        // `lane_b_audit` returns `Skipped` under the existing PR-4 test
-        // backend — the wiring is the spec deliverable; empirical
-        // firing depends on the producer's grade, which is a PR-7+
-        // concern (the production prompt template lets the model emit
-        // `Grade::Weak`/`Grade::Declines` self-grades).
+        // Lane B audit (recast §4.3, brainstorm §7). PR-4 wires the
+        // real cross-provider auditor closure: pre-flight verdict
+        // cache → cross-provider backend lookup → audit-prompt
+        // round-trip → YAML verdict parse → on-disk persistence.
+        // Closure-internal errors map to
+        // `AuditVerdict::HardFail(reason)` because the closure's
+        // signature can't propagate `Result` outward;
+        // `resolve_audit_verdict` translates HardFail into
+        // `AgentError::LaneBFail`.
         let producer_provider = request.transport.provider();
         let producer_backend = self.backend_router.clone();
         let for_provider_fn = self.for_provider.clone();
         let bus_ref = self.event_bus.as_ref();
         let producer_agent_id = agent_id(&request);
+
+        let audit_stage = request.stage;
+        let audit_target_id = request.target_id.clone();
+        let audit_dir_for_closure = self.audit_dir.clone();
+        let producer_model_id = self.backend_router.fingerprint().model_id.clone();
+        let producer_output_for_closure = runtime_result.output.clone();
+        let producer_output_bytes_for_closure = runtime_result.output_bytes.clone();
+        let producer_agent_id_for_closure = producer_agent_id.clone();
+        let transcript_for_closure = producer_transcript.clone();
+
         let verdict = audit::lane_b_audit(
             bus_ref,
             &producer_agent_id,
@@ -743,16 +780,35 @@ impl AgentRuntime {
             for_provider_fn
                 .as_deref()
                 .map(|f| f as &(dyn Fn(Provider) -> Option<Arc<dyn LlmBackend>> + Send + Sync)),
-            // PR-7-WIRES-REAL-AUDITOR: the auditor closure is a stub;
-            // PR-7 plumbs the real audit-prompt round-trip against
-            // the chosen backend. Under PR-5 the closure returns
-            // `Accept` so when Lane B fires (Weak/Declines grade) the
-            // producer result stands; this is the documented
-            // minimum-viable wiring (FIX 2 step 2).
-            |_auditor_backend| async { audit::AuditVerdict::Accept },
+            move |choice: audit::AuditorChoice| {
+                let audit_dir = audit_dir_for_closure;
+                let target_id = audit_target_id;
+                let agent_id_payload = producer_agent_id_for_closure;
+                let producer_output = producer_output_for_closure;
+                let producer_output_bytes = producer_output_bytes_for_closure;
+                let producer_model = producer_model_id;
+                let transcript = transcript_for_closure;
+                async move {
+                    run_real_audit(
+                        choice,
+                        audit::lane_b::provider_label(producer_provider),
+                        &producer_model,
+                        &producer_output,
+                        &producer_output_bytes,
+                        &transcript,
+                        audit_stage,
+                        &target_id,
+                        &agent_id_payload,
+                        &audit_dir,
+                    )
+                    .await
+                }
+            },
         )
         .await;
-        match resolve_audit_verdict(&verdict, lane_a_retries) {
+
+        let cumulative_retries = lane_a_retries.saturating_add(request.lane_b_revisions);
+        match resolve_audit_verdict(&verdict, cumulative_retries) {
             ResolvedAuditAction::Proceed => {
                 // Lane B accepted (or skipped). Fall through to cache
                 // write + AgentComplete with the original result.
@@ -762,21 +818,30 @@ impl AgentRuntime {
                     agent_id: producer_agent_id.clone(),
                     error_kind: "lane_b".to_string(),
                     error_summary: reason.clone(),
-                    retry_count: lane_a_retries,
+                    retry_count: cumulative_retries,
                 });
                 return Err(AgentError::LaneBFail(reason));
             }
-            ResolvedAuditAction::RequestRevision(_reason) => {
-                // PR-7-ENRICHES-PROMPT-WITH-REVISION-REASON: full
-                // revision-retry harness is a PR-7 deliverable; PR-5's
-                // minimum-viable Lane B wiring records the verdict
-                // (via the `AuditVerdict` event already emitted
-                // inside `lane_b_audit`) and accepts the producer's
-                // result by falling through to the cache-write
-                // below. Cumulative-retry budget is honoured here:
-                // if Lane A already retried, the resolver above maps
-                // `RequestRevision` → `HardFail` rather than
-                // falling through to this branch.
+            ResolvedAuditAction::RequestRevision(reason) => {
+                // PR-4: re-invoke the producer with the auditor's
+                // critique threaded into the system-prompt addendum.
+                // `lane_b_revisions` increments so the recursive call's
+                // `resolve_audit_verdict` sees the cumulative budget
+                // and escalates the next `RequestRevision` to
+                // `HardFail`. The cache write is NOT performed for the
+                // rejected output — only the revised output (if it
+                // passes audit) lands in the cache.
+                let prior_output_rendered = render_producer_output_text(&runtime_result.output);
+                let retries_remaining = 1u32.saturating_sub(cumulative_retries);
+                let addendum =
+                    build_revision_addendum(&prior_output_rendered, &reason, retries_remaining);
+                let mut revised = request.clone();
+                revised.initial_prompt = format!("{}\n\n{}", revised.initial_prompt, addendum);
+                revised.lane_b_revisions = request.lane_b_revisions.saturating_add(1);
+                // Box the recursive future so it's `Sized`; the
+                // recursion depth is bounded by the cumulative-budget
+                // rule (max 2 frames in practice).
+                return Box::pin(self.call_agent(revised)).await;
             }
         }
 
@@ -907,6 +972,11 @@ impl AgentRuntime {
                     // deterministic evidence supports — see
                     // `crate::runtime::audit::evidence::grade_ceiling`.
                     let grade_engine = grade_to_engine(&grade);
+                    // PR-4: keep a clone of the transcript before
+                    // `into_bytes` consumes it — Lane B's audit closure
+                    // renders this for the auditor's view of the
+                    // producer's evidence trail.
+                    let transcript_for_audit = transcript.clone();
                     let transcript_bytes = transcript.into_bytes(grade_engine);
                     let output_bytes = serde_json::to_vec(&output.value)
                         .map_err(|e| AgentError::Backend(format!("output encode failed: {e}")))?;
@@ -918,6 +988,7 @@ impl AgentRuntime {
                             output_bytes,
                         },
                         lane_a_retries,
+                        transcript: transcript_for_audit,
                     });
                 }
                 Err(err) => {
@@ -963,30 +1034,245 @@ fn agent_id(req: &AgentRequest) -> String {
     Agent::from(req).id()
 }
 
-/// PR-5 follow-up: Lane B verdict → caller action mapping.
+/// Lane B verdict → caller action mapping.
 ///
 /// `Skipped` / `Accept` → `Proceed`. `HardFail(reason)` → `HardFail`.
 /// `RequestRevision(reason)` → either `RequestRevision` (room left in
-/// the cumulative budget) or `HardFail` (Lane A already retried — the
-/// agent has spent its quota per recast §4.3). The `Degraded` wrapper
-/// is unwrapped and resolved recursively.
-fn resolve_audit_verdict(verdict: &AuditVerdict, lane_a_retries: u32) -> ResolvedAuditAction {
+/// the cumulative budget) or `HardFail` (Lane A + prior Lane B
+/// revisions already spent the agent's quota per recast §4.3). The
+/// `Degraded` wrapper is unwrapped and resolved recursively.
+///
+/// `cumulative_retries` is the *combined* Lane A retry count plus the
+/// number of Lane B revisions already fired against this agent target
+/// across recursive `call_agent` invocations. The cap is `>= 1`: any
+/// further `RequestRevision` after a single retry-of-any-kind has
+/// already fired escalates to `HardFail`.
+fn resolve_audit_verdict(verdict: &AuditVerdict, cumulative_retries: u32) -> ResolvedAuditAction {
     match verdict {
         AuditVerdict::Skipped | AuditVerdict::Accept => ResolvedAuditAction::Proceed,
         AuditVerdict::HardFail(reason) => ResolvedAuditAction::HardFail(reason.clone()),
         AuditVerdict::RequestRevision(reason) => {
-            if lane_a_retries >= 1 {
-                // Cumulative budget exhausted (Lane A burned the only
-                // retry slot). Escalate to a hard fail.
+            if cumulative_retries >= 1 {
+                // Cumulative budget exhausted (lane_a + lane_b combined
+                // already burned the single retry slot). Escalate to a
+                // hard fail.
                 ResolvedAuditAction::HardFail(format!(
-                    "lane_b request_revision after lane_a retry exhausted budget: {reason}"
+                    "lane_b request_revision after retry budget exhausted: {reason}"
                 ))
             } else {
                 ResolvedAuditAction::RequestRevision(reason.clone())
             }
         }
-        AuditVerdict::Degraded(inner) => resolve_audit_verdict(inner, lane_a_retries),
+        AuditVerdict::Degraded(inner) => resolve_audit_verdict(inner, cumulative_retries),
     }
+}
+
+/// PR-4: build the revision system-prompt addendum (brainstorm §7.3).
+/// Re-invokes the producer with its prior output + the auditor's
+/// critique embedded so the producer can target the specific issue
+/// rather than re-generating from scratch.
+fn build_revision_addendum(
+    producer_previous_output: &str,
+    auditor_reason: &str,
+    retries_remaining: u32,
+) -> String {
+    format!(
+        "PRIOR ATTEMPT:\n{producer_previous_output}\n\n\
+         AUDITOR'S CRITIQUE:\n{auditor_reason}\n\n\
+         Revise your output to address the auditor's critique. You may invoke \
+         tools again if additional evidence is needed. Cumulative retry budget \
+         remaining: {retries_remaining}."
+    )
+}
+
+/// PR-4: render the producer's output as text for the audit prompt.
+/// Prefers the originating fenced YAML body (when available) so the
+/// auditor judges the exact bytes the producer emitted; falls back to a
+/// canonical JSON serialization of `output.value` for backends that
+/// don't carry text blocks (e.g. the test backend's `response.output`
+/// envelope).
+fn render_producer_output_text(output: &AgentOutput) -> String {
+    if !output.text.is_empty() {
+        return output.text.clone();
+    }
+    serde_json::to_string_pretty(&output.value).unwrap_or_else(|_| output.value.to_string())
+}
+
+/// PR-4: the auditor closure body. Pre-flights the verdict cache,
+/// calls the auditor backend, parses the fenced YAML response,
+/// persists the verdict pair on disk, and returns the `AuditVerdict`
+/// for `lane_b_audit` to wrap. Closure-internal errors map to
+/// `AuditVerdict::HardFail(reason)` — `lane_b_audit`'s `audit_fn`
+/// signature can't propagate `Result` outward; the calling-frame
+/// `resolve_audit_verdict` translates HardFail to `LaneBFail`.
+#[allow(clippy::too_many_arguments)]
+async fn run_real_audit(
+    choice: audit::AuditorChoice,
+    producer_provider_label: &'static str,
+    producer_model_id: &str,
+    producer_output: &AgentOutput,
+    producer_output_bytes: &[u8],
+    producer_transcript: &Transcript,
+    stage: Stage,
+    target_id: &str,
+    agent_id_payload: &str,
+    audit_dir: &Path,
+) -> AuditVerdict {
+    let auditor_provider = choice.provider();
+    let auditor_provider_label = audit::lane_b::provider_label(auditor_provider);
+    let auditor_backend = choice.backend().clone();
+    let auditor_model_id = auditor_backend.fingerprint().model_id;
+    let producer_output_sha = sha256_hex(producer_output_bytes);
+
+    // Pre-flight cache: replay a fresh verdict whose producer sha
+    // matches.
+    match audit::read_verdict_if_complete(audit_dir, stage, target_id) {
+        Ok(Some(cached)) => {
+            if cached.producer.output_sha == producer_output_sha {
+                return verdict_from_cached(cached);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "audit verdict cache read failed; falling through to fresh audit"
+            );
+        }
+    }
+
+    // Compose audit prompt.
+    let producer_output_rendered = render_producer_output_text(producer_output);
+    let transcript_rendered = audit::render_transcript_for_audit(producer_transcript);
+    let prompt = audit::build_audit_prompt(
+        producer_provider_label,
+        auditor_provider_label,
+        stage,
+        &producer_output_rendered,
+        &transcript_rendered,
+    );
+
+    // Call auditor. The `LlmRequest` carries the prompt under
+    // `inputs.conversation` matching `build_llm_request_with_tools`'s
+    // shape so HTTP backends route it identically.
+    let llm_request = LlmRequest {
+        prompt_template: atlas_llm::PromptId::Classify,
+        inputs: serde_json::json!({
+            "conversation": prompt,
+            "tools": [],
+        }),
+        schema: atlas_llm::ResponseSchema::accept_any(),
+    };
+
+    let response = match auditor_backend.call_async(&llm_request).await {
+        Ok(v) => v,
+        Err(e) => {
+            return AuditVerdict::HardFail(format!("auditor backend call failed: {e}"));
+        }
+    };
+
+    // Extract the text payload from the response (Anthropic / OpenAI
+    // shapes both flow through `parse_final_output`'s logic).
+    let parsed = crate::runtime::tool_loop_http::parse_final_output(&response);
+    let response_text = if !parsed.text.is_empty() {
+        parsed.text
+    } else if let Some(s) = response.as_str() {
+        s.to_string()
+    } else {
+        serde_json::to_string(&parsed.value).unwrap_or_default()
+    };
+
+    // Extract + parse YAML fence.
+    let yaml_body = match crate::runtime::prompt_examples::extract_yaml_fence(&response_text) {
+        Ok(b) => b,
+        Err(e) => {
+            return AuditVerdict::HardFail(format!(
+                "auditor response missing fenced YAML verdict: {e}"
+            ));
+        }
+    };
+    let emitted: audit::AuditorEmittedVerdict = match serde_yaml::from_str(yaml_body) {
+        Ok(v) => v,
+        Err(e) => {
+            return AuditVerdict::HardFail(format!("auditor verdict YAML deserialize failed: {e}"));
+        }
+    };
+
+    // Persist verdict to disk for re-run replay.
+    let (tokens_in, tokens_out) = extract_audit_token_counts(&response);
+    let on_disk = audit::AuditVerdictOnDisk {
+        agent_id: agent_id_payload.to_string(),
+        stage: stage.into(),
+        producer: audit::ProducerMeta {
+            provider: producer_provider_label.to_string(),
+            model: producer_model_id.to_string(),
+            output_sha: producer_output_sha,
+        },
+        auditor: audit::AuditorVerdictMeta {
+            provider: auditor_provider_label.to_string(),
+            model: auditor_model_id,
+            verdict: emitted.verdict,
+            reason: emitted.reason.clone(),
+        },
+        audit_tokens: audit::TokenCounts {
+            tokens_in,
+            tokens_out,
+        },
+        audited_at: now_iso(),
+    };
+    if let Err(e) =
+        audit::write_verdict_pair(audit_dir, stage, target_id, &on_disk, &transcript_rendered)
+    {
+        tracing::warn!(error = %e, "audit verdict persistence failed (non-fatal)");
+    }
+
+    verdict_from_emitted(emitted)
+}
+
+/// PR-4: map a freshly-parsed auditor verdict YAML to the in-memory
+/// [`AuditVerdict`] enum. The `Degraded` wrapper is applied by
+/// `lane_b_audit`, not here.
+fn verdict_from_emitted(emitted: audit::AuditorEmittedVerdict) -> AuditVerdict {
+    match emitted.verdict {
+        audit::VerdictKind::Accept => AuditVerdict::Accept,
+        audit::VerdictKind::RequestRevision => AuditVerdict::RequestRevision(emitted.reason),
+        audit::VerdictKind::HardFail => AuditVerdict::HardFail(emitted.reason),
+        audit::VerdictKind::Skipped => AuditVerdict::Skipped,
+    }
+}
+
+/// PR-4: map a cached on-disk verdict to the in-memory enum on the
+/// cache-replay path.
+fn verdict_from_cached(cached: audit::AuditVerdictOnDisk) -> AuditVerdict {
+    match cached.auditor.verdict {
+        audit::VerdictKind::Accept => AuditVerdict::Accept,
+        audit::VerdictKind::RequestRevision => AuditVerdict::RequestRevision(cached.auditor.reason),
+        audit::VerdictKind::HardFail => AuditVerdict::HardFail(cached.auditor.reason),
+        audit::VerdictKind::Skipped => AuditVerdict::Skipped,
+    }
+}
+
+/// PR-4: extract `(tokens_in, tokens_out)` from an auditor response.
+/// Tries both the Anthropic shape (`usage.input_tokens` /
+/// `usage.output_tokens`) and the OpenAI shape (`usage.prompt_tokens`
+/// / `usage.completion_tokens`); falls back to `(0, 0)` if neither is
+/// present (the test backend's response shape carries no usage block).
+fn extract_audit_token_counts(response: &Value) -> (u64, u64) {
+    let usage = match response.get("usage") {
+        Some(u) => u,
+        None => return (0, 0),
+    };
+    let tokens_in = usage
+        .get("input_tokens")
+        .or_else(|| usage.get("prompt_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let tokens_out = usage
+        .get("output_tokens")
+        .or_else(|| usage.get("completion_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    (tokens_in, tokens_out)
 }
 
 /// Caller-facing action shape produced by [`resolve_audit_verdict`].

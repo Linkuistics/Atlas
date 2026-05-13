@@ -123,6 +123,26 @@ fn text_block(text: &str) -> Value {
     json!({ "content": [{ "type": "text", "text": text }] })
 }
 
+/// PR-4: canned auditor response. The producer prompts open with
+/// "You are Atlas's <stage> agent"; the audit prompt opens with
+/// "You are an auditor for an Atlas agent's output". The substring
+/// "auditor" disambiguates and routes audit calls to the canned
+/// accept-verdict here so Lane B can complete on a synthetic
+/// workspace without a second `StagedBackend` instance.
+fn audit_accept_response() -> Value {
+    // Use `concat!()` with explicit newlines + literal leading spaces
+    // on the block-scalar content line — `\n\` line continuations
+    // consume leading whitespace, which would un-indent the YAML
+    // block scalar and break the parser.
+    text_block(concat!(
+        "```yaml\n",
+        "verdict: accept\n",
+        "reason: |\n",
+        "  Synthetic-test producer; transcript is empty by design.\n",
+        "```\n"
+    ))
+}
+
 #[tokio::test]
 async fn agent_runtime_runs_a_workspace_end_to_end_single_iteration() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -134,6 +154,10 @@ async fn agent_runtime_runs_a_workspace_end_to_end_single_iteration() {
     // `"<stage> agent"` to remain stable across prompt-body edits while
     // disambiguating the three stages.
     let backend = Arc::new(StagedBackend::new(vec![
+        // PR-4: audit responses first so Lane B fires can match this
+        // entry before the producer-stage entries (the audit prompt
+        // doesn't contain "classify agent" / etc., so order is safe).
+        ("auditor".to_string(), audit_accept_response()),
         (
             "classify agent".to_string(),
             text_block("{\"components\":[{\"id\":\"foo\"}]}"),
@@ -164,6 +188,7 @@ async fn agent_runtime_runs_a_workspace_end_to_end_single_iteration() {
         max_iterations: 1,
         for_provider: None,
         mcp_server: None,
+        audit_dir: dir.path().join("audit"),
     };
     let workspace = AgentsWorkspace::new(root);
 
@@ -201,6 +226,9 @@ async fn lane_a_retry_fires_exactly_once_on_classify_schema_fail() {
     let project_response = text_block("{\"components\":[{\"id\":\"foo\"}]}");
 
     let backend_inner = StagedBackend::new(vec![
+        // PR-4: audit accept first so Lane B can complete on a
+        // synthetic workspace (see notes in the other test).
+        ("auditor".to_string(), audit_accept_response()),
         ("classify agent".to_string(), invalid),
         ("reduce agent".to_string(), reduce_response),
         ("project agent".to_string(), project_response),
@@ -242,6 +270,7 @@ async fn lane_a_retry_fires_exactly_once_on_classify_schema_fail() {
         max_iterations: 1,
         for_provider: None,
         mcp_server: None,
+        audit_dir: dir.path().join("audit"),
     };
     let workspace = AgentsWorkspace::new(root);
 

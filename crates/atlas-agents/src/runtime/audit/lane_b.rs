@@ -199,7 +199,7 @@ pub async fn lane_b_audit<F, Fut>(
     audit_fn: F,
 ) -> AuditVerdict
 where
-    F: FnOnce(Arc<dyn LlmBackend>) -> Fut,
+    F: FnOnce(AuditorChoice) -> Fut,
     Fut: std::future::Future<Output = AuditVerdict>,
 {
     if !should_audit(producer_grade) {
@@ -212,7 +212,7 @@ where
         auditor_provider: provider_label(choice.provider()).to_string(),
     });
     let degraded = choice.is_degraded();
-    let verdict = audit_fn(choice.backend().clone()).await;
+    let verdict = audit_fn(choice).await;
     let final_verdict = if degraded {
         AuditVerdict::Degraded(Box::new(verdict))
     } else {
@@ -404,8 +404,8 @@ mod tests {
             Provider::Anthropic,
             &producer,
             Some(&for_provider),
-            |chosen| async move {
-                assert_eq!(chosen.fingerprint().model_id, "openai-auditor");
+            |choice| async move {
+                assert_eq!(choice.backend().fingerprint().model_id, "openai-auditor");
                 AuditVerdict::Accept
             },
         )
