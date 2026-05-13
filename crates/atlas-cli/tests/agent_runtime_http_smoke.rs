@@ -308,18 +308,35 @@ fn agent_runtime_http_smoke_completes_with_config_loaded_from_env() {
     let config_file = write_config(&sprint_config_yaml(true));
     let atlas_config = AtlasConfig::load(config_file.path()).unwrap();
     let (provider_router, prompts_dir) = build_provider_router(&atlas_config, workspace.path());
+    // PR-3: keys updated to per-stage `"<stage> agent"` substring
+    // (matches the production prompt opening "You are Atlas's <stage>
+    // agent"). Canned responses populate the shim's required
+    // canonical fields (kind, purpose, workspace_purpose) so the
+    // end-to-end shim wire-in succeeds.
     let staged_backend = Arc::new(StagedBackend::new(vec![
         (
-            "classify component".to_string(),
-            text_block("{\"components\":[{\"id\":\"foo\"}]}"),
+            "classify agent".to_string(),
+            text_block(
+                "{\"kind\":\"rust-library\",\"language\":\"rust\",\
+                 \"lifecycle\":\"runtime\",\"subsystem_hint\":\"agents\",\
+                 \"components\":[{\"id\":\"foo\"}]}",
+            ),
         ),
         (
-            "reduce subsystem".to_string(),
-            text_block("{\"components\":[{\"id\":\"foo\"}]}"),
+            "reduce agent".to_string(),
+            text_block(
+                "{\"purpose\":\"Synthetic subsystem purpose.\",\
+                 \"component_ids\":[\"foo\"],\"components\":[{\"id\":\"foo\"}]}",
+            ),
         ),
         (
-            "project the workspace".to_string(),
-            text_block("{\"components\":[{\"id\":\"foo\"}]}"),
+            "project agent".to_string(),
+            text_block(
+                "{\"workspace_purpose\":\"Synthetic workspace.\",\
+                 \"subsystem_catalog\":[{\"subsystem_id\":\"agents\",\
+                 \"purpose\":\"x\",\"component_count\":1}],\
+                 \"components\":[{\"id\":\"foo\"}]}",
+            ),
         ),
     ])) as Arc<dyn LlmBackend>;
     let handles = backend_handles(staged_backend, provider_router, prompts_dir);
@@ -329,9 +346,11 @@ fn agent_runtime_http_smoke_completes_with_config_loaded_from_env() {
 
     run_index_agent_runtime(&index_config, &atlas_config, handles, &args).unwrap();
 
+    // PR-3: agent-runtime-projection moved from `.json` to `.yaml`
+    // (memory `feedback_yaml_canonical_interchange`).
     let projection_path = output_dir
         .join("cache")
-        .join("agent-runtime-projection.json");
+        .join("agent-runtime-projection.yaml");
     assert!(projection_path.exists());
     let events = std::fs::read_to_string(events_path).unwrap();
     assert!(events.contains("AgentStart"));

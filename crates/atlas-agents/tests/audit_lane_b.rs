@@ -256,14 +256,20 @@ impl LlmBackend for ClassifyBackend {
     }
 }
 
-/// FIX 2 step 6: assert Lane B is wired into `call_agent` by running
-/// the runtime end-to-end with a backend that grades `Strong` and
-/// verifying no `AuditFire` event fires (because Lane B's
-/// `should_audit` predicate returns `false` for `Strong`). The
-/// wiring deliverable is structural — empirical Lane B firing
-/// requires a multi-grade backend, which is a PR-7+ concern.
+/// Assert Lane B is wired into `call_agent` end-to-end. Under PR-3's
+/// real per-stage evidence-floor scoring, a synthetic backend that
+/// emits no `evidence_pointers` and triggers no transcript tool-call
+/// reads gets its non-dispatch grades clamped to `Declines` by Lane
+/// A's evidence-floor layer. Lane B then fires audit — so at least
+/// one `AuditFire` event lands during the end-to-end run.
+///
+/// PR-2 framing: the pre-PR-3 test asserted *no* `AuditFire` (because
+/// PR-2's placeholder evidence ratio of `1.0` for non-dispatch stages
+/// preserved hardcoded-Strong). PR-2 note item 1 explicitly flagged
+/// this would invert under PR-3. The wiring is the constant; the
+/// polarity reflects the regime.
 #[tokio::test]
-async fn lane_b_wired_into_call_agent_skips_on_strong_grade() {
+async fn lane_b_wired_into_call_agent_fires_when_evidence_floor_clamps_below_strong() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     std::fs::write(
@@ -312,8 +318,11 @@ async fn lane_b_wired_into_call_agent_skips_on_strong_grade() {
         "RuntimeComplete must fire at end of run"
     );
     assert!(
-        !saw_audit_fire,
-        "Lane B must skip on Strong grade — no `AuditFire` event expected, but one was emitted"
+        saw_audit_fire,
+        "Lane B must be wired into call_agent — at least one `AuditFire` event \
+         expected under PR-3's evidence-floor clamping (synthetic backend emits \
+         no evidence_pointers, transcript is empty, classify evidence ratio = 0.0, \
+         ceiling = Declines, Lane B fires)"
     );
 }
 
