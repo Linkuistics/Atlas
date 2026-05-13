@@ -1,8 +1,8 @@
 # Atlas vNext — Production-prompt sprint — Status
 
-Companion to `docs/superpowers/specs/2026-05-13-atlas-production-prompt-sprint-plan.md`. This file tracks per-PR completion state across sessions. The PR-1 continuation prompt at `docs/superpowers/prompts/2026-05-13-pr1-continue.md` reads this file to find the next PR to dispatch.
+Companion to `docs/superpowers/specs/2026-05-13-atlas-production-prompt-sprint-plan.md`. This file tracks per-PR completion state across sessions. The active continuation prompts at `docs/superpowers/prompts/2026-05-13-pr3-continue.md` (sequential, next on the critical path) and `docs/superpowers/prompts/2026-05-13-prb-continue.md` (parallel-track, unblocked by PR-A) read this file to find the next PR to dispatch. Each session re-points this line as PRs land + new continuation prompts are authored; the expired continuation prompts for PR-1 / PR-2 / PR-A were dropped after their PRs shipped (matches the cleanup pattern from commit `7d6f6f3`).
 
-**Last updated:** 2026-05-13 (PR-A landed on top of PR-2's tip — `rmcp` migration of PR-1's hand-rolled MCP framing + subprocess MCP `serve_client` driver; verification-note commit `d1df478` + code-commit `c07c5d5`. PR-2's earlier landing this session: code-commit `876ea24`.)
+**Last updated:** 2026-05-13 (post-PR-A cleanup — dropped landed-PR continuation prompts; authored PR-3 + PR-B continuation prompts. PR-A landed earlier this session — `rmcp` migration of PR-1's hand-rolled MCP framing + subprocess MCP `serve_client` driver; verification-note commit `d1df478` + code-commit `c07c5d5`. PR-2's earlier landing this session: code-commit `876ea24`.)
 
 ## PR status
 
