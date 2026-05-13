@@ -31,6 +31,14 @@ const VERSION: &str = concat!(
 #[derive(Debug, Parser)]
 #[command(name = "atlas", version = VERSION, about, long_about = None)]
 struct Cli {
+    /// Override the default <workspace_root>/.atlas/config.yaml resolution.
+    ///
+    /// Env-var substitution is applied when the named config is loaded
+    /// (for example, `${ANTHROPIC_API_KEY}` resolves from the process
+    /// environment).
+    #[arg(long, value_name = "PATH", global = true)]
+    config: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -92,8 +100,9 @@ fn main() -> ExitCode {
 
 fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
+    let config_override = cli.config;
     match cli.command {
-        Command::Index(args) => run_index_cmd(args),
+        Command::Index(args) => run_index_cmd(args, config_override),
         Command::ValidateOverrides(args) => run_validate_overrides_cmd(args),
         Command::Init(args) => {
             let root = args
@@ -104,8 +113,8 @@ fn run() -> Result<ExitCode> {
         }
         Command::Drift(args) => reports::run_drift_cmd(args),
         Command::Impact(args) => reports::run_impact_cmd(args),
-        Command::Modularity(args) => reports::run_modularity_cmd(args),
-        Command::Divergence(args) => reports::run_divergence_cmd(args),
+        Command::Modularity(args) => reports::run_modularity_cmd_with_config(args, config_override),
+        Command::Divergence(args) => reports::run_divergence_cmd_with_config(args, config_override),
     }
 }
 
@@ -129,7 +138,11 @@ fn run_validate_overrides_cmd(args: ValidateOverridesArgs) -> Result<ExitCode> {
     }
 }
 
-fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
+fn resolve_config_path(output_dir: &std::path::Path, override_path: Option<PathBuf>) -> PathBuf {
+    override_path.unwrap_or_else(|| output_dir.join("config.yaml"))
+}
+
+fn run_index_cmd(args: IndexArgs, config_override: Option<PathBuf>) -> Result<ExitCode> {
     // Phase 7 PR-6: short-circuit the entire `atlas index` deterministic
     // pipeline when `--replay-from-cache` is set. The replay path
     // spawns a local tokio runtime (the only legal sync→async
@@ -193,7 +206,7 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
             .output_dir
             .clone()
             .unwrap_or_else(|| root.join(atlas_cli::DEFAULT_OUTPUT_SUBDIR));
-        let config_path = output_dir.join("config.yaml");
+        let config_path = resolve_config_path(&output_dir, config_override.clone());
         let atlas_config = atlas_llm::AtlasConfig::load(&config_path)
             .with_context(|| format!("failed to load {}", config_path.display()))?;
 
@@ -206,7 +219,7 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
             .budget
             .map(|b| Arc::new(atlas_llm::TokenCounter::new(b)));
 
-        let handles = atlas_cli::backend::build_production_backend_with_counter(
+        let handles = atlas_cli::backend::build_agent_runtime_backend_with_counter(
             &atlas_config,
             &index_config.root,
             counter.clone(),
@@ -247,7 +260,7 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
         .clone()
         .unwrap_or_else(|| root.join(atlas_cli::DEFAULT_OUTPUT_SUBDIR));
 
-    let config_path = output_dir.join("config.yaml");
+    let config_path = resolve_config_path(&output_dir, config_override);
     let atlas_config = atlas_llm::AtlasConfig::load(&config_path)
         .with_context(|| format!("failed to load {}", config_path.display()))?;
 
@@ -340,5 +353,58 @@ fn run_index_cmd(args: IndexArgs) -> Result<ExitCode> {
             drop(handles);
             Ok(ExitCode::from(code))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_config_flag_is_available_before_index_subcommand() {
+        let cli = Cli::try_parse_from([
+            "atlas",
+            "--config",
+            "/tmp/atlas-sprint.yaml",
+            "index",
+            "/tmp/workspace",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.config.as_deref(),
+            Some(std::path::Path::new("/tmp/atlas-sprint.yaml"))
+        );
+    }
+
+    #[test]
+    fn global_config_flag_is_available_after_non_index_subcommand() {
+        let cli = Cli::try_parse_from([
+            "atlas",
+            "validate-overrides",
+            "--config",
+            "/tmp/atlas-sprint.yaml",
+            "/tmp/components.overrides.yaml",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.config.as_deref(),
+            Some(std::path::Path::new("/tmp/atlas-sprint.yaml"))
+        );
+    }
+
+    #[test]
+    fn config_override_replaces_default_atlas_config_path() {
+        let output_dir = std::path::Path::new("/tmp/workspace/.atlas");
+        assert_eq!(
+            resolve_config_path(
+                output_dir,
+                Some(std::path::PathBuf::from("/tmp/sprint.yaml"))
+            ),
+            std::path::PathBuf::from("/tmp/sprint.yaml")
+        );
+        assert_eq!(
+            resolve_config_path(output_dir, None),
+            output_dir.join("config.yaml")
+        );
     }
 }

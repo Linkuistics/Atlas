@@ -50,8 +50,8 @@ pub enum ConfigError {
     },
     #[error("failed to parse config.yaml: {0}")]
     Parse(String),
-    #[error("env var `{name}` is unset (referenced in config.yaml)")]
-    EnvVarUnset { name: String },
+    #[error("env var `{var_name}` is unset (referenced in config.yaml)")]
+    MissingEnvVar { var_name: String },
     #[error("defaults.model is required in config.yaml")]
     MissingDefaultModel,
     #[error("provider `{provider}` is used but not configured in providers:")]
@@ -108,8 +108,8 @@ fn interpolate_segment(s: &str, out: &mut String) -> Result<(), ConfigError> {
             ))
         })?;
         let name = &after[..end];
-        let value = std::env::var(name).map_err(|_| ConfigError::EnvVarUnset {
-            name: name.to_string(),
+        let value = std::env::var(name).map_err(|_| ConfigError::MissingEnvVar {
+            var_name: name.to_string(),
         })?;
         out.push_str(&value);
         rest = &after[end + 1..];
@@ -274,7 +274,7 @@ operations:
         std::env::remove_var("_ATLAS_DEFINITELY_UNSET_XYZ");
         let err = interpolate_env_vars("${_ATLAS_DEFINITELY_UNSET_XYZ}").unwrap_err();
         assert!(
-            matches!(err, ConfigError::EnvVarUnset { name } if name == "_ATLAS_DEFINITELY_UNSET_XYZ")
+            matches!(err, ConfigError::MissingEnvVar { var_name } if var_name == "_ATLAS_DEFINITELY_UNSET_XYZ")
         );
     }
 

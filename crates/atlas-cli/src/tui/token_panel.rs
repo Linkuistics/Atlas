@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use super::state::TuiState;
-use atlas_agents::Provider;
+use atlas_llm::Provider;
 
 /// Render the token panel.
 ///

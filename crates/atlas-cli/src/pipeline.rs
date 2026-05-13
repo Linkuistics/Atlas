@@ -1022,11 +1022,10 @@ pub fn run_index_agent_runtime(
 
     use atlas_agents::{
         agent_cache_writer, default_tool_catalog, AgentRuntime, EventBus, Semaphores, ToolCatalog,
-        TransportFlavour, Workspace as AgentsWorkspace,
+        Workspace as AgentsWorkspace,
     };
     use atlas_engine::LlmResponseCache;
-
-    let _ = atlas_config; // reserved for future Provider-aware wiring
+    use atlas_llm::Provider;
 
     // ---- runtime ---------------------------------------------------
     let tokio_rt = tokio::runtime::Builder::new_multi_thread()
@@ -1124,27 +1123,25 @@ pub fn run_index_agent_runtime(
 
     // ---- runtime construction -------------------------------------
     let tools: Arc<ToolCatalog> = Arc::new(default_tool_catalog());
+    let router_for_closure = Arc::clone(&backend_handles.provider_router);
+    let for_provider: Arc<atlas_agents::runtime::ForProviderFn> =
+        Arc::new(move |provider: Provider| {
+            router_for_closure.backend_for_provider(provider).cloned()
+        });
+    let default_transport = default_transport_from_config(atlas_config)?;
     let runtime = AgentRuntime {
         backend_router: backend_handles.backend.clone(),
         tools,
         cache: cache.clone(),
         event_bus: event_bus.clone(),
         semaphores: Semaphores::defaults(),
-        // PR-7: default transport reflects the typical Atlas backend
-        // pair (claude_code + codex per memory
-        // `project_atlas_common_backend_config`). When subprocess
-        // transports route, the runtime currently surfaces a clean
-        // error (the MCP `serve_client` task wiring is a follow-up);
-        // for HTTP routes Lane A + Lane B fire normally.
-        default_transport: TransportFlavour::ClaudeCode,
+        // PR-1: default transport follows `defaults.model` so
+        // `--config <PATH>` can switch the AgentRuntime between the
+        // canonical subprocess pair and the sprint's HTTP pairing.
+        default_transport,
         default_max_steps: 8,
         max_iterations: 5,
-        // PR-7 MVP: `for_provider: None` → Lane B falls back to the
-        // same-model auditor with `AuditDegraded`. Per-provider auditor
-        // wiring requires un-gating `BackendRouter::from_dispatch_table`
-        // or adding a per-provider lookup helper to `atlas-llm`;
-        // documented as a follow-up in the closeout note.
-        for_provider: None,
+        for_provider: Some(for_provider),
     };
 
     let workspace = AgentsWorkspace::new(config.root.clone());
@@ -1194,6 +1191,26 @@ pub fn run_index_agent_runtime(
         })?;
     }
     Ok(())
+}
+
+fn default_transport_from_config(
+    atlas_config: &atlas_llm::AtlasConfig,
+) -> Result<atlas_agents::TransportFlavour, IndexError> {
+    let Some((provider, _model)) = atlas_config.defaults.model.split_once('/') else {
+        return Err(IndexError::Other(anyhow::anyhow!(
+            "defaults.model `{}` must be in `<provider>/<model-id>` format",
+            atlas_config.defaults.model
+        )));
+    };
+    match provider {
+        "anthropic" => Ok(atlas_agents::TransportFlavour::HttpAnthropic),
+        "openai" | "openrouter" => Ok(atlas_agents::TransportFlavour::HttpOpenai),
+        "claude-code" => Ok(atlas_agents::TransportFlavour::ClaudeCode),
+        "codex" => Ok(atlas_agents::TransportFlavour::Codex),
+        other => Err(IndexError::Other(anyhow::anyhow!(
+            "unsupported defaults.model provider `{other}` in config"
+        ))),
+    }
 }
 
 /// Resolve a component's absolute on-disk directory from its

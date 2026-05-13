@@ -54,6 +54,25 @@ pub use http_openai::OpenAiHttpBackend;
 pub use router::BackendRouter;
 pub use test_backend::TestBackend;
 
+/// LLM provider identity. Transport-specific flavours live in
+/// `atlas-agents`; provider identity is owned here so `BackendRouter`
+/// can expose production per-provider lookup without a crate cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum Provider {
+    Anthropic,
+    OpenAi,
+}
+
+impl Provider {
+    /// Return the opposite provider for cross-provider audit routing.
+    pub fn cross(self) -> Self {
+        match self {
+            Self::Anthropic => Self::OpenAi,
+            Self::OpenAi => Self::Anthropic,
+        }
+    }
+}
+
 /// Identifier for one of Atlas's built-in prompt templates. The
 /// engine refers to prompts by id rather than path so that a backend
 /// is free to bundle templates statically or load them from disk.

@@ -18,6 +18,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use atlas_llm::Provider;
+
 /// Wire flavour for a backend transport. Hashes into the transcript-cache
 /// fingerprint so that the same logical agent run over two different
 /// transports produces two cache entries.
@@ -55,18 +57,6 @@ impl TransportFlavour {
             Self::Codex | Self::HttpOpenai => Provider::OpenAi,
         }
     }
-}
-
-/// LLM provider identity. The cross-provider audit rule (Anthropic↔OpenAi
-/// pairings only) is enforced one layer up in the runtime.
-///
-/// `Ord` is derived so the PR-6 TUI's per-provider token breakdown
-/// can hold a deterministic key order via `BTreeMap`. Alphabetical
-/// variant order suffices for the rendering purpose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum Provider {
-    Anthropic,
-    OpenAi,
 }
 
 #[cfg(test)]

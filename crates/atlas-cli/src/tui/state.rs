@@ -16,7 +16,8 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use atlas_agents::events::CacheHitSource;
-use atlas_agents::{AgentEvent, Grade, Provider, TransportFlavour};
+use atlas_agents::{AgentEvent, Grade, TransportFlavour};
+use atlas_llm::Provider;
 use serde::{Deserialize, Serialize};
 
 /// Status of a single agent within the workspace tree.

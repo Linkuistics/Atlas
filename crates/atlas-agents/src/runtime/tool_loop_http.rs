@@ -25,12 +25,11 @@
 //! Parsing helpers are exposed for unit tests; the production caller
 //! is `crate::runtime::AgentRuntime::call_agent`.
 
-use atlas_llm::{LlmBackend, LlmRequest, PromptId, ResponseSchema};
+use atlas_llm::{LlmBackend, LlmRequest, PromptId, Provider, ResponseSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::runtime::audit::{AgentOutput, Stage};
-use crate::transport::Provider;
 use crate::{ToolArgs, ToolContext, ToolResult};
 
 use super::semaphores::Semaphores;

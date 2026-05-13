@@ -26,6 +26,7 @@ use crate::prompts::{EMBEDDED_ONTOLOGY_YAML, EMBEDDED_PROMPTS};
 /// Everything the CLI needs to keep alive for the duration of a run.
 pub struct BackendHandles {
     pub backend: Arc<dyn LlmBackend>,
+    pub provider_router: Arc<atlas_llm::BackendRouter>,
     pub counter: Option<Arc<TokenCounter>>,
     pub sentinel: Arc<BudgetSentinel>,
     pub fingerprint: LlmFingerprint,
@@ -134,23 +135,58 @@ pub fn build_production_backend_with_counter(
     counter: Option<Arc<TokenCounter>>,
     observer: Option<Arc<dyn atlas_llm::BackendCallObserver>>,
 ) -> Result<BackendHandles> {
+    build_backend_handles(config, workspace_path, counter, observer, false)
+}
+
+/// Construct the backend stack for `atlas index --agent-runtime`.
+///
+/// AgentRuntime drives HTTP providers through Atlas's tool-use loop,
+/// so HTTP backends are valid for every stage on this path.
+pub fn build_agent_runtime_backend_with_counter(
+    config: &atlas_llm::AtlasConfig,
+    workspace_path: &std::path::Path,
+    counter: Option<Arc<TokenCounter>>,
+    observer: Option<Arc<dyn atlas_llm::BackendCallObserver>>,
+) -> Result<BackendHandles> {
+    build_backend_handles(config, workspace_path, counter, observer, true)
+}
+
+fn build_backend_handles(
+    config: &atlas_llm::AtlasConfig,
+    workspace_path: &std::path::Path,
+    counter: Option<Arc<TokenCounter>>,
+    observer: Option<Arc<dyn atlas_llm::BackendCallObserver>>,
+    agent_runtime: bool,
+) -> Result<BackendHandles> {
     let prompts_dir = TempDir::new()?;
     crate::prompts::materialise_to(prompts_dir.path())?;
 
     let template_sha = compute_template_sha();
     let ontology_sha = compute_ontology_sha();
 
-    let router = atlas_llm::BackendRouter::new(
-        config,
-        prompts_dir.path(),
-        workspace_path,
-        template_sha,
-        ontology_sha,
-        observer,
-    )
+    let router = if agent_runtime {
+        atlas_llm::BackendRouter::new_for_agent_runtime(
+            config,
+            prompts_dir.path(),
+            workspace_path,
+            template_sha,
+            ontology_sha,
+            observer,
+        )
+    } else {
+        atlas_llm::BackendRouter::new(
+            config,
+            prompts_dir.path(),
+            workspace_path,
+            template_sha,
+            ontology_sha,
+            observer,
+        )
+    }
     .map_err(|e| anyhow::anyhow!("failed to build backend: {e}"))?;
-    let fingerprint = router.fingerprint();
-    let inner: Arc<dyn LlmBackend> = Arc::new(router);
+    let provider_router = Arc::new(router);
+    let fingerprint = provider_router.fingerprint();
+    let inner: Arc<dyn LlmBackend> = provider_router.clone();
 
     let backend_after_budget: Arc<dyn LlmBackend> = match counter.as_ref() {
         Some(c) => Arc::new(BudgetedBackend::new(
@@ -165,6 +201,7 @@ pub fn build_production_backend_with_counter(
 
     Ok(BackendHandles {
         backend,
+        provider_router,
         counter,
         sentinel,
         fingerprint,

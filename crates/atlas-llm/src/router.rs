@@ -4,11 +4,19 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::config::AtlasConfig;
-use crate::{BackendCallObserver, LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId};
+use crate::{
+    BackendCallObserver, LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId, Provider,
+};
 
 pub struct BackendRouter {
     table: HashMap<PromptId, Arc<dyn LlmBackend>>,
+    provider_entries: Vec<ProviderEntry>,
     fingerprint: LlmFingerprint,
+}
+
+struct ProviderEntry {
+    provider: Provider,
+    backend: Arc<dyn LlmBackend>,
 }
 
 impl BackendRouter {
@@ -26,6 +34,50 @@ impl BackendRouter {
         ontology_sha: [u8; 32],
         observer: Option<Arc<dyn BackendCallObserver>>,
     ) -> Result<Self, LlmError> {
+        Self::new_inner(
+            config,
+            prompts_dir,
+            workspace_path,
+            template_sha,
+            ontology_sha,
+            observer,
+            false,
+        )
+    }
+
+    /// Build a router for AgentRuntime. The runtime's HTTP path is an
+    /// Atlas-owned tool loop, so HTTP backends are valid for every
+    /// stage here even though the deterministic prompt templates still
+    /// reject HTTP for filesystem-heavy surface / edge extraction.
+    pub fn new_for_agent_runtime(
+        config: &AtlasConfig,
+        prompts_dir: &std::path::Path,
+        workspace_path: &std::path::Path,
+        template_sha: [u8; 32],
+        ontology_sha: [u8; 32],
+        observer: Option<Arc<dyn BackendCallObserver>>,
+    ) -> Result<Self, LlmError> {
+        Self::new_inner(
+            config,
+            prompts_dir,
+            workspace_path,
+            template_sha,
+            ontology_sha,
+            observer,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_inner(
+        config: &AtlasConfig,
+        prompts_dir: &std::path::Path,
+        workspace_path: &std::path::Path,
+        template_sha: [u8; 32],
+        ontology_sha: [u8; 32],
+        observer: Option<Arc<dyn BackendCallObserver>>,
+        allow_http_filesystem_prompts: bool,
+    ) -> Result<Self, LlmError> {
         let all_prompt_ids = [
             PromptId::Classify,
             PromptId::Subcarve,
@@ -34,21 +86,24 @@ impl BackendRouter {
         ];
 
         let mut table: HashMap<PromptId, Arc<dyn LlmBackend>> = HashMap::new();
+        let mut provider_entries: Vec<ProviderEntry> = Vec::new();
         let mut model_parts: Vec<String> = Vec::new();
         let mut version_parts: Vec<String> = Vec::new();
 
         for &prompt_id in &all_prompt_ids {
             let op = config.resolve_operation(prompt_id);
             let model_str = &op.model;
-            let (provider, model_id) = model_str.split_once('/').ok_or_else(|| {
+            let (provider_key, model_id) = model_str.split_once('/').ok_or_else(|| {
                 LlmError::Setup(format!(
                     "model `{model_str}` must be in `<provider>/<model-id>` format"
                 ))
             })?;
 
-            reject_http_for_filesystem_required_prompt(prompt_id, provider, model_str)?;
+            if !allow_http_filesystem_prompts {
+                reject_http_for_filesystem_required_prompt(prompt_id, provider_key, model_str)?;
+            }
 
-            let backend: Arc<dyn LlmBackend> = match provider {
+            let backend: Arc<dyn LlmBackend> = match provider_key {
                 "anthropic" => {
                     let api_key = config
                         .providers
@@ -124,6 +179,12 @@ impl BackendRouter {
             let fp = backend.fingerprint();
             model_parts.push(format!("{:?}={}", prompt_id, model_str));
             version_parts.push(format!("{:?}={}", prompt_id, fp.backend_version));
+            if let Some(provider) = provider_from_config_key(provider_key) {
+                provider_entries.push(ProviderEntry {
+                    provider,
+                    backend: backend.clone(),
+                });
+            }
             table.insert(prompt_id, backend);
         }
 
@@ -134,7 +195,11 @@ impl BackendRouter {
             backend_version: version_parts.join("|"),
         };
 
-        Ok(Self { table, fingerprint })
+        Ok(Self {
+            table,
+            provider_entries,
+            fingerprint,
+        })
     }
 
     /// Test-only constructor: build a router directly from a dispatch table.
@@ -143,7 +208,19 @@ impl BackendRouter {
         table: HashMap<PromptId, Arc<dyn LlmBackend>>,
         fingerprint: LlmFingerprint,
     ) -> Self {
-        Self { table, fingerprint }
+        Self {
+            table,
+            provider_entries: Vec::new(),
+            fingerprint,
+        }
+    }
+}
+
+fn provider_from_config_key(provider: &str) -> Option<Provider> {
+    match provider {
+        "anthropic" | "claude-code" => Some(Provider::Anthropic),
+        "openai" | "codex" => Some(Provider::OpenAi),
+        _ => None,
     }
 }
 
@@ -211,6 +288,16 @@ impl LlmBackend for BackendRouter {
 }
 
 impl BackendRouter {
+    /// Returns the first backend whose configured provider matches the
+    /// requested provider. Production code path for Lane B
+    /// cross-provider audit.
+    pub fn backend_for_provider(&self, provider: Provider) -> Option<&Arc<dyn LlmBackend>> {
+        self.provider_entries
+            .iter()
+            .find(|entry| entry.provider == provider)
+            .map(|entry| &entry.backend)
+    }
+
     /// Look up the backend routed for a given `PromptId`. Returns
     /// `None` if no entry is registered for that prompt. Useful for
     /// router-level capability checks (e.g. asking the per-prompt
@@ -234,6 +321,72 @@ mod tests {
             model_id: model_id.to_string(),
             backend_version: "test".to_string(),
         }
+    }
+
+    #[test]
+    fn provider_cross_returns_opposite_vendor() {
+        assert_eq!(Provider::Anthropic.cross(), Provider::OpenAi);
+        assert_eq!(Provider::OpenAi.cross(), Provider::Anthropic);
+    }
+
+    #[test]
+    fn backend_for_provider_returns_configured_http_backends_for_agent_runtime() {
+        use crate::{AtlasConfig, OperationConfig, OperationsConfig, ProviderConfig};
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "anthropic".to_string(),
+            ProviderConfig {
+                api_key: "sk-anthropic-test".to_string(),
+            },
+        );
+        providers.insert(
+            "openai".to_string(),
+            ProviderConfig {
+                api_key: "sk-openai-test".to_string(),
+            },
+        );
+
+        let config = AtlasConfig {
+            providers,
+            defaults: OperationConfig {
+                model: "anthropic/claude-opus-4-7".to_string(),
+                params: json!({ "max_tokens": 4096 }),
+            },
+            operations: OperationsConfig {
+                classify: Some(OperationConfig {
+                    model: "anthropic/claude-opus-4-7".to_string(),
+                    params: json!({ "max_tokens": 4096 }),
+                }),
+                subcarve: Some(OperationConfig {
+                    model: "openai/gpt-5-codex".to_string(),
+                    params: json!({ "max_tokens": 4096 }),
+                }),
+                surface: Some(OperationConfig {
+                    model: "anthropic/claude-opus-4-7".to_string(),
+                    params: json!({ "max_tokens": 4096 }),
+                }),
+                edges: Some(OperationConfig {
+                    model: "openai/gpt-5-codex".to_string(),
+                    params: json!({ "max_tokens": 4096 }),
+                }),
+            },
+        };
+
+        let prompts_dir = tempfile::TempDir::new().unwrap();
+        let workspace = tempfile::TempDir::new().unwrap();
+        let router = BackendRouter::new_for_agent_runtime(
+            &config,
+            prompts_dir.path(),
+            workspace.path(),
+            [0u8; 32],
+            [0u8; 32],
+            None,
+        )
+        .expect("agent runtime router accepts HTTP backends for tool-loop stages");
+
+        assert!(router.backend_for_provider(Provider::Anthropic).is_some());
+        assert!(router.backend_for_provider(Provider::OpenAi).is_some());
     }
 
     #[test]

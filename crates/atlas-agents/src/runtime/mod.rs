@@ -37,14 +37,14 @@ use atlas_engine::llm_cache::{
     TRANSCRIPT_FRAME_PREFIX,
 };
 use atlas_index::Stage as IndexStage;
-use atlas_llm::{LlmBackend, LlmError};
+use atlas_llm::{LlmBackend, LlmError, Provider};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::events::{AgentEvent, CacheHitSource, EventBus, Grade};
-use crate::transport::{Provider, TransportFlavour};
+use crate::transport::TransportFlavour;
 use crate::ToolHandle;
 
 pub use agent::Agent;
@@ -342,11 +342,10 @@ pub struct AgentRuntime {
     /// `AuditDegraded` event.
     ///
     /// Approach rationale: a closure carries the same shape as the
-    /// existing `current_sha_fn` placeholder pattern, costs no
-    /// `LlmBackend`-trait surgery, and keeps `Provider` confined to
-    /// `atlas-agents`. PR-7 plugs in a closure that delegates to the
-    /// real `BackendRouter::backend_for_provider` (which PR-7 adds);
-    /// tests inject simpler mocks via [`AgentRuntime::with_for_provider`].
+    /// existing `current_sha_fn` placeholder pattern and costs no
+    /// `LlmBackend`-trait surgery. Production wiring delegates to
+    /// `BackendRouter::backend_for_provider`; tests inject simpler
+    /// mocks via [`AgentRuntime::with_for_provider`].
     pub for_provider: Option<Arc<ForProviderFn>>,
 }
 

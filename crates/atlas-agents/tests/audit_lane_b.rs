@@ -9,10 +9,10 @@ use std::sync::Arc;
 
 use atlas_agents::events::{AgentEvent, EventBus, Grade};
 use atlas_agents::runtime::audit::lane_b::{lane_b_audit, AuditVerdict};
-use atlas_agents::transport::{Provider, TransportFlavour};
+use atlas_agents::transport::TransportFlavour;
 use atlas_agents::{default_tool_catalog, AgentRuntime, Semaphores, Workspace as AgentsWorkspace};
 use atlas_engine::llm_cache::LlmResponseCache;
-use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest};
+use atlas_llm::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, Provider};
 use serde_json::{json, Value};
 
 /// Tiny `LlmBackend` impl whose `fingerprint().model_id` is the

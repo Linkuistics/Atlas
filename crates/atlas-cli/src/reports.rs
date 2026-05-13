@@ -787,6 +787,13 @@ fn print_partition(label: &str, map: &std::collections::BTreeMap<String, Vec<Str
 /// surface / edges queries, and Atlas fails loud on runaway token
 /// usage.
 pub fn run_modularity_cmd(args: ModularityArgs) -> Result<ExitCode> {
+    run_modularity_cmd_with_config(args, None)
+}
+
+pub fn run_modularity_cmd_with_config(
+    args: ModularityArgs,
+    config_override: Option<PathBuf>,
+) -> Result<ExitCode> {
     if args.budget.is_none() && !args.no_budget {
         anyhow::bail!(
             "`atlas modularity` requires `--budget <N-tokens>` to fail loudly on runaway LLM \
@@ -800,7 +807,7 @@ pub fn run_modularity_cmd(args: ModularityArgs) -> Result<ExitCode> {
         .canonicalize()
         .with_context(|| format!("failed to resolve root path {}", args.root.display()))?;
     let output_dir = root.join(DEFAULT_OUTPUT_SUBDIR);
-    let config_path = output_dir.join("config.yaml");
+    let config_path = config_override.unwrap_or_else(|| output_dir.join("config.yaml"));
     let atlas_config = atlas_llm::AtlasConfig::load(&config_path)
         .with_context(|| format!("failed to load {}", config_path.display()))?;
 
@@ -855,6 +862,13 @@ pub fn run_modularity_cmd(args: ModularityArgs) -> Result<ExitCode> {
 /// backend (e.g. [`atlas_llm::TestBackend`]) without requiring the
 /// `claude` CLI to be on PATH.
 pub fn run_divergence_cmd(args: DivergenceArgs) -> Result<ExitCode> {
+    run_divergence_cmd_with_config(args, None)
+}
+
+pub fn run_divergence_cmd_with_config(
+    args: DivergenceArgs,
+    config_override: Option<PathBuf>,
+) -> Result<ExitCode> {
     let root = args
         .root
         .canonicalize()
@@ -864,7 +878,7 @@ pub fn run_divergence_cmd(args: DivergenceArgs) -> Result<ExitCode> {
         .clone()
         .unwrap_or_else(|| root.join(DEFAULT_OUTPUT_SUBDIR));
 
-    let config_path = output_dir.join("config.yaml");
+    let config_path = config_override.unwrap_or_else(|| output_dir.join("config.yaml"));
     let atlas_config = atlas_llm::AtlasConfig::load(&config_path)
         .with_context(|| format!("failed to load {}", config_path.display()))?;
     let handles = backend::build_production_backend_with_counter(&atlas_config, &root, None, None)

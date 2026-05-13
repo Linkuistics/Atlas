@@ -27,10 +27,9 @@
 
 use std::sync::Arc;
 
-use atlas_llm::LlmBackend;
+use atlas_llm::{LlmBackend, Provider};
 
 use crate::events::{AgentEvent, EventBus, Grade};
-use crate::transport::Provider;
 
 /// Lane B verdict shape returned by [`lane_b_audit`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,10 +68,7 @@ impl AuditVerdict {
 /// Compute the auditor provider for `producer_provider` per the
 /// cross-provider mapping rule. Pure helper; tested in isolation.
 pub fn auditor_provider_for(producer_provider: Provider) -> Provider {
-    match producer_provider {
-        Provider::Anthropic => Provider::OpenAi,
-        Provider::OpenAi => Provider::Anthropic,
-    }
+    producer_provider.cross()
 }
 
 /// Should Lane B fire for a producer that emitted `grade`? Pure helper

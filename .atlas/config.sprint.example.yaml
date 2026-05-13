@@ -1,0 +1,38 @@
+# Atlas sprint example backend config. Copy to .atlas/config.sprint.yaml
+# (gitignored) and fill in your environment variables. The example here
+# uses the canonical sprint pairing: claude-opus-4-7 (Anthropic,
+# primary) + gpt-5-codex (OpenAI, cross-provider auditor) over HTTP.
+#
+# Subscription-subsidised subprocess backends (claude_code + codex) are
+# the canonical user runtime per memory project_atlas_common_backend_config,
+# but during the sprint's empirical work HTTP backends are the live path
+# per memory project_phase7_agent_runtime_default_ratified.
+
+providers:
+  anthropic:
+    api_key: "${ANTHROPIC_API_KEY}"
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+
+defaults:
+  model: "anthropic/claude-opus-4-7"
+  params:
+    max_tokens: 4096
+
+operations:
+  classify:
+    model: "anthropic/claude-opus-4-7"
+    params:
+      max_tokens: 4096
+  subcarve:
+    model: "openai/gpt-5-codex"
+    params:
+      max_tokens: 4096
+  surface:
+    model: "anthropic/claude-opus-4-7"
+    params:
+      max_tokens: 8192
+  edges:
+    model: "openai/gpt-5-codex"
+    params:
+      max_tokens: 8192
