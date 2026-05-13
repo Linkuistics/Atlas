@@ -1,43 +1,40 @@
-//! `McpServer` — multi-client MCP stdio dispatch loop.
+//! `McpServer` — multi-client MCP stdio dispatch on top of `rmcp`.
 //!
 //! Multi-client isolation is structural: the server holds an
 //! `Arc<HashMap<id, ToolHandle>>` shared read-only across all clients;
-//! each client's `serve_client` task owns its own reader/writer pair
-//! and a per-task `client_id`. JSON-RPC `id` values from one client
-//! never reach another.
+//! each client's `serve_client` task owns its own transport (built from
+//! a duplex/process-pipe `(AsyncRead, AsyncWrite)` pair) and an
+//! `AtlasHandler` snapshot stamped with its `ClientId`. JSON-RPC `id`
+//! values from one client never reach another — rmcp's per-transport
+//! `serve_server` invocation services them on disjoint Tokio tasks.
 //!
-//! Spawning model (PR-4 will wire this): the default
-//! `claude_code` + `codex` pairing spawns two `serve_client` tasks,
-//! one per subprocess, against `tokio::io::duplex` streams piped to
-//! the subprocess stdin/stdout. Hosting a remote MCP transport
-//! (HTTP/SSE) is out of scope for PR-1 — Atlas's MCP is in-process by
-//! design (recast §5.5: "no external surfaces").
+//! Per-client transcript recording survives the migration: every
+//! successful `tools/call` dispatch appends a record to a per-
+//! `ClientId` vector behind a `Mutex`, drained by
+//! `drain_client_transcript`. The agent runtime's MCP tool-loop
+//! (`crate::runtime::tool_loop_mcp`) uses this to merge the
+//! subprocess-driven tool-use traffic into the transcript-cache blob.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use rmcp::handler::server::ServerHandler;
+use rmcp::model::{
+    CallToolRequestParams, CallToolResult, ErrorCode, ErrorData as McpError, Implementation,
+    InitializeResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities, Tool as McpTool,
+};
+use rmcp::serve_server;
+use rmcp::service::{RequestContext, RoleServer};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::descriptors::tools_list_response;
-use super::{error_codes, ClientId, JsonRpcRequest, JsonRpcResponse};
+use super::ClientId;
 use crate::tool::{ToolArgs, ToolContext, ToolHandle};
-
-/// MCP protocol version Atlas's server speaks. Bumped when the
-/// upstream protocol or our dispatch semantics change.
-pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// `McpServer` holds a shared, read-only tool catalog and a per-server
 /// `ToolContext`. Instances are wrapped in `Arc` and shared across
 /// every concurrent client task.
-///
-/// PR-4 added a per-client transcript recorder: every successful
-/// `tools/call` dispatch appends a record to a per-client vector,
-/// drained by `drain_client_transcript`. The agent runtime's MCP
-/// tool-loop (`crate::runtime::tool_loop_mcp`) uses this to merge the
-/// subprocess-driven tool-use traffic into the transcript-cache blob.
-/// Recording is best-effort — a poisoned mutex degrades to empty
-/// drains rather than panicking (the runtime call site still succeeds).
 pub struct McpServer {
     tools: HashMap<&'static str, ToolHandle>,
     ctx: ToolContext,
@@ -52,8 +49,7 @@ pub struct McpServer {
 impl McpServer {
     /// Build a server from a tool list and a shared context. Duplicate
     /// `Tool::id()` values cause a later one to win silently — callers
-    /// are expected to register from a single source of truth (the
-    /// catalog assembled in PR-3 and wired in PR-7).
+    /// are expected to register from a single source of truth.
     pub fn new(tools: Vec<ToolHandle>, ctx: ToolContext) -> Self {
         let map = tools.into_iter().map(|t| (t.id(), t)).collect();
         Self {
@@ -71,16 +67,6 @@ impl McpServer {
     /// Drain (and clear) the per-client transcript recorder. Returns
     /// the records accumulated since the last drain — one entry per
     /// successful `tools/call` dispatch the client issued.
-    ///
-    /// PR-4 entry point for `crate::runtime::tool_loop_mcp`. The
-    /// runtime calls this once after `backend.call_async` returns, so
-    /// every tool call the subprocess emitted during its agent loop
-    /// lands in the transcript-cache blob.
-    ///
-    /// Returns an empty vector if `client_id` has no recorded events
-    /// (the typical "subprocess returned immediately with the final
-    /// answer" case). A poisoned mutex also yields the empty result
-    /// rather than panicking.
     pub fn drain_client_transcript(&self, client_id: ClientId) -> Vec<Value> {
         match self.transcript.lock() {
             Ok(mut guard) => guard.remove(&client_id).unwrap_or_default(),
@@ -99,154 +85,131 @@ impl McpServer {
         }
     }
 
-    /// Drive one client's dispatch loop until EOF on `reader`. Each
-    /// JSON-RPC request is read as a single newline-terminated line,
-    /// dispatched against the tool catalog, and the response written
-    /// back to `writer` on its own line.
-    ///
-    /// The loop terminates cleanly on EOF (the typical case: the
-    /// subprocess client closed its stdin/stdout) or with `Err` on a
-    /// transport-level I/O failure.
+    /// Drive one client's MCP service to completion. The
+    /// `(reader, writer)` pair is wrapped in `rmcp`'s
+    /// `AsyncRwTransport` (newline-delimited JSON-RPC framing) and
+    /// handed to `rmcp::serve_server`, which performs the initialize
+    /// handshake then dispatches `tools/list` + `tools/call` requests
+    /// against the per-client `AtlasHandler` snapshot until the
+    /// transport closes.
     pub async fn serve_client<R, W>(
         self: Arc<Self>,
         client_id: ClientId,
         reader: R,
-        mut writer: W,
+        writer: W,
     ) -> std::io::Result<()>
     where
-        R: AsyncRead + Unpin + Send,
-        W: AsyncWrite + Unpin + Send,
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
     {
-        let mut reader = BufReader::new(reader);
-        let mut line = String::new();
-        loop {
-            line.clear();
-            let n = reader.read_line(&mut line).await?;
-            if n == 0 {
-                return Ok(()); // EOF
-            }
-            // Tolerate blank keep-alive lines.
-            if line.trim().is_empty() {
-                continue;
-            }
-            let response = match serde_json::from_str::<JsonRpcRequest>(&line) {
-                Ok(req) => self.handle_request(client_id, req).await,
-                Err(e) => JsonRpcResponse::err(
-                    Value::Null,
-                    error_codes::INVALID_PARAMS,
-                    format!("malformed JSON-RPC request: {e}"),
-                ),
-            };
-            let mut bytes = serde_json::to_vec(&response).map_err(std::io::Error::other)?;
-            bytes.push(b'\n');
-            writer.write_all(&bytes).await?;
-            writer.flush().await?;
-        }
+        let handler = AtlasHandler {
+            server: Arc::clone(&self),
+            client_id,
+        };
+        let service = serve_server(handler, (reader, writer))
+            .await
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        service
+            .waiting()
+            .await
+            .map(|_quit_reason| ())
+            .map_err(|join_err| std::io::Error::other(join_err.to_string()))
     }
+}
 
-    async fn handle_request(&self, client_id: ClientId, req: JsonRpcRequest) -> JsonRpcResponse {
-        let id = req.id.clone();
-        match req.method.as_str() {
-            "initialize" => JsonRpcResponse::ok(
-                id,
-                json!({
-                    "protocolVersion": MCP_PROTOCOL_VERSION,
-                    "capabilities": { "tools": {} },
-                    "serverInfo": {
-                        "name": "atlas-agents",
-                        "version": env!("CARGO_PKG_VERSION"),
-                    },
-                }),
-            ),
-            "tools/list" => {
-                let tools: Vec<ToolHandle> = self.tools.values().cloned().collect();
-                JsonRpcResponse::ok(id, tools_list_response(&tools))
-            }
-            "tools/call" => self.dispatch_tool_call(id, client_id, req.params).await,
-            other => JsonRpcResponse::err(
-                id,
-                error_codes::METHOD_NOT_FOUND,
-                format!("method `{other}` not supported by atlas-agents MCP server"),
-            ),
-        }
-    }
+/// Per-client `rmcp::ServerHandler` snapshot — clones cheaply
+/// (`Arc<McpServer>` clone + a 64-bit `ClientId`).
+#[derive(Clone)]
+struct AtlasHandler {
+    server: Arc<McpServer>,
+    client_id: ClientId,
+}
 
-    async fn dispatch_tool_call(
+impl ServerHandler for AtlasHandler {
+    fn list_tools(
         &self,
-        id: Value,
-        client_id: ClientId,
-        params: Option<Value>,
-    ) -> JsonRpcResponse {
-        let params = match params {
-            Some(p) => p,
-            None => {
-                return JsonRpcResponse::err(
-                    id,
-                    error_codes::INVALID_PARAMS,
-                    "tools/call requires params",
-                );
-            }
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
+        let tools: Vec<McpTool> = self
+            .server
+            .tools
+            .values()
+            .map(|t| {
+                let schema = t.json_schema();
+                let input_schema_obj = schema.args_schema.as_object().cloned().unwrap_or_default();
+                let mut tool = McpTool::default();
+                tool.name = Cow::Borrowed(t.id());
+                tool.description = Some(Cow::Owned(schema.description.clone()));
+                tool.input_schema = Arc::new(input_schema_obj);
+                tool
+            })
+            .collect();
+        std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
+    }
+
+    fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
+        let name = request.name.clone();
+        let arguments_value = match request.arguments {
+            Some(map) => Value::Object(map),
+            None => Value::Null,
         };
-        let name = match params.get("name").and_then(Value::as_str) {
-            Some(s) => s.to_string(),
-            None => {
-                return JsonRpcResponse::err(
-                    id,
-                    error_codes::INVALID_PARAMS,
-                    "tools/call params.name (string) is required",
-                );
-            }
-        };
-        let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
-        let tool = match self.tools.get(name.as_str()) {
-            Some(t) => t.clone(),
-            None => {
-                return JsonRpcResponse::err(
-                    id,
-                    error_codes::METHOD_NOT_FOUND,
+        let tool_opt = self.server.tools.get(name.as_ref()).cloned();
+        async move {
+            let Some(tool) = tool_opt else {
+                return Err(McpError::new(
+                    ErrorCode::METHOD_NOT_FOUND,
                     format!("tool `{name}` is not registered"),
-                );
-            }
-        };
-        match tool.invoke(ToolArgs(arguments.clone()), &self.ctx).await {
-            Ok(result) => {
-                // PR-4: record per-client transcript so the agent
-                // runtime's MCP tool-loop can drain it post-call.
-                self.record(
-                    client_id,
-                    json!({
-                        "kind": "tool_call",
-                        "tool_name": name,
-                        "args": arguments,
-                        "output": result.output,
-                        "bytes": result.bytes,
-                    }),
-                );
-                JsonRpcResponse::ok(
-                    id,
-                    json!({
-                        "content": [{"type": "json", "json": result.output}],
-                        "isError": false,
-                    }),
-                )
-            }
-            Err(err) => {
-                let err_text = err.to_string();
-                self.record(
-                    client_id,
-                    json!({
-                        "kind": "tool_error",
-                        "tool_name": name,
-                        "args": arguments,
-                        "error": err_text,
-                    }),
-                );
-                JsonRpcResponse::err(
-                    id,
-                    error_codes::TOOL_INVOCATION_FAILED,
-                    format!("tool `{name}` failed: {err}"),
-                )
+                    None,
+                ));
+            };
+            match tool
+                .invoke(ToolArgs(arguments_value.clone()), &self.server.ctx)
+                .await
+            {
+                Ok(result) => {
+                    self.server.record(
+                        self.client_id,
+                        json!({
+                            "kind": "tool_call",
+                            "tool_name": name.as_ref(),
+                            "args": arguments_value,
+                            "output": result.output,
+                            "bytes": result.bytes,
+                        }),
+                    );
+                    Ok(CallToolResult::structured(result.output))
+                }
+                Err(err) => {
+                    let err_text = err.to_string();
+                    self.server.record(
+                        self.client_id,
+                        json!({
+                            "kind": "tool_error",
+                            "tool_name": name.as_ref(),
+                            "args": arguments_value,
+                            "error": err_text,
+                        }),
+                    );
+                    Err(McpError::new(
+                        ErrorCode::INTERNAL_ERROR,
+                        format!("tool `{name}` failed: {err}"),
+                        None,
+                    ))
+                }
             }
         }
+    }
+
+    fn get_info(&self) -> InitializeResult {
+        let capabilities = ServerCapabilities::builder().enable_tools().build();
+        InitializeResult::new(capabilities).with_server_info(Implementation::new(
+            "atlas-agents",
+            env!("CARGO_PKG_VERSION"),
+        ))
     }
 }

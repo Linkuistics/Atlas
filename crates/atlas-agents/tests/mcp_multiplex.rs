@@ -5,7 +5,12 @@
 //! and each client's `arguments` payload is echoed back verbatim.
 //!
 //! The test is the cornerstone acceptance probe for PR-1's
-//! multi-client multiplexing requirement (plan §4 Task 1 Step 1.9).
+//! multi-client multiplexing requirement, preserved through PR-A's
+//! migration of the underlying JSON-RPC framing onto `rmcp`. Test
+//! logic (concurrency setup, isolation assertions, id round-trip,
+//! payload-per-client) is unchanged; the wire-shape assertions
+//! adapt to the standard MCP envelope `rmcp` emits (initialize
+//! handshake first; `structuredContent` for tool-call payloads).
 
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -19,8 +24,9 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// Minimal `Tool` impl that echoes its args back as the result. The
-/// MCP server wraps this in the `content[0].json` payload; the test
-/// strips that envelope and compares against the original args.
+/// MCP server emits this via `CallToolResult::structured(...)`, which
+/// places the args in `structuredContent` (and a textual rendering in
+/// `content[0]`); the test extracts from `structuredContent`.
 struct EchoTool;
 
 fn echo_schema() -> &'static ToolSchema {
@@ -83,22 +89,8 @@ fn spawn_client(
     (client_side, handle)
 }
 
-/// Send one `tools/call` request from the test-side end of a client
-/// pipe and return the parsed JSON-RPC response.
-async fn send_tools_call(
-    pipe: &mut tokio::io::DuplexStream,
-    id: u64,
-    payload: &str,
-) -> serde_json::Value {
-    let req = json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": "tools/call",
-        "params": {
-            "name": "echo",
-            "arguments": { "payload": payload }
-        }
-    });
+/// Send one JSON-RPC request and read exactly one JSON-RPC response.
+async fn round_trip(pipe: &mut tokio::io::DuplexStream, req: Value) -> Value {
     let mut bytes = serde_json::to_vec(&req).unwrap();
     bytes.push(b'\n');
     pipe.write_all(&bytes).await.unwrap();
@@ -109,6 +101,46 @@ async fn send_tools_call(
     let mut line = String::new();
     reader.read_line(&mut line).await.unwrap();
     serde_json::from_str(&line).unwrap()
+}
+
+/// Perform the MCP initialize handshake. Returns the server's
+/// InitializeResult response so callers can assert on it when they
+/// care. rmcp's `serve_server` enters the dispatch loop immediately
+/// after sending InitializeResult — no `notifications/initialized`
+/// is required.
+async fn initialize_handshake(pipe: &mut tokio::io::DuplexStream) -> Value {
+    round_trip(
+        pipe,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "atlas-mcp-multiplex-test", "version": "0"}
+            }
+        }),
+    )
+    .await
+}
+
+/// Send one `tools/call` request from the test-side end of a client
+/// pipe and return the parsed JSON-RPC response.
+async fn send_tools_call(pipe: &mut tokio::io::DuplexStream, id: u64, payload: &str) -> Value {
+    round_trip(
+        pipe,
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {
+                "name": "echo",
+                "arguments": { "payload": payload }
+            }
+        }),
+    )
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -124,39 +156,42 @@ async fn two_concurrent_clients_isolated_dispatch() {
     let (mut pipe_a, handle_a) = spawn_client(Arc::clone(&server), ClientId(1));
     let (mut pipe_b, handle_b) = spawn_client(Arc::clone(&server), ClientId(2));
 
+    // Each client must complete the MCP initialize handshake before
+    // issuing tool calls (rmcp enforces initialize-first lifecycle).
+    let init_a = initialize_handshake(&mut pipe_a).await;
+    let init_b = initialize_handshake(&mut pipe_b).await;
+    assert_eq!(init_a["id"], 0);
+    assert_eq!(init_b["id"], 0);
+    assert_eq!(init_a["result"]["serverInfo"]["name"], "atlas-agents");
+    assert_eq!(init_b["result"]["serverInfo"]["name"], "atlas-agents");
+
     // Interleave: client A id=100 fires first, client B id=200 fires
     // concurrently. Both clients use the same JSON-RPC `id` semantics
     // (numeric) but the values do not collide across the two sockets
     // — and even if they did, response demultiplexing is per-socket.
-    let req_a = async {
-        let resp = send_tools_call(&mut pipe_a, 100, "from-client-a").await;
-        resp
-    };
-    let req_b = async {
-        let resp = send_tools_call(&mut pipe_b, 200, "from-client-b").await;
-        resp
-    };
+    let req_a = send_tools_call(&mut pipe_a, 100, "from-client-a");
+    let req_b = send_tools_call(&mut pipe_b, 200, "from-client-b");
     let (resp_a, resp_b) = tokio::join!(req_a, req_b);
 
     // Each response must carry its originating client's id (proving
-    // no cross-wire), and each response must echo its own payload.
+    // no cross-wire), and each response must echo its own payload
+    // (via rmcp's `structuredContent` field — the canonical MCP
+    // place for structured tool outputs).
     assert_eq!(resp_a["jsonrpc"], "2.0");
     assert_eq!(resp_a["id"], 100, "client A response id must round-trip");
-    let content_a = &resp_a["result"]["content"][0];
-    assert_eq!(content_a["type"], "json");
     assert_eq!(
-        content_a["json"]["payload"], "from-client-a",
+        resp_a["result"]["structuredContent"]["payload"], "from-client-a",
         "client A must receive its own payload, not B's"
     );
+    assert_eq!(resp_a["result"]["isError"], false);
 
     assert_eq!(resp_b["jsonrpc"], "2.0");
     assert_eq!(resp_b["id"], 200, "client B response id must round-trip");
-    let content_b = &resp_b["result"]["content"][0];
-    assert_eq!(content_b["type"], "json");
     assert_eq!(
-        content_b["json"]["payload"], "from-client-b",
+        resp_b["result"]["structuredContent"]["payload"], "from-client-b",
         "client B must receive its own payload, not A's"
     );
+    assert_eq!(resp_b["result"]["isError"], false);
 
     // Close pipes so serve_client tasks see EOF and exit cleanly.
     drop(pipe_a);
@@ -176,25 +211,12 @@ async fn initialize_returns_protocol_handshake() {
     ));
     let (mut pipe, handle) = spawn_client(Arc::clone(&server), ClientId(7));
 
-    let req = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {}
-    });
-    let mut bytes = serde_json::to_vec(&req).unwrap();
-    bytes.push(b'\n');
-    pipe.write_all(&bytes).await.unwrap();
-    pipe.flush().await.unwrap();
-
-    let (read_half, _) = tokio::io::split(&mut pipe);
-    let mut reader = BufReader::new(read_half);
-    let mut line = String::new();
-    reader.read_line(&mut line).await.unwrap();
-    let resp: Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(resp["id"], 1);
+    let resp = initialize_handshake(&mut pipe).await;
+    assert_eq!(resp["id"], 0);
     assert!(resp["result"]["protocolVersion"].is_string());
     assert_eq!(resp["result"]["serverInfo"]["name"], "atlas-agents");
+    // ServerCapabilities.tools is set (we advertise tool support).
+    assert!(resp["result"]["capabilities"]["tools"].is_object());
 
     drop(pipe);
     handle.await.unwrap().unwrap();
@@ -211,21 +233,17 @@ async fn tools_list_returns_registered_tool_catalog() {
     ));
     let (mut pipe, handle) = spawn_client(Arc::clone(&server), ClientId(11));
 
-    let req = json!({
-        "jsonrpc": "2.0",
-        "id": 42,
-        "method": "tools/list"
-    });
-    let mut bytes = serde_json::to_vec(&req).unwrap();
-    bytes.push(b'\n');
-    pipe.write_all(&bytes).await.unwrap();
-    pipe.flush().await.unwrap();
+    initialize_handshake(&mut pipe).await;
 
-    let (read_half, _) = tokio::io::split(&mut pipe);
-    let mut reader = BufReader::new(read_half);
-    let mut line = String::new();
-    reader.read_line(&mut line).await.unwrap();
-    let resp: Value = serde_json::from_str(&line).unwrap();
+    let resp = round_trip(
+        &mut pipe,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 42,
+            "method": "tools/list"
+        }),
+    )
+    .await;
     assert_eq!(resp["id"], 42);
     let tools = resp["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 1);
@@ -248,23 +266,22 @@ async fn unknown_method_returns_method_not_found_error() {
     ));
     let (mut pipe, handle) = spawn_client(Arc::clone(&server), ClientId(13));
 
-    let req = json!({
-        "jsonrpc": "2.0",
-        "id": 9,
-        "method": "resources/list"
-    });
-    let mut bytes = serde_json::to_vec(&req).unwrap();
-    bytes.push(b'\n');
-    pipe.write_all(&bytes).await.unwrap();
-    pipe.flush().await.unwrap();
+    initialize_handshake(&mut pipe).await;
 
-    let (read_half, _) = tokio::io::split(&mut pipe);
-    let mut reader = BufReader::new(read_half);
-    let mut line = String::new();
-    reader.read_line(&mut line).await.unwrap();
-    let resp: Value = serde_json::from_str(&line).unwrap();
+    // Send a non-standard MCP method (rmcp routes anything outside its
+    // built-in set to `ServerHandler::on_custom_request`, which we leave
+    // at the default — returns METHOD_NOT_FOUND).
+    let resp = round_trip(
+        &mut pipe,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "atlas/this_method_does_not_exist"
+        }),
+    )
+    .await;
     assert_eq!(resp["id"], 9);
-    assert!(resp["result"].is_null());
+    assert!(resp.get("result").is_none() || resp["result"].is_null());
     assert_eq!(resp["error"]["code"], -32601);
 
     drop(pipe);

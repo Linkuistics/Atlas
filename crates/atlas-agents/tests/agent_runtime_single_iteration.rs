@@ -159,6 +159,7 @@ async fn agent_runtime_runs_a_workspace_end_to_end_single_iteration() {
         // count and one-shot consumption stay valid under PR-5.
         max_iterations: 1,
         for_provider: None,
+        mcp_server: None,
     };
     let workspace = AgentsWorkspace::new(root);
 
@@ -236,6 +237,7 @@ async fn lane_a_retry_fires_exactly_once_on_classify_schema_fail() {
         // count and one-shot consumption stay valid under PR-5.
         max_iterations: 1,
         for_provider: None,
+        mcp_server: None,
     };
     let workspace = AgentsWorkspace::new(root);
 

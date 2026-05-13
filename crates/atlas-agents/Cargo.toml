@@ -13,6 +13,7 @@ atlas-engine = { path = "../atlas-engine" }
 atlas-index = { workspace = true }
 atlas-llm = { path = "../atlas-llm" }
 component-ontology = { workspace = true }
+rmcp = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

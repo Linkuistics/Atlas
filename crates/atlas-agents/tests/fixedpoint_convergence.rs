@@ -127,6 +127,7 @@ async fn fixedpoint_converges_on_idempotent_workspace_after_two_iterations() {
         default_max_steps: 4,
         max_iterations: 5,
         for_provider: None,
+        mcp_server: None,
     };
     let workspace = AgentsWorkspace::new(root);
     let projection = runtime
@@ -182,6 +183,7 @@ async fn fixedpoint_hard_fails_when_max_iter_exceeded() {
         // distinct projections cannot converge under any cap.
         max_iterations: 3,
         for_provider: None,
+        mcp_server: None,
     };
     let workspace = AgentsWorkspace::new(root);
     let err = runtime

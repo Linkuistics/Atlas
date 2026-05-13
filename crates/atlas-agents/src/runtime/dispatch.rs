@@ -715,6 +715,7 @@ mod tests {
             default_max_steps: 4,
             max_iterations: 1,
             for_provider: None,
+            mcp_server: None,
         }
     }
 

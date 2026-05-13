@@ -1142,6 +1142,13 @@ pub fn run_index_agent_runtime(
         default_max_steps: 8,
         max_iterations: 5,
         for_provider: Some(for_provider),
+        // PR-A: subprocess transports require an MCP server. The CLI
+        // pipeline today doesn't construct one (HTTP backends are the
+        // live path during the production-prompt sprint); the wiring
+        // hard-errors at first subprocess `call_agent`. PR-7 will
+        // populate this when the subprocess transport is actively
+        // exercised.
+        mcp_server: None,
     };
 
     let workspace = AgentsWorkspace::new(config.root.clone());

@@ -132,6 +132,16 @@ pub enum AgentError {
     MaxStepsExceeded(u32),
     #[error("backend error: {0}")]
     Backend(String),
+    #[error("subprocess spawn failed: {0}")]
+    SubprocessSpawn(#[source] std::io::Error),
+    #[error("subprocess wait failed: {0}")]
+    SubprocessWait(#[source] std::io::Error),
+    #[error("subprocess exited non-zero: {exit_status:?}")]
+    SubprocessFailed {
+        exit_status: std::process::ExitStatus,
+    },
+    #[error("subprocess produced no parseable final output")]
+    NoFinalOutput,
     #[error("transcript-cache error: {0}")]
     Cache(String),
     /// PR-5: fixed-point loop ran `iterations` times without
@@ -349,6 +359,12 @@ pub struct AgentRuntime {
     /// `BackendRouter::backend_for_provider`; tests inject simpler
     /// mocks via [`AgentRuntime::with_for_provider`].
     pub for_provider: Option<Arc<ForProviderFn>>,
+    /// PR-A: per-runtime MCP server instance, drives subprocess
+    /// transports (`TransportFlavour::ClaudeCode | Codex`) via
+    /// [`crate::mcp::serve_client::serve_client`]. `None` means the
+    /// runtime can only service HTTP transports; selecting a subprocess
+    /// transport under that condition returns a clear error.
+    pub mcp_server: Option<Arc<crate::mcp::server::McpServer>>,
 }
 
 /// Type alias for the Lane B cross-provider lookup closure. Boxed
@@ -778,19 +794,42 @@ impl AgentRuntime {
                     .await
                 }
                 TransportFlavour::ClaudeCode | TransportFlavour::Codex => {
-                    // PR-4: subprocess transports route through the
-                    // MCP observation harness. The runtime caller
-                    // (PR-7) is responsible for wiring the
-                    // subprocess's stdin/stdout to a `serve_client`
-                    // task on the MCP server. PR-4 itself never spawns
-                    // a subprocess — the smoke test uses TestBackend.
-                    // We surface a clear error so an accidental PR-4
-                    // deployment doesn't silently no-op.
-                    return Err(AgentError::Backend(
-                        "PR-4 runtime does not drive subprocess transports directly; \
-                         PR-7 wires the MCP `serve_client` task"
-                            .to_string(),
-                    ));
+                    // PR-A: subprocess transports drive a per-call
+                    // `serve_client` against the runtime's MCP server.
+                    // The `mcp_config_path` is materialised by the CLI
+                    // entry point (PR-7) and refined by PR-B; the
+                    // placeholder here lets the structural plumbing
+                    // exercise without a real config file.
+                    let Some(mcp_server) = self.mcp_server.as_ref() else {
+                        return Err(AgentError::Backend(
+                            "subprocess transport selected but \
+                             AgentRuntime.mcp_server is None; the CLI \
+                             pipeline must provide an Arc<McpServer> \
+                             when --agent-runtime uses a subprocess \
+                             backend"
+                                .to_string(),
+                        ));
+                    };
+                    let mcp_config_path = std::path::Path::new("/dev/null");
+                    let config = match request.transport {
+                        TransportFlavour::ClaudeCode => {
+                            crate::mcp::serve_client::claude_code_config(
+                                mcp_config_path,
+                                &conversation,
+                            )
+                        }
+                        TransportFlavour::Codex => {
+                            crate::mcp::serve_client::codex_config(mcp_config_path, &conversation)
+                        }
+                        _ => unreachable!(),
+                    };
+                    crate::mcp::serve_client::serve_client(
+                        Arc::clone(mcp_server),
+                        request.transport,
+                        conversation.clone(),
+                        config,
+                    )
+                    .await
                 }
             };
             let output = outcome?;

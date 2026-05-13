@@ -289,6 +289,7 @@ async fn lane_b_wired_into_call_agent_skips_on_strong_grade() {
         default_max_steps: 4,
         max_iterations: 1,
         for_provider: None,
+        mcp_server: None,
     };
     let workspace = AgentsWorkspace::new(root);
 

@@ -97,7 +97,8 @@ pub trait Tool: Send + Sync {
     fn version(&self) -> &'static str;
 
     /// JSON Schema for `args`, plus a model-facing description. The MCP
-    /// server (`crate::mcp::descriptors`) lifts this into the
+    /// server (`crate::mcp::server::McpServer`, via its `rmcp`-backed
+    /// `ServerHandler::list_tools` impl) lifts this into the
     /// `tools/list` reply; the HTTP tool-loop (PR-4) lifts it into the
     /// `parameters` block of the upstream tool-use payload.
     fn json_schema(&self) -> &ToolSchema;
