@@ -95,7 +95,7 @@ Key PR-0 design call-outs to surface to PR-1+:
 
 10. **Live source-file landmarks verified clean** against current main 2026-05-13 (commit `a852be5`). The full list lives in plan §8. Spot-check candidates the PR-1 implementer should re-verify: `dispatch.rs:203, :254, :274, :285, :306, :327, :339, :346`; `mod.rs:350, :356, :461, :477, :665, :919, :928, :1008`; `router.rs:14, :142, :213`; `pipeline.rs:1015, :1177`; `lane_a.rs:44, :62, :97, :123`; `atomic_write.rs:40, :134`.
 
-PR-0 commit SHA: `<PR-0-COMMIT-SHA>` (backfilled by the orchestrator after the commit lands).
+PR-0 commit SHA: `b44593a` (single commit per the brief's PR-0 exception; status row pre-flipped `[x]` in the same commit).
 
 ### PR-1
 
