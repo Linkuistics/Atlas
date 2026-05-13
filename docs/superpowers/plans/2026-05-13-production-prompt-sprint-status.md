@@ -2,7 +2,7 @@
 
 Companion to `docs/superpowers/specs/2026-05-13-atlas-production-prompt-sprint-plan.md`. This file tracks per-PR completion state across sessions. The active continuation prompts at `docs/superpowers/prompts/2026-05-13-pr3-continue.md` (sequential, next on the critical path) and `docs/superpowers/prompts/2026-05-13-prb-continue.md` (parallel-track, unblocked by PR-A) read this file to find the next PR to dispatch. Each session re-points this line as PRs land + new continuation prompts are authored; the expired continuation prompts for PR-1 / PR-2 / PR-A were dropped after their PRs shipped (matches the cleanup pattern from commit `7d6f6f3`).
 
-**Last updated:** 2026-05-13 (post-PR-A cleanup — dropped landed-PR continuation prompts; authored PR-3 + PR-B continuation prompts. PR-A landed earlier this session — `rmcp` migration of PR-1's hand-rolled MCP framing + subprocess MCP `serve_client` driver; verification-note commit `d1df478` + code-commit `c07c5d5`. PR-2's earlier landing this session: code-commit `876ea24`.)
+**Last updated:** 2026-05-13 (PR-B landed — live-subprocess `--disallowedTools` probe at `crates/atlas-agents/tests/mcp_disallowed_tools.rs`; code-commit `b8af469`. Empirical findings against upstream `claude` 2.1.140 (Claude Code) pinned in `crates/atlas-agents/src/mcp/restrictions.md`. Prior landings this session: PR-A code-commit `c07c5d5` + verification-note `d1df478`; PR-2 code-commit `876ea24`.)
 
 ## PR status
 
@@ -15,7 +15,7 @@ Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the
 - [ ] PR-4 — Cross-provider auditor (replaces `PR-7-WIRES-REAL-AUDITOR` stub at `mod.rs:665`) + `runtime/audit/audit_prompt.rs` + `runtime/audit/verdict.rs` + revision-prompt path + on-disk verdict at `.atlas/audit/<stage>/<target>.yaml` (medium)
 - [ ] PR-5 — Atlas-on-Atlas calibration + intrinsic-metrics recording (cold tokens per provider; iteration count; wall time; evidence-score distribution per stage; Lane A retry counts; audit-verdict distribution; shim missing-field count) + within-LLM-spine cross-transport parity test + closeout note + memory updates (small code surface; measurement-heavy)
 - [x] PR-A — `rmcp` migration of PR-1's hand-rolled MCP framing (or `jsonrpsee` + thin shim if `rmcp` fails 4-criterion verification gate) + subprocess MCP `serve_client` driver at `mcp/serve_client.rs` + `tool_loop_http.rs` subprocess-transport branch wiring (medium, parallel after PR-1)
-- [ ] PR-B — `--disallowedTools` live-subprocess probe at `tests/mcp_disallowed_tools.rs` (small, parallel after PR-A; `#[ignore]`-gated)
+- [x] PR-B — `--disallowedTools` live-subprocess probe at `tests/mcp_disallowed_tools.rs` (small, parallel after PR-A; `#[ignore]`-gated)
 
 When every box is `[x]`, the sprint is complete. PR-5's closeout note appended below; memory `project_phase4_plus_roadmap` is updated to mark the sprint SHIPPED + Phase 8 (Cargo retirement per recast §11.2) unblocked.
 
@@ -211,4 +211,34 @@ PR-A commit SHAs: verification `d1df478`; code `c07c5d5` (single code-commit; st
 
 ### PR-B
 
-*(Empty — to be filled by PR-B's session.)*
+2026-05-13 — Landed. Code-commit: `b8af469` (`sprint: PR-B subprocess --disallowedTools probe`). Status-flip commit follows in the same session.
+
+PR-B shipped `crates/atlas-agents/tests/mcp_disallowed_tools.rs` — an `#[ignore]`-gated live-subprocess probe that asserts the **Atlas server-side MCP transcript records zero `Read` tool calls** when `claude --disallowedTools=Read,Grep,Glob,Bash,Write,Edit` is spawned with a Read-provoking prompt. Two `#[tokio::test]`s ship in the file: the claude probe + a codex stub. Both run with `cargo test -p atlas-agents --test mcp_disallowed_tools --release -- --ignored`. The forensic `eprintln!` captures upstream version + observed response shape for traceability.
+
+All six cumulative regression gates clean. Polyglot fixture: 2 tests passed, ~110s wall-time, cold count within loose bound. The `--ignored` claude probe ran live twice against the operator's machine: both passes, response shape stable across runs.
+
+Key PR-B decisions + follow-ups future PRs (PR-7, PR-3, PR-4) should know:
+
+1. **Empirical pin against `claude` 2.1.140 (Claude Code), verified 2026-05-13.** `claude --version` output is the source of truth. The brief and earlier sprint docs assumed the binary was named `claude-code`; the actual upstream binary is `claude`. `claude_code_config` in `crates/atlas-agents/src/mcp/serve_client.rs:69` now spawns `claude` (not `claude-code`); `restrictions.md` documents the verified binary name + flag set.
+
+2. **`--disallowedTools` companion-flag inventory verified.** `--disallowedTools` and `--disallowed-tools` both accepted (CamelCase + kebab-case forms work). Value accepts comma- OR space-separated tool-name lists. `--mcp-config <configs...>` accepts JSON files or strings (space-separated). `-p`/`--print` is the non-interactive entry point. `--strict-mcp-config` forces MCP sourcing exclusively from `--mcp-config` (no per-user MCP config inheritance). Recorded in `restrictions.md`.
+
+3. **Observed response shape (Ok arm) under 2.1.140:** subprocess succeeded; the LLM emitted a refusal text along the lines of *"I can't fulfill this request as stated. The `Read` tool is not currently available in my toolset..."* + lists the tools it *does* see (which are claude's own internal CLI tools — `Agent`, `AskUserQuestion`, `ScheduleWakeup`, `Skill`, `ToolSearch` — NOT Atlas's MCP catalog). Server-side transcript: 0 entries. Wall-time: ~21s including LLM inference. PR-B's assertion (zero Read calls) held cleanly.
+
+4. **Atlas's in-process `McpServer` cannot today be reached by a `claude --mcp-config` subprocess.** The `mcp_config.json` PR-B writes points at a `/bin/echo` placeholder; claude's MCP client fails to handshake with it, so no MCP traffic crosses to Atlas's server. The transcript stays empty regardless of whether `--disallowedTools` works. **The probe's assertion is therefore forward-looking** — it catches regressions where future claude-code routes built-in `Read` requests through MCP servers OR where Atlas registers an MCP-exposed tool named `Read`, but it does NOT catch regressions in claude's built-in tool-availability gating (which would surface in the forensic `eprintln!` response text instead). PR-7 is expected to materialise a standalone `atlas-mcp-server` binary that `claude --mcp-config` can spawn; once shipped, this test gains operational teeth. The test's module docstring explicitly calls this out (recast §5.4 invariant; "what the assertion catches today vs after PR-7" section).
+
+5. **`serve_client` return type extended** (`crates/atlas-agents/src/mcp/serve_client.rs:121`). PR-A's `serve_client` auto-drained the per-client MCP transcript internally and never exposed it, and the `ClientId` was generated by a private static counter — leaving PR-B's test with no way to observe the server-side transcript. With explicit user approval (over alternatives: McpServer cache, defer PR-B, drop the transcript assertion), the return type changed from `Result<AgentOutput, AgentError>` to `Result<(AgentOutput, Vec<serde_json::Value>), AgentError>`. Sole production caller at `crates/atlas-agents/src/runtime/mod.rs:833` updated with `.map(|(output, _subprocess_mcp_transcript)| output)` to preserve existing semantics (the subprocess MCP transcript is discarded at the production call site for now; PR-7 may merge it with the HTTP-side `Transcript` if needed).
+
+6. **`serve_client` drain-order bug fixed.** Pre-PR-B, the per-client transcript was drained *after* the `if !exit_status.success()` early-return check at `serve_client.rs:181-192`. Subprocesses that exited non-zero after making tool calls would leak transcript entries in `McpServer.transcript: Mutex<HashMap<ClientId, Vec<Value>>>` (the `HashMap` entry was never removed). The drain is now unconditional and precedes the exit-status check; the warn-log on non-zero exit includes the transcript-entry count for forensic visibility. Caught by the PR-B quality reviewer; fix landed in the same code-commit.
+
+7. **`AgentRuntime.mcp_server: Option<Arc<McpServer>>` semantics preserved.** PR-B does NOT touch `AgentRuntime` or its construction sites. The seven existing call sites still pass `mcp_server: None`; the subprocess-transport branch in `runtime/mod.rs::run_tool_loop_with_lane_a` still hard-errors with the same diagnostic when `None`. PR-7 owns the population.
+
+8. **Codex sibling stub** (`codex_subprocess_cannot_invoke_disallowed_read_equivalent`) ships as a `#[ignore]`-gated `#[tokio::test]` with `eprintln!` + `return` body documenting the unblocking conditions (codex upstream version + introduced disallow flag + the three update sites). Per `restrictions.md` (2026-05-13 against codex 0.x), codex has no `--disallowedTools`-equivalent flag — restriction is enforced by *omission* (Atlas's MCP catalog has no Read-equivalent). When a future codex upstream introduces an explicit disallow flag, fill in the stub mirroring the claude probe + update `codex_config` in `serve_client.rs` + extend `restrictions.md` § codex.
+
+9. **LOC budget overage acknowledged.** Plan §4 Task 7 budget: 100–200 LOC for the test file. Shipped: 258 LOC (claude probe + codex stub + 4 helpers + module docstring). The 58-LOC overage is entirely doc-comments — the "what the assertion catches today vs after PR-7" framing, the why-`#[ignore]`-gated explanation, and the forensic-output documentation. The 2× stop-and-surface threshold (400 LOC) was not approached. Spec reviewer flagged the overage and judged the overage was "entirely doc-comments" — kept on that basis.
+
+10. **MEDIUM issues recorded for later sweeps** (none HIGH unresolved): the spec reviewer's Issue 1 (the assertion is structurally vacuous today because no MCP wire flows between claude subprocess and Atlas's in-process server) is acknowledged in the test's module docstring as a forward-looking-only assertion until PR-7 materialises a standalone `atlas-mcp-server` binary. The brief explicitly accepted this framing (Step B.1 inline scaffold lines 3098-3112: "The load-bearing assertion is the server-side transcript"; PR-A note item 7: "PR-B is the empirical validation that pins down the exact wire shape per upstream").
+
+11. **Two-commit pattern verified.** Commit 1: code + test + restrictions.md + serve_client return-type extension + runtime/mod.rs adapter (`sprint: PR-B subprocess --disallowedTools probe`). Commit 2: status flip (this file's PR-B row from `[ ]` to `[x]` + "Last updated" header refresh + this per-PR note).
+
+PR-B commit SHAs: code `b8af469` (single code-commit); status flip in a separate commit per the two-commit pattern.
