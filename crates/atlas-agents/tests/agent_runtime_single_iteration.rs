@@ -129,17 +129,21 @@ async fn agent_runtime_runs_a_workspace_end_to_end_single_iteration() {
     let root = dir.path();
     write_overrides(root);
 
+    // PR-3: production prompts open with the substring
+    // `"You are Atlas's <stage> agent"`; the test backend keys on
+    // `"<stage> agent"` to remain stable across prompt-body edits while
+    // disambiguating the three stages.
     let backend = Arc::new(StagedBackend::new(vec![
         (
-            "classify component".to_string(),
+            "classify agent".to_string(),
             text_block("{\"components\":[{\"id\":\"foo\"}]}"),
         ),
         (
-            "reduce subsystem".to_string(),
+            "reduce agent".to_string(),
             text_block("{\"components\":[{\"id\":\"foo\"}]}"),
         ),
         (
-            "project the workspace".to_string(),
+            "project agent".to_string(),
             text_block("{\"components\":[{\"id\":\"foo\"}]}"),
         ),
     ])) as Arc<dyn LlmBackend>;
@@ -197,9 +201,9 @@ async fn lane_a_retry_fires_exactly_once_on_classify_schema_fail() {
     let project_response = text_block("{\"components\":[{\"id\":\"foo\"}]}");
 
     let backend_inner = StagedBackend::new(vec![
-        ("classify component".to_string(), invalid),
-        ("reduce subsystem".to_string(), reduce_response),
-        ("project the workspace".to_string(), project_response),
+        ("classify agent".to_string(), invalid),
+        ("reduce agent".to_string(), reduce_response),
+        ("project agent".to_string(), project_response),
     ])
     .with_one_shot("[lane_a_retry]", valid_after_retry);
     let backend: Arc<dyn LlmBackend> = Arc::new(backend_inner);

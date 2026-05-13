@@ -24,6 +24,8 @@ pub mod agent;
 pub mod audit;
 pub mod dispatch;
 pub mod fixedpoint_loop;
+pub mod outputs;
+pub mod projection_to_canonical;
 pub mod prompt_examples;
 pub mod semaphores;
 pub mod tool_loop_http;
@@ -466,21 +468,55 @@ impl AgentRuntime {
             subsystem_components.push((subsystem, components));
         }
 
-        // Pass 2: drive per-component Classify + Surface, then
-        // per-subsystem Reduce, then a workspace-level Project.
+        // Pass 2: drive per-component Classify, then per-subsystem
+        // Reduce. Per-subsystem reduce outputs accumulate for the
+        // workspace-level Project pass below.
+        //
+        // PR-3: each stage's prompt now embeds caller-supplied
+        // soft/hard caps that are also threaded through
+        // `AgentRequest::max_steps` so prompt-text and request-budget
+        // cannot drift (decision row 4).
+        let mut reduce_rollup: Vec<(String, String, u32)> = Vec::new();
         for (subsystem, components) in subsystem_components {
+            // Pluck (id, kind, language) tuples for the reducer's
+            // context after each component's classify completes. The
+            // values come from the parsed YAML body when present; if
+            // a synthetic backend emits a degenerate response the
+            // fallbacks are empty strings.
+            let mut classify_rollup: Vec<(String, String, String)> =
+                Vec::with_capacity(components.len());
             for component in &components {
                 let classify_req = AgentRequest {
                     stage: Stage::Classify,
                     target_id: component.id.clone(),
                     iteration: iter,
                     transport: self.default_transport,
-                    initial_prompt: build_classify_prompt(workspace.root(), component),
+                    initial_prompt: build_classify_prompt(
+                        workspace.root(),
+                        component,
+                        DEFAULT_CLASSIFY_SOFT_CAP,
+                        DEFAULT_CLASSIFY_HARD_CAP,
+                    ),
                     fingerprint_inputs: Vec::new(),
                     candidate_ids: all_component_ids.clone(),
                     prior_model_sha: prior_model_sha.clone(),
                 };
                 let classify_res = self.call_agent(classify_req).await?;
+                let kind = classify_res
+                    .output
+                    .value
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let language = classify_res
+                    .output
+                    .value
+                    .get("language")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                classify_rollup.push((component.id.clone(), kind, language));
                 projection
                     .components
                     .insert(component.id.clone(), classify_res.output);
@@ -491,24 +527,52 @@ impl AgentRuntime {
                 target_id: subsystem.id.clone(),
                 iteration: iter,
                 transport: self.default_transport,
-                initial_prompt: build_reduce_prompt(&subsystem, &components),
+                initial_prompt: build_reduce_prompt(
+                    workspace.root(),
+                    &subsystem,
+                    &classify_rollup,
+                    DEFAULT_REDUCE_SOFT_CAP,
+                    DEFAULT_REDUCE_HARD_CAP,
+                ),
                 fingerprint_inputs: Vec::new(),
                 candidate_ids: all_component_ids.clone(),
                 prior_model_sha: prior_model_sha.clone(),
             };
             let reduce_res = self.call_agent(reduce_req).await?;
+            let subsystem_purpose = reduce_res
+                .output
+                .value
+                .get("purpose")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let component_count = reduce_res
+                .output
+                .value
+                .get("component_ids")
+                .and_then(Value::as_array)
+                .map(|a| a.len() as u32)
+                .unwrap_or(0);
+            reduce_rollup.push((subsystem.id.clone(), subsystem_purpose, component_count));
             projection
                 .subsystems
                 .insert(subsystem.id.clone(), reduce_res.output);
         }
 
-        // Workspace-level project.
+        // Workspace-level project — runs once after every per-subsystem
+        // reduce completes. PR-3 ships the real `build_project_prompt`
+        // here; PR-7's placeholder text is replaced.
         let project_req = AgentRequest {
             stage: Stage::Project,
             target_id: "_workspace".to_string(),
             iteration: iter,
             transport: self.default_transport,
-            initial_prompt: "project the workspace projection".to_string(),
+            initial_prompt: build_project_prompt(
+                workspace.root(),
+                &reduce_rollup,
+                DEFAULT_PROJECT_SOFT_CAP,
+                DEFAULT_PROJECT_HARD_CAP,
+            ),
             fingerprint_inputs: Vec::new(),
             candidate_ids: all_component_ids.clone(),
             prior_model_sha: prior_model_sha.clone(),
@@ -958,31 +1022,415 @@ fn tool_context_for(_request: &AgentRequest) -> crate::ToolContext {
     }
 }
 
-/// Render the per-component Classify prompt. PR-4 keeps it
-/// content-free — the smoke test only inspects routing and Lane A,
-/// not the actual classifier prompt; PR-5 will replace this with the
-/// production prompt template.
-fn build_classify_prompt(_root: &Path, component: &ComponentPartition) -> String {
+/// PR-3: default soft-cap on the per-component Classify agent's
+/// tool-iteration budget (brainstorm §6.1; decision row 4). Embedded
+/// in the prompt and threaded through `AgentRequest::max_steps` so
+/// prompt-text and request-budget cannot drift.
+pub const DEFAULT_CLASSIFY_SOFT_CAP: u32 = 6;
+
+/// PR-3: default hard-cap on the per-component Classify agent.
+pub const DEFAULT_CLASSIFY_HARD_CAP: u32 = 12;
+
+/// PR-3: default soft-cap on the per-subsystem Reduce agent
+/// (brainstorm §6.2).
+pub const DEFAULT_REDUCE_SOFT_CAP: u32 = 4;
+
+/// PR-3: default hard-cap on the per-subsystem Reduce agent.
+pub const DEFAULT_REDUCE_HARD_CAP: u32 = 8;
+
+/// PR-3: default soft-cap on the workspace-level Project agent
+/// (brainstorm §6.3).
+pub const DEFAULT_PROJECT_SOFT_CAP: u32 = 4;
+
+/// PR-3: default hard-cap on the workspace-level Project agent.
+pub const DEFAULT_PROJECT_HARD_CAP: u32 = 8;
+
+/// PR-3: production per-component Classify prompt.
+///
+/// The agent is asked to (a) read the component's primary manifest,
+/// (b) inspect at least one source entry-point, and (c) emit exactly
+/// one fenced ```yaml block matching the
+/// [`outputs::ClassifyAgentOutput`] shape.
+///
+/// `evidence_pointers` is ordered by convention: `[primary_manifest,
+/// source_entrypoint, ...]`. Lane A's classify-stage evidence floor
+/// (`audit::evidence::classify_evidence`) reads `evidence_pointers[0]`
+/// as the manifest path the transcript must show was read, and
+/// `evidence_pointers[1]` (when present) as the source-entry-point.
+/// `expected_classify_tool_id` is derived from `kind` so the LLM only
+/// needs to declare its kind correctly — the runtime infers which
+/// parser tool should have fired.
+///
+/// `soft_cap` / `hard_cap` are embedded verbatim so the prompt-text
+/// and the caller's [`AgentRequest::max_steps`] cannot drift.
+/// PR-3's drift-catcher test
+/// (`crates/atlas-agents/tests/classify_prompt_shape.rs`) asserts the
+/// embedded YAML example deserializes via `ClassifyAgentOutput` AND
+/// both caps appear in the prompt body.
+pub fn build_classify_prompt(
+    workspace_root: &Path,
+    component: &ComponentPartition,
+    soft_cap: u32,
+    hard_cap: u32,
+) -> String {
     format!(
-        "classify component id={} subsystem={} (PR-4 placeholder)",
-        component.id, component.subsystem_id
+        r#"You are Atlas's classify agent. Classify component `{component_id}` \
+(subsystem `{subsystem_id}`) under workspace `{root}`.
+
+Use the available manifest-parser tools (parse_cargo_toml, \
+parse_package_json, parse_pyproject_toml, parse_dockerfile, \
+parse_compose, ...) and language classifiers to read the component's \
+primary manifest BEFORE assigning a kind / language / lifecycle. Then \
+read at least one source entry-point (lib.rs, index.ts, __init__.py, \
+the Dockerfile's FROM line, ...) to confirm.
+
+Iteration budget: soft cap {soft_cap}; hard cap {hard_cap}. Stop \
+emitting new tool calls once you can ground every field in at least \
+one of: a manifest read + a parser-tool call + a source-entrypoint \
+read.
+
+Emit your final answer as exactly ONE fenced yaml block matching this \
+shape:
+
+```yaml
+component_id: "{component_id}"
+kind: "rust-library"
+language: "rust"
+lifecycle: "build"
+subsystem_hint: "{subsystem_id}"
+evidence_pointers:
+  - path: "crates/{component_id}/Cargo.toml"
+    line_range: [1, 30]
+  - path: "crates/{component_id}/src/lib.rs"
+confidence_grade: "moderate"
+```
+
+Field rules:
+- `component_id` MUST equal `{component_id}` exactly (quoted).
+- `kind` is an open-vocabulary kebab-case string. Use the canonical \
+  Atlas vocabulary when it fits (`rust-library`, `rust-binary`, \
+  `typescript-package`, `python-package`, `docker-image`, \
+  `csharp-project`, ...). Quote it.
+- `language` is the dominant programming language as a kebab-case \
+  string (`rust`, `typescript`, `python`, ...). Quote it.
+- `lifecycle` is one of the closed component-ontology values: \
+  `design`, `codegen`, `build`, `test`, `deploy`, `runtime`, \
+  `dev-workflow`. Quote it.
+- `subsystem_hint` may correct the runtime-supplied subsystem if your \
+  reading of the manifest disagrees; otherwise echo `{subsystem_id}`.
+- `evidence_pointers` is REQUIRED and ORDERED: index 0 is the primary \
+  manifest path you read; index 1 (when present) is the source \
+  entry-point you read. Additional indices may carry supporting \
+  evidence. Each `path` is workspace-relative.
+- `confidence_grade` ∈ {{"strong", "moderate", "weak", "declines"}}.
+
+`confidence_grade` rubric:
+- "strong": primary manifest READ and source entry-point READ and \
+  the classifier tool whose name matches the declared `kind` was \
+  CALLED.
+- "moderate": primary manifest READ and the classifier tool was \
+  CALLED, but no source entry-point read (or the kind was inferred \
+  from the manifest alone).
+- "weak": primary manifest READ but no classifier tool called (the \
+  kind/language are best-guess from filename / directory structure).
+- "declines": the primary manifest could not be read, OR there isn't \
+  enough evidence to commit to a kind/language — emit a best-guess \
+  + this grade so a downstream consumer or human reviewer can \
+  intervene.
+
+Quote any identity-shaped scalar (component id, kind, language) that \
+could collide with YAML's implicit-typing rules — for example a \
+component literally called "true", "1.10", or "0123" must appear as \
+`"true"`, `"1.10"`, `"0123"`.
+"#,
+        component_id = component.id,
+        subsystem_id = component.subsystem_id,
+        root = workspace_root.display(),
+        soft_cap = soft_cap,
+        hard_cap = hard_cap,
     )
 }
 
-/// Render the per-subsystem reduce prompt. PR-4 placeholder; PR-5
-/// fills in the production prompt template.
-fn build_reduce_prompt(
+/// PR-3: production per-subsystem Reduce prompt.
+///
+/// The reducer consumes per-component classify outputs and emits ONE
+/// fenced ```yaml block matching the [`outputs::ReduceAgentOutput`]
+/// shape — including refactoring cues (framing #2 use-case b) and
+/// internal edges between the subsystem's components.
+///
+/// `classify_outputs` carries the already-classified per-component
+/// outputs as a `(component_id, kind, language)` tuple. The reducer
+/// uses these for context; the prompt does not embed the raw classify
+/// YAML to keep prompt size bounded.
+pub fn build_reduce_prompt(
+    workspace_root: &Path,
     subsystem: &SubsystemPartition,
-    components: &[ComponentPartition],
+    classify_outputs: &[(String, String, String)],
+    soft_cap: u32,
+    hard_cap: u32,
 ) -> String {
-    format!(
-        "reduce subsystem={} components=[{}] (PR-4 placeholder)",
-        subsystem.id,
-        components
+    let component_rollup = if classify_outputs.is_empty() {
+        format!(
+            "(no per-component classify outputs available; \
+             dispatched members: {:?})",
+            subsystem.members
+        )
+    } else {
+        classify_outputs
             .iter()
-            .map(|c| c.id.as_str())
+            .map(|(id, kind, lang)| format!("  - id: {id}; kind: {kind}; language: {lang}"))
             .collect::<Vec<_>>()
-            .join(",")
+            .join("\n")
+    };
+    let example_components: Vec<String> = subsystem
+        .members
+        .iter()
+        .take(2)
+        .map(|s| format!("\"{}\"", s))
+        .collect();
+    let example_components_yaml = if example_components.is_empty() {
+        "  - \"example-component\"".to_string()
+    } else {
+        example_components
+            .iter()
+            .map(|c| format!("  - {c}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r#"You are Atlas's reduce agent. Reduce the per-component \
+classify outputs into a subsystem-level summary for subsystem \
+`{subsystem_id}` (workspace `{root}`).
+
+Per-component classify outputs you were handed:
+{component_rollup}
+
+Use the available tools (manifest parsers, language classifiers, \
+surface analysers) ONLY to verify cross-component facts: shared \
+contracts between components, internal edges (component → component) \
+inside this subsystem, and refactoring cues spanning two or more \
+components. Avoid re-classifying individual components — that work is \
+already done.
+
+Iteration budget: soft cap {soft_cap}; hard cap {hard_cap}. Stop \
+emitting new tool calls once every claim in your output is grounded.
+
+Emit your final answer as exactly ONE fenced yaml block matching this \
+shape:
+
+```yaml
+subsystem_id: "{subsystem_id}"
+purpose: "One to three sentences describing what this subsystem does, \
+LLM-consumable as standalone context."
+declared_child_component_ids:
+{example_components_yaml}
+component_ids:
+{example_components_yaml}
+key_contracts:
+  - id: "tools/parse_cargo_toml"
+    kind: "tool-handle"
+    source_path:
+      path: "crates/example/src/tools.rs"
+internal_edges:
+  - from: "example-component"
+    to: "example-component"
+    kind: "depends-on"
+refactoring_cues:
+  - kind: "abstraction-opportunity"
+    component_ids: ["example-component"]
+    rationale: "One sentence explaining the cue."
+    evidence_pointers:
+      - path: "crates/example/src/lib.rs"
+evidence_pointers:
+  - path: "crates/example/Cargo.toml"
+confidence_grade: "moderate"
+```
+
+Field rules:
+- `subsystem_id` MUST equal `{subsystem_id}` exactly (quoted).
+- `purpose` is 1-3 sentences. Frame it as standalone LLM context — a \
+  downstream tool should be able to understand what this subsystem \
+  does from this sentence alone.
+- `declared_child_component_ids` MUST echo back the exact list of \
+  per-component classify outputs you were handed (the component ids \
+  above). Lane A's reduce-stage evidence floor reads this as the \
+  denominator of the coverage ratio.
+- `component_ids` is the set of children you actually accounted for in \
+  this subsystem reduce. To score Strong, this MUST equal \
+  `declared_child_component_ids`.
+- `key_contracts` lists the cross-component contracts the subsystem \
+  exposes (traits, tool-handles, HTTP endpoints, IDL definitions, ...). \
+  `kind` is free-text; quote it.
+- `internal_edges` lists component→component relationships INSIDE \
+  this subsystem. `kind` should match the component-ontology edge \
+  vocabulary (`depends-on`, `calls`, `provides-contract`, \
+  `implements-contract`, ...). Quote it.
+- `refactoring_cues` is load-bearing — Atlas exists in part to \
+  surface refactoring opportunities for downstream LLM consumers. \
+  `kind` ∈ {{"duplication", "mis-modularised", \
+  "abstraction-opportunity", "dependency-inversion", "dead-code", \
+  "other"}}. Quote it.
+- `evidence_pointers` cites the subsystem-level evidence you read \
+  (cross-component manifests, README, design docs).
+- `confidence_grade` ∈ {{"strong", "moderate", "weak", "declines"}}.
+
+`confidence_grade` rubric:
+- "strong": every child component appears in `component_ids`; every \
+  `refactoring_cue` and `internal_edge` carries an evidence pointer; \
+  `key_contracts` are grounded in source-path reads.
+- "moderate": most children accounted for; some cues lack evidence \
+  pointers.
+- "weak": purpose written but contracts / edges / cues are sparse or \
+  unverified.
+- "declines": fewer than half the children consumed — surface the \
+  best-effort reduce and a `declines` grade.
+
+Quote any identity-shaped scalar (component id, subsystem id, \
+contract id, edge kind) that could collide with YAML's implicit-typing \
+rules.
+"#,
+        subsystem_id = subsystem.id,
+        root = workspace_root.display(),
+        component_rollup = component_rollup,
+        example_components_yaml = example_components_yaml,
+        soft_cap = soft_cap,
+        hard_cap = hard_cap,
+    )
+}
+
+/// PR-3: production workspace-level Project prompt.
+///
+/// The project agent consumes per-subsystem reduce outputs and emits
+/// ONE fenced ```yaml block matching the
+/// [`outputs::ProjectAgentOutput`] shape — including the
+/// `doc_scaffold` outline (framing #2 use-case (c) — documentation
+/// generation).
+///
+/// `reduce_outputs` is the rollup the runtime collected from each
+/// subsystem reduce; the prompt embeds it as a compact list.
+pub fn build_project_prompt(
+    workspace_root: &Path,
+    reduce_outputs: &[(String, String, u32)],
+    soft_cap: u32,
+    hard_cap: u32,
+) -> String {
+    let subsystem_rollup = if reduce_outputs.is_empty() {
+        "(no subsystem reduces available)".to_string()
+    } else {
+        reduce_outputs
+            .iter()
+            .map(|(id, purpose, count)| {
+                format!("  - id: {id}; component_count: {count}; purpose: {purpose}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let example_subsystem_ids: Vec<String> = reduce_outputs
+        .iter()
+        .take(2)
+        .map(|(id, _, _)| format!("\"{}\"", id))
+        .collect();
+    let example_subsystem_yaml = if example_subsystem_ids.is_empty() {
+        "  - \"example-subsystem\"".to_string()
+    } else {
+        example_subsystem_ids
+            .iter()
+            .map(|s| format!("  - {s}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r#"You are Atlas's project agent. Roll the per-subsystem reduce \
+outputs up into a workspace-level architecture summary for workspace \
+`{root}`. The output is the PRIMARY LLM-consumable artifact downstream \
+tools read first.
+
+Per-subsystem reduce outputs you were handed:
+{subsystem_rollup}
+
+Use the available tools sparingly here — most of the evidence has \
+already been gathered. Read top-level docs (README.md, ARCHITECTURE.md, \
+docs/*.md) if they exist; do not re-classify components.
+
+Iteration budget: soft cap {soft_cap}; hard cap {hard_cap}.
+
+Emit your final answer as exactly ONE fenced yaml block matching this \
+shape:
+
+```yaml
+workspace_purpose: "Two to five sentences describing what this \
+workspace as a whole does. Downstream LLM consumers read this first."
+declared_subsystem_ids:
+{example_subsystem_yaml}
+subsystem_catalog:
+  - subsystem_id: "example-subsystem"
+    purpose: "One sentence summary."
+    component_count: 3
+cross_subsystem_edges:
+  - from: "example-subsystem"
+    to: "example-subsystem"
+    kind: "depends-on"
+workspace_refactoring_cues:
+  - kind: "abstraction-opportunity"
+    component_ids: ["example-component"]
+    rationale: "One sentence explaining the cue."
+    evidence_pointers:
+      - path: "docs/architecture.md"
+doc_scaffold:
+  sections:
+    - heading: "Architecture overview"
+      source_references:
+        - path: "docs/architecture.md"
+      child_sections:
+        - heading: "Per-subsystem deep-dives"
+          source_references:
+            - path: "docs/architecture.md"
+confidence_grade: "moderate"
+```
+
+Field rules:
+- `workspace_purpose` is 2-5 sentences. Frame it as standalone LLM \
+  context — a downstream tool should understand the workspace's reason \
+  to exist from this paragraph alone.
+- `declared_subsystem_ids` MUST echo back EVERY subsystem id from the \
+  rollup above. Lane A's project-stage evidence floor reads this as \
+  the denominator of the coverage ratio.
+- `subsystem_catalog` MUST contain one row per subsystem you accounted \
+  for. To score Strong, every `declared_subsystem_ids` entry MUST \
+  appear as a `subsystem_id` here.
+- `cross_subsystem_edges` lists subsystem→subsystem relationships. \
+  `kind` follows the component-ontology edge vocabulary.
+- `workspace_refactoring_cues` is the workspace-level analog of the \
+  per-subsystem `refactoring_cues` — cross-subsystem opportunities. \
+  Same `kind` vocabulary as `RefactoringCueKind`.
+- `doc_scaffold` is REQUIRED and load-bearing — downstream \
+  documentation-generation tools fill the body of each section using \
+  the cited `source_references`. Heading text should read as a \
+  table-of-contents entry. Recurse via `child_sections` for \
+  subheadings.
+- `confidence_grade` ∈ {{"strong", "moderate", "weak", "declines"}}.
+
+`confidence_grade` rubric:
+- "strong": every subsystem appears in `subsystem_catalog`; \
+  `doc_scaffold` covers every subsystem at least once; \
+  `workspace_refactoring_cues` reference real edges with evidence \
+  pointers.
+- "moderate": most subsystems cataloged; `doc_scaffold` has gaps.
+- "weak": `workspace_purpose` written but `subsystem_catalog` \
+  incomplete or `doc_scaffold` shallow.
+- "declines": cannot produce a coherent workspace-level view — emit \
+  best-effort + this grade.
+
+Quote any identity-shaped scalar that could collide with YAML's \
+implicit-typing rules.
+"#,
+        root = workspace_root.display(),
+        subsystem_rollup = subsystem_rollup,
+        example_subsystem_yaml = example_subsystem_yaml,
+        soft_cap = soft_cap,
+        hard_cap = hard_cap,
     )
 }
 

@@ -1000,7 +1000,7 @@ pub fn build_engine_database_for_reports(
 ///    emitted (the runtime owns that contract); `block_on` each
 ///    subscriber's join handle to apply the drain handshake.
 /// 6. Serialise the returned `L9Projection` to
-///    `<output_dir>/cache/agent-runtime-projection.json` so the wiring
+///    `<output_dir>/cache/agent-runtime-projection.yaml` so the wiring
 ///    deliverable has a verifiable artefact even before production
 ///    prompt templates emit ontology-shaped output. The deterministic
 ///    pipeline's canonical YAMLs are NOT written by this path — that
@@ -1175,10 +1175,20 @@ pub fn run_index_agent_runtime(
         }
     };
     if !config.dry_run {
+        // PR-3: YAML-canonical interchange (memory
+        // `feedback_yaml_canonical_interchange`). The intermediate
+        // projection moves from `agent-runtime-projection.json` to
+        // `.yaml` here; stale `.json` files from prior runs are NOT
+        // auto-deleted — they survive as forensic artefacts. The
+        // greenfield + hard-upgrade discipline (Phase 7 §2.2) tells
+        // users to delete `.atlas/` and re-run between phase
+        // boundaries; a user who upgrades will lose the stale `.json`
+        // naturally. Atlas should not own transitional-artefact
+        // cleanup.
         let out_path = config
             .output_dir
             .join("cache")
-            .join("agent-runtime-projection.json");
+            .join("agent-runtime-projection.yaml");
         if let Some(parent) = out_path.parent() {
             if let Err(err) = std::fs::create_dir_all(parent) {
                 return Err(IndexError::Other(anyhow::anyhow!(
@@ -1187,15 +1197,30 @@ pub fn run_index_agent_runtime(
                 )));
             }
         }
-        let bytes = serde_json::to_vec_pretty(&projection).map_err(|e| {
+        let yaml = serde_yaml::to_string(&projection).map_err(|e| {
             IndexError::Other(anyhow::anyhow!("failed to serialise projection: {e}"))
         })?;
-        atomic_write(&out_path, &bytes).map_err(|e| {
+        atomic_write(&out_path, yaml.as_bytes()).map_err(|e| {
             IndexError::Other(anyhow::anyhow!(
                 "failed to write {}: {e}",
                 out_path.display()
             ))
         })?;
+
+        // PR-3: canonical-schema shim. Projects the LLM-spine
+        // `L9Projection` into the three canonical YAMLs downstream
+        // Atlas tooling reads (framing #2). Hard-fails surface as
+        // `ShimError::MissingProjectionField` and propagate as
+        // `IndexError::Other` — a producer prompt that didn't emit a
+        // required field is a prompt-correctness signal, not a
+        // recoverable error (brainstorm framing #2; memory
+        // `feedback_no_deterministic_engine_comparison`).
+        let canonical_dir = &config.output_dir;
+        atlas_agents::runtime::projection_to_canonical::project_l9_to_canonical(
+            &projection,
+            canonical_dir,
+        )
+        .map_err(|e| IndexError::Other(anyhow::anyhow!("canonical-schema shim failed: {e}")))?;
     }
     Ok(())
 }

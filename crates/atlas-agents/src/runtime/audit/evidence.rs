@@ -32,13 +32,10 @@ pub fn compute_evidence_score(stage: Stage, transcript: &Transcript, output: &Ag
     match stage {
         Stage::DispatchSubsystem => dispatch_subsystems_evidence(transcript, output),
         Stage::DispatchComponent => dispatch_components_evidence(transcript, output),
-        // PR-3 OWNS: real per-stage evidence functions for Classify,
-        // Surface, Reduce, Project. Until then, return 1.0 so the LLM's
-        // self-grade flows through unchanged — preserves the pre-PR-2
-        // Strong-on-success behaviour for non-dispatch agents and keeps
-        // Lane B's `should_audit` gate working end-to-end. The brainstorm
-        // ladder is fully exercised for the dispatch arms above.
-        Stage::Classify | Stage::Surface | Stage::Reduce | Stage::Project => 1.0,
+        Stage::Classify => classify_evidence(transcript, output),
+        Stage::Surface => surface_evidence(transcript, output),
+        Stage::Reduce => reduce_evidence(transcript, output),
+        Stage::Project => project_evidence(transcript, output),
     }
 }
 
@@ -103,6 +100,106 @@ fn dispatch_components_evidence(transcript: &Transcript, output: &AgentOutput) -
         .filter(|c| reads.contains(&c.primary_manifest_path))
         .count();
     manifests_read as f32 / candidates.len() as f32
+}
+
+/// PR-3: per-component Classify evidence (decision row 5; brainstorm
+/// §6.1).
+///
+/// Ladder:
+///
+/// | reads observed                               | score |
+/// |----------------------------------------------|-------|
+/// | manifest + entrypoint + classify tool called | 1.0   |
+/// | manifest + classify tool called              | 0.6   |
+/// | manifest only                                | 0.4   |
+/// | none of the above                            | 0.0   |
+///
+/// The primary-manifest and source-entry-point paths are read from
+/// `evidence_pointers[0]` / `evidence_pointers[1]` per the classify
+/// prompt rubric's ordering convention. The expected classifier tool
+/// is derived from the agent's declared `kind`
+/// ([`AgentOutput::expected_classify_tool_id`]).
+fn classify_evidence(transcript: &Transcript, output: &AgentOutput) -> f32 {
+    let reads = transcript.read_file_paths();
+    let manifest_read = match output.primary_manifest_path() {
+        Some(p) => reads.contains(&p),
+        None => false,
+    };
+    let entrypoint_read = output
+        .declared_entrypoint_path()
+        .map(|p| reads.contains(&p))
+        .unwrap_or(false);
+    let classify_tool_called = transcript.tool_called(&output.expected_classify_tool_id());
+    if manifest_read && entrypoint_read && classify_tool_called {
+        1.0
+    } else if manifest_read && classify_tool_called {
+        0.6
+    } else if manifest_read {
+        0.4
+    } else {
+        0.0
+    }
+}
+
+/// PR-3: per-component Surface evidence.
+///
+/// Ratio of inspected public-item sources to declared count. A
+/// component with zero declared public items is vacuously satisfied
+/// (returns 1.0) — surface extraction for a header-only or pure-data
+/// component legitimately produces no surfaces.
+///
+/// An "inspection" is counted via either:
+///
+/// 1. A call to the `find_pub_items` tool (one per call), or
+/// 2. A tool call whose `args.path` matches a declared surface's
+///    `source_path`.
+///
+/// The sum is clamped to `1.0` so heavy over-inspection doesn't
+/// inflate the score beyond Strong.
+fn surface_evidence(transcript: &Transcript, output: &AgentOutput) -> f32 {
+    let declared = output.declared_public_items_count();
+    if declared == 0 {
+        return 1.0;
+    }
+    let declared_paths = output.declared_public_item_paths();
+    let reads = transcript.read_file_paths();
+    let path_intersections = reads.iter().filter(|p| declared_paths.contains(*p)).count();
+    let pub_items_calls = transcript.tool_calls_for("find_pub_items").count();
+    let inspected = path_intersections + pub_items_calls;
+    (inspected as f32 / declared as f32).min(1.0)
+}
+
+/// PR-3: per-subsystem Reduce evidence.
+///
+/// Ratio of children the reducer accounted for to children the
+/// runtime handed it. Empty child list → vacuously 1.0 (a subsystem
+/// with no children is trivially reduced).
+///
+/// The reduce prompt rubric tells the reducer to echo the
+/// per-subsystem child list back as `declared_child_component_ids`
+/// (the denominator); the reducer's `component_ids` is what it
+/// actually addressed (the numerator).
+fn reduce_evidence(_transcript: &Transcript, output: &AgentOutput) -> f32 {
+    let expected = output.declared_child_component_ids().len();
+    if expected == 0 {
+        return 1.0;
+    }
+    let observed = output.component_ids().len();
+    (observed as f32 / expected as f32).min(1.0)
+}
+
+/// PR-3: workspace-level Project evidence.
+///
+/// Same shape as reduce, scoped to subsystems. Empty subsystem list →
+/// vacuously 1.0 (a workspace with zero subsystems is trivially
+/// projected).
+fn project_evidence(_transcript: &Transcript, output: &AgentOutput) -> f32 {
+    let expected = output.declared_subsystem_ids().len();
+    if expected == 0 {
+        return 1.0;
+    }
+    let observed = output.subsystem_catalog().len();
+    (observed as f32 / expected as f32).min(1.0)
 }
 
 #[cfg(test)]
@@ -204,6 +301,10 @@ mod tests {
 
     #[test]
     fn compute_evidence_score_dispatches_by_stage() {
+        // Empty-output baseline: dispatch arms return 0.0 (no candidates
+        // claimed); Classify/Surface returns 0.0 (no evidence); Reduce
+        // and Project return 1.0 (vacuously satisfied — zero declared
+        // children/subsystems). All values must lie in [0, 1].
         let output = AgentOutput::from_value(json!({}));
         let transcript = Transcript::new();
         for stage in [
@@ -214,10 +315,6 @@ mod tests {
             Stage::Reduce,
             Stage::Project,
         ] {
-            // Every stage returns a finite, in-range value. Behaviour
-            // for PR-3 stages is `0.0`; for PR-2 dispatch stages it's
-            // also `0.0` here because the synthetic output has empty
-            // `candidates_considered`.
             let s = compute_evidence_score(stage, &transcript, &output);
             assert!(
                 (0.0..=1.0).contains(&s),
@@ -235,5 +332,198 @@ mod tests {
         let v = serde_json::to_value(&original).unwrap();
         let back: L1CandidateRef = serde_json::from_value(v).unwrap();
         assert_eq!(back, original);
+    }
+
+    // ---- PR-3 per-stage evidence unit tests ---------------------------
+
+    #[test]
+    fn classify_evidence_strong_when_manifest_entrypoint_and_tool_called() {
+        let output = AgentOutput::from_value(json!({
+            "kind": "rust-library",
+            "evidence_pointers": [
+                { "path": "crates/atlas-cli/Cargo.toml" },
+                { "path": "crates/atlas-cli/src/main.rs" }
+            ]
+        }));
+        let mut t = Transcript::new();
+        t.push_synthetic_tool_call(
+            "parse_cargo_toml",
+            json!({ "path": "crates/atlas-cli/Cargo.toml" }),
+            json!({}),
+        );
+        t.push_synthetic_tool_call(
+            "read_file",
+            json!({ "path": "crates/atlas-cli/src/main.rs" }),
+            json!({}),
+        );
+        let score = classify_evidence(&t, &output);
+        assert!(
+            (score - 1.0).abs() < f32::EPSILON,
+            "manifest+entrypoint+tool must score 1.0, got {score}"
+        );
+    }
+
+    #[test]
+    fn classify_evidence_moderate_when_manifest_and_tool_only() {
+        let output = AgentOutput::from_value(json!({
+            "kind": "rust-library",
+            "evidence_pointers": [
+                { "path": "crates/atlas-cli/Cargo.toml" },
+                { "path": "crates/atlas-cli/src/main.rs" }
+            ]
+        }));
+        let mut t = Transcript::new();
+        t.push_synthetic_tool_call(
+            "parse_cargo_toml",
+            json!({ "path": "crates/atlas-cli/Cargo.toml" }),
+            json!({}),
+        );
+        // entrypoint NOT read.
+        let score = classify_evidence(&t, &output);
+        assert!(
+            (score - 0.6).abs() < f32::EPSILON,
+            "manifest+tool no entrypoint must score 0.6, got {score}"
+        );
+    }
+
+    #[test]
+    fn classify_evidence_weak_when_manifest_only_no_tool() {
+        let output = AgentOutput::from_value(json!({
+            "kind": "rust-library",
+            "evidence_pointers": [
+                { "path": "crates/atlas-cli/Cargo.toml" }
+            ]
+        }));
+        let mut t = Transcript::new();
+        // Tool call that LANDS the manifest path but isn't the
+        // classifier tool (just a generic read).
+        t.push_synthetic_tool_call(
+            "read_file",
+            json!({ "path": "crates/atlas-cli/Cargo.toml" }),
+            json!({}),
+        );
+        let score = classify_evidence(&t, &output);
+        assert!(
+            (score - 0.4).abs() < f32::EPSILON,
+            "manifest-read-only must score 0.4, got {score}"
+        );
+    }
+
+    #[test]
+    fn classify_evidence_zero_when_no_reads() {
+        let output = AgentOutput::from_value(json!({
+            "kind": "rust-library",
+            "evidence_pointers": [
+                { "path": "Cargo.toml" }
+            ]
+        }));
+        let t = Transcript::new();
+        let score = classify_evidence(&t, &output);
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn surface_evidence_one_when_zero_declared() {
+        let output = AgentOutput::from_value(json!({ "surfaces": [] }));
+        let t = Transcript::new();
+        assert!((surface_evidence(&t, &output) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn surface_evidence_full_coverage_when_paths_read() {
+        let output = AgentOutput::from_value(json!({
+            "surfaces": [
+                { "source_path": "crates/a/src/lib.rs" },
+                { "source_path": "crates/b/src/lib.rs" }
+            ]
+        }));
+        let mut t = Transcript::new();
+        t.push_synthetic_tool_call(
+            "read_file",
+            json!({ "path": "crates/a/src/lib.rs" }),
+            json!({}),
+        );
+        t.push_synthetic_tool_call(
+            "read_file",
+            json!({ "path": "crates/b/src/lib.rs" }),
+            json!({}),
+        );
+        assert!((surface_evidence(&t, &output) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn surface_evidence_partial_when_some_paths_unread() {
+        let output = AgentOutput::from_value(json!({
+            "surfaces": [
+                { "source_path": "a.rs" },
+                { "source_path": "b.rs" }
+            ]
+        }));
+        let mut t = Transcript::new();
+        t.push_synthetic_tool_call("read_file", json!({ "path": "a.rs" }), json!({}));
+        let score = surface_evidence(&t, &output);
+        assert!((score - 0.5).abs() < f32::EPSILON, "got {score}");
+    }
+
+    #[test]
+    fn reduce_evidence_vacuous_when_no_declared_children() {
+        // declared_child_component_ids absent → expected = 0 → 1.0.
+        let output = AgentOutput::from_value(json!({}));
+        let t = Transcript::new();
+        assert!((reduce_evidence(&t, &output) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn reduce_evidence_full_coverage() {
+        let output = AgentOutput::from_value(json!({
+            "declared_child_component_ids": ["a", "b", "c"],
+            "component_ids": ["a", "b", "c"]
+        }));
+        let t = Transcript::new();
+        assert!((reduce_evidence(&t, &output) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn reduce_evidence_partial_coverage() {
+        let output = AgentOutput::from_value(json!({
+            "declared_child_component_ids": ["a", "b", "c", "d"],
+            "component_ids": ["a", "b"]
+        }));
+        let t = Transcript::new();
+        let score = reduce_evidence(&t, &output);
+        assert!((score - 0.5).abs() < f32::EPSILON, "got {score}");
+    }
+
+    #[test]
+    fn project_evidence_vacuous_when_no_declared_subsystems() {
+        let output = AgentOutput::from_value(json!({}));
+        let t = Transcript::new();
+        assert!((project_evidence(&t, &output) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn project_evidence_full_coverage() {
+        let output = AgentOutput::from_value(json!({
+            "declared_subsystem_ids": ["agents", "cli"],
+            "subsystem_catalog": [
+                { "subsystem_id": "agents", "purpose": "x", "component_count": 1 },
+                { "subsystem_id": "cli", "purpose": "y", "component_count": 1 }
+            ]
+        }));
+        let t = Transcript::new();
+        assert!((project_evidence(&t, &output) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn project_evidence_partial_coverage() {
+        let output = AgentOutput::from_value(json!({
+            "declared_subsystem_ids": ["a", "b", "c", "d"],
+            "subsystem_catalog": [
+                { "subsystem_id": "a", "purpose": "x", "component_count": 1 }
+            ]
+        }));
+        let t = Transcript::new();
+        let score = project_evidence(&t, &output);
+        assert!((score - 0.25).abs() < f32::EPSILON, "got {score}");
     }
 }

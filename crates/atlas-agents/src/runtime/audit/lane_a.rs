@@ -179,6 +179,165 @@ impl AgentOutput {
     pub fn subsystem_component_candidates(&self) -> Vec<L1CandidateRef> {
         self.l1_candidates_referenced()
     }
+
+    /// PR-3: classify-stage primary manifest path. The classify prompt
+    /// rubric advertises that `evidence_pointers[0]` is the primary
+    /// manifest (e.g. `crates/atlas-cli/Cargo.toml`); Lane A's
+    /// classify-stage scorer asserts that path appears in the
+    /// transcript's read set.
+    pub fn primary_manifest_path(&self) -> Option<PathBuf> {
+        self.value
+            .get("evidence_pointers")
+            .and_then(Value::as_array)
+            .and_then(|arr| arr.first())
+            .and_then(|first| first.get("path"))
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+    }
+
+    /// PR-3: classify-stage declared source-entry-point. Rubric:
+    /// `evidence_pointers[1]` is the source entry point when present
+    /// (e.g. `crates/atlas-cli/src/main.rs`). Optional — a Strong
+    /// grading requires this to be set and read; a Moderate grading
+    /// tolerates its absence.
+    pub fn declared_entrypoint_path(&self) -> Option<PathBuf> {
+        self.value
+            .get("evidence_pointers")
+            .and_then(Value::as_array)
+            .and_then(|arr| arr.get(1))
+            .and_then(|second| second.get("path"))
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+    }
+
+    /// PR-3: which classifier tool the runtime expects the classify
+    /// agent to have called, derived from the agent's declared `kind`.
+    /// Returns a stable string id matching the tool catalog's
+    /// `Tool::id()` so [`crate::runtime::Transcript::tool_called`] can
+    /// pattern-match. Unknown / missing `kind` returns the generic
+    /// `"classify"` sentinel.
+    ///
+    /// Mapping mirrors the manifest-parser tools surfaced by
+    /// `default_tool_catalog`:
+    ///
+    /// | kind prefix      | expected tool        |
+    /// |------------------|----------------------|
+    /// | `rust-`          | `parse_cargo_toml`   |
+    /// | `typescript-` / `javascript-` / `node-` | `parse_package_json` |
+    /// | `python-`        | `parse_pyproject_toml` |
+    /// | `docker-` / `compose-` | `parse_dockerfile` |
+    /// | anything else    | `classify` (sentinel)  |
+    pub fn expected_classify_tool_id(&self) -> String {
+        let kind = self.value.get("kind").and_then(Value::as_str).unwrap_or("");
+        if kind.starts_with("rust-") {
+            "parse_cargo_toml".to_string()
+        } else if kind.starts_with("typescript-")
+            || kind.starts_with("javascript-")
+            || kind.starts_with("node-")
+        {
+            "parse_package_json".to_string()
+        } else if kind.starts_with("python-") {
+            "parse_pyproject_toml".to_string()
+        } else if kind.starts_with("docker-") || kind.starts_with("compose-") {
+            "parse_dockerfile".to_string()
+        } else {
+            "classify".to_string()
+        }
+    }
+
+    /// PR-3: surface-stage declared public-items count. Reads
+    /// `value["surfaces"]` array length; 0 when missing or malformed.
+    /// A component with zero declared public items legitimately scores
+    /// 1.0 in `surface_evidence` (the vacuously-satisfied case).
+    pub fn declared_public_items_count(&self) -> usize {
+        self.value
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .map(|a| a.len())
+            .unwrap_or(0)
+    }
+
+    /// PR-3: surface-stage declared public-item source paths. Reads
+    /// `surfaces[i].source_path` (when present) into a HashSet so
+    /// `surface_evidence` can intersect against
+    /// `transcript.read_file_paths`. Surfaces lacking a `source_path`
+    /// contribute nothing — their inspection is recorded via the
+    /// `find_pub_items` tool-call count instead.
+    pub fn declared_public_item_paths(&self) -> HashSet<PathBuf> {
+        self.value
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        item.get("source_path")
+                            .and_then(Value::as_str)
+                            .map(PathBuf::from)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// PR-3: reduce-stage declared child component ids. Reads the
+    /// `declared_child_component_ids` field the reduce prompt rubric
+    /// tells the reducer to echo back (the per-subsystem child list
+    /// the runtime handed it). Denominator of `reduce_evidence`'s
+    /// coverage ratio.
+    pub fn declared_child_component_ids(&self) -> Vec<String> {
+        read_string_array(&self.value, "declared_child_component_ids")
+    }
+
+    /// PR-3: reduce-stage component ids the reducer actually
+    /// accounted for in its output. Numerator vs.
+    /// [`Self::declared_child_component_ids`].
+    pub fn component_ids(&self) -> Vec<String> {
+        read_string_array(&self.value, "component_ids")
+    }
+
+    /// PR-3: project-stage subsystem catalog. Reads the
+    /// `subsystem_catalog` array's `subsystem_id` per row. Numerator
+    /// of `project_evidence`.
+    pub fn subsystem_catalog(&self) -> Vec<String> {
+        self.value
+            .get("subsystem_catalog")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        item.get("subsystem_id")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// PR-3: project-stage declared subsystem ids. Reads the
+    /// `declared_subsystem_ids` field the project prompt rubric tells
+    /// the agent to echo back. Denominator of `project_evidence`.
+    pub fn declared_subsystem_ids(&self) -> Vec<String> {
+        read_string_array(&self.value, "declared_subsystem_ids")
+    }
+}
+
+/// PR-3 helper: pull a `Vec<String>` out of `value[key]`, dropping any
+/// element that isn't a string. Missing / malformed → empty vec. Used
+/// by [`AgentOutput::declared_child_component_ids`] +
+/// [`AgentOutput::component_ids`] +
+/// [`AgentOutput::declared_subsystem_ids`] to keep the accessor bodies
+/// uniform.
+fn read_string_array(value: &Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// True iff the stage requires `len(output.surfaces) >= 1`. Pure helper
@@ -331,9 +490,12 @@ mod tests {
     #[tokio::test]
     async fn accepts_object_with_no_edges_or_components() {
         let out = AgentOutput::from_value(json!({}));
-        // PR-2: Classify stage's evidence-floor fallback is 1.0 until
-        // PR-3 lands the real classify-stage scorer; the LLM's
-        // claimed grade (default Strong on absent field) flows through.
+        // PR-3 wired the real classify-stage evidence scorer. With no
+        // evidence pointers and an empty transcript the classify
+        // evidence ratio resolves to 0.0 → ceiling = Declines. The
+        // schema-layer pass-through still holds (no edges, no components);
+        // the value the validator returns is the clamped grade, not a
+        // schema verdict.
         let grade = lane_a_validate(
             &out,
             Stage::Classify,
@@ -342,7 +504,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(grade, Grade::Strong);
+        assert_eq!(grade, Grade::Declines);
     }
 
     #[tokio::test]
