@@ -30,12 +30,15 @@
 //! validation predicate only.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
 use component_ontology::EdgeKind;
+
+use crate::events::Grade;
 
 /// Per-stage discriminator for Lane A schema validation. The stage
 /// drives which sub-checks fire — e.g. only `Stage::Surface` requires
@@ -89,21 +92,92 @@ pub enum SchemaError {
     MalformedComponent(String),
 }
 
+/// One L1 candidate the dispatch agent considered. Emitted by the
+/// LLM as part of its dispatch-stage YAML envelope under the
+/// `candidates_considered:` field; Lane A's evidence-floor scorer
+/// reads this against the transcript's `read_file_paths()` to compute
+/// the dispatch-stage evidence ratio.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct L1CandidateRef {
+    /// Stable id of the candidate (e.g. `"atlas-cli"`).
+    pub id: String,
+    /// Primary manifest path the agent should have read to ground its
+    /// dispatch decision (e.g. `crates/atlas-cli/Cargo.toml`). Lane A
+    /// matches this against the transcript's file-read set.
+    pub primary_manifest_path: PathBuf,
+}
+
 /// Structured agent output the runtime hands to Lane A. The
 /// `value` field is the raw JSON the model emitted; the optional
 /// helper-parsed projections are populated by `tool_loop_*` parsers
 /// for stages where the wire shape is well-known.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentOutput {
     /// Raw JSON value emitted by the model. Lane A inspects this
     /// directly; downstream callers may extract typed views.
     pub value: Value,
+    /// PR-2: raw concatenation of the LLM's `content[].text` blocks.
+    /// The dispatch-stage YAML-migration path fence-extracts this via
+    /// [`crate::runtime::prompt_examples::extract_yaml_fence`] and
+    /// hands the body to `serde_yaml::from_str`. Empty when the
+    /// response arrived in a shape that did not carry text blocks
+    /// (e.g. the `response.output` envelope used by the test backend).
+    #[serde(default)]
+    pub text: String,
 }
 
 impl AgentOutput {
-    /// Construct from a raw JSON value.
+    /// Construct from a raw JSON value (no text-block content).
     pub fn from_value(value: Value) -> Self {
-        Self { value }
+        Self {
+            value,
+            text: String::new(),
+        }
+    }
+
+    /// Construct from a raw JSON value + the originating LLM text
+    /// content. PR-2: `parse_final_output` populates both fields when
+    /// the response carries text blocks.
+    pub fn from_value_and_text(value: Value, text: String) -> Self {
+        Self { value, text }
+    }
+
+    /// LLM's self-claimed confidence grade. Reads `value["confidence_grade"]`
+    /// as a case-insensitive string and maps to [`Grade`]. Returns
+    /// `Grade::Strong` if the field is absent — preserves the pre-PR-2
+    /// hardcoded behaviour for backends that don't emit a grade.
+    pub fn confidence_grade(&self) -> Grade {
+        self.value
+            .get("confidence_grade")
+            .and_then(Value::as_str)
+            .and_then(|s| match s.to_lowercase().as_str() {
+                "strong" => Some(Grade::Strong),
+                "moderate" => Some(Grade::Moderate),
+                "weak" => Some(Grade::Weak),
+                "declines" => Some(Grade::Declines),
+                _ => None,
+            })
+            .unwrap_or(Grade::Strong)
+    }
+
+    /// L1 candidates the dispatch-subsystem agent emitted in its output
+    /// envelope. Used by [`crate::runtime::audit::evidence`]
+    /// `dispatch_subsystems_evidence` to compute the
+    /// reads-vs-candidates ratio. Returns an empty `Vec` when the
+    /// `candidates_considered` field is absent or malformed.
+    pub fn l1_candidates_referenced(&self) -> Vec<L1CandidateRef> {
+        self.value
+            .get("candidates_considered")
+            .and_then(|v| serde_json::from_value::<Vec<L1CandidateRef>>(v.clone()).ok())
+            .unwrap_or_default()
+    }
+
+    /// L1 candidates the dispatch-component agent emitted in its output
+    /// envelope. Same envelope shape as
+    /// [`Self::l1_candidates_referenced`], scoped to one subsystem's
+    /// component candidates.
+    pub fn subsystem_component_candidates(&self) -> Vec<L1CandidateRef> {
+        self.l1_candidates_referenced()
     }
 }
 
@@ -113,14 +187,51 @@ pub fn requires_at_least_one_surface(stage: Stage) -> bool {
     matches!(stage, Stage::Surface)
 }
 
-/// Run Lane A on `output` against the per-call `candidate_ids` set.
+/// Run Lane A on `output` against the per-call `candidate_ids` set
+/// + `transcript`.
+///
+/// **PR-2: two-layer validation.**
+///
+/// - **Layer 1 (schema)** — the pre-existing structural checks
+///   (unknown edge kinds, unknown component ids, missing surfaces on
+///   `Stage::Surface`). Fails fast on the first violation, surfaced
+///   via [`SchemaError`].
+/// - **Layer 2 (evidence floor)** — once Layer 1 passes, the LLM's
+///   self-claimed grade ([`AgentOutput::confidence_grade`]) is
+///   clamped against the deterministic evidence score
+///   ([`crate::runtime::audit::evidence::compute_evidence_score`])
+///   via [`crate::runtime::audit::evidence::grade_ceiling`]. The
+///   clamped grade is returned to the caller, which propagates it
+///   through `AgentComplete` events + transcript-frame metadata.
 ///
 /// `candidate_ids` is the set of component ids the dispatcher already
 /// resolved (PR-4: from override files; PR-5 widens to LLM dispatch).
 /// An empty set means "Lane A skips the component-id check for this
 /// call" — used by the dispatch stages themselves, which decide the
-/// candidate set rather than consult one.
+/// candidate set rather than consult one. The dispatch-stage call
+/// sites in [`crate::runtime::dispatch`] pass an empty `HashSet`.
 pub async fn lane_a_validate(
+    output: &AgentOutput,
+    stage: Stage,
+    candidate_ids: &HashSet<String>,
+    transcript: &crate::runtime::Transcript,
+) -> Result<Grade, SchemaError> {
+    // Layer 1: schema validation (pre-PR-2 behaviour preserved).
+    schema_validate(output, stage, candidate_ids)?;
+
+    // Layer 2: deterministic evidence-floor clamp.
+    let claimed = output.confidence_grade();
+    let evidence_score =
+        crate::runtime::audit::evidence::compute_evidence_score(stage, transcript, output);
+    let evidence_max = crate::runtime::audit::evidence::grade_ceiling(evidence_score);
+    Ok(claimed.min(evidence_max))
+}
+
+/// Layer 1 schema validation, exposed as a free helper so dispatch
+/// call sites can run it against the parsed override-file path (where
+/// the evidence-floor doesn't apply because the synthetic transcript
+/// is empty by construction).
+fn schema_validate(
     output: &AgentOutput,
     stage: Stage,
     candidate_ids: &HashSet<String>,
@@ -206,26 +317,45 @@ pub async fn lane_a_validate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::Transcript;
     use serde_json::json;
 
     fn empty_candidates() -> HashSet<String> {
         HashSet::new()
     }
 
+    fn empty_transcript() -> Transcript {
+        Transcript::new()
+    }
+
     #[tokio::test]
     async fn accepts_object_with_no_edges_or_components() {
         let out = AgentOutput::from_value(json!({}));
-        lane_a_validate(&out, Stage::Classify, &empty_candidates())
-            .await
-            .unwrap();
+        // PR-2: Classify stage's evidence-floor fallback is 1.0 until
+        // PR-3 lands the real classify-stage scorer; the LLM's
+        // claimed grade (default Strong on absent field) flows through.
+        let grade = lane_a_validate(
+            &out,
+            Stage::Classify,
+            &empty_candidates(),
+            &empty_transcript(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(grade, Grade::Strong);
     }
 
     #[tokio::test]
     async fn rejects_non_object_root() {
         let out = AgentOutput::from_value(json!([1, 2, 3]));
-        let err = lane_a_validate(&out, Stage::Classify, &empty_candidates())
-            .await
-            .unwrap_err();
+        let err = lane_a_validate(
+            &out,
+            Stage::Classify,
+            &empty_candidates(),
+            &empty_transcript(),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, SchemaError::NotAnObject));
     }
 
@@ -236,9 +366,14 @@ mod tests {
                 { "kind": "frobnicates", "from": "a", "to": "b" }
             ]
         }));
-        let err = lane_a_validate(&out, Stage::Classify, &empty_candidates())
-            .await
-            .unwrap_err();
+        let err = lane_a_validate(
+            &out,
+            Stage::Classify,
+            &empty_candidates(),
+            &empty_transcript(),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, SchemaError::UnknownEdgeKind(ref k) if k == "frobnicates"));
     }
 
@@ -249,9 +384,14 @@ mod tests {
                 { "kind": "depends-on", "from": "a", "to": "b" }
             ]
         }));
-        lane_a_validate(&out, Stage::Classify, &empty_candidates())
-            .await
-            .unwrap();
+        let _grade = lane_a_validate(
+            &out,
+            Stage::Classify,
+            &empty_candidates(),
+            &empty_transcript(),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -263,7 +403,7 @@ mod tests {
                 { "kind": "depends-on", "from": "a", "to": "stranger" }
             ]
         }));
-        let err = lane_a_validate(&out, Stage::Classify, &candidates)
+        let err = lane_a_validate(&out, Stage::Classify, &candidates, &empty_transcript())
             .await
             .unwrap_err();
         assert!(matches!(err, SchemaError::UnknownComponentId(ref id) if id == "stranger"));
@@ -272,9 +412,14 @@ mod tests {
     #[tokio::test]
     async fn requires_at_least_one_surface_on_surface_stage() {
         let out = AgentOutput::from_value(json!({ "surfaces": [] }));
-        let err = lane_a_validate(&out, Stage::Surface, &empty_candidates())
-            .await
-            .unwrap_err();
+        let err = lane_a_validate(
+            &out,
+            Stage::Surface,
+            &empty_candidates(),
+            &empty_transcript(),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, SchemaError::NoSurfacesEmitted { .. }));
     }
 
@@ -282,9 +427,14 @@ mod tests {
     async fn surface_count_check_skipped_on_non_surface_stage() {
         // Classify stage tolerates absent / empty surfaces.
         let out = AgentOutput::from_value(json!({ "surfaces": [] }));
-        lane_a_validate(&out, Stage::Classify, &empty_candidates())
-            .await
-            .unwrap();
+        let _grade = lane_a_validate(
+            &out,
+            Stage::Classify,
+            &empty_candidates(),
+            &empty_transcript(),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -292,8 +442,84 @@ mod tests {
         let out = AgentOutput::from_value(json!({
             "surfaces": [{ "name": "GetWidget" }]
         }));
-        lane_a_validate(&out, Stage::Surface, &empty_candidates())
+        let _grade = lane_a_validate(
+            &out,
+            Stage::Surface,
+            &empty_candidates(),
+            &empty_transcript(),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn dispatch_subsystem_with_all_manifests_read_returns_strong() {
+        // Output emits `confidence_grade: strong` + 2 candidates; the
+        // transcript records `parse_cargo_toml` calls for both manifest
+        // paths. Evidence = 1.0 → ceiling = Strong; claimed = Strong;
+        // clamped = Strong.
+        let out = AgentOutput::from_value(json!({
+            "confidence_grade": "strong",
+            "candidates_considered": [
+                { "id": "a", "primary_manifest_path": "a/Cargo.toml" },
+                { "id": "b", "primary_manifest_path": "b/Cargo.toml" }
+            ]
+        }));
+        let mut t = Transcript::new();
+        t.push_synthetic_tool_call(
+            "parse_cargo_toml",
+            json!({ "path": "a/Cargo.toml" }),
+            json!({}),
+        );
+        t.push_synthetic_tool_call(
+            "parse_cargo_toml",
+            json!({ "path": "b/Cargo.toml" }),
+            json!({}),
+        );
+        let grade = lane_a_validate(&out, Stage::DispatchSubsystem, &empty_candidates(), &t)
             .await
             .unwrap();
+        assert_eq!(grade, Grade::Strong);
+    }
+
+    #[tokio::test]
+    async fn dispatch_subsystem_claims_strong_with_empty_transcript_clamps_to_declines() {
+        let out = AgentOutput::from_value(json!({
+            "confidence_grade": "strong",
+            "candidates_considered": [
+                { "id": "a", "primary_manifest_path": "a/Cargo.toml" }
+            ]
+        }));
+        let grade = lane_a_validate(
+            &out,
+            Stage::DispatchSubsystem,
+            &empty_candidates(),
+            &empty_transcript(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(grade, Grade::Declines);
+    }
+
+    #[tokio::test]
+    async fn claimed_moderate_is_preserved_when_evidence_supports_strong() {
+        // Evidence ceiling = Strong (1.0), claimed = Moderate; the
+        // clamp is `min` so the LLM's lower self-grade wins.
+        let out = AgentOutput::from_value(json!({
+            "confidence_grade": "moderate",
+            "candidates_considered": [
+                { "id": "a", "primary_manifest_path": "a/Cargo.toml" }
+            ]
+        }));
+        let mut t = Transcript::new();
+        t.push_synthetic_tool_call(
+            "parse_cargo_toml",
+            json!({ "path": "a/Cargo.toml" }),
+            json!({}),
+        );
+        let grade = lane_a_validate(&out, Stage::DispatchSubsystem, &empty_candidates(), &t)
+            .await
+            .unwrap();
+        assert_eq!(grade, Grade::Moderate);
     }
 }

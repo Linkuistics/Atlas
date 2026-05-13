@@ -44,13 +44,22 @@ use atlas_engine::llm_cache::{
 };
 use atlas_index::Stage as IndexStage;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::events::{AgentEvent, CacheHitSource};
 
-use super::audit::Stage;
+use super::audit::{L1CandidateRef, Stage};
+use super::prompt_examples::{extract_yaml_fence, FenceExtractError};
+use super::yaml_strict::deserialize_string_strict;
 use super::{now_iso, AgentError, AgentRequest, AgentRuntime, Workspace};
+
+/// PR-2: default soft cap on the dispatch agent's tool-iteration budget.
+/// Embedded in the prompt and threaded through `AgentRequest::max_steps`
+/// so prompt-text and request-budget cannot drift (decision row 4).
+pub const DEFAULT_DISPATCH_SOFT_CAP: u32 = 15;
+
+/// PR-2: default hard cap on the dispatch agent's tool-iteration budget.
+pub const DEFAULT_DISPATCH_HARD_CAP: u32 = 30;
 
 /// File name for the subsystems override pin.
 pub const SUBSYSTEMS_OVERRIDE_FILENAME: &str = "subsystems.overrides.yaml";
@@ -97,19 +106,39 @@ pub struct ComponentFieldOverrides {
     pub subsystem: Option<String>,
 }
 
-/// On-disk shape for `subsystems.overrides.yaml`.
+/// On-disk shape for `subsystems.overrides.yaml` AND wire-envelope
+/// shape the dispatch-subsystems LLM emits.
+///
+/// PR-2: extended with `candidates_considered` + `confidence_grade`
+/// fields so the LLM's evidence-floor envelope round-trips through
+/// the same struct as the user-authored override file. The shortcircuit
+/// path leaves both fields empty; the LLM-decided path populates them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubsystemsOverrideFile {
     pub schema_version: u32,
     #[serde(default)]
     pub subsystems: Vec<SubsystemOverrideEntry>,
+    /// PR-2: L1 candidates the dispatch agent inspected (with primary
+    /// manifest paths). Lane A's evidence-floor scorer matches these
+    /// against the transcript's `read_file_paths`.
+    #[serde(default)]
+    pub candidates_considered: Vec<L1CandidateRef>,
+    /// PR-2: LLM's self-claimed confidence grade. Lane A clamps this
+    /// against the deterministic evidence ceiling.
+    #[serde(default)]
+    pub confidence_grade: Option<String>,
 }
 
 /// One subsystem entry inside `subsystems.overrides.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubsystemOverrideEntry {
+    /// Kebab-case subsystem id. PR-2 applies the strict-string adapter
+    /// to defend against YAML implicit-typing coercion of
+    /// identity-shaped scalars (`id: true` → bool, `id: 1.10` → float,
+    /// etc.).
+    #[serde(deserialize_with = "deserialize_string_strict")]
     pub id: String,
     #[serde(default)]
     pub members: Vec<String>,
@@ -125,13 +154,22 @@ pub struct SubsystemOverrideEntry {
     pub lifecycle_roles: Vec<String>,
 }
 
-/// On-disk shape for `components.overrides.yaml`.
+/// On-disk shape for `components.overrides.yaml` AND wire-envelope
+/// shape the dispatch-components LLM emits. PR-2: parallel to
+/// [`SubsystemsOverrideFile`], extended with the same evidence-floor
+/// fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComponentsOverrideFile {
     pub schema_version: u32,
     #[serde(default)]
     pub components: std::collections::BTreeMap<String, ComponentOverrideEntry>,
+    /// PR-2: same shape as on [`SubsystemsOverrideFile`].
+    #[serde(default)]
+    pub candidates_considered: Vec<L1CandidateRef>,
+    /// PR-2: same shape as on [`SubsystemsOverrideFile`].
+    #[serde(default)]
+    pub confidence_grade: Option<String>,
 }
 
 /// One component entry inside `components.overrides.yaml`.
@@ -200,20 +238,26 @@ pub async fn dispatch_subsystems(
     // §6.1) still holds because the override-shortcircuit path produces
     // `Some(sha)` for the same `(stage, target_id, iteration=0)` tuple.
     //
-    // PR-7-WIRES-REAL-PROMPT: the initial prompt is a stub; PR-7
-    // replaces it with the production dispatch prompt template.
+    // PR-2: production dispatch prompt + YAML-canonical output envelope.
+    // Lane A's evidence-floor scorer (downstream of `call_agent`) clamps
+    // the LLM's self-grade against the deterministic transcript-derived
+    // ceiling.
     let request = AgentRequest {
         stage: Stage::DispatchSubsystem,
         target_id: "_workspace".to_string(),
         iteration: 0,
         transport: runtime.default_transport,
-        initial_prompt: build_dispatch_subsystems_prompt(workspace.root()),
+        initial_prompt: build_dispatch_subsystems_prompt(
+            workspace.root(),
+            DEFAULT_DISPATCH_SOFT_CAP,
+            DEFAULT_DISPATCH_HARD_CAP,
+        ),
         fingerprint_inputs: Vec::new(),
         candidate_ids: HashSet::new(),
         prior_model_sha: None,
     };
     let result = runtime.call_agent(request).await?;
-    parse_subsystems_from_output_value(&result.output.value)
+    parse_subsystems_from_output(&result.output.text)
 }
 
 /// PR-5: dispatch a subsystem's components. Same shortcircuit shape as
@@ -251,62 +295,171 @@ pub async fn dispatch_components(
     // mirrors `ComponentsOverrideFile` so the same `components_from_parsed`
     // helper projects to `ComponentPartition`.
     //
-    // PR-7-WIRES-REAL-PROMPT: the initial prompt is a stub; PR-7
-    // replaces it with the production dispatch prompt template.
+    // PR-2: production dispatch prompt + YAML-canonical output envelope.
     let request = AgentRequest {
         stage: Stage::DispatchComponent,
         target_id: subsystem.id.clone(),
         iteration: 0,
         transport: runtime.default_transport,
-        initial_prompt: build_dispatch_components_prompt(workspace.root(), subsystem),
+        initial_prompt: build_dispatch_components_prompt(
+            workspace.root(),
+            subsystem,
+            DEFAULT_DISPATCH_SOFT_CAP,
+            DEFAULT_DISPATCH_HARD_CAP,
+        ),
         fingerprint_inputs: Vec::new(),
         candidate_ids: HashSet::new(),
         prior_model_sha: None,
     };
     let result = runtime.call_agent(request).await?;
-    parse_components_from_output_value(&result.output.value, subsystem)
+    parse_components_from_output(&result.output.text, subsystem)
 }
 
-/// PR-5: dispatch-subsystems prompt stub. PR-7 replaces this with the
-/// production prompt template (with full ontology + workspace listing).
+/// PR-2: production dispatch-subsystems prompt. The agent is asked to
+/// (a) enumerate L1 candidates from the workspace, (b) read each
+/// candidate's primary manifest before grouping, and (c) emit one
+/// fenced ```yaml block matching the [`SubsystemsOverrideFile`] shape
+/// (extended with `candidates_considered` + `confidence_grade` so
+/// Lane A's evidence floor can clamp the LLM's self-grade).
+///
 /// The test backend keys canned responses on the `"dispatch subsystems"`
-/// substring.
-fn build_dispatch_subsystems_prompt(root: &Path) -> String {
+/// substring; that phrase is preserved in the prompt's opening line.
+///
+/// `soft_cap` / `hard_cap` are embedded verbatim so the prompt-text
+/// and the caller's [`AgentRequest::max_steps`] (decision row 4) cannot
+/// drift. PR-2's drift-catcher test in `tests/dispatch_prompt_shape.rs`
+/// asserts both caps appear in the prompt.
+pub fn build_dispatch_subsystems_prompt(
+    workspace_root: &Path,
+    soft_cap: u32,
+    hard_cap: u32,
+) -> String {
     format!(
-        "dispatch subsystems for workspace at {} (PR-5 stub; PR-7 wires production prompt). \
-         Emit a JSON object: {{\"schema_version\": 1, \"subsystems\": [{{\"id\": \"...\", \"members\": [...]}}]}}.",
-        root.display()
+        r#"You are Atlas's dispatch subsystems agent. Inspect the workspace at \
+{root} and partition its components into subsystems.
+
+Use the available manifest-parser tools (parse_cargo_toml, parse_compose, \
+parse_dockerfile, parse_package_json) and language classifiers to gather \
+evidence. Read each L1 candidate's primary manifest BEFORE assigning it \
+to a subsystem.
+
+Iteration budget: soft cap {soft_cap}; hard cap {hard_cap}. Stop emitting \
+new tool calls once you can ground every subsystem assignment in at \
+least one manifest read.
+
+Emit your final answer as exactly ONE fenced yaml block matching this \
+shape:
+
+```yaml
+schema_version: 1
+candidates_considered:
+  - id: "example-component"
+    primary_manifest_path: "crates/example/Cargo.toml"
+subsystems:
+  - id: "core"
+    members:
+      - "example-component"
+confidence_grade: "moderate"
+```
+
+The `candidates_considered` field MUST list every L1 candidate you \
+inspected together with the manifest path you read for it. Lane A \
+compares this list against your tool-call transcript: claims unsupported \
+by manifest reads are clamped downward.
+
+`confidence_grade` rubric (decision row 5):
+- "strong": every subsystem member's primary manifest was read AND \
+  classified; structural evidence is unambiguous.
+- "moderate": most members read; one or two grouping decisions rest \
+  on heuristic naming evidence rather than manifest content.
+- "weak": several grouping decisions rest on naming alone; manifest \
+  reads partial.
+- "declines": insufficient evidence to commit; emit a best-guess \
+  partition + this grade so a human reviewer can intervene.
+
+Quote any identity-shaped scalar (subsystem id, component id) that \
+could collide with YAML's implicit-typing rules — for example a \
+component literally called "true", "1.10", or "0123" must appear as \
+`"true"`, `"1.10"`, `"0123"`.
+"#,
+        root = workspace_root.display(),
+        soft_cap = soft_cap,
+        hard_cap = hard_cap,
     )
 }
 
-/// PR-5: dispatch-components prompt stub. PR-7 replaces this with the
-/// production prompt template. The test backend keys canned responses
-/// on the `"dispatch components"` substring.
-fn build_dispatch_components_prompt(root: &Path, subsystem: &SubsystemPartition) -> String {
+/// PR-2: production dispatch-components prompt. Same shape as
+/// [`build_dispatch_subsystems_prompt`], scoped to a single subsystem's
+/// component candidates. The test backend keys canned responses on
+/// the `"dispatch components"` substring.
+pub fn build_dispatch_components_prompt(
+    workspace_root: &Path,
+    subsystem: &SubsystemPartition,
+    soft_cap: u32,
+    hard_cap: u32,
+) -> String {
     format!(
-        "dispatch components for subsystem `{}` (members={:?}) in workspace at {} \
-         (PR-5 stub; PR-7 wires production prompt). \
-         Emit a JSON object: {{\"schema_version\": 1, \"components\": {{\"<id>\": {{\"subsystem\": \"...\"}}}}}}.",
-        subsystem.id,
-        subsystem.members,
-        root.display()
+        r#"You are Atlas's dispatch components agent. The workspace at {root} \
+has been partitioned into subsystems; your job is to enumerate components \
+for subsystem `{subsystem_id}` (already-known members: {members:?}).
+
+Use the available manifest-parser tools (parse_cargo_toml, parse_compose, \
+parse_dockerfile, parse_package_json) and language classifiers / surface \
+analysers to discover any additional components belonging to this \
+subsystem. Read each candidate's primary manifest BEFORE assigning it.
+
+Iteration budget: soft cap {soft_cap}; hard cap {hard_cap}.
+
+Emit your final answer as exactly ONE fenced yaml block matching this \
+shape:
+
+```yaml
+schema_version: 1
+candidates_considered:
+  - id: "example-component"
+    primary_manifest_path: "crates/example/Cargo.toml"
+components:
+  example-component:
+    subsystem: "{subsystem_id}"
+    overrides:
+      kind: "rust-library"
+confidence_grade: "moderate"
+```
+
+The `candidates_considered` field MUST list every component candidate \
+you inspected with the manifest path you read for it. Lane A's evidence \
+floor compares this list against your transcript and clamps your \
+self-grade.
+
+`confidence_grade` rubric (decision row 5):
+- "strong": every component's primary manifest was read AND classified; \
+  the field-override hints (language/kind/lifecycle) are grounded.
+- "moderate": most components read; one or two assignments rest on \
+  naming heuristics.
+- "weak": several assignments rest on naming alone.
+- "declines": insufficient evidence — emit a best-guess + this grade.
+
+Quote any identity-shaped scalar (component id, override value) that \
+could collide with YAML's implicit-typing rules.
+"#,
+        root = workspace_root.display(),
+        subsystem_id = subsystem.id,
+        members = subsystem.members,
+        soft_cap = soft_cap,
+        hard_cap = hard_cap,
     )
 }
 
-/// Parse the LLM dispatch agent's output JSON value into
-/// `Vec<SubsystemPartition>`. The wire envelope mirrors
-/// [`SubsystemsOverrideFile`] for symmetry with the override-shortcircuit
-/// path (both shapes feed [`subsystems_from_parsed`]).
-fn parse_subsystems_from_output_value(
-    value: &Value,
-) -> Result<Vec<SubsystemPartition>, AgentError> {
-    // PR-7: LLM-output-parse failures surface as `LlmOutputMalformed`
-    // (semantically distinct from user-authored-override-file parse
-    // failures, which use `OverrideRequired`). PR-5 closeout MEDIUM-2.
-    let parsed: SubsystemsOverrideFile = serde_json::from_value(value.clone()).map_err(|e| {
+/// Parse the LLM dispatch-subsystems agent's output text into
+/// `Vec<SubsystemPartition>`. The text is expected to contain exactly
+/// one fenced ```yaml block matching the [`SubsystemsOverrideFile`]
+/// shape (PR-2 migration: YAML-canonical interchange).
+fn parse_subsystems_from_output(text: &str) -> Result<Vec<SubsystemPartition>, AgentError> {
+    let yaml_body = extract_yaml_fence(text).map_err(fence_extract_to_agent_error)?;
+    let parsed: SubsystemsOverrideFile = serde_yaml::from_str(yaml_body).map_err(|e| {
         AgentError::LlmOutputMalformed(format!(
             "dispatch agent emitted output that did not match \
-             SubsystemsOverrideFile shape: {e}; raw value = {value}"
+             SubsystemsOverrideFile shape: {e}; raw yaml body = {yaml_body}"
         ))
     })?;
     // The override path uses a `Path` for diagnostics; the LLM path
@@ -315,22 +468,28 @@ fn parse_subsystems_from_output_value(
     subsystems_from_parsed(parsed, Path::new("<dispatch-agent-output>"))
 }
 
-/// Parse the LLM dispatch agent's output JSON value into
-/// `Vec<ComponentPartition>`, filtered to `subsystem`. Mirrors
-/// [`ComponentsOverrideFile`] for parser symmetry with the override
-/// path.
-fn parse_components_from_output_value(
-    value: &Value,
+/// Parse the LLM dispatch-components agent's output text into
+/// `Vec<ComponentPartition>`, filtered to `subsystem`. Same shape as
+/// [`parse_subsystems_from_output`].
+fn parse_components_from_output(
+    text: &str,
     subsystem: &SubsystemPartition,
 ) -> Result<Vec<ComponentPartition>, AgentError> {
-    // PR-7: LLM-output-parse failures surface as `LlmOutputMalformed`.
-    let parsed: ComponentsOverrideFile = serde_json::from_value(value.clone()).map_err(|e| {
+    let yaml_body = extract_yaml_fence(text).map_err(fence_extract_to_agent_error)?;
+    let parsed: ComponentsOverrideFile = serde_yaml::from_str(yaml_body).map_err(|e| {
         AgentError::LlmOutputMalformed(format!(
             "dispatch agent emitted output that did not match \
-             ComponentsOverrideFile shape: {e}; raw value = {value}"
+             ComponentsOverrideFile shape: {e}; raw yaml body = {yaml_body}"
         ))
     })?;
     Ok(components_from_parsed(parsed, subsystem))
+}
+
+/// Lift a fence-extraction failure to the runtime's `AgentError`
+/// shape. PR-2: surfaced as `LlmOutputMalformed` so Lane A's retry
+/// path can ask the LLM to re-emit a single fenced ```yaml block.
+fn fence_extract_to_agent_error(e: FenceExtractError) -> AgentError {
+    AgentError::LlmOutputMalformed(format!("dispatch agent output is not yaml-fenced: {e}"))
 }
 
 /// PR-5 helper: parse `subsystems.overrides.yaml` into the raw on-disk

@@ -25,6 +25,9 @@
 //! Parsing helpers are exposed for unit tests; the production caller
 //! is `crate::runtime::AgentRuntime::call_agent`.
 
+use std::collections::HashSet;
+use std::path::PathBuf;
+
 use atlas_llm::{LlmBackend, LlmRequest, PromptId, Provider, ResponseSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -60,9 +63,15 @@ pub enum TranscriptRecord {
     AssistantTurn { value: Value },
     /// One tool result. Stored alongside the tool name + id so the
     /// replay can reconstruct the `tool_result` block on the wire.
+    /// PR-2 adds `args` so the Lane A evidence-floor scorer can match
+    /// the agent's per-call tool inputs against the dispatched candidate
+    /// set. `#[serde(default)]` keeps pre-PR-2 cached transcripts
+    /// deserialisable (the field defaults to `Value::Null`).
     ToolResult {
         tool_use_id: String,
         tool_name: String,
+        #[serde(default)]
+        args: Value,
         output: Value,
         bytes: u64,
     },
@@ -93,11 +102,14 @@ impl Transcript {
     }
 
     /// Record one tool result, correlated with the originating
-    /// `tool_use` block.
+    /// `tool_use` block. The originating call's args are captured so
+    /// Lane A's evidence-floor scorer (PR-2) can introspect which
+    /// files / candidates the agent's tool calls referenced.
     pub fn record_tool_result(&mut self, tu: &ToolUse, result: &ToolResult) {
         self.records.push(TranscriptRecord::ToolResult {
             tool_use_id: tu.id.clone(),
             tool_name: tu.name.clone(),
+            args: tu.args.clone(),
             output: result.output.clone(),
             bytes: result.bytes,
         });
@@ -123,6 +135,67 @@ impl Transcript {
     /// Borrow the underlying record list (read-only).
     pub fn records(&self) -> &[TranscriptRecord] {
         &self.records
+    }
+
+    /// Append a synthetic `ToolResult` record. Test-only helper used by
+    /// the Lane A evidence-floor regression suite (PR-2 Step 2.10) to
+    /// build transcripts that mimic an agent having read N candidate
+    /// manifests without running a real backend.
+    #[doc(hidden)]
+    pub fn push_synthetic_tool_call(
+        &mut self,
+        tool_name: impl Into<String>,
+        args: Value,
+        output: Value,
+    ) {
+        self.records.push(TranscriptRecord::ToolResult {
+            tool_use_id: String::new(),
+            tool_name: tool_name.into(),
+            args,
+            output,
+            bytes: 0,
+        });
+    }
+
+    /// True iff at least one tool call invoked `tool_id`.
+    pub fn tool_called(&self, tool_id: &str) -> bool {
+        self.records.iter().any(|r| match r {
+            TranscriptRecord::ToolResult { tool_name, .. } => tool_name == tool_id,
+            _ => false,
+        })
+    }
+
+    /// Iterate over every `ToolResult` record whose `tool_name` matches
+    /// `tool_id`. Borrowed access to the underlying record — no
+    /// allocations.
+    pub fn tool_calls_for<'a>(
+        &'a self,
+        tool_id: &'a str,
+    ) -> impl Iterator<Item = &'a TranscriptRecord> + 'a {
+        self.records.iter().filter(move |r| match r {
+            TranscriptRecord::ToolResult { tool_name, .. } => tool_name == tool_id,
+            _ => false,
+        })
+    }
+
+    /// Set of file paths the agent's tool calls referenced via a
+    /// top-level `path` arg. Best-effort: any tool whose args carry a
+    /// `path` string field contributes — the Atlas tool catalog's
+    /// manifest parsers + surface analysers all follow this shape, so
+    /// the heuristic matches them all without naming each tool. Returns
+    /// an empty set if no tool call carried a `path` field. Lane A's
+    /// dispatch-stage evidence scorer (PR-2) uses this to compute the
+    /// reads-vs-candidates ratio against the dispatched candidate set.
+    pub fn read_file_paths(&self) -> HashSet<PathBuf> {
+        self.records
+            .iter()
+            .filter_map(|r| match r {
+                TranscriptRecord::ToolResult { args, .. } => {
+                    args.get("path").and_then(Value::as_str).map(PathBuf::from)
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// Frame this transcript as bytes for the transcript cache.
@@ -280,10 +353,21 @@ pub fn parse_final_output(response: &Value) -> AgentOutput {
             }
         }
         if !text.is_empty() {
-            if let Ok(parsed) = serde_json::from_str::<Value>(&text) {
-                return AgentOutput::from_value(parsed);
+            // PR-2: try YAML fence-extract first so dispatch-stage
+            // (and PR-3's classify/surface/reduce/project) outputs
+            // populate `value` with the structured envelope. Falls
+            // through to the pre-PR-2 JSON-parse branch for backends
+            // that still emit raw JSON. `text` carries the raw text
+            // so dispatch parsers can re-derive the fenced body.
+            if let Ok(body) = crate::runtime::prompt_examples::extract_yaml_fence(&text) {
+                if let Ok(parsed) = serde_yaml::from_str::<Value>(body) {
+                    return AgentOutput::from_value_and_text(parsed, text);
+                }
             }
-            return AgentOutput::from_value(json!({ "text": text }));
+            if let Ok(parsed) = serde_json::from_str::<Value>(&text) {
+                return AgentOutput::from_value_and_text(parsed, text);
+            }
+            return AgentOutput::from_value_and_text(json!({ "text": text.clone() }), text);
         }
     }
     AgentOutput::from_value(response.clone())
@@ -354,6 +438,59 @@ fn format_tool_result_for_conversation(tu: &ToolUse, result: &ToolResult) -> Str
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn transcript_tool_called_finds_recorded_tool() {
+        let mut t = Transcript::new();
+        t.push_synthetic_tool_call(
+            "parse_cargo_toml",
+            json!({ "path": "crates/foo/Cargo.toml" }),
+            json!({ "ok": true }),
+        );
+        assert!(t.tool_called("parse_cargo_toml"));
+        assert!(!t.tool_called("nonexistent"));
+    }
+
+    #[test]
+    fn transcript_tool_calls_for_filters_by_name() {
+        let mut t = Transcript::new();
+        t.push_synthetic_tool_call("a", json!({}), json!({}));
+        t.push_synthetic_tool_call("b", json!({}), json!({}));
+        t.push_synthetic_tool_call("a", json!({}), json!({}));
+        assert_eq!(t.tool_calls_for("a").count(), 2);
+        assert_eq!(t.tool_calls_for("b").count(), 1);
+        assert_eq!(t.tool_calls_for("c").count(), 0);
+    }
+
+    #[test]
+    fn transcript_read_file_paths_collects_path_args() {
+        let mut t = Transcript::new();
+        t.push_synthetic_tool_call(
+            "parse_cargo_toml",
+            json!({ "path": "crates/atlas-cli/Cargo.toml" }),
+            json!({}),
+        );
+        t.push_synthetic_tool_call(
+            "rust_surface",
+            json!({ "path": "crates/atlas-engine/src/lib.rs" }),
+            json!({}),
+        );
+        t.push_synthetic_tool_call(
+            "ts_js_classify",
+            json!({ "candidate_dir": "frontend" }), // no `path` field
+            json!({}),
+        );
+        let paths = t.read_file_paths();
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&PathBuf::from("crates/atlas-cli/Cargo.toml")));
+        assert!(paths.contains(&PathBuf::from("crates/atlas-engine/src/lib.rs")));
+    }
+
+    #[test]
+    fn transcript_read_file_paths_is_empty_when_no_tool_calls() {
+        let t = Transcript::new();
+        assert!(t.read_file_paths().is_empty());
+    }
 
     #[test]
     fn extract_tool_uses_handles_anthropic_shape() {

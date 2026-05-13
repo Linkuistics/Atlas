@@ -214,11 +214,14 @@ async fn dispatch_without_override_file_fires_llm_agent() {
     // (d) a normal `AgentComplete` event WAS emitted for the dispatch
     //     agent's `agent_id` shape.
     let dir = tempfile::tempdir().unwrap();
-    // Intentionally no override files.
+    // Intentionally no override files. PR-2: canned response is the
+    // YAML-canonical envelope (fenced ```yaml block) the production
+    // prompt asks the LLM to emit.
+    let canned_yaml = "```yaml\nschema_version: 1\nsubsystems:\n  - id: \"agents\"\n    members:\n      - \"foo\"\ncandidates_considered: []\nconfidence_grade: \"strong\"\n```";
     let canned = json!({
         "content": [{
             "type": "text",
-            "text": "{\"schema_version\":1,\"subsystems\":[{\"id\":\"agents\",\"members\":[\"foo\"]}]}"
+            "text": canned_yaml,
         }]
     });
     let backend = Arc::new(DispatchStagedBackend::new(vec![(

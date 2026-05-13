@@ -24,9 +24,11 @@ pub mod agent;
 pub mod audit;
 pub mod dispatch;
 pub mod fixedpoint_loop;
+pub mod prompt_examples;
 pub mod semaphores;
 pub mod tool_loop_http;
 pub mod tool_loop_mcp;
+pub mod yaml_strict;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -792,9 +794,14 @@ impl AgentRuntime {
                 }
             };
             let output = outcome?;
-            match lane_a_validate(&output, request.stage, &request.candidate_ids).await {
-                Ok(()) => {
-                    let grade = Grade::Strong;
+            match lane_a_validate(&output, request.stage, &request.candidate_ids, &transcript).await
+            {
+                Ok(grade) => {
+                    // PR-2: Lane A now returns the evidence-floor-clamped
+                    // grade rather than hardcoding `Strong`. The clamp
+                    // pulls the LLM's claim down to whatever the
+                    // deterministic evidence supports — see
+                    // `crate::runtime::audit::evidence::grade_ceiling`.
                     let grade_engine = grade_to_engine(&grade);
                     let transcript_bytes = transcript.into_bytes(grade_engine);
                     let output_bytes = serde_json::to_vec(&output.value)

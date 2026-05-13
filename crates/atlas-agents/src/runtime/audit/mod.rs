@@ -15,10 +15,14 @@
 //! decision + event emission scaffold; the actual auditor prompt is a
 //! placeholder pending PR-7 wiring.
 
+pub mod evidence;
 pub mod lane_a;
 pub mod lane_b;
 
-pub use lane_a::{lane_a_validate, requires_at_least_one_surface, AgentOutput, SchemaError, Stage};
+pub use evidence::{compute_evidence_score, grade_ceiling};
+pub use lane_a::{
+    lane_a_validate, requires_at_least_one_surface, AgentOutput, L1CandidateRef, SchemaError, Stage,
+};
 pub use lane_b::{
     auditor_provider_for, lane_b_audit, provider_label, select_auditor_backend, should_audit,
     AuditVerdict, AuditorChoice,

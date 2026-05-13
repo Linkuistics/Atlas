@@ -28,12 +28,18 @@ use crate::transport::TransportFlavour;
 
 /// Confidence grade attached to an `AgentComplete` event. The spine
 /// uses these to decide whether to fire an audit (recast §9.1, §10).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// **Variant order is load-bearing.** Variants are listed from lowest
+/// to highest confidence (`Declines < Weak < Moderate < Strong`) so
+/// `#[derive(PartialOrd, Ord)]` produces the natural confidence
+/// ordering — PR-2's Lane A evidence-floor clamping uses
+/// `claimed.min(evidence_ceiling)` to clamp the LLM's self-grade.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Grade {
-    Strong,
-    Moderate,
-    Weak,
     Declines,
+    Weak,
+    Moderate,
+    Strong,
 }
 
 /// Provenance label for a `CacheHit` event. Distinguishes a true
