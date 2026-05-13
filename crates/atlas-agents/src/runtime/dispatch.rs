@@ -255,6 +255,7 @@ pub async fn dispatch_subsystems(
         fingerprint_inputs: Vec::new(),
         candidate_ids: HashSet::new(),
         prior_model_sha: None,
+        lane_b_revisions: 0,
     };
     let result = runtime.call_agent(request).await?;
     parse_subsystems_from_output(&result.output.text)
@@ -310,6 +311,7 @@ pub async fn dispatch_components(
         fingerprint_inputs: Vec::new(),
         candidate_ids: HashSet::new(),
         prior_model_sha: None,
+        lane_b_revisions: 0,
     };
     let result = runtime.call_agent(request).await?;
     parse_components_from_output(&result.output.text, subsystem)
@@ -716,6 +718,11 @@ mod tests {
             max_iterations: 1,
             for_provider: None,
             mcp_server: None,
+            // PR-4: dispatch unit tests never reach Lane B audit (the
+            // StubBackend errors before producing output), so the audit
+            // dir is unused. A shared `/tmp` path is fine for the
+            // test helper.
+            audit_dir: std::env::temp_dir().join("atlas-pr4-dispatch-unit-test-audit"),
         }
     }
 

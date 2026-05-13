@@ -149,6 +149,10 @@ fn make_runtime(backend: Arc<dyn LlmBackend>) -> AgentRuntime {
         max_iterations: 1,
         for_provider: None,
         mcp_server: None,
+        // PR-4: dispatch-shortcircuit tests use override files (Lane B
+        // audit never fires on the shortcircuit path), so a shared
+        // `/tmp` path is fine.
+        audit_dir: std::env::temp_dir().join("atlas-pr4-dispatch-shortcircuit-audit"),
     }
 }
 
@@ -225,10 +229,21 @@ async fn dispatch_without_override_file_fires_llm_agent() {
             "text": canned_yaml,
         }]
     });
-    let backend = Arc::new(DispatchStagedBackend::new(vec![(
-        "dispatch subsystems".to_string(),
-        canned,
-    )]));
+    // PR-4: with the real auditor closure wired, an audit fires when
+    // Lane A's evidence-floor clamps the dispatcher's claimed grade
+    // (the test's canned envelope declares "strong" but the
+    // transcript has no manifest reads); add a canned audit-accept
+    // response so Lane B can complete on this synthetic backend.
+    let audit_accept = json!({
+        "content": [{
+            "type": "text",
+            "text": "```yaml\nverdict: accept\nreason: |\n  Synthetic dispatch backend; transcript is empty.\n```\n",
+        }]
+    });
+    let backend = Arc::new(DispatchStagedBackend::new(vec![
+        ("auditor".to_string(), audit_accept),
+        ("dispatch subsystems".to_string(), canned),
+    ]));
     let runtime = make_runtime(backend.clone() as Arc<dyn LlmBackend>);
     let workspace = AgentsWorkspace::new(dir.path());
 

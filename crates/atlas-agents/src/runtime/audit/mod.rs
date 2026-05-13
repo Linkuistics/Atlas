@@ -15,10 +15,16 @@
 //! decision + event emission scaffold; the actual auditor prompt is a
 //! placeholder pending PR-7 wiring.
 
+pub mod audit_prompt;
 pub mod evidence;
 pub mod lane_a;
 pub mod lane_b;
+pub mod verdict;
 
+pub use audit_prompt::{
+    build_audit_prompt, render_transcript_for_audit, summarise_value, AuditorEmittedVerdict,
+    SUMMARISE_ARGS_BUDGET, SUMMARISE_RESULT_BUDGET,
+};
 pub use evidence::{compute_evidence_score, grade_ceiling};
 pub use lane_a::{
     lane_a_validate, requires_at_least_one_surface, AgentOutput, L1CandidateRef, SchemaError, Stage,
@@ -26,4 +32,8 @@ pub use lane_a::{
 pub use lane_b::{
     auditor_provider_for, lane_b_audit, provider_label, select_auditor_backend, should_audit,
     AuditVerdict, AuditorChoice,
+};
+pub use verdict::{
+    read_verdict_if_complete, write_verdict_pair, AuditVerdictOnDisk, AuditorVerdictMeta,
+    ProducerMeta, TokenCounts, VerdictKind, VerdictWriteError,
 };

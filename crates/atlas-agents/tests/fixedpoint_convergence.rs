@@ -73,7 +73,17 @@ impl LlmBackend for ConvergenceBackend {
             .get("conversation")
             .and_then(Value::as_str)
             .unwrap_or("");
-        let _ = conversation;
+        // PR-4: audit prompts open with "You are an auditor for an
+        // Atlas agent's output". Return a fenced YAML accept verdict
+        // so Lane B can complete on the synthetic workspace.
+        if conversation.contains("You are an auditor") {
+            return Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": "```yaml\nverdict: accept\nreason: |\n  Synthetic-test producer; transcript is empty.\n```"
+                }]
+            }));
+        }
         // Wrap the response in a text-block envelope so the
         // tool_loop_http parser extracts the JSON payload.
         let inner = match self.mode {
@@ -128,6 +138,7 @@ async fn fixedpoint_converges_on_idempotent_workspace_after_two_iterations() {
         max_iterations: 5,
         for_provider: None,
         mcp_server: None,
+        audit_dir: dir.path().join("audit"),
     };
     let workspace = AgentsWorkspace::new(root);
     let projection = runtime
@@ -184,6 +195,7 @@ async fn fixedpoint_hard_fails_when_max_iter_exceeded() {
         max_iterations: 3,
         for_provider: None,
         mcp_server: None,
+        audit_dir: dir.path().join("audit"),
     };
     let workspace = AgentsWorkspace::new(root);
     let err = runtime

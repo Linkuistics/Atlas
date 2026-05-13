@@ -83,7 +83,7 @@ async fn lane_b_routes_anthropic_producer_to_openai_auditor() {
         move |chosen_backend| {
             let observed = observed_auditor_clone.clone();
             async move {
-                *observed.lock().unwrap() = chosen_backend.fingerprint().model_id;
+                *observed.lock().unwrap() = chosen_backend.backend().fingerprint().model_id;
                 AuditVerdict::Accept
             }
         },
@@ -117,7 +117,7 @@ async fn lane_b_routes_openai_producer_to_anthropic_auditor() {
         move |chosen_backend| {
             let observed = observed_auditor_clone.clone();
             async move {
-                *observed.lock().unwrap() = chosen_backend.fingerprint().model_id;
+                *observed.lock().unwrap() = chosen_backend.backend().fingerprint().model_id;
                 AuditVerdict::Accept
             }
         },
@@ -151,7 +151,7 @@ async fn lane_b_falls_back_to_same_model_with_audit_degraded_warning() {
         move |chosen_backend| {
             let observed = observed_auditor_clone.clone();
             async move {
-                *observed.lock().unwrap() = chosen_backend.fingerprint().model_id;
+                *observed.lock().unwrap() = chosen_backend.backend().fingerprint().model_id;
                 AuditVerdict::Accept
             }
         },
@@ -296,13 +296,18 @@ async fn lane_b_wired_into_call_agent_fires_when_evidence_floor_clamps_below_str
         max_iterations: 1,
         for_provider: None,
         mcp_server: None,
+        audit_dir: dir.path().join("audit"),
     };
     let workspace = AgentsWorkspace::new(root);
 
-    let _projection = runtime
-        .run_workspace(&workspace)
-        .await
-        .expect("workspace runs end-to-end under ClassifyBackend");
+    // PR-4: with the real auditor closure wired, ClassifyBackend's
+    // raw-JSON output cannot be parsed as a fenced YAML audit verdict —
+    // the audit closure returns `HardFail`, which the runtime surfaces
+    // as `AgentError::LaneBFail`. The load-bearing assertion is
+    // unchanged from PR-3: `AuditFire` must emit when Lane B fires.
+    // `RuntimeComplete` also emits on both Ok and Err paths (runtime
+    // owns that invariant), so the drain handshake still completes.
+    let outcome = runtime.run_workspace(&workspace).await;
 
     let mut saw_audit_fire = false;
     let mut saw_runtime_complete = false;
@@ -315,7 +320,7 @@ async fn lane_b_wired_into_call_agent_fires_when_evidence_floor_clamps_below_str
     }
     assert!(
         saw_runtime_complete,
-        "RuntimeComplete must fire at end of run"
+        "RuntimeComplete must fire at end of run (Ok or Err path)"
     );
     assert!(
         saw_audit_fire,
@@ -324,6 +329,17 @@ async fn lane_b_wired_into_call_agent_fires_when_evidence_floor_clamps_below_str
          no evidence_pointers, transcript is empty, classify evidence ratio = 0.0, \
          ceiling = Declines, Lane B fires)"
     );
+    // Outcome shape: PR-4's real auditor closure HardFails on
+    // ClassifyBackend's raw-JSON (no fenced YAML verdict). Document the
+    // expected error type so a future regression that "accidentally"
+    // makes the audit accept here is caught.
+    match outcome {
+        Err(atlas_agents::AgentError::LaneBFail(_)) => {}
+        other => panic!(
+            "expected LaneBFail (auditor cannot parse ClassifyBackend's raw-JSON \
+             response as a fenced YAML verdict); got {other:?}"
+        ),
+    }
 }
 
 /// PR-7 (PR-5 closeout AWARENESS-A): positive-assertion complement to

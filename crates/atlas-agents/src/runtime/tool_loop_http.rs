@@ -83,7 +83,12 @@ pub enum TranscriptRecord {
 /// Accumulating record of an in-progress agent invocation. The runtime
 /// hands one `Transcript` per agent call; on success it is framed via
 /// `into_bytes(grade)` and written to the transcript cache.
-#[derive(Debug, Default)]
+///
+/// `Clone` is derived so PR-4's Lane B audit closure can render the
+/// producer's tool-call trail after `into_bytes` consumes the original
+/// — the clone lives inside the audit closure's environment until the
+/// audit call resolves.
+#[derive(Debug, Default, Clone)]
 pub struct Transcript {
     records: Vec<TranscriptRecord>,
 }
