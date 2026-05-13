@@ -2,7 +2,7 @@
 
 Companion to `docs/superpowers/specs/2026-05-13-atlas-production-prompt-sprint-plan.md`. This file tracks per-PR completion state across sessions. The PR-1 continuation prompt at `docs/superpowers/prompts/2026-05-13-pr1-continue.md` reads this file to find the next PR to dispatch.
 
-**Last updated:** 2026-05-13 (PR-2 landed — production dispatch prompts + Lane A YAML migration + dispatch-stage evidence-floor scoring; status-flip commit follows the PR-2 code-commit `876ea24`).
+**Last updated:** 2026-05-13 (PR-A landed on top of PR-2's tip — `rmcp` migration of PR-1's hand-rolled MCP framing + subprocess MCP `serve_client` driver; verification-note commit `d1df478` + code-commit `c07c5d5`. PR-2's earlier landing this session: code-commit `876ea24`.)
 
 ## PR status
 
@@ -14,7 +14,7 @@ Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the
 - [ ] PR-3 — Production classify/reduce/project prompts (replaces stubs at `mod.rs:919, :928` + new `build_project_prompt`) + 4 typed-output structs in new `runtime/outputs.rs` + remaining 4 evidence-score functions in `evidence.rs` + canonical-schema shim `runtime/projection_to_canonical.rs` + `agent-runtime-projection.json` → `.yaml` migration at `pipeline.rs:1177` (large)
 - [ ] PR-4 — Cross-provider auditor (replaces `PR-7-WIRES-REAL-AUDITOR` stub at `mod.rs:665`) + `runtime/audit/audit_prompt.rs` + `runtime/audit/verdict.rs` + revision-prompt path + on-disk verdict at `.atlas/audit/<stage>/<target>.yaml` (medium)
 - [ ] PR-5 — Atlas-on-Atlas calibration + intrinsic-metrics recording (cold tokens per provider; iteration count; wall time; evidence-score distribution per stage; Lane A retry counts; audit-verdict distribution; shim missing-field count) + within-LLM-spine cross-transport parity test + closeout note + memory updates (small code surface; measurement-heavy)
-- [ ] PR-A — `rmcp` migration of PR-1's hand-rolled MCP framing (or `jsonrpsee` + thin shim if `rmcp` fails 4-criterion verification gate) + subprocess MCP `serve_client` driver at `mcp/serve_client.rs` + `tool_loop_http.rs` subprocess-transport branch wiring (medium, parallel after PR-1)
+- [x] PR-A — `rmcp` migration of PR-1's hand-rolled MCP framing (or `jsonrpsee` + thin shim if `rmcp` fails 4-criterion verification gate) + subprocess MCP `serve_client` driver at `mcp/serve_client.rs` + `tool_loop_http.rs` subprocess-transport branch wiring (medium, parallel after PR-1)
 - [ ] PR-B — `--disallowedTools` live-subprocess probe at `tests/mcp_disallowed_tools.rs` (small, parallel after PR-A; `#[ignore]`-gated)
 
 When every box is `[x]`, the sprint is complete. PR-5's closeout note appended below; memory `project_phase4_plus_roadmap` is updated to mark the sprint SHIPPED + Phase 8 (Cargo retirement per recast §11.2) unblocked.
@@ -179,7 +179,35 @@ PR-2 commit SHA: `876ea24` (code-commit); status flip in a separate commit per t
 
 ### PR-A
 
-*(Empty — to be filled by PR-A's session. PR-A's first commit is the `rmcp` maturity-verification note at `crates/atlas-agents/src/mcp/rmcp_verification.md` documenting the 4-criterion decision.)*
+2026-05-13 — Landed. Verification-note commit: `d1df478` (`sprint: PR-A rmcp maturity verification`). Code-commit: `c07c5d5` (`sprint: PR-A rmcp migration + subprocess serve_client driver`). Status-flip commit follows in the same session.
+
+PR-A migrated PR-1's hand-rolled MCP JSON-RPC framing (~250 LOC of envelope types + dispatch loop in `mcp/{mod.rs, server.rs, descriptors.rs}`) onto the `rmcp` crate (Rust MCP SDK), and shipped the structural subprocess `serve_client` driver so `TransportFlavour::ClaudeCode | Codex` no longer hard-errors at first `call_agent`. All six cumulative regression gates clean; `mcp_multiplex.rs` regression-green with test-logic preserved (assertions adapted to standard MCP wire shape).
+
+Key PR-A decisions + follow-ups PR-B + future PRs should know:
+
+1. **rmcp 1.6 PASSED all four maturity criteria** (verification note at `crates/atlas-agents/src/mcp/rmcp_verification.md`): last publish 2026-05-01 (12 days; monthly cadence); repo activity 2026-05-12 (1 day; stdio-parse-error robustness fixes in the last week); multi-client server abstraction documented (`serve_server` is per-transport; multi-client = spawn one per duplex transport with handlers sharing `Arc<Inner>` state); 14 direct deps at default features `[base64, macros, server]` (zero WS/TLS/HTTP-server crates pulled). PR-A proceeds with `rmcp`; the `jsonrpsee` fallback path documented in the plan was not exercised.
+
+2. **MCP wire shape standardised.** Atlas's hand-rolled framing emitted a non-standard `{"type":"json","json":<result>}` content variant for tool-call outputs; rmcp emits standard MCP via `CallToolResult::structured(value)` which produces `{"content":[{"type":"text","text":"<json-string>"}], "structuredContent":<value>, "isError":false}`. `mcp_multiplex.rs` assertions adapted to use `structuredContent`; the multi-client isolation contract (per-pipe id round-trip + payload-per-client) is preserved verbatim.
+
+3. **MCP lifecycle enforcement.** rmcp's `serve_server` requires the initialize-first handshake before dispatching `tools/call` or `tools/list`. Atlas's hand-rolled server was lenient about lifecycle. The `mcp_multiplex.rs` test now performs a proper initialize handshake before each test's first request; this is correct MCP, not a test-logic change. PR-B's live-subprocess probe inherits the same lifecycle requirement.
+
+4. **The `unknown-method` test now sends `atlas/this_method_does_not_exist`** instead of the prior `resources/list`. Under rmcp, `resources/list` is a standard MCP method that defaults to returning empty `Ok(ListResourcesResult::default())`; the test would no longer surface `METHOD_NOT_FOUND`. Custom methods route to `ServerHandler::on_custom_request`, which defaults to `METHOD_NOT_FOUND`. The semantic intent of the test (assert -32601 for unknown methods) is preserved.
+
+5. **`AgentRuntime` grew `mcp_server: Option<Arc<McpServer>>` field.** All seven construction sites (CLI pipeline + dispatch.rs unit-test helper + 5 integration-test files) now pass `mcp_server: None`. The subprocess branch returns a clear error when None; PR-7 will populate when subprocess transports become the live exercise path. PR-2/PR-3/PR-4 do NOT need to touch this field — their `AgentRuntime` construction is via existing call sites that already carry `None`.
+
+6. **`AgentError` grew four granular subprocess variants:** `SubprocessSpawn(io::Error)`, `SubprocessWait(io::Error)`, `SubprocessFailed { exit_status }`, `NoFinalOutput`. PR-B's probe pattern-matches on these. PR-2/PR-3/PR-4 don't interact with these variants; they're scoped to the subprocess path.
+
+7. **`serve_client.rs` is a structural skeleton, not a complete subprocess driver.** PR-A ships spawn/wait/drain plumbing exercised against POSIX `cat` / `false` stubs. The dual-channel question (whether MCP wire and LLM prompt share `child.stdin`/`child.stdout` or sit on disjoint channels — CLI arg vs stdio) is genuinely upstream-version-dependent for both claude-code and codex. The `claude_code_config` preset uses `--print <prompt>` (current claude-code CLI shape); the `codex_config` preset has a TODO marker for the verified flag set. **PR-B is the empirical validation** that pins down the exact wire shape per upstream — pin the targeted upstream version in `restrictions.md` when PR-B runs against the live binary.
+
+8. **`restrictions.md` updated.** `claude-code` section unchanged from PR-1 (`--disallowedTools=Read,Grep,Glob,Bash,Write,Edit`). `codex` section now records the current state: as of 2026-05-13 codex has no dedicated `--disallowedTools`-equivalent flag; tool-availability is controlled implicitly by what MCP servers in the config advertise (Atlas's MCP server exposes only the Atlas tool catalog, so the restriction is enforced by omission). PR-B's probe will validate this empirically + update if upstream adds an explicit flag.
+
+9. **Test-content shape changes are confined to `mcp_multiplex.rs`.** The test's structural assertions (concurrent multi-client isolation, id round-trip, payload-per-client) are the load-bearing contract and are preserved. The wire-shape changes (initialize handshake; `structuredContent` assertion field; custom-method-for-unknown-method test) reflect standard MCP and are necessary downstream of the framing migration.
+
+10. **Cargo.lock growth: ~10 new transitive crates** introduced by rmcp default features (rmcp-macros, schemars, pastey, tokio-util, plus a small handful of helper crates). Many of rmcp's 14 direct deps overlap Atlas's existing workspace deps (tokio, serde, serde_json, async-trait, thiserror, tracing, chrono, base64). No WebSocket/TLS/HTTP-server crates pulled.
+
+11. **Pragmatic commit decomposition.** The plan's recommended 4-commit decomposition (verification, migration, serve_client + wiring, status flip) was simplified to 3 commits: verification note (`d1df478`) + combined code commit (`c07c5d5`) + status flip. The migration and the subprocess wiring are tightly coupled — splitting them creates an intermediate compile-clean state without reviewer value. This matches PR-1's actual 2-commit pattern (code + status-flip).
+
+PR-A commit SHAs: verification `d1df478`; code `c07c5d5` (single code-commit; status flip follows per the two-commit pattern).
 
 ### PR-B
 
