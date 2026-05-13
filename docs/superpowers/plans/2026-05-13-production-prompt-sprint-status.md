@@ -2,7 +2,7 @@
 
 Companion to `docs/superpowers/specs/2026-05-13-atlas-production-prompt-sprint-plan.md`. This file tracks per-PR completion state across sessions. The PR-1 continuation prompt at `docs/superpowers/prompts/2026-05-13-pr1-continue.md` reads this file to find the next PR to dispatch.
 
-**Last updated:** 2026-05-13 (PR-1 landed — `BackendRouter::backend_for_provider` + `ForProviderFn` closure + `--config <PATH>` flag + HTTP smoke; status-flip commit follows Codex's PR-1 code-commit `a064f63`).
+**Last updated:** 2026-05-13 (PR-2 landed — production dispatch prompts + Lane A YAML migration + dispatch-stage evidence-floor scoring; status-flip commit follows the PR-2 code-commit `876ea24`).
 
 ## PR status
 
@@ -10,7 +10,7 @@ Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the
 
 - [x] PR-0 — Plan + status + PR-1 continuation prompt (docs only)
 - [x] PR-1 — `BackendRouter::backend_for_provider` + `Arc<ForProviderFn>` closure + `--config <PATH>` flag + `.atlas/config.sprint.example.yaml` + HTTP-backend smoke test (small / structural)
-- [ ] PR-2 — Production dispatch prompts (replaces `PR-7-WIRES-REAL-PROMPT` stubs at `dispatch.rs:203, :254`) + Lane A YAML migration (`serde_json::from_value` → `serde_yaml::from_str` at `dispatch.rs:306, :327`) + dispatch-stage Lane A evidence scoring + `runtime/yaml_strict.rs` + `runtime/prompt_examples.rs` + `runtime/audit/evidence.rs` (medium)
+- [x] PR-2 — Production dispatch prompts (replaces `PR-7-WIRES-REAL-PROMPT` stubs at `dispatch.rs:203, :254`) + Lane A YAML migration (`serde_json::from_value` → `serde_yaml::from_str` at `dispatch.rs:306, :327`) + dispatch-stage Lane A evidence scoring + `runtime/yaml_strict.rs` + `runtime/prompt_examples.rs` + `runtime/audit/evidence.rs` (medium)
 - [ ] PR-3 — Production classify/reduce/project prompts (replaces stubs at `mod.rs:919, :928` + new `build_project_prompt`) + 4 typed-output structs in new `runtime/outputs.rs` + remaining 4 evidence-score functions in `evidence.rs` + canonical-schema shim `runtime/projection_to_canonical.rs` + `agent-runtime-projection.json` → `.yaml` migration at `pipeline.rs:1177` (large)
 - [ ] PR-4 — Cross-provider auditor (replaces `PR-7-WIRES-REAL-AUDITOR` stub at `mod.rs:665`) + `runtime/audit/audit_prompt.rs` + `runtime/audit/verdict.rs` + revision-prompt path + on-disk verdict at `.atlas/audit/<stage>/<target>.yaml` (medium)
 - [ ] PR-5 — Atlas-on-Atlas calibration + intrinsic-metrics recording (cold tokens per provider; iteration count; wall time; evidence-score distribution per stage; Lane A retry counts; audit-verdict distribution; shim missing-field count) + within-LLM-spine cross-transport parity test + closeout note + memory updates (small code surface; measurement-heavy)
@@ -131,7 +131,39 @@ PR-1 commit SHA: `a064f63` (single code-commit; status flip in a separate commit
 
 ### PR-2
 
-*(Empty — to be filled by PR-2's session.)*
+2026-05-13 — Landed. Code-commit: `876ea24` (`sprint: PR-2 production dispatch prompts + Lane A YAML migration + dispatch-stage evidence scoring`). Status-flip commit follows in the same session.
+
+PR-2 replaced the two `PR-7-WIRES-REAL-PROMPT` stubs with production dispatch prompts that advertise a fenced ```yaml envelope, migrated Lane A's deserialiser from `serde_json::from_value` to `serde_yaml::from_str`, and introduced the dispatch-stage half of the evidence-floor scoring system. All six cumulative regression gate commands pass: workspace build, workspace tests, clippy with -D warnings, fmt --check, release workspace build, polyglot fixture release run (2 tests; cold count in loose-bound `0 < cold < 100`).
+
+LOC: ~1546 insertions / 88 deletions across 13 files (7 modified, 6 new). Within the "structural medium" budget; below the brainstorm §12 risk #1 "stop and surface at 2x" threshold.
+
+Key deviations + extensions from the plan PR-3+ implementers should know about:
+
+1. **Evidence-floor fallback for not-yet-implemented stages returns 1.0, NOT 0.0.** The plan's §2.4 pseudo-code suggests returning `0.0` for classify/surface/reduce/project to "fail-loud until PR-3", but the existing `lane_b_wired_into_call_agent_skips_on_strong_grade` integration test exercises end-to-end `run_workspace` which classifies after dispatch — clamping non-dispatch grades to Declines would mis-fire Lane B for every classify call. The PR-2 implementation returns `1.0` for `Stage::Classify | Surface | Reduce | Project` so the LLM's self-grade flows through unchanged. **PR-3 MUST replace this fallback with real evidence functions** at the same time as adding the typed-output structs at `outputs.rs`. Until then, non-dispatch stages do NOT exercise the evidence-floor clamping; they preserve the pre-PR-2 hardcoded-Strong behaviour.
+
+2. **`lane_a_validate` signature changed**: `(output, stage, candidate_ids) -> Result<(), SchemaError>` became `(output, stage, candidate_ids, transcript) -> Result<Grade, SchemaError>`. The schema-check layer is preserved verbatim (unknown edge kinds, unknown component ids, surface-count check); a second layer reads `output.confidence_grade()`, computes the evidence ratio via `compute_evidence_score`, and clamps with `claimed.min(grade_ceiling(score))`. The call site in `runtime/mod.rs::run_tool_loop_with_lane_a` uses the returned grade instead of hardcoding `Grade::Strong`. PR-4's auditor wiring will pick up the now-real grade flow.
+
+3. **`Grade` variant order is now load-bearing.** Reordered to `Declines < Weak < Moderate < Strong` so `derive(PartialOrd, Ord)` produces the natural confidence ordering used by `claimed.min(evidence_max)`. Comment in `events.rs` warns future editors not to alphabetise. PR-4 auditor verdict comparisons should also use the natural order.
+
+4. **AgentOutput gained `text: String` field** populated by `parse_final_output` when the LLM response carries `content[].text` blocks. Dispatch parsers fence-extract from this field. Backward-compat: the `from_value` constructor still works; the new `from_value_and_text` constructor is what `parse_final_output` calls. For PR-3 classify/surface/reduce/project YAML migrations, parsers should pull from `output.text` the same way.
+
+5. **`Transcript::TranscriptRecord::ToolResult` gained an `args` field** with `#[serde(default)]` so pre-PR-2 cached transcripts deserialise unchanged. The evidence-floor scorer needs the per-call args to match dispatched candidate manifest paths. New accessors: `read_file_paths`, `tool_called`, `tool_calls_for`, `push_synthetic_tool_call` (test-only, `#[doc(hidden)]`).
+
+6. **`SubsystemsOverrideFile` / `ComponentsOverrideFile` extended with `candidates_considered: Vec<L1CandidateRef>` + `confidence_grade: Option<String>`.** Both fields are `#[serde(default)]` so user-authored override files don't need to include them (the override-shortcircuit path leaves them empty). LLM dispatch output populates them; Lane A's evidence-floor scorer reads them via `AgentOutput::l1_candidates_referenced()`. The `L1CandidateRef` struct lives in `runtime/audit/lane_a.rs` and is re-exported through `runtime::audit`.
+
+7. **YAML-1.2 reality vs. plan's YAML-1.1 framing.** The plan's Norway-problem test names (e.g. `component_id: NO` → bool false) reflect YAML 1.1 semantics; serde_yaml 0.9 follows YAML 1.2, in which `NO` / `yes` / `on` remain strings. The PR-2 regression suite at `yaml_envelope_norway_problem.rs` (9 tests) is calibrated for YAML-1.2 reality: the adapter catches the active coercion hazards (`id: true`, `id: 1.10`, `id: 42`, `id: null`), and the suite pins that `NO` / `yes` / `on` naturally stay strings. The strict adapter retains the "Norway-problem" framing in error messages for actionable retry prompts.
+
+8. **Strict-string adapter applied only to `SubsystemOverrideEntry::id`** for PR-2 minimal scope. The component-side string fields (`component_id` keys in `ComponentsOverrideFile.components` BTreeMap; `ComponentFieldOverrides::language` etc.) are NOT yet adapter-guarded because (a) BTreeMap keys are themselves deserialised as strings via the inner type's `Deserialize` impl and the adapter doesn't trivially wire there, (b) the field-override values are `Option<String>` which serde handles via `#[serde(default)]`. **PR-3 should sweep the new typed-output structs in `outputs.rs` and apply the adapter to every identity-shaped string field.**
+
+9. **`parse_final_output` now tries YAML fence-extract first** before falling back to JSON-parse. Order matters: text that contains a fenced ```yaml block parses as YAML; raw-JSON text still works via the existing branch; everything else wraps as `{"text": <raw>}`. PR-3's classify/surface/reduce/project prompts should also emit fenced YAML; this path will catch them automatically.
+
+10. **Default dispatch caps**: `DEFAULT_DISPATCH_SOFT_CAP = 15`, `DEFAULT_DISPATCH_HARD_CAP = 30`. Exported `pub const` from `runtime/dispatch.rs` so future callers can reference them without re-hardcoding. The prompts embed caller-supplied values verbatim, not the constants — the drift catcher in `tests/dispatch_prompt_shape.rs` exercises non-default caps (7/42) to confirm the prompt isn't accidentally using a hardcoded literal.
+
+11. **Test fixture migration scope was minimal**: only `dispatch_shortcircuit.rs::dispatch_without_override_file_fires_llm_agent` needed its canned response migrated from JSON to fenced YAML. The `audit_lane_b.rs` `ClassifyBackend` emits classify-stage JSON which still flows through `parse_final_output`'s JSON-fallback branch (no fence present → JSON-parse succeeds → backward-compat preserved).
+
+PR-3 reading order before dispatch: this PR-2 note, then PR-1's note, then the plan §4 Task 3 block, then brainstorm §6.1 + §6.2 + §6.4 + §12.8. The two load-bearing surface changes PR-3 must honour: (a) the evidence-floor fallback policy — PR-3 MUST replace the `1.0` fallback for classify/surface/reduce/project with real evidence functions, AND (b) the `text` field on `AgentOutput` — PR-3's classify/surface/reduce/project prompts should emit fenced YAML and the parsers should read from `output.text` the same way dispatch does.
+
+PR-2 commit SHA: `876ea24` (code-commit); status flip in a separate commit per the two-commit pattern.
 
 ### PR-3
 
