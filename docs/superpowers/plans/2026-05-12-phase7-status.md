@@ -459,7 +459,7 @@ The `--agent-runtime` flag, as wired in PR-7, will **immediately hard-error** wh
 
 **Polyglot smoke cumulative regression guard:** cold = ~40 LLM calls (calibrated codebase baseline since Phase 6 PR-5; loose-bound `0 < cold < 100`); warm + reports = 0; cross-transport parity (claude_code vs codex labels) holds. No drift across the seven code PRs.
 
-**Atlas-on-Atlas cold token total baseline:** DEFERRED (Step 7.4). The Atlas-on-Atlas baseline number is the regression detector for future Phase 7+ changes; it is RECORDED IN A FOLLOW-UP SPRINT once production prompt templates ship. Tracked as the headline follow-up item.
+**Atlas-on-Atlas cold token total baseline:** **0 producer + 0 auditor tokens** — recorded 2026-05-14 by the production-prompt sprint's PR-5 closeout. The calibration run hard-failed pre-HTTP with `LlmError::TemplateSyntax("unknown token \`{{COMPONENT_KINDS}}\` in template")` at the agent-runtime → HTTP backend wiring boundary; both producer and auditor token counters are zero because no `reqwest` connect fired. The specific-diagnostic outcome was the brainstorm §8.5 acceptable alternative to a clean completion; see `docs/superpowers/plans/2026-05-13-production-prompt-sprint-status.md` § "Sprint — complete" § "Atlas-on-Atlas baseline section" for full event log, root-cause analysis, and the Phase 8 prerequisite item the diagnostic surfaced.
 
 ### Phase 7 → Phase 8 handoff
 
