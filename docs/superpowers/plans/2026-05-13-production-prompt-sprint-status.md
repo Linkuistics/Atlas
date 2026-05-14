@@ -2,7 +2,7 @@
 
 Companion to `docs/superpowers/specs/2026-05-13-atlas-production-prompt-sprint-plan.md`. This file tracks per-PR completion state across sessions. The active continuation prompt at `docs/superpowers/prompts/2026-05-14-pr5-continue.md` (sprint-closeout; ships baseline metrics + cross-transport parity check + Sprint SHIPPED flag, after which Phase 8 unblocks) reads this file to find the next PR to dispatch. The parallel track (PR-A + PR-B) is closed; PR-5 is the only remaining sequential PR. Each session re-points this line as PRs land + new continuation prompts are authored; the expired continuation prompts for PR-1 / PR-2 / PR-3 / PR-4 / PR-A / PR-B were dropped after their PRs shipped (matches the cleanup pattern from commit `7d6f6f3`).
 
-**Last updated:** 2026-05-14 (PR-4 landed this session — Wave 4 closes; only PR-5 remains for sprint completion. Real cross-provider auditor closure replaces the `PR-7-WIRES-REAL-AUDITOR` stub at `mod.rs:746` (was `:665` per plan; PR-2/PR-3 shifted it). New `runtime/audit/{audit_prompt.rs,verdict.rs}` modules + `audit_dir: PathBuf` field on `AgentRuntime` + `lane_b_revisions: u32` field on `AgentRequest` + recursive `call_agent` revision path. Modules commit: `8c8cf14`; closure + cascade + integration tests commit: `5b564f2`; status flip in a separate commit per the two-commit pattern. Prior landings this session: PR-3 (impl `4776013`, tests `b31069c`, flip `aa49ac4`); PR-B (code `b8af469`, flip `ae71dfa`); PR-A (verify `d1df478`, code `c07c5d5`); PR-2 (code `876ea24`).)
+**Last updated:** 2026-05-14 (PR-5 landed this session — sprint SHIPPED; all 8 PRs of the production-prompt sprint are merged. Closeout commit: `b8aa1d0` (`sprint: PR-5 Atlas-on-Atlas calibration + cross-transport parity + closeout`); status-flip follows in a separate commit per the two-commit pattern. Atlas-on-Atlas calibration hard-failed pre-HTTP with the diagnostic `LlmError::TemplateSyntax("unknown token \`{{COMPONENT_KINDS}}\` in template")`; the cross-provider parity test hit the same wiring-gap class. Per brainstorm §8.5 the specific-diagnostic outcome is the acceptable PR-5 alternative to a clean completion; the diagnostic is recorded as the new highest-priority Phase 8 prerequisite (full detail in PR-5 per-PR note + "Sprint — complete" section below). Phase 8 (Cargo retirement) formally unblocked. The expired PR-5 continuation prompt at `docs/superpowers/prompts/2026-05-14-pr5-continue.md` is dropped in the status-flip commit per the precedent at `7d6f6f3`. Phase 7 status file's line 462 backfilled with the recorded zero-tokens baseline + pointer to this file's closeout section.)
 
 ## PR status
 
@@ -13,7 +13,7 @@ Mark `[~]` when a subagent is dispatched and not yet merged; mark `[x]` when the
 - [x] PR-2 — Production dispatch prompts (replaces `PR-7-WIRES-REAL-PROMPT` stubs at `dispatch.rs:203, :254`) + Lane A YAML migration (`serde_json::from_value` → `serde_yaml::from_str` at `dispatch.rs:306, :327`) + dispatch-stage Lane A evidence scoring + `runtime/yaml_strict.rs` + `runtime/prompt_examples.rs` + `runtime/audit/evidence.rs` (medium)
 - [x] PR-3 — Production classify/reduce/project prompts (replaces stubs at `mod.rs:919, :928` + new `build_project_prompt`) + 4 typed-output structs in new `runtime/outputs.rs` + remaining 4 evidence-score functions in `evidence.rs` + canonical-schema shim `runtime/projection_to_canonical.rs` + `agent-runtime-projection.json` → `.yaml` migration at `pipeline.rs:1177` (large)
 - [x] PR-4 — Cross-provider auditor (replaces `PR-7-WIRES-REAL-AUDITOR` stub at `mod.rs:665`) + `runtime/audit/audit_prompt.rs` + `runtime/audit/verdict.rs` + revision-prompt path + on-disk verdict at `.atlas/audit/<stage>/<target>.yaml` (medium)
-- [ ] PR-5 — Atlas-on-Atlas calibration + intrinsic-metrics recording (cold tokens per provider; iteration count; wall time; evidence-score distribution per stage; Lane A retry counts; audit-verdict distribution; shim missing-field count) + within-LLM-spine cross-transport parity test + closeout note + memory updates (small code surface; measurement-heavy)
+- [x] PR-5 — Atlas-on-Atlas calibration + intrinsic-metrics recording (cold tokens per provider; iteration count; wall time; evidence-score distribution per stage; Lane A retry counts; audit-verdict distribution; shim missing-field count) + within-LLM-spine cross-transport parity test + closeout note + memory updates (small code surface; measurement-heavy)
 - [x] PR-A — `rmcp` migration of PR-1's hand-rolled MCP framing (or `jsonrpsee` + thin shim if `rmcp` fails 4-criterion verification gate) + subprocess MCP `serve_client` driver at `mcp/serve_client.rs` + `tool_loop_http.rs` subprocess-transport branch wiring (medium, parallel after PR-1)
 - [x] PR-B — `--disallowedTools` live-subprocess probe at `tests/mcp_disallowed_tools.rs` (small, parallel after PR-A; `#[ignore]`-gated)
 
@@ -241,7 +241,7 @@ PR-4 commit SHAs: modules `8c8cf14`; closure-replacement + cascade `5b564f2`; st
 
 ### PR-5
 
-2026-05-14 — Landed. Closeout commit: `<PR-5-CLOSEOUT-SHA>` (`sprint: PR-5 Atlas-on-Atlas calibration + cross-transport parity + closeout`). Status-flip commit follows in the same session.
+2026-05-14 — Landed. Closeout commit: `b8aa1d0` (`sprint: PR-5 Atlas-on-Atlas calibration + cross-transport parity + closeout`). Status-flip commit follows in the same session.
 
 PR-5 shipped the within-LLM-spine cross-transport parity test (`crates/atlas-agents/tests/agent_runtime_cross_provider_parity.rs`, ~230 LOC, `#[ignore]`-gated), ran the Atlas-on-Atlas calibration against the Atlas workspace, ran the parity test against the synthetic 3-subsystem fixture, and authored the sprint-closeout note below. **The calibration and the parity test both hard-failed with the same diagnostic class** — a prompt-template / token-substitution wiring gap between the agent-runtime and the HTTP backend's prompt loader. Per brainstorm §8.5 ("Atlas-on-Atlas invocation completes (or hard-fails with specific diagnostic; brainstorm §12 risk #5 captures the latter case)") this is the acceptable PR-5 outcome — the baseline of record is the *diagnostic*, recorded here, and Phase 8 picks up the fix.
 
@@ -282,7 +282,7 @@ Key PR-5 findings + decisions Phase 8 must address:
 
 10. **Memory writes (Step 5.8) — minimal, per the PR-5 prompt's "no other memory writes" framing.** `.claude/memory/project_phase4_plus_roadmap.md` got a "Sprint — SHIPPED 2026-05-14" entry under Phase 7 (the production-prompt sprint is logically Phase-7-completion-work) + a note that Phase 8 (Cargo retirement) is now formally unblocked. `.claude/memory/MEMORY.md`'s roadmap-memory hook line had its description text updated to reflect the sprint shipping. No other memory writes — the five framing memories (`feedback_no_deterministic_engine_comparison`, `project_atlas_purpose_llm_consumers`, `feedback_prefer_existing_crates`, `feedback_yaml_canonical_interchange`, `feedback_cross_provider_llm_audit`) are durable framings authored at the brainstorm and the sprint operated within them without amendment. The operational memories (`project_atlas_common_backend_config`, `project_phase7_agent_runtime_default_ratified`, the four execution-discipline ones) were honoured but did not need text updates.
 
-PR-5 commit SHAs: closeout `<PR-5-CLOSEOUT-SHA>` (single code-commit); status flip in a separate commit per the two-commit pattern.
+PR-5 commit SHAs: closeout `b8aa1d0` (single code-commit); status flip in a separate commit per the two-commit pattern.
 
 ### PR-A
 
@@ -365,7 +365,7 @@ Sprint commit lineage per PR:
 - **PR-B** (`--disallowedTools` live-subprocess probe; `#[ignore]`-gated): code `b8af469` + status flip `ae71dfa`
 - **PR-3** (production classify/reduce/project prompts + 4 typed-output structs + 4 evidence-score functions + canonical-schema shim + projection `.json`→`.yaml` migration): code `4776013` + tests `b31069c` + status flip `aa49ac4` + merge `170d6de`
 - **PR-4** (cross-provider auditor closure + `runtime/audit/audit_prompt.rs` + `runtime/audit/verdict.rs` + revision-prompt path + on-disk verdict at `.atlas/audit/<stage>/<target>.yaml`): modules `8c8cf14` + closure + cascade `5b564f2` + status flip `c838efc` + merge `3bf1aab`
-- **PR-5** (Atlas-on-Atlas calibration + cross-provider parity test + closeout + Phase 7 baseline backfill + sprint SHIPPED): closeout `<PR-5-CLOSEOUT-SHA>` + status flip `<PR-5-STATUS-FLIP-SHA>` (this session)
+- **PR-5** (Atlas-on-Atlas calibration + cross-provider parity test + closeout + Phase 7 baseline backfill + sprint SHIPPED): closeout `b8aa1d0` + status flip *(this commit; SHA at HEAD)*
 
 ### Polyglot smoke cumulative regression guard summary
 
