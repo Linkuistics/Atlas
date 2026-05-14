@@ -2,12 +2,12 @@
 
 Companion to `docs/superpowers/specs/2026-05-15-atlas-vnext-phase8-plan.md`. This file tracks per-WI completion state across sessions.
 
-**Last updated:** 2026-05-15 (WI-1 status flip).
+**Last updated:** 2026-05-15 (WI-2 status flip).
 
 ## WI status
 
 - [x] WI-1 — Agent-runtime HTTP-backend bypass
-- [ ] WI-2 — HardFail event emission in call_agent
+- [x] WI-2 — HardFail event emission in call_agent
 - [ ] WI-3 — Cargo classifier retirement
 - [ ] WI-4 — Atlas-on-Atlas calibration + closeout
 
@@ -57,7 +57,34 @@ Companion to `docs/superpowers/specs/2026-05-15-atlas-vnext-phase8-plan.md`. Thi
 
 ### WI-2
 
-(pending)
+**Shipped:** 2026-05-15. Code commit `f142157` (`phase8 WI-2: HardFail event emission for backend errors`).
+
+**What landed:**
+
+- Producer-fail HardFail emit at `crates/atlas-agents/src/runtime/mod.rs:968` (the former `let output = outcome?;` site inside `run_tool_loop_with_lane_a`). The bare `?` becomes a `match` that emits `AgentEvent::HardFail { agent_id: agent_id(request), error_kind: "backend", error_summary: e.to_string(), retry_count: lane_a_retries }` before returning `Err(e)`. The propagated `Err` preserves the backend's verbatim error text (the new arm returns `e`, not a wrapped string).
+- Auditor-fail HardFail emit inside `run_real_audit`'s auditor-backend `Err(e)` match arm (lines ~1186–1198 post-edit). Emits `AgentEvent::HardFail { agent_id: agent_id_payload.to_string(), error_kind: "audit_backend", error_summary: e.to_string(), retry_count: 0 }` before returning `AuditVerdict::HardFail(...)`. The cascading `lane_b` HardFail at line 817 (`ResolvedAuditAction::HardFail` arm) still fires afterwards, but subscribers can distinguish auditor-vs-producer via the new `audit_backend` discriminator.
+- `run_real_audit` gained an `event_bus: &EventBus` parameter (11th positional). The threading decision (plan § 8 Step 2.3 surfaced two shapes: thread state in OR return `Result<AuditVerdict, AuditorBackendError>`) resolved to thread-in because the closure passed to `audit::lane_b_audit` is constrained to return `AuditVerdict` — option B would have required collapsing the Result back at the closure return site without access to the bus, which doesn't help. The call-site closure captures a cloned `Arc<EventBus>` (one atomic incr) and passes `event_bus.as_ref()` through.
+- New test: `crates/atlas-agents/tests/agent_runtime_hardfail_emission.rs` (2 tests). `AlwaysErroringBackend` for producer-fail; `AlwaysSucceedingBackend` (returning Weak-grade classify YAML) + auditor `AlwaysErroringBackend` (routed via `ForProviderFn` for `Provider::OpenAi`) for auditor-fail. Both tests assert (1) the expected `error_kind` HardFail lands on the bus and (2) the propagated `Err` carries the backend's verbatim error text.
+
+**Plan-time deviations (worth noting for WI-3's executor):**
+
+- Producer-fail anchor at `mod.rs:965` (`let output = outcome?;`) was at the plan's exact frozen-2026-05-15 line — no drift from WI-1. After my edit the rewritten match-arm spans lines 968–987.
+- Auditor-fail anchor: plan said `mod.rs:1167–1172`; post-WI-1 the actual `Err(e) => { return AuditVerdict::HardFail(...) }` arm was at `mod.rs:1160–1164` (4-line drift downward from WI-1's auditor `LlmRequest::from_rendered` edit at line 1158). After my edit the rewritten arm spans lines 1186–1199.
+- `agent_id` helper is a private free function — tests can't call it. The test asserts on `error_kind` and `error_summary` substring instead of asserting on the precise `agent_id` string, which is the stable-across-internal-refactoring approach.
+- The auditor-fail test surfaces TWO `HardFail` events on the bus: the new `audit_backend` one (mine) and the existing `lane_b` cascade at line 817 (since `ResolvedAuditAction::HardFail` still fires). Test asserts on the `audit_backend` discriminator only, but the test's docstring calls out the coexistence so a future reader understands.
+
+**Regression gates (all six clean):**
+
+- `cargo build --workspace`: clean.
+- `cargo test --workspace --no-fail-fast -- --skip polyglot_phase3`: 111 test-result-ok lines, 0 failures.
+- `cargo clippy --all-targets -- -D warnings`: clean.
+- `cargo fmt --check`: clean (one rustfmt pass applied to the new test file's chained-method assertion calls).
+- `cargo build --release --workspace`: clean.
+- Polyglot release smoke (`cargo test -p atlas-cli --test phase3_polyglot_fixture --release --no-fail-fast`): 2 tests pass, wall-time 100.78s — within the 100–110s expected band, +1.34s from WI-1's 99.44s baseline (within natural per-run variance). Polyglot HOLDS per plan § 4 (HardFail emit is on a path the smoke never traverses).
+
+**Sprint PR-5 closeout-note item 4 (producer-fail / auditor-fail diagnostic visibility):** closed. Both backend-error sites now emit `HardFail` records that downstream JSONL subscribers (`jsonl_subscriber.rs`) and TUI (PR-6) consumers can ingest. The operator-side calibration verification per plan § 8 acceptance-gate bullet 5 (re-run PR-5's calibration command against a known-failing backend) is **not** a CI gate — it's an out-of-session operator validation step.
+
+**Cargo SHAs:** code commit `f142157`; status-flip commit (this) to follow.
 
 ### WI-3
 
