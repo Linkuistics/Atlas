@@ -770,6 +770,10 @@ impl AgentRuntime {
         let producer_output_bytes_for_closure = runtime_result.output_bytes.clone();
         let producer_agent_id_for_closure = producer_agent_id.clone();
         let transcript_for_closure = producer_transcript.clone();
+        // WI-2: clone the event-bus Arc into the audit closure so
+        // `run_real_audit` can emit an `audit_backend`-tagged HardFail
+        // on auditor-backend failure (`Arc::clone` is one atomic incr).
+        let event_bus_for_closure = self.event_bus.clone();
 
         let verdict = audit::lane_b_audit(
             bus_ref,
@@ -788,6 +792,7 @@ impl AgentRuntime {
                 let producer_output_bytes = producer_output_bytes_for_closure;
                 let producer_model = producer_model_id;
                 let transcript = transcript_for_closure;
+                let event_bus = event_bus_for_closure;
                 async move {
                     run_real_audit(
                         choice,
@@ -800,6 +805,7 @@ impl AgentRuntime {
                         &target_id,
                         &agent_id_payload,
                         &audit_dir,
+                        event_bus.as_ref(),
                     )
                     .await
                 }
@@ -962,7 +968,26 @@ impl AgentRuntime {
                     .map(|(output, _subprocess_mcp_transcript)| output)
                 }
             };
-            let output = outcome?;
+            let output = match outcome {
+                Ok(v) => v,
+                Err(e) => {
+                    // WI-2: emit per-agent HardFail before propagating.
+                    // Closes sprint PR-5 closeout-note item 4 — without
+                    // this emit the JSONL event-log carries no record of
+                    // *why* this agent returned `Err`. The `lane_a`
+                    // HardFail at the schema-fail site below uses
+                    // `retry_count: 1`; here it is `lane_a_retries`
+                    // because a producer-backend failure can fire on
+                    // attempt 0 (before any retry) or attempt 1.
+                    self.event_bus.emit(AgentEvent::HardFail {
+                        agent_id: agent_id(request),
+                        error_kind: "backend".to_string(),
+                        error_summary: e.to_string(),
+                        retry_count: lane_a_retries,
+                    });
+                    return Err(e);
+                }
+            };
             match lane_a_validate(&output, request.stage, &request.candidate_ids, &transcript).await
             {
                 Ok(grade) => {
@@ -1117,6 +1142,7 @@ async fn run_real_audit(
     target_id: &str,
     agent_id_payload: &str,
     audit_dir: &Path,
+    event_bus: &EventBus,
 ) -> AuditVerdict {
     let auditor_provider = choice.provider();
     let auditor_provider_label = audit::lane_b::provider_label(auditor_provider);
@@ -1160,6 +1186,19 @@ async fn run_real_audit(
     let response = match auditor_backend.call_async(&llm_request).await {
         Ok(v) => v,
         Err(e) => {
+            // WI-2: emit a distinct `audit_backend`-tagged HardFail
+            // before propagating. The closure can't surface `Result`
+            // outward (see top-of-function doc), so without this emit
+            // the JSONL event-log would only carry the cascading
+            // `lane_b` HardFail from the call-site at the
+            // `ResolvedAuditAction::HardFail` arm — losing the
+            // auditor-vs-producer distinction that diagnostics need.
+            event_bus.emit(AgentEvent::HardFail {
+                agent_id: agent_id_payload.to_string(),
+                error_kind: "audit_backend".to_string(),
+                error_summary: e.to_string(),
+                retry_count: 0,
+            });
             return AuditVerdict::HardFail(format!("auditor backend call failed: {e}"));
         }
     };
