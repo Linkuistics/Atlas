@@ -102,12 +102,15 @@ impl LenientBackend {
 #[async_trait::async_trait]
 impl LlmBackend for LenientBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        let prompt = req
+            .prompt_template
+            .expect("LenientBackend services deterministic-spine templated requests");
         let inputs_canonical = serde_json::to_string(&req.inputs).unwrap_or_default();
         self.call_log
             .lock()
             .expect("call_log mutex poisoned")
-            .push((req.prompt_template, inputs_canonical));
-        Ok(match req.prompt_template {
+            .push((prompt, inputs_canonical));
+        Ok(match prompt {
             PromptId::Classify => self.classify_response.clone(),
             PromptId::Stage1Surface => self.stage1_surface_response.clone(),
             PromptId::Stage2Edges => json!([]),
@@ -159,11 +162,7 @@ mod tests {
     }
 
     fn req(prompt: PromptId) -> LlmRequest {
-        LlmRequest {
-            prompt_template: prompt,
-            inputs: json!({}),
-            schema: ResponseSchema::accept_any(),
-        }
+        LlmRequest::from_template(prompt, json!({}), ResponseSchema::accept_any())
     }
 
     #[test]
@@ -235,11 +234,11 @@ mod tests {
     fn calls_with_inputs_records_canonical_inputs() {
         let backend = LenientBackend::new(fp());
         let payload = json!({"k": "v"});
-        let r = LlmRequest {
-            prompt_template: PromptId::Classify,
-            inputs: payload.clone(),
-            schema: ResponseSchema::accept_any(),
-        };
+        let r = LlmRequest::from_template(
+            PromptId::Classify,
+            payload.clone(),
+            ResponseSchema::accept_any(),
+        );
         backend.call(&r).expect("call must succeed");
 
         let logged = backend.calls_with_inputs();

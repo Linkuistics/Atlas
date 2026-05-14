@@ -69,12 +69,18 @@ impl LlmBackend for CaptureBackend {
         let idx = self
             .call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst) as usize;
-        let conversation = req
-            .inputs
-            .get("conversation")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
+        // WI-1: agent-runtime requests carry the prompt under
+        // `rendered_prompt`.
+        let conversation: String = req
+            .rendered_prompt
+            .clone()
+            .or_else(|| {
+                req.inputs
+                    .get("conversation")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
         self.seen_conversations
             .lock()
             .unwrap()

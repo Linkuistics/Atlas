@@ -47,7 +47,12 @@ use crate::cache::{PersistentCache, Sha256Hex};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LlmCacheKey {
     pub fingerprint: LlmFingerprint,
-    pub prompt: PromptId,
+    /// `None` for agent-runtime rendered-prompt requests (WI-1 bypass);
+    /// the deterministic spine always sets `Some(_)`. The L3/L5/L6
+    /// queries that materialise this key only ever issue templated
+    /// requests, so the deterministic path's cache hit-rate is
+    /// unaffected.
+    pub prompt: Option<PromptId>,
     /// Canonical JSON of `LlmRequest.inputs`. `serde_json::Value`'s
     /// default object representation is `BTreeMap`, so `to_string`
     /// serialises keys in sorted order.
@@ -877,11 +882,7 @@ mod tests {
     }
 
     fn req(prompt: PromptId, inputs: serde_json::Value) -> LlmRequest {
-        LlmRequest {
-            prompt_template: prompt,
-            inputs,
-            schema: ResponseSchema::accept_any(),
-        }
+        LlmRequest::from_template(prompt, inputs, ResponseSchema::accept_any())
     }
 
     #[test]

@@ -746,20 +746,20 @@ mod tests {
             &self,
             req: &atlas_llm::LlmRequest,
         ) -> Result<serde_json::Value, atlas_llm::LlmError> {
-            self.calls
-                .lock()
-                .expect("calls poisoned")
-                .push(req.prompt_template);
+            self.calls.lock().expect("calls poisoned").push(
+                req.prompt_template
+                    .expect("test backend services templated requests"),
+            );
             self.inner.call(req)
         }
         async fn call_async(
             &self,
             req: &atlas_llm::LlmRequest,
         ) -> Result<serde_json::Value, atlas_llm::LlmError> {
-            self.calls
-                .lock()
-                .expect("calls poisoned")
-                .push(req.prompt_template);
+            self.calls.lock().expect("calls poisoned").push(
+                req.prompt_template
+                    .expect("test backend services templated requests"),
+            );
             self.inner.call_async(req).await
         }
         fn fingerprint(&self) -> LlmFingerprint {

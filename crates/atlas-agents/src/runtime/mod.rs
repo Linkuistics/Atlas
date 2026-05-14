@@ -1152,17 +1152,10 @@ async fn run_real_audit(
         &transcript_rendered,
     );
 
-    // Call auditor. The `LlmRequest` carries the prompt under
-    // `inputs.conversation` matching `build_llm_request_with_tools`'s
-    // shape so HTTP backends route it identically.
-    let llm_request = LlmRequest {
-        prompt_template: atlas_llm::PromptId::Classify,
-        inputs: serde_json::json!({
-            "conversation": prompt,
-            "tools": [],
-        }),
-        schema: atlas_llm::ResponseSchema::accept_any(),
-    };
+    // Call auditor. WI-1: the auditor's prompt is already a complete
+    // rendered string, so use `LlmRequest::from_rendered` to bypass
+    // the backend's `prompts_dir` lookup.
+    let llm_request = LlmRequest::from_rendered(prompt, atlas_llm::ResponseSchema::accept_any());
 
     let response = match auditor_backend.call_async(&llm_request).await {
         Ok(v) => v,

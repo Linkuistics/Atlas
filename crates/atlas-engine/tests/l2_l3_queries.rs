@@ -64,24 +64,29 @@ impl LenientStubBackend {
 #[async_trait::async_trait]
 impl LlmBackend for LenientStubBackend {
     fn call(&self, req: &LlmRequest) -> Result<serde_json::Value, LlmError> {
-        Ok(match req.prompt_template {
-            PromptId::Classify => json!({
-                "kind": "typescript-package",
-                "language": "typescript",
-                "build_system": "npm",
-                "evidence_grade": "strong",
-                "evidence_fields": [],
-                "rationale": "stub",
-                "is_boundary": false,
-            }),
-            PromptId::Stage1Surface => json!({ "purpose": "stub", "notes": "" }),
-            PromptId::Stage2Edges => json!([]),
-            PromptId::Subcarve => json!({
-                "should_subcarve": false,
-                "sub_dirs": [],
-                "rationale": "policy declined",
-            }),
-        })
+        Ok(
+            match req
+                .prompt_template
+                .expect("test backend services templated requests")
+            {
+                PromptId::Classify => json!({
+                    "kind": "typescript-package",
+                    "language": "typescript",
+                    "build_system": "npm",
+                    "evidence_grade": "strong",
+                    "evidence_fields": [],
+                    "rationale": "stub",
+                    "is_boundary": false,
+                }),
+                PromptId::Stage1Surface => json!({ "purpose": "stub", "notes": "" }),
+                PromptId::Stage2Edges => json!([]),
+                PromptId::Subcarve => json!({
+                    "should_subcarve": false,
+                    "sub_dirs": [],
+                    "rationale": "policy declined",
+                }),
+            },
+        )
     }
 
     async fn call_async(&self, req: &LlmRequest) -> Result<serde_json::Value, LlmError> {

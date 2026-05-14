@@ -105,11 +105,11 @@ pub fn surface_of(db: &AtlasDatabase, id: ComponentId) -> Arc<SurfaceRecord> {
         .collect();
 
     let inputs = build_inputs(entry, &peer_ids);
-    let request = LlmRequest {
-        prompt_template: PromptId::Stage1Surface,
-        inputs: inputs.clone(),
-        schema: ResponseSchema::accept_any(),
-    };
+    let request = LlmRequest::from_template(
+        PromptId::Stage1Surface,
+        inputs.clone(),
+        ResponseSchema::accept_any(),
+    );
 
     // PR-10: L5 stage fingerprint per design §8.1. Contributors:
     //

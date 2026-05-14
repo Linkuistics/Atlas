@@ -39,27 +39,32 @@ impl SimpleBackend {
 #[async_trait::async_trait]
 impl LlmBackend for SimpleBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        Ok(match req.prompt_template {
-            PromptId::Classify => json!({
-                "kind": "rust-library",
-                "language": "rust",
-                "build_system": "cargo",
-                "evidence_grade": "medium",
-                "evidence_fields": [],
-                "rationale": "test",
-                "is_boundary": true,
-            }),
-            PromptId::Stage1Surface => json!({
-                "purpose": "test surface",
-                "notes": "",
-            }),
-            PromptId::Stage2Edges => json!([]),
-            PromptId::Subcarve => json!({
-                "should_subcarve": false,
-                "sub_dirs": [],
-                "rationale": "policy declined",
-            }),
-        })
+        Ok(
+            match req
+                .prompt_template
+                .expect("test backend services templated requests")
+            {
+                PromptId::Classify => json!({
+                    "kind": "rust-library",
+                    "language": "rust",
+                    "build_system": "cargo",
+                    "evidence_grade": "medium",
+                    "evidence_fields": [],
+                    "rationale": "test",
+                    "is_boundary": true,
+                }),
+                PromptId::Stage1Surface => json!({
+                    "purpose": "test surface",
+                    "notes": "",
+                }),
+                PromptId::Stage2Edges => json!([]),
+                PromptId::Subcarve => json!({
+                    "should_subcarve": false,
+                    "sub_dirs": [],
+                    "rationale": "policy declined",
+                }),
+            },
+        )
     }
 
     async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {

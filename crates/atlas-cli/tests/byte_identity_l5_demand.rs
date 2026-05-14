@@ -100,7 +100,7 @@ impl CountingBackend {
 impl LlmBackend for CountingBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         self.total_calls.fetch_add(1, Ordering::Relaxed);
-        if matches!(req.prompt_template, PromptId::Stage1Surface) {
+        if matches!(req.prompt_template, Some(PromptId::Stage1Surface)) {
             self.stage1_calls.fetch_add(1, Ordering::Relaxed);
         }
         self.inner.call(req)
@@ -108,7 +108,7 @@ impl LlmBackend for CountingBackend {
 
     async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         self.total_calls.fetch_add(1, Ordering::Relaxed);
-        if matches!(req.prompt_template, PromptId::Stage1Surface) {
+        if matches!(req.prompt_template, Some(PromptId::Stage1Surface)) {
             self.stage1_calls.fetch_add(1, Ordering::Relaxed);
         }
         self.inner.call_async(req).await

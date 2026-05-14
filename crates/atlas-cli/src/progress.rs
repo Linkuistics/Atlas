@@ -414,12 +414,15 @@ impl BackendCallObserver for Reporter {
     }
 }
 
-fn prompt_label(prompt: PromptId) -> &'static str {
+fn prompt_label(prompt: Option<PromptId>) -> &'static str {
     match prompt {
-        PromptId::Classify => "classify",
-        PromptId::Subcarve => "subcarve",
-        PromptId::Stage1Surface => "surface",
-        PromptId::Stage2Edges => "edges",
+        Some(PromptId::Classify) => "classify",
+        Some(PromptId::Subcarve) => "subcarve",
+        Some(PromptId::Stage1Surface) => "surface",
+        Some(PromptId::Stage2Edges) => "edges",
+        // WI-1: agent-runtime rendered-prompt requests have no
+        // PromptId; the agent runtime owns its own logging anyway.
+        None => "agent",
     }
 }
 
@@ -482,15 +485,19 @@ impl ProgressBackend {
 impl LlmBackend for ProgressBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         let result = self.inner.call(req);
-        let target = relpath_from_inputs(&req.inputs);
-        self.reporter.on_llm_call(req.prompt_template, target);
+        if let Some(prompt) = req.prompt_template {
+            let target = relpath_from_inputs(&req.inputs);
+            self.reporter.on_llm_call(prompt, target);
+        }
         result
     }
 
     async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         let result = self.inner.call_async(req).await;
-        let target = relpath_from_inputs(&req.inputs);
-        self.reporter.on_llm_call(req.prompt_template, target);
+        if let Some(prompt) = req.prompt_template {
+            let target = relpath_from_inputs(&req.inputs);
+            self.reporter.on_llm_call(prompt, target);
+        }
         result
     }
 
@@ -983,7 +990,7 @@ mod tests {
         BackendCallObserver::on_event(
             r.as_ref(),
             BackendCallEvent::CallStart {
-                prompt: PromptId::Subcarve,
+                prompt: Some(PromptId::Subcarve),
             },
         );
         assert!(r.agent_visible());
@@ -999,7 +1006,7 @@ mod tests {
         BackendCallObserver::on_event(
             r.as_ref(),
             BackendCallEvent::CallStart {
-                prompt: PromptId::Subcarve,
+                prompt: Some(PromptId::Subcarve),
             },
         );
         BackendCallObserver::on_event(
@@ -1022,7 +1029,7 @@ mod tests {
         BackendCallObserver::on_event(
             r.as_ref(),
             BackendCallEvent::CallStart {
-                prompt: PromptId::Subcarve,
+                prompt: Some(PromptId::Subcarve),
             },
         );
         BackendCallObserver::on_event(
@@ -1046,7 +1053,7 @@ mod tests {
         BackendCallObserver::on_event(
             r.as_ref(),
             BackendCallEvent::CallStart {
-                prompt: PromptId::Subcarve,
+                prompt: Some(PromptId::Subcarve),
             },
         );
         BackendCallObserver::on_event(
@@ -1067,7 +1074,7 @@ mod tests {
         BackendCallObserver::on_event(
             r.as_ref(),
             BackendCallEvent::CallStart {
-                prompt: PromptId::Subcarve,
+                prompt: Some(PromptId::Subcarve),
             },
         );
         BackendCallObserver::on_event(
@@ -1094,7 +1101,7 @@ mod tests {
         BackendCallObserver::on_event(
             r.as_ref(),
             BackendCallEvent::CallStart {
-                prompt: PromptId::Subcarve,
+                prompt: Some(PromptId::Subcarve),
             },
         );
         BackendCallObserver::on_event(r.as_ref(), BackendCallEvent::CallEnd);

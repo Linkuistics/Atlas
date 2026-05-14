@@ -62,12 +62,12 @@ impl ScriptedBackend {
 #[async_trait::async_trait]
 impl LlmBackend for ScriptedBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
+        let prompt = req
+            .prompt_template
+            .expect("test backend services templated requests");
         let map = self.responses.lock().unwrap();
-        map.get(&req.prompt_template).cloned().ok_or_else(|| {
-            LlmError::TestBackendMiss(format!(
-                "ScriptedBackend has no response for {:?}",
-                req.prompt_template
-            ))
+        map.get(&prompt).cloned().ok_or_else(|| {
+            LlmError::TestBackendMiss(format!("ScriptedBackend has no response for {:?}", prompt))
         })
     }
 

@@ -28,7 +28,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use atlas_llm::{LlmBackend, LlmRequest, PromptId, Provider, ResponseSchema};
+use atlas_llm::{LlmBackend, LlmRequest, Provider, ResponseSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -212,37 +212,15 @@ impl Transcript {
     }
 }
 
-/// Build the per-step `LlmRequest` for the HTTP tool-use loop. PR-4
-/// keeps the request shape minimal: the running conversation + the
-/// tool catalog's JSON-Schema descriptors carried in `inputs`. Future
-/// PRs may extend the shape (e.g. `audit_policy`, `max_tokens`); the
-/// `#[non_exhaustive]` markers on the engine's `AgentRequest` lock in
-/// the additive-compatibility contract.
-pub fn build_llm_request_with_tools(conversation: &str, tools: &ToolCatalog) -> LlmRequest {
-    let tool_descriptors: Vec<Value> = tools
-        .iter()
-        .map(|t| {
-            let schema = t.json_schema();
-            json!({
-                "name": t.id(),
-                "description": schema.description,
-                "input_schema": schema.args_schema,
-            })
-        })
-        .collect();
-    LlmRequest {
-        // PR-4 places the runtime's tool-loop calls under `Classify`
-        // for routing purposes. PR-5 will introduce a dedicated
-        // PromptId variant for the multi-step agent path; for now
-        // the routing table is reused so the test backend's existing
-        // canned-response surface covers us.
-        prompt_template: PromptId::Classify,
-        inputs: json!({
-            "conversation": conversation,
-            "tools": tool_descriptors,
-        }),
-        schema: ResponseSchema::accept_any(),
-    }
+/// Build the per-step `LlmRequest` for the HTTP tool-use loop. The
+/// agent runtime owns prompt rendering, so the `conversation` argument
+/// is a complete string and goes verbatim to the backend via
+/// `LlmRequest::from_rendered` (WI-1 bypass). `_tools` is kept on the
+/// signature for the caller's typed accounting; the HTTP backends
+/// don't currently read tool descriptors off the request (separate
+/// wiring concern outside WI-1's scope).
+pub fn build_llm_request_with_tools(conversation: &str, _tools: &ToolCatalog) -> LlmRequest {
+    LlmRequest::from_rendered(conversation.to_string(), ResponseSchema::accept_any())
 }
 
 /// Extract `tool_use` blocks from a backend response. Supports both
@@ -577,12 +555,10 @@ mod tests {
     }
 
     #[test]
-    fn build_llm_request_carries_tool_descriptors() {
-        // Minimal catalog: empty. The request must still render
-        // with `tools: []` and a `conversation` field.
+    fn build_llm_request_uses_rendered_bypass() {
         let cat = ToolCatalog::new(std::iter::empty());
         let req = build_llm_request_with_tools("hello", &cat);
-        assert_eq!(req.inputs["conversation"], json!("hello"));
-        assert_eq!(req.inputs["tools"], json!([]));
+        assert_eq!(req.rendered_prompt.as_deref(), Some("hello"));
+        assert!(req.prompt_template.is_none());
     }
 }

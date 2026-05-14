@@ -15,7 +15,7 @@ use atlas_cli::pipeline::{run_index_agent_runtime, IndexConfig};
 use atlas_cli::IndexArgs;
 use atlas_llm::{
     AtlasConfig, BackendRouter, ConfigError, LlmBackend, LlmError, LlmFingerprint, LlmRequest,
-    Provider,
+    PromptId, Provider,
 };
 use clap::Parser;
 use serde_json::{json, Value};
@@ -94,10 +94,14 @@ impl LlmBackend for StagedBackend {
     }
 
     async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        let conversation = req
-            .inputs
-            .get("conversation")
-            .and_then(Value::as_str)
+        // WI-1: agent-runtime requests carry the prompt under
+        // `rendered_prompt`; legacy templated callers used
+        // `inputs.conversation`. Support both so this test backend
+        // works across the bypass.
+        let conversation: &str = req
+            .rendered_prompt
+            .as_deref()
+            .or_else(|| req.inputs.get("conversation").and_then(Value::as_str))
             .unwrap_or("");
         for (substring, value) in &self.by_substring {
             if conversation.contains(substring) {
@@ -154,6 +158,40 @@ fn build_provider_router(config: &AtlasConfig, workspace: &Path) -> (Arc<Backend
         None,
     )
     .unwrap();
+    (Arc::new(router), prompts_dir)
+}
+
+/// Build a router whose provider entries are mock backends — the smoke
+/// runs without live HTTP. PR-4 note item 9(b) follow-up: uses the
+/// public test-only `from_test_dispatch_table_with_providers`
+/// constructor to inject a mock auditor backend.
+fn build_mock_provider_router(staged: Arc<dyn LlmBackend>) -> (Arc<BackendRouter>, TempDir) {
+    let prompts_dir = TempDir::new().unwrap();
+    let mut table = std::collections::HashMap::new();
+    for id in [
+        PromptId::Classify,
+        PromptId::Subcarve,
+        PromptId::Stage1Surface,
+        PromptId::Stage2Edges,
+    ] {
+        table.insert(id, staged.clone());
+    }
+    let providers = vec![
+        (Provider::Anthropic, staged.clone()),
+        (Provider::OpenAi, staged.clone()),
+    ];
+    let fingerprint = LlmFingerprint {
+        template_sha: [0u8; 32],
+        ontology_sha: [0u8; 32],
+        model_id: "mock-provider-router".to_string(),
+        backend_version: "0".to_string(),
+    };
+    let router = BackendRouter::from_test_dispatch_table_with_providers(
+        table,
+        providers,
+        Provider::Anthropic,
+        fingerprint,
+    );
     (Arc::new(router), prompts_dir)
 }
 
@@ -295,22 +333,11 @@ fn agent_runtime_http_smoke_single_provider_emits_audit_degraded() {
     ));
 }
 
-// PR-4 follow-up: with the real cross-provider auditor closure
-// wired, this end-to-end smoke now exercises the audit-prompt
-// round-trip against a real `BackendRouter`-constructed OpenAI HTTP
-// backend. That backend tries to load `classify.md` from `prompts_dir`
-// and (when present) make an HTTP call — neither is wired by this
-// PR-1-era smoke (the empty `prompts_dir` was fine when the auditor
-// closure was a stub returning Accept). The structural cross-provider
-// routing assertion that this test pre-PR-4 was vacuously satisfying
-// is now properly covered by
-// `crates/atlas-agents/tests/cross_provider_audit_routing.rs` (which
-// uses mock backends for the auditor). PR-5 should either (a) record
-// HTTP responses against a local mock server, or (b) lift a
-// `BackendRouter::from_dispatch_table`-style test constructor out of
-// `#[cfg(test)]` so this smoke can inject a mock auditor backend.
+// Phase 8 WI-1 closed the wiring gap: agent-runtime requests now use
+// `LlmRequest::from_rendered` and bypass `prompts_dir` lookup, so the
+// empty `prompts_dir` no longer poisons the auditor backend's render
+// step. The smoke is un-ignored.
 #[test]
-#[ignore = "PR-4: real auditor needs real HTTP OpenAI backend or mock-injection seam; PR-5 follow-up"]
 fn agent_runtime_http_smoke_completes_with_config_loaded_from_env() {
     let _guard = ENV_LOCK.lock().unwrap();
     let env = EnvGuard::capture(&["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]);
@@ -322,12 +349,14 @@ fn agent_runtime_http_smoke_completes_with_config_loaded_from_env() {
     let events_path = workspace.path().join("events.jsonl");
     let config_file = write_config(&sprint_config_yaml(true));
     let atlas_config = AtlasConfig::load(config_file.path()).unwrap();
-    let (provider_router, prompts_dir) = build_provider_router(&atlas_config, workspace.path());
     // PR-3: keys updated to per-stage `"<stage> agent"` substring
     // (matches the production prompt opening "You are Atlas's <stage>
     // agent"). Canned responses populate the shim's required
     // canonical fields (kind, purpose, workspace_purpose) so the
-    // end-to-end shim wire-in succeeds.
+    // end-to-end shim wire-in succeeds. WI-1: the auditor "verdict
+    // agent" substring also points at StagedBackend, mock-routed via
+    // `from_test_dispatch_table_with_providers` so Lane B cross-
+    // provider audit doesn't hit real HTTP.
     let staged_backend = Arc::new(StagedBackend::new(vec![
         (
             "classify agent".to_string(),
@@ -353,7 +382,12 @@ fn agent_runtime_http_smoke_completes_with_config_loaded_from_env() {
                  \"components\":[{\"id\":\"foo\"}]}",
             ),
         ),
+        (
+            "Verdict shape".to_string(),
+            text_block("```yaml\nverdict: accept\nreason: |\n  smoke-test accept\n```"),
+        ),
     ])) as Arc<dyn LlmBackend>;
+    let (provider_router, prompts_dir) = build_mock_provider_router(staged_backend.clone());
     let handles = backend_handles(staged_backend, provider_router, prompts_dir);
     let mut index_config = IndexConfig::new(workspace.path().to_path_buf());
     index_config.output_dir = output_dir.clone();

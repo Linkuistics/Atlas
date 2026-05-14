@@ -13,8 +13,7 @@
 //! records into the `Transcript` that ultimately gets framed for the
 //! transcript cache.
 
-use atlas_llm::{LlmBackend, LlmRequest, PromptId, ResponseSchema};
-use serde_json::json;
+use atlas_llm::{LlmBackend, LlmRequest, ResponseSchema};
 
 use crate::mcp::server::McpServer;
 use crate::mcp::ClientId;
@@ -58,14 +57,8 @@ pub async fn run_tool_loop_mcp(
 /// subprocess speaks its own tool-use protocol internally, so the
 /// payload is just the initial prompt — no tool descriptors. The
 /// subprocess discovers the tool catalog via the MCP handshake the
-/// runtime set up out-of-band.
+/// runtime set up out-of-band. WI-1 routes via `from_rendered` so the
+/// backend bypasses `prompts_dir` lookup.
 fn build_llm_request_subprocess(initial_prompt: String) -> LlmRequest {
-    LlmRequest {
-        // PR-4 routes the subprocess agent's call through the
-        // Classify table entry; PR-5 will introduce a dedicated
-        // PromptId variant for the multi-step agent path.
-        prompt_template: PromptId::Classify,
-        inputs: json!({ "conversation": initial_prompt }),
-        schema: ResponseSchema::accept_any(),
-    }
+    LlmRequest::from_rendered(initial_prompt, ResponseSchema::accept_any())
 }

@@ -93,14 +93,21 @@ impl ClaudeCodeBackend {
     }
 
     fn render_request(&self, req: &LlmRequest) -> Result<String, LlmError> {
-        let template = std::fs::read_to_string(self.prompt_template_path(req.prompt_template))
-            .map_err(|e| {
-                LlmError::Invocation(format!(
-                    "failed to read prompt template `{:?}` from {}: {e}",
-                    req.prompt_template,
-                    self.prompts_dir.display()
-                ))
-            })?;
+        // WI-1 bypass: agent runtime supplies a fully-rendered prompt;
+        // skip prompts_dir lookup + token substitution.
+        if let Some(rendered) = &req.rendered_prompt {
+            return Ok(rendered.clone());
+        }
+        let id = req.prompt_template.expect(
+            "LlmRequest invariant: exactly one of prompt_template / rendered_prompt is Some",
+        );
+        let template = std::fs::read_to_string(self.prompt_template_path(id)).map_err(|e| {
+            LlmError::Invocation(format!(
+                "failed to read prompt template `{:?}` from {}: {e}",
+                id,
+                self.prompts_dir.display()
+            ))
+        })?;
         let tokens = extract_tokens(&req.inputs)?;
         prompt::render(&template, &tokens)
     }
@@ -606,14 +613,14 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let backend =
             ClaudeCodeBackend::new(DEFAULT_MODEL_ID, prompts.path(), workspace.path()).unwrap();
-        let req = LlmRequest {
-            prompt_template: PromptId::Classify,
-            inputs: json!({}),
-            schema: ResponseSchema(json!({
+        let req = LlmRequest::from_template(
+            PromptId::Classify,
+            json!({}),
+            ResponseSchema(json!({
                 "type": "object",
                 "required": ["ok"]
             })),
-        };
+        );
 
         let response = backend.call(&req).expect("claude call");
 

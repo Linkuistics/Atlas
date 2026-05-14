@@ -243,7 +243,10 @@ mod tests {
     #[async_trait::async_trait]
     impl LlmBackend for AlwaysBoundaryBackend {
         fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-            match req.prompt_template {
+            match req
+                .prompt_template
+                .expect("test backend services templated requests")
+            {
                 PromptId::Classify => Ok(json!({
                     "kind": "rust-library",
                     "rationale": "stub",

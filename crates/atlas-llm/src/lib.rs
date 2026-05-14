@@ -100,11 +100,52 @@ impl ResponseSchema {
 }
 
 /// One engine-issued request to a backend.
+///
+/// Exactly one of `prompt_template` / `rendered_prompt` is `Some`.
+/// Construct via [`LlmRequest::from_template`] (deterministic-spine
+/// path; reads a prompt file from the backend's `prompts_dir` and
+/// substitutes `{{TOKEN}}` placeholders from `inputs`) or
+/// [`LlmRequest::from_rendered`] (agent-runtime path; the prompt is
+/// already a complete string and goes to the backend verbatim,
+/// bypassing `prompts_dir` lookup).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct LlmRequest {
-    pub prompt_template: PromptId,
+    pub prompt_template: Option<PromptId>,
+    pub rendered_prompt: Option<String>,
     pub inputs: Value,
     pub schema: ResponseSchema,
+}
+
+impl LlmRequest {
+    /// Construct a request whose prompt is loaded from
+    /// `<prompts_dir>/<prompt_template_filename(id)>` and rendered with
+    /// `inputs` as substitution tokens. Used by the deterministic spine
+    /// (L3/L5/L6 stages).
+    pub fn from_template(id: PromptId, inputs: Value, schema: ResponseSchema) -> Self {
+        Self {
+            prompt_template: Some(id),
+            rendered_prompt: None,
+            inputs,
+            schema,
+        }
+    }
+
+    /// Construct a request whose prompt is already a complete string
+    /// (built by the agent runtime via `build_*_prompt` helpers) and
+    /// goes to the backend verbatim, bypassing `prompts_dir` lookup.
+    pub fn from_rendered(rendered: String, schema: ResponseSchema) -> Self {
+        debug_assert!(
+            !rendered.is_empty(),
+            "from_rendered: rendered prompt must not be empty"
+        );
+        Self {
+            prompt_template: None,
+            rendered_prompt: Some(rendered),
+            inputs: Value::Null,
+            schema,
+        }
+    }
 }
 
 /// Backend-identity fingerprint fed into the memoisation key of every

@@ -58,7 +58,10 @@ struct ClassifyCountingBackend {
 #[async_trait::async_trait]
 impl LlmBackend for ClassifyCountingBackend {
     fn call(&self, req: &LlmRequest) -> Result<serde_json::Value, LlmError> {
-        match req.prompt_template {
+        match req
+            .prompt_template
+            .expect("test backend services templated requests")
+        {
             PromptId::Classify => {
                 self.classify_calls.fetch_add(1, Ordering::SeqCst);
                 Err(LlmError::TestBackendMiss(
@@ -458,11 +461,11 @@ fn python_l5_cache_layer_honours_binary_sha_in_fingerprint_end_to_end() {
         fb.finalise()
     }
 
-    let request = atlas_llm::LlmRequest {
-        prompt_template: PromptId::Stage1Surface,
-        inputs: json!({ "id": "py-comp" }),
-        schema: ResponseSchema::accept_any(),
-    };
+    let request = atlas_llm::LlmRequest::from_template(
+        PromptId::Stage1Surface,
+        json!({ "id": "py-comp" }),
+        ResponseSchema::accept_any(),
+    );
 
     let dir = tempfile::tempdir().expect("tempdir");
     let backend = TestBackend::with_fingerprint(default_fingerprint());

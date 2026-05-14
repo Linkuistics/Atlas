@@ -43,7 +43,10 @@ impl AnyStage2Backend {
 #[async_trait::async_trait]
 impl LlmBackend for AnyStage2Backend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        match req.prompt_template {
+        match req
+            .prompt_template
+            .expect("test backend services templated requests")
+        {
             PromptId::Stage1Surface => {
                 // Return a minimal valid surface record so `surface_of`
                 // does not fall into the error-notes path.

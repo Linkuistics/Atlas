@@ -53,23 +53,28 @@ impl KindBackend {
 #[async_trait::async_trait]
 impl LlmBackend for KindBackend {
     fn call(&self, req: &LlmRequest) -> Result<serde_json::Value, LlmError> {
-        Ok(match req.prompt_template {
-            PromptId::Classify => json!({
-                "kind": self.classify_kind,
-                "language": if self.classify_kind == "makefile-orchestration" { "makefile" } else { "shell" },
-                "evidence_grade": "medium",
-                "evidence_fields": [],
-                "rationale": "stub",
-                "is_boundary": true,
-            }),
-            PromptId::Stage1Surface => json!({ "purpose": "stub", "notes": "" }),
-            PromptId::Stage2Edges => json!([]),
-            PromptId::Subcarve => json!({
-                "should_subcarve": false,
-                "sub_dirs": [],
-                "rationale": "policy declined",
-            }),
-        })
+        Ok(
+            match req
+                .prompt_template
+                .expect("test backend services templated requests")
+            {
+                PromptId::Classify => json!({
+                    "kind": self.classify_kind,
+                    "language": if self.classify_kind == "makefile-orchestration" { "makefile" } else { "shell" },
+                    "evidence_grade": "medium",
+                    "evidence_fields": [],
+                    "rationale": "stub",
+                    "is_boundary": true,
+                }),
+                PromptId::Stage1Surface => json!({ "purpose": "stub", "notes": "" }),
+                PromptId::Stage2Edges => json!([]),
+                PromptId::Subcarve => json!({
+                    "should_subcarve": false,
+                    "sub_dirs": [],
+                    "rationale": "policy declined",
+                }),
+            },
+        )
     }
 
     async fn call_async(&self, req: &LlmRequest) -> Result<serde_json::Value, LlmError> {

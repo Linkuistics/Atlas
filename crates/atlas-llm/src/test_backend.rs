@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::{LlmBackend, LlmError, LlmFingerprint, LlmRequest, PromptId};
 
 pub struct TestBackend {
-    canned: Mutex<HashMap<(PromptId, String), Value>>,
+    canned: Mutex<HashMap<(Option<PromptId>, String), Value>>,
     fingerprint: LlmFingerprint,
 }
 
@@ -40,7 +40,7 @@ impl TestBackend {
     /// prompt id and inputs, the recorded value is returned; any
     /// other call errors.
     pub fn respond(&self, prompt: PromptId, inputs: Value, response: Value) {
-        let key = (prompt, canonical_key(&inputs));
+        let key = (Some(prompt), canonical_key(&inputs));
         self.canned
             .lock()
             .expect("canned map poisoned")
@@ -97,11 +97,7 @@ mod tests {
     use serde_json::json;
 
     fn req(prompt: PromptId, inputs: Value) -> LlmRequest {
-        LlmRequest {
-            prompt_template: prompt,
-            inputs,
-            schema: ResponseSchema::accept_any(),
-        }
+        LlmRequest::from_template(prompt, inputs, ResponseSchema::accept_any())
     }
 
     #[test]

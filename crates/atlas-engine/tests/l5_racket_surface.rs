@@ -116,11 +116,11 @@ fn racket_binary_sha_change_invalidates_l5_cache_end_to_end() {
         fb.finalise()
     }
 
-    let request = atlas_llm::LlmRequest {
-        prompt_template: PromptId::Stage1Surface,
-        inputs: json!({ "id": "rkt-comp" }),
-        schema: ResponseSchema::accept_any(),
-    };
+    let request = atlas_llm::LlmRequest::from_template(
+        PromptId::Stage1Surface,
+        json!({ "id": "rkt-comp" }),
+        ResponseSchema::accept_any(),
+    );
 
     let dir = tempfile::tempdir().expect("tempdir");
     let backend = TestBackend::with_fingerprint(default_fingerprint());

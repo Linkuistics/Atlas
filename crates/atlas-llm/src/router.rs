@@ -11,6 +11,12 @@ use crate::{
 pub struct BackendRouter {
     table: HashMap<PromptId, Arc<dyn LlmBackend>>,
     provider_entries: Vec<ProviderEntry>,
+    /// Provider used to route requests carrying a `rendered_prompt`
+    /// (agent-runtime path; see `LlmRequest::from_rendered`). Seeded
+    /// from the `Classify` operation's configured provider — that's the
+    /// implicit default the agent runtime already inherited via the
+    /// pre-WI-1 `PromptId::Classify` shim.
+    default_provider: Provider,
     fingerprint: LlmFingerprint,
 }
 
@@ -89,6 +95,7 @@ impl BackendRouter {
         let mut provider_entries: Vec<ProviderEntry> = Vec::new();
         let mut model_parts: Vec<String> = Vec::new();
         let mut version_parts: Vec<String> = Vec::new();
+        let mut default_provider: Option<Provider> = None;
 
         for &prompt_id in &all_prompt_ids {
             let op = config.resolve_operation(prompt_id);
@@ -184,9 +191,20 @@ impl BackendRouter {
                     provider,
                     backend: backend.clone(),
                 });
+                if prompt_id == PromptId::Classify {
+                    default_provider = Some(provider);
+                }
             }
             table.insert(prompt_id, backend);
         }
+
+        let default_provider = default_provider.ok_or_else(|| {
+            LlmError::Setup(
+                "BackendRouter: Classify operation must resolve to a known provider \
+                 (anthropic / openai / claude-code / codex) for rendered-prompt routing"
+                    .to_string(),
+            )
+        })?;
 
         let fingerprint = LlmFingerprint {
             template_sha,
@@ -198,12 +216,14 @@ impl BackendRouter {
         Ok(Self {
             table,
             provider_entries,
+            default_provider,
             fingerprint,
         })
     }
 
-    /// Test-only constructor: build a router directly from a dispatch table.
-    #[cfg(test)]
+    /// Test-only constructor: build a router directly from a dispatch
+    /// table. No cross-provider audit support (`provider_entries`
+    /// stays empty); for that, use [`Self::from_test_dispatch_table_with_providers`].
     pub fn from_dispatch_table(
         table: HashMap<PromptId, Arc<dyn LlmBackend>>,
         fingerprint: LlmFingerprint,
@@ -211,6 +231,31 @@ impl BackendRouter {
         Self {
             table,
             provider_entries: Vec::new(),
+            default_provider: Provider::Anthropic,
+            fingerprint,
+        }
+    }
+
+    /// Test-only constructor with explicit provider entries — supports
+    /// cross-provider audit lookups (`backend_for_provider`) and
+    /// rendered-prompt routing (`default_provider`). PR-4 note item 9(b):
+    /// lifted from `#[cfg(test)]` so out-of-crate smokes (e.g.
+    /// `crates/atlas-cli/tests/agent_runtime_http_smoke.rs`) can inject
+    /// mock auditor backends without hitting real HTTP endpoints.
+    pub fn from_test_dispatch_table_with_providers(
+        table: HashMap<PromptId, Arc<dyn LlmBackend>>,
+        provider_backends: Vec<(Provider, Arc<dyn LlmBackend>)>,
+        default_provider: Provider,
+        fingerprint: LlmFingerprint,
+    ) -> Self {
+        let provider_entries = provider_backends
+            .into_iter()
+            .map(|(provider, backend)| ProviderEntry { provider, backend })
+            .collect();
+        Self {
+            table,
+            provider_entries,
+            default_provider,
             fingerprint,
         }
     }
@@ -254,21 +299,45 @@ fn reject_http_for_filesystem_required_prompt(
 #[async_trait::async_trait]
 impl LlmBackend for BackendRouter {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        let backend = self.table.get(&req.prompt_template).ok_or_else(|| {
-            LlmError::Setup(format!(
-                "BackendRouter has no entry for {:?}",
-                req.prompt_template
-            ))
+        if req.rendered_prompt.is_some() {
+            let backend = self
+                .backend_for_provider(self.default_provider)
+                .ok_or_else(|| {
+                    LlmError::Setup(format!(
+                        "rendered-prompt request: no backend registered for default \
+                     provider {:?}",
+                        self.default_provider
+                    ))
+                })?;
+            return backend.call(req);
+        }
+        let prompt_id = req.prompt_template.expect(
+            "LlmRequest invariant: exactly one of prompt_template / rendered_prompt is Some",
+        );
+        let backend = self.table.get(&prompt_id).ok_or_else(|| {
+            LlmError::Setup(format!("BackendRouter has no entry for {:?}", prompt_id))
         })?;
         backend.call(req)
     }
 
     async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        let backend = self.table.get(&req.prompt_template).ok_or_else(|| {
-            LlmError::Setup(format!(
-                "BackendRouter has no entry for {:?}",
-                req.prompt_template
-            ))
+        if req.rendered_prompt.is_some() {
+            let backend = self
+                .backend_for_provider(self.default_provider)
+                .ok_or_else(|| {
+                    LlmError::Setup(format!(
+                        "rendered-prompt request: no backend registered for default \
+                     provider {:?}",
+                        self.default_provider
+                    ))
+                })?;
+            return backend.call_async(req).await;
+        }
+        let prompt_id = req.prompt_template.expect(
+            "LlmRequest invariant: exactly one of prompt_template / rendered_prompt is Some",
+        );
+        let backend = self.table.get(&prompt_id).ok_or_else(|| {
+            LlmError::Setup(format!("BackendRouter has no entry for {:?}", prompt_id))
         })?;
         backend.call_async(req).await
     }
@@ -410,11 +479,11 @@ mod tests {
 
         let router = BackendRouter::from_dispatch_table(table, make_fingerprint("test-composite"));
 
-        let req = LlmRequest {
-            prompt_template: PromptId::Classify,
-            inputs: json!({ "dir_relative": "crates/foo" }),
-            schema: ResponseSchema::accept_any(),
-        };
+        let req = LlmRequest::from_template(
+            PromptId::Classify,
+            json!({ "dir_relative": "crates/foo" }),
+            ResponseSchema::accept_any(),
+        );
         let result = router.call(&req).unwrap();
         assert_eq!(result["is_component"], true);
     }
@@ -422,11 +491,8 @@ mod tests {
     #[test]
     fn missing_table_entry_is_setup_error() {
         let router = BackendRouter::from_dispatch_table(HashMap::new(), make_fingerprint("empty"));
-        let req = LlmRequest {
-            prompt_template: PromptId::Classify,
-            inputs: json!({}),
-            schema: ResponseSchema::accept_any(),
-        };
+        let req =
+            LlmRequest::from_template(PromptId::Classify, json!({}), ResponseSchema::accept_any());
         let err = router.call(&req).unwrap_err();
         assert!(matches!(err, LlmError::Setup(_)));
     }

@@ -86,13 +86,19 @@ impl CodexBackend {
     }
 
     fn render_request(&self, req: &LlmRequest) -> Result<String, LlmError> {
-        let path = self
-            .prompts_dir
-            .join(prompt_template_filename(req.prompt_template));
+        // WI-1 bypass: agent runtime supplies a fully-rendered prompt;
+        // skip prompts_dir lookup + token substitution.
+        if let Some(rendered) = &req.rendered_prompt {
+            return Ok(rendered.clone());
+        }
+        let id = req.prompt_template.expect(
+            "LlmRequest invariant: exactly one of prompt_template / rendered_prompt is Some",
+        );
+        let path = self.prompts_dir.join(prompt_template_filename(id));
         let template = std::fs::read_to_string(&path).map_err(|e| {
             LlmError::Invocation(format!(
                 "failed to read prompt template `{:?}` from {}: {e}",
-                req.prompt_template,
+                id,
                 self.prompts_dir.display()
             ))
         })?;
@@ -323,11 +329,11 @@ mod tests {
             observer: None,
         };
 
-        let req = LlmRequest {
-            prompt_template: PromptId::Classify,
-            inputs: json!({"COMPONENT_ID": "crates/atlas-llm", "KIND": "rust-library"}),
-            schema: ResponseSchema::accept_any(),
-        };
+        let req = LlmRequest::from_template(
+            PromptId::Classify,
+            json!({"COMPONENT_ID": "crates/atlas-llm", "KIND": "rust-library"}),
+            ResponseSchema::accept_any(),
+        );
 
         let rendered = backend.render_request(&req).unwrap();
 
@@ -346,11 +352,8 @@ mod tests {
             observer: None,
         };
 
-        let req = LlmRequest {
-            prompt_template: PromptId::Classify,
-            inputs: json!({}),
-            schema: ResponseSchema::accept_any(),
-        };
+        let req =
+            LlmRequest::from_template(PromptId::Classify, json!({}), ResponseSchema::accept_any());
 
         let err = backend.render_request(&req).unwrap_err();
         assert!(
@@ -406,14 +409,14 @@ mod tests {
 
         let backend = CodexBackend::new(integration_test_model(), prompts.path())
             .expect("codex must be authenticated for this test");
-        let req = LlmRequest {
-            prompt_template: PromptId::Classify,
-            inputs: json!({}),
-            schema: ResponseSchema(json!({
+        let req = LlmRequest::from_template(
+            PromptId::Classify,
+            json!({}),
+            ResponseSchema(json!({
                 "type": "object",
                 "required": ["ok"]
             })),
-        };
+        );
 
         let response = backend.call(&req).expect("codex call");
 

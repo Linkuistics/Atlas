@@ -129,39 +129,45 @@ impl PR4Backend {
 impl LlmBackend for PR4Backend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         let inputs_canonical = serde_json::to_string(&req.inputs).unwrap_or_default();
-        self.call_log
-            .lock()
-            .unwrap()
-            .push((req.prompt_template, inputs_canonical));
+        self.call_log.lock().unwrap().push((
+            req.prompt_template
+                .expect("test backend services templated requests"),
+            inputs_canonical,
+        ));
 
-        Ok(match req.prompt_template {
-            PromptId::Classify => json!({
-                "kind": "rust-library",
-                "language": "rust",
-                "build_system": "cargo",
-                "evidence_grade": "medium",
-                "evidence_fields": [],
-                "rationale": "pr4-salvage backend default",
-                "is_boundary": true,
-            }),
-            PromptId::Stage1Surface => json!({
-                "purpose": "pr4-salvage backend stage-1 stub",
-                "notes": "",
-            }),
-            PromptId::Stage2Edges => json!([{
-                "kind": "consumes-contract",
-                "lifecycle": "design",
-                "participants": [CONSUMER_ID, CONTRACT_ID],
-                "evidence_grade": "strong",
-                "evidence_fields": ["consumer.uses-foo"],
-                "rationale": "consumer references schema_crate::Foo",
-            }]),
-            PromptId::Subcarve => json!({
-                "should_subcarve": false,
-                "sub_dirs": [],
-                "rationale": "policy declined",
-            }),
-        })
+        Ok(
+            match req
+                .prompt_template
+                .expect("test backend services templated requests")
+            {
+                PromptId::Classify => json!({
+                    "kind": "rust-library",
+                    "language": "rust",
+                    "build_system": "cargo",
+                    "evidence_grade": "medium",
+                    "evidence_fields": [],
+                    "rationale": "pr4-salvage backend default",
+                    "is_boundary": true,
+                }),
+                PromptId::Stage1Surface => json!({
+                    "purpose": "pr4-salvage backend stage-1 stub",
+                    "notes": "",
+                }),
+                PromptId::Stage2Edges => json!([{
+                    "kind": "consumes-contract",
+                    "lifecycle": "design",
+                    "participants": [CONSUMER_ID, CONTRACT_ID],
+                    "evidence_grade": "strong",
+                    "evidence_fields": ["consumer.uses-foo"],
+                    "rationale": "consumer references schema_crate::Foo",
+                }]),
+                PromptId::Subcarve => json!({
+                    "should_subcarve": false,
+                    "sub_dirs": [],
+                    "rationale": "policy declined",
+                }),
+            },
+        )
     }
 
     async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {

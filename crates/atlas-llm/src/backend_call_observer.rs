@@ -26,8 +26,9 @@ pub trait BackendCallObserver: Send + Sync {
 #[derive(Debug, Clone)]
 pub enum BackendCallEvent {
     /// Fired once at the start of an `LlmBackend::call`, after the
-    /// subprocess has been spawned and observation begins.
-    CallStart { prompt: PromptId },
+    /// subprocess has been spawned and observation begins. `prompt` is
+    /// `None` for agent-runtime rendered-prompt requests (WI-1 bypass).
+    CallStart { prompt: Option<PromptId> },
     /// One per `tool_use` block in any assistant turn.
     ToolUse { name: String, summary: String },
     /// One per `tool_result` block in any user turn.
@@ -81,7 +82,7 @@ mod tests {
     #[test]
     fn agent_event_debug_includes_variant_name() {
         let e = BackendCallEvent::CallStart {
-            prompt: PromptId::Classify,
+            prompt: Some(PromptId::Classify),
         };
         let s = format!("{e:?}");
         assert!(s.contains("CallStart"), "got {s:?}");

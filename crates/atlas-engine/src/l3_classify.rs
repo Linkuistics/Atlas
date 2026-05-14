@@ -842,11 +842,8 @@ impl LlmHook for EngineLlmHook {
             &self.bundle,
             &self.snippets,
         );
-        let request = LlmRequest {
-            prompt_template: PromptId::Classify,
-            inputs,
-            schema: ResponseSchema::accept_any(),
-        };
+        let request =
+            LlmRequest::from_template(PromptId::Classify, inputs, ResponseSchema::accept_any());
         match self
             .db
             .call_llm_cached_with_fp(Stage::L3, &self.stage_fingerprint, &request)

@@ -112,10 +112,12 @@ impl LlmBackend for DispatchStagedBackend {
     async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         self.call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let conversation = req
-            .inputs
-            .get("conversation")
-            .and_then(Value::as_str)
+        // WI-1: agent-runtime requests carry the prompt under
+        // `rendered_prompt`.
+        let conversation: &str = req
+            .rendered_prompt
+            .as_deref()
+            .or_else(|| req.inputs.get("conversation").and_then(Value::as_str))
             .unwrap_or("");
         for (substring, value) in &self.by_substring {
             if conversation.contains(substring.as_str()) {

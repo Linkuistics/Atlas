@@ -68,10 +68,12 @@ impl LlmBackend for ConvergenceBackend {
         let n = self
             .call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let conversation = req
-            .inputs
-            .get("conversation")
-            .and_then(Value::as_str)
+        // WI-1: agent-runtime requests carry the prompt under
+        // `rendered_prompt`.
+        let conversation: &str = req
+            .rendered_prompt
+            .as_deref()
+            .or_else(|| req.inputs.get("conversation").and_then(Value::as_str))
             .unwrap_or("");
         // PR-4: audit prompts open with "You are an auditor for an
         // Atlas agent's output". Return a fenced YAML accept verdict

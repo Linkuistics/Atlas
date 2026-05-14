@@ -74,12 +74,18 @@ impl LlmBackend for LabelBackend {
     async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         self.call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let conversation = req
-            .inputs
-            .get("conversation")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
+        // WI-1: agent-runtime requests carry the prompt under
+        // `rendered_prompt`.
+        let conversation: String = req
+            .rendered_prompt
+            .clone()
+            .or_else(|| {
+                req.inputs
+                    .get("conversation")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
         self.conversations.lock().unwrap().push(conversation);
         Ok(self.response.clone())
     }
@@ -165,10 +171,12 @@ impl LlmBackend for SubstringBackend {
         ))
     }
     async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
-        let conversation = req
-            .inputs
-            .get("conversation")
-            .and_then(Value::as_str)
+        // WI-1: agent-runtime requests carry the prompt under
+        // `rendered_prompt`.
+        let conversation: &str = req
+            .rendered_prompt
+            .as_deref()
+            .or_else(|| req.inputs.get("conversation").and_then(Value::as_str))
             .unwrap_or("");
         if conversation.contains("You are an auditor") {
             self.audit_calls

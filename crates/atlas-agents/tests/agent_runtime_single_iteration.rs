@@ -70,10 +70,13 @@ impl LlmBackend for StagedBackend {
     async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         self.call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let conversation = req
-            .inputs
-            .get("conversation")
-            .and_then(Value::as_str)
+        // WI-1: agent-runtime requests carry the prompt under
+        // `rendered_prompt`; legacy templated callers used
+        // `inputs.conversation`.
+        let conversation: &str = req
+            .rendered_prompt
+            .as_deref()
+            .or_else(|| req.inputs.get("conversation").and_then(Value::as_str))
             .unwrap_or("");
 
         // One-shots: scan in insertion order; first match wins, and
@@ -316,11 +319,11 @@ async fn lane_a_retry_fires_exactly_once_on_classify_schema_fail() {
 async fn staged_backend_one_shot_pops_after_match() {
     let backend = StagedBackend::new(vec![("hello".to_string(), json!({"perm": true}))])
         .with_one_shot("hello", json!({"oneshot": true}));
-    let req = LlmRequest {
-        prompt_template: atlas_llm::PromptId::Classify,
-        inputs: json!({ "conversation": "hello world" }),
-        schema: atlas_llm::ResponseSchema::accept_any(),
-    };
+    let req = LlmRequest::from_template(
+        atlas_llm::PromptId::Classify,
+        json!({ "conversation": "hello world" }),
+        atlas_llm::ResponseSchema::accept_any(),
+    );
     let r1 = backend.call_async(&req).await.unwrap();
     let r2 = backend.call_async(&req).await.unwrap();
     assert_eq!(r1, json!({"oneshot": true}));

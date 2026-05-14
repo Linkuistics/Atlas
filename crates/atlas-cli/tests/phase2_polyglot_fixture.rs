@@ -185,49 +185,55 @@ impl PR14Backend {
 impl LlmBackend for PR14Backend {
     fn call(&self, req: &LlmRequest) -> Result<Value, LlmError> {
         let inputs_canonical = serde_json::to_string(&req.inputs).unwrap_or_default();
-        self.call_log
-            .lock()
-            .unwrap()
-            .push((req.prompt_template, inputs_canonical));
+        self.call_log.lock().unwrap().push((
+            req.prompt_template
+                .expect("test backend services templated requests"),
+            inputs_canonical,
+        ));
 
-        Ok(match req.prompt_template {
-            // Classify is not expected to fire — every component is
-            // either a deterministic-classifier candidate (Cargo,
-            // Dockerfile, Compose) or supplied via additions
-            // (shell-script, makefile-orchestration, buildkite-suffix
-            // docker-image). A fallback verdict is still safer than
-            // failing the run, since the additions path can produce
-            // candidate dirs that nothing classifies.
-            PromptId::Classify => json!({
-                "kind": "unknown",
-                "language": "unknown",
-                "evidence_grade": "weak",
-                "evidence_fields": [],
-                "rationale": "pr14 backend default classify",
-                "is_boundary": false,
-            }),
-            PromptId::Stage1Surface => json!({
-                "purpose": "pr14 backend stage-1 stub",
-                "notes": "",
-            }),
-            // The single Stage2Edges batch returns one consumes-contract
-            // edge from py_pkg to the behaviour contract that ex_app's
-            // defprotocol defines.  Edge::validate enforces distinct
-            // participants; the canned shape satisfies §9.5.
-            PromptId::Stage2Edges => json!([{
-                "kind": "consumes-contract",
-                "lifecycle": "design",
-                "participants": [ID_PY, CONTRACT_ID_BEHAVIOUR],
-                "evidence_grade": "strong",
-                "evidence_fields": ["py_pkg.uses-stringable"],
-                "rationale": "py_pkg references the Stringable behaviour",
-            }]),
-            PromptId::Subcarve => json!({
-                "should_subcarve": false,
-                "sub_dirs": [],
-                "rationale": "policy declined",
-            }),
-        })
+        Ok(
+            match req
+                .prompt_template
+                .expect("test backend services templated requests")
+            {
+                // Classify is not expected to fire — every component is
+                // either a deterministic-classifier candidate (Cargo,
+                // Dockerfile, Compose) or supplied via additions
+                // (shell-script, makefile-orchestration, buildkite-suffix
+                // docker-image). A fallback verdict is still safer than
+                // failing the run, since the additions path can produce
+                // candidate dirs that nothing classifies.
+                PromptId::Classify => json!({
+                    "kind": "unknown",
+                    "language": "unknown",
+                    "evidence_grade": "weak",
+                    "evidence_fields": [],
+                    "rationale": "pr14 backend default classify",
+                    "is_boundary": false,
+                }),
+                PromptId::Stage1Surface => json!({
+                    "purpose": "pr14 backend stage-1 stub",
+                    "notes": "",
+                }),
+                // The single Stage2Edges batch returns one consumes-contract
+                // edge from py_pkg to the behaviour contract that ex_app's
+                // defprotocol defines.  Edge::validate enforces distinct
+                // participants; the canned shape satisfies §9.5.
+                PromptId::Stage2Edges => json!([{
+                    "kind": "consumes-contract",
+                    "lifecycle": "design",
+                    "participants": [ID_PY, CONTRACT_ID_BEHAVIOUR],
+                    "evidence_grade": "strong",
+                    "evidence_fields": ["py_pkg.uses-stringable"],
+                    "rationale": "py_pkg references the Stringable behaviour",
+                }]),
+                PromptId::Subcarve => json!({
+                    "should_subcarve": false,
+                    "sub_dirs": [],
+                    "rationale": "policy declined",
+                }),
+            },
+        )
     }
 
     async fn call_async(&self, req: &LlmRequest) -> Result<Value, LlmError> {

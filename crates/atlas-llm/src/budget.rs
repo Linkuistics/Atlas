@@ -136,11 +136,7 @@ mod tests {
     use serde_json::json;
 
     fn req(inputs: Value) -> LlmRequest {
-        LlmRequest {
-            prompt_template: PromptId::Classify,
-            inputs,
-            schema: ResponseSchema::accept_any(),
-        }
+        LlmRequest::from_template(PromptId::Classify, inputs, ResponseSchema::accept_any())
     }
 
     #[test]

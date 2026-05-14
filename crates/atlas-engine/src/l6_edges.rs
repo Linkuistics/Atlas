@@ -128,11 +128,11 @@ pub fn all_proposed_edges(db: &AtlasDatabase) -> Arc<Vec<Edge>> {
         .collect();
 
     let inputs = build_inputs(&surfaces);
-    let request = LlmRequest {
-        prompt_template: PromptId::Stage2Edges,
-        inputs: inputs.clone(),
-        schema: ResponseSchema::accept_any(),
-    };
+    let request = LlmRequest::from_template(
+        PromptId::Stage2Edges,
+        inputs.clone(),
+        ResponseSchema::accept_any(),
+    );
 
     // PR-10 / PR-11: L6 stage fingerprint per design §8.1. Contributors:
     //

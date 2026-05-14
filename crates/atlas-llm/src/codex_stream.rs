@@ -46,7 +46,7 @@ pub(crate) fn codex_command_summary(command: &str) -> String {
 pub(crate) fn parse_codex_stream<R: Read>(
     reader: R,
     observer: Option<&Arc<dyn BackendCallObserver>>,
-    prompt: PromptId,
+    prompt: Option<PromptId>,
 ) -> Result<Value, LlmError> {
     let _guard = ObserverGuard::new(observer);
     if let Some(o) = observer {
@@ -225,9 +225,12 @@ mod tests {
             json!({"type": "turn.completed", "usage": {}}),
         ]);
 
-        let response =
-            parse_codex_stream(Cursor::new(events), Some(&observer_dyn), PromptId::Classify)
-                .expect("ok");
+        let response = parse_codex_stream(
+            Cursor::new(events),
+            Some(&observer_dyn),
+            Some(PromptId::Classify),
+        )
+        .expect("ok");
 
         assert_eq!(response, json!({"ok": true}));
         assert_eq!(
@@ -267,8 +270,12 @@ mod tests {
             json!({"type": "turn.completed", "usage": {}}),
         ]);
 
-        parse_codex_stream(Cursor::new(events), Some(&observer_dyn), PromptId::Subcarve)
-            .expect("ok");
+        parse_codex_stream(
+            Cursor::new(events),
+            Some(&observer_dyn),
+            Some(PromptId::Subcarve),
+        )
+        .expect("ok");
 
         assert_eq!(
             observer.names(),
@@ -300,8 +307,12 @@ mod tests {
             }),
         ]);
 
-        parse_codex_stream(Cursor::new(events), Some(&observer_dyn), PromptId::Classify)
-            .expect("ok");
+        parse_codex_stream(
+            Cursor::new(events),
+            Some(&observer_dyn),
+            Some(PromptId::Classify),
+        )
+        .expect("ok");
 
         assert!(observer.names().iter().any(|n| n == "ToolResult:false"));
     }
@@ -321,9 +332,12 @@ mod tests {
             }),
         ]);
 
-        let response =
-            parse_codex_stream(Cursor::new(events), Some(&observer_dyn), PromptId::Classify)
-                .expect("ok");
+        let response = parse_codex_stream(
+            Cursor::new(events),
+            Some(&observer_dyn),
+            Some(PromptId::Classify),
+        )
+        .expect("ok");
 
         assert_eq!(response, json!({"final": true}));
     }
@@ -341,8 +355,12 @@ mod tests {
             }),
         ]);
 
-        let err = parse_codex_stream(Cursor::new(events), Some(&observer_dyn), PromptId::Classify)
-            .expect_err("turn.failed must error");
+        let err = parse_codex_stream(
+            Cursor::new(events),
+            Some(&observer_dyn),
+            Some(PromptId::Classify),
+        )
+        .expect_err("turn.failed must error");
 
         match err {
             LlmError::Invocation(msg) => {
@@ -363,8 +381,12 @@ mod tests {
             json!({"type": "turn.completed", "usage": {}}),
         ]);
 
-        let err = parse_codex_stream(Cursor::new(events), Some(&observer_dyn), PromptId::Classify)
-            .expect_err("no agent_message must error");
+        let err = parse_codex_stream(
+            Cursor::new(events),
+            Some(&observer_dyn),
+            Some(PromptId::Classify),
+        )
+        .expect_err("no agent_message must error");
 
         assert!(matches!(err, LlmError::Parse(_)));
     }
@@ -391,9 +413,12 @@ mod tests {
         );
         bytes.push(b'\n');
 
-        let response =
-            parse_codex_stream(Cursor::new(bytes), Some(&observer_dyn), PromptId::Classify)
-                .expect("ok");
+        let response = parse_codex_stream(
+            Cursor::new(bytes),
+            Some(&observer_dyn),
+            Some(PromptId::Classify),
+        )
+        .expect("ok");
 
         assert_eq!(response, json!({"ok": true}));
     }
@@ -407,9 +432,12 @@ mod tests {
             "item": {"type": "agent_message", "text": "```json\n{\"ok\": true}\n```"}
         })]);
 
-        let response =
-            parse_codex_stream(Cursor::new(events), Some(&observer_dyn), PromptId::Classify)
-                .expect("ok");
+        let response = parse_codex_stream(
+            Cursor::new(events),
+            Some(&observer_dyn),
+            Some(PromptId::Classify),
+        )
+        .expect("ok");
 
         assert_eq!(response, json!({"ok": true}));
     }
@@ -429,7 +457,7 @@ mod tests {
     ) -> Result<Value, LlmError> {
         let path = fixture_path(name);
         let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-        parse_codex_stream(Cursor::new(bytes), Some(observer), prompt)
+        parse_codex_stream(Cursor::new(bytes), Some(observer), Some(prompt))
     }
 
     #[test]

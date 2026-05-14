@@ -432,7 +432,10 @@ fn csharp_project_classifies_without_llm_call() {
     #[async_trait::async_trait]
     impl LlmBackend for ClassifyCountingBackend {
         fn call(&self, req: &LlmRequest) -> Result<serde_json::Value, LlmError> {
-            match req.prompt_template {
+            match req
+                .prompt_template
+                .expect("test backend services templated requests")
+            {
                 PromptId::Classify => {
                     self.classify_calls.fetch_add(1, Ordering::SeqCst);
                     Err(LlmError::TestBackendMiss(

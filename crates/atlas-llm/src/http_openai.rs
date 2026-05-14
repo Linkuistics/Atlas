@@ -74,9 +74,15 @@ impl OpenAiHttpBackend {
     }
 
     fn render_request(&self, req: &LlmRequest) -> Result<String, LlmError> {
-        let path = self
-            .prompts_dir
-            .join(prompt_template_filename(req.prompt_template));
+        // WI-1 bypass: agent runtime supplies a fully-rendered prompt;
+        // skip prompts_dir lookup + token substitution.
+        if let Some(rendered) = &req.rendered_prompt {
+            return Ok(rendered.clone());
+        }
+        let id = req.prompt_template.expect(
+            "LlmRequest invariant: exactly one of prompt_template / rendered_prompt is Some",
+        );
+        let path = self.prompts_dir.join(prompt_template_filename(id));
         let template = std::fs::read_to_string(&path)
             .map_err(|e| LlmError::Invocation(format!("failed to read {:?}: {e}", path)))?;
         let tokens = extract_tokens(&req.inputs)?;

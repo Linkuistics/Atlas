@@ -46,7 +46,10 @@ impl ContractViolationBackend {
 #[async_trait::async_trait]
 impl LlmBackend for ContractViolationBackend {
     fn call(&self, req: &LlmRequest) -> Result<Value, atlas_llm::LlmError> {
-        match req.prompt_template {
+        match req
+            .prompt_template
+            .expect("test backend services templated requests")
+        {
             PromptId::Classify => Ok(json!({
                 "kind": "rust-library",
                 "language": "rust",
