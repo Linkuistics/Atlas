@@ -238,18 +238,20 @@ impl Default for ToolCatalog {
     }
 }
 
-/// Build the default tool catalog from the 22 PR-3 wrappers.
+/// Build the default tool catalog from the 21 wrappers remaining
+/// after Phase 8 WI-3 (Cargo classifier retired; `parse_cargo_toml`
+/// retained as the manifest parser).
 ///
 /// Layout mirrors `crate::tools::{classifiers, manifests, surfaces}`:
 ///
-/// - 10 classifiers
+/// - 9 classifiers (Cargo dropped Phase 8 WI-3)
 /// - 4 manifest parsers
 /// - 8 surface analysers
 pub fn default_tool_catalog() -> ToolCatalog {
     use crate::tools::classifiers::{
-        CargoClassifyTool, ComposeClassifyTool, CsharpClassifyTool, DartClassifyTool,
-        DockerfileClassifyTool, ElixirClassifyTool, LispKitClassifyTool, PythonClassifyTool,
-        RacketClassifyTool, TsJsClassifyTool,
+        ComposeClassifyTool, CsharpClassifyTool, DartClassifyTool, DockerfileClassifyTool,
+        ElixirClassifyTool, LispKitClassifyTool, PythonClassifyTool, RacketClassifyTool,
+        TsJsClassifyTool,
     };
     use crate::tools::manifests::{
         ParseCargoTomlTool, ParseComposeTool, ParseDockerfileTool, ParsePackageJsonTool,
@@ -259,8 +261,7 @@ pub fn default_tool_catalog() -> ToolCatalog {
         PythonSurfaceTool, RacketSurfaceTool, RustSurfaceTool, TsJsSurfaceTool,
     };
     let handles: Vec<ToolHandle> = vec![
-        // Classifiers (10).
-        Arc::new(CargoClassifyTool),
+        // Classifiers (9).
         Arc::new(ComposeClassifyTool),
         Arc::new(CsharpClassifyTool),
         Arc::new(DartClassifyTool),
@@ -1396,11 +1397,10 @@ pub fn build_classify_prompt(
 (subsystem `{subsystem_id}`) under workspace `{root}`.
 
 Use the available manifest-parser tools (parse_cargo_toml, \
-parse_package_json, parse_pyproject_toml, parse_dockerfile, \
-parse_compose, ...) and language classifiers to read the component's \
-primary manifest BEFORE assigning a kind / language / lifecycle. Then \
-read at least one source entry-point (lib.rs, index.ts, __init__.py, \
-the Dockerfile's FROM line, ...) to confirm.
+parse_package_json, parse_dockerfile, parse_compose, ...) to read \
+the component's primary manifest BEFORE assigning a kind / language \
+/ lifecycle. Then read at least one source entry-point (lib.rs, \
+index.ts, __init__.py, the Dockerfile's FROM line, ...) to confirm.
 
 Iteration budget: soft cap {soft_cap}; hard cap {hard_cap}. Stop \
 emitting new tool calls once you can ground every field in at least \
@@ -1427,8 +1427,10 @@ Field rules:
 - `component_id` MUST equal `{component_id}` exactly (quoted).
 - `kind` is an open-vocabulary kebab-case string. Use the canonical \
   Atlas vocabulary when it fits (`rust-library`, `rust-binary`, \
-  `typescript-package`, `python-package`, `docker-image`, \
-  `csharp-project`, ...). Quote it.
+  `rust-workspace`, `typescript-package`, `python-package`, \
+  `docker-image`, `csharp-project`, ...). Quote it. For a Rust \
+  `Cargo.toml` with a `[workspace]` table and no `[lib]`/`[bin]`, \
+  prefer `rust-workspace`.
 - `language` is the dominant programming language as a kebab-case \
   string (`rust`, `typescript`, `python`, ...). Quote it.
 - `lifecycle` is one of the closed component-ontology values: \
@@ -1443,14 +1445,13 @@ Field rules:
 - `confidence_grade` ∈ {{"strong", "moderate", "weak", "declines"}}.
 
 `confidence_grade` rubric:
-- "strong": primary manifest READ and source entry-point READ and \
-  the classifier tool whose name matches the declared `kind` was \
-  CALLED.
-- "moderate": primary manifest READ and the classifier tool was \
-  CALLED, but no source entry-point read (or the kind was inferred \
-  from the manifest alone).
-- "weak": primary manifest READ but no classifier tool called (the \
-  kind/language are best-guess from filename / directory structure).
+- "strong": primary manifest READ and the appropriate parser tool was \
+  CALLED (`parse_cargo_toml` for Rust, `parse_package_json` for \
+  TS/JS, `parse_dockerfile` for Docker, `parse_compose` for Compose, \
+  etc.) and source entry-point READ.
+- "moderate": primary manifest READ and the parser tool was CALLED, \
+  but no source entry-point read.
+- "weak": primary manifest READ only (no parser tool called).
 - "declines": the primary manifest could not be read, OR there isn't \
   enough evidence to commit to a kind/language — emit a best-guess \
   + this grade so a downstream consumer or human reviewer can \
@@ -1867,9 +1868,9 @@ mod tests {
     }
 
     #[test]
-    fn tool_catalog_default_contains_22_wrappers() {
+    fn tool_catalog_default_contains_21_wrappers() {
         let cat = default_tool_catalog();
-        assert_eq!(cat.len(), 22);
+        assert_eq!(cat.len(), 21);
     }
 
     #[test]

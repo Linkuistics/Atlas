@@ -5,7 +5,6 @@
 //! analysis logic lives here — all decisions come from the underlying
 //! analyser.
 
-pub mod cargo;
 pub mod compose;
 pub mod csharp;
 pub mod dart;
@@ -16,7 +15,6 @@ pub mod python;
 pub mod racket;
 pub mod ts_js;
 
-pub use cargo::CargoClassifyTool;
 pub use compose::ComposeClassifyTool;
 pub use csharp::CsharpClassifyTool;
 pub use dart::DartClassifyTool;
