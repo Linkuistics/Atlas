@@ -2,13 +2,13 @@
 
 Companion to `docs/superpowers/specs/2026-05-15-atlas-vnext-phase8-plan.md`. This file tracks per-WI completion state across sessions.
 
-**Last updated:** 2026-05-15 (WI-2 status flip).
+**Last updated:** 2026-05-16 (WI-3 status flip).
 
 ## WI status
 
 - [x] WI-1 — Agent-runtime HTTP-backend bypass
 - [x] WI-2 — HardFail event emission in call_agent
-- [ ] WI-3 — Cargo classifier retirement
+- [x] WI-3 — Cargo classifier retirement
 - [ ] WI-4 — Atlas-on-Atlas calibration + closeout
 
 ## Per-WI notes
@@ -88,7 +88,61 @@ Companion to `docs/superpowers/specs/2026-05-15-atlas-vnext-phase8-plan.md`. Thi
 
 ### WI-3
 
-(pending)
+**Shipped:** 2026-05-16. Three commits per plan § 9 Step 3.9 decomposition:
+
+- WI-3a `165d0a2` (`phase8 WI-3a: drop CargoClassifyTool + classify-prompt rubric rewrite`)
+- WI-3b `da96fc5` (`phase8 WI-3b: delete deterministic cargo_classifier + cascade`)
+- WI-3c (this status flip; to follow)
+
+**What landed (agent layer — WI-3a):**
+
+- `default_tool_catalog` drops `CargoClassifyTool`; catalog count 22 → 21. Doc-comment block at top of catalog builder updated ("21 wrappers" / "9 classifiers"). In-mod count assertion test renamed `tool_catalog_default_contains_22_wrappers` → `tool_catalog_default_contains_21_wrappers`.
+- `build_classify_prompt` rewrites the `confidence_grade` rubric per plan § 9 Step 3.3: "strong" now rewards `parse_cargo_toml` + source entry-point READ (the parser-tool reward replaces the old "classifier tool whose name matches the declared `kind` was CALLED" reward); "moderate" = parser tool only; "weak" = manifest read only; "declines" unchanged. The available-tools paragraph drops "and language classifiers" wording + drops `parse_pyproject_toml` (verified absent from the catalog — the latent `lane_a.rs:240` reference is a pre-existing Phase-9 cleanup, out of WI-3 scope).
+- Canonical-vocabulary list at runtime/mod.rs:~1428 grows `rust-workspace` with a clarifier ("For a Rust `Cargo.toml` with a `[workspace]` table and no `[lib]`/`[bin]`, prefer `rust-workspace`"). Worked YAML example stays as `rust-library` per plan F11.
+- `crates/atlas-agents/src/tools/classifiers/cargo.rs` deleted; `tools/classifiers/mod.rs` drops `pub mod cargo;` + `pub use cargo::CargoClassifyTool;`.
+
+**What landed (analyzer + engine + CLI cascade — WI-3b):**
+
+- `crates/atlas-analyzers/src/cargo_classifier.rs` deleted outright (no deprecated stub per F11 option a).
+- `atlas-analyzers`: lib.rs / registry.rs / dispatcher.rs cascades per plan § 9 Step 3.6. Sibling-classifier doc-comments (dart / elixir / python (×2) / racket / ts_js (×2) / dockerfile) lose their cross-references to `crate::cargo_classifier`. Three registry-test cascades: `builtin_lists_fourteen_analysers` → `builtin_lists_thirteen_analysers`; `merge_yaml_updates_existing_built_in_spec_in_place` rewrites to target `dockerfile_classifier::ANALYZER_ID` (preserving the "merge_yaml updates an existing built-in spec in place" coverage); `merge_yaml_accepts_unknown_id_and_keeps_builtin_count` count drops to 13/14. Two dispatcher cargo-specific tests deleted (`dispatch_picks_cheapest_applicable` + `dispatch_returns_winning_analyser_identity`).
+- `atlas-engine/src/heuristics.rs`: three doc-comment rewords (top of file / on `classify_deterministic` / inside tests-mod) record the Phase 8 WI-3 retirement.
+- `atlas-engine/src/l3_classify.rs`: drops `cargo_classifier::CargoClassificationOutput` from `use`; drops the cargo downcast arm in `classification_from_output`; drops the `cargo_to_classification` helper (~30 LOC). Cargo dispatch outcomes fall through to `LlmClassifyOutput` per plan § 9 Step 3.6 Option A (preferred — no new `LlmFallbackOutput` shape).
+- `atlas-cli/tests/jsonl_subscriber.rs`: two `tool_name: "classify_cargo_component"` literals rename to `"classify_ts_js_component"` (test asserts JSONL shape, not the specific tool).
+- `atlas-cli/tests/scattered_atlas_layout.rs`: `cargo_classified_component_records_cargo_analyser_identity` test deleted; the per-analyser identity threading coverage survives in the sibling `dockerfile_classified_component_records_dockerfile_analyser_identity` test.
+
+**New test (WI-3a):**
+
+`crates/atlas-agents/tests/cargo_retirement_smoke.rs` — three tests mapping 1:1 to WI-3 deliverables:
+
+1. `default_tool_catalog_excludes_cargo_classifier` — asserts `classify_cargo_component` is absent, `parse_cargo_toml` retained, count = 21.
+2. `classify_prompt_keeps_rust_library_as_worked_example` — asserts the worked YAML example still demonstrates `kind: "rust-library"`; the new rubric names `parse_cargo_toml`; the legacy "classifier tool whose name matches" wording is gone.
+3. `classify_prompt_adds_rust_workspace_to_vocabulary` — asserts `rust-workspace` + `[workspace]` clarifier appear in the prompt body.
+
+**Plan-time deviations (worth noting for WI-4's executor):**
+
+- Plan § 9 Step 3.1's drafted test sketch used a canned tool-call trajectory scaffold (`canned_tool_call` / `canned_tool_result` / `canned_final_yaml` helpers) to assert agent-runtime end-to-end behaviour. The executor's judgement was that a canned-trajectory scaffold tests the *runtime's* tool-execution loop with a particular sequence — not WI-3's actual deliverables (the catalog/prompt edits). The shipped tests mirror the existing `crates/atlas-agents/tests/classify_prompt_shape.rs` pattern (substring assertions on `build_classify_prompt` output + catalog-shape via `default_tool_catalog`), which honestly tests the deliverables without elaborate scaffolding.
+- Anchor line drift: post-WI-2 the rubric block was at mod.rs:~1445–1457 (plan said 1411–1426); vocabulary list at ~1428–1431 (plan said 1396–1399); worked YAML example at ~1413–1424. Net drift ~+32 lines from WI-2's two HardFail emit-arm additions.
+- Cascade gap: the pre-existing in-mod test `tool_catalog_default_contains_22_wrappers` at `runtime/mod.rs:1871` was not on plan § 9 Step 3.6's enumerated cascade-target list. Caught by `cargo test --workspace` post-edit (22≠21 assertion panic). Renamed + retargeted to 21. Pattern worth carrying: hardcoded-count tests on enumerable collections act as canary tests that flag any deletion, complementing named-reference cascade lists.
+- Cascade gap: `atlas-analyzers/src/dispatcher.rs:186` `use crate::TargetFile;` was the only consumer of `TargetFile` through the deleted `cargo_target_with_lib` helper. Clippy `-D unused-imports` caught.
+- Cascade gap: `atlas-cli/tests/scattered_atlas_layout.rs:160-203` `cargo_classified_component_records_cargo_analyser_identity` test was a regression-guard specifically for the Cargo per-analyser identity. Identified during workspace-wide `cargo-toml-classifier` literal sweep. Retired entirely (per-analyser identity coverage survives in the sibling Dockerfile test).
+- Polyglot smoke recalibration: the plan's most-likely scenario (case 1, `0 < cold < 100` absorbs the recalibration) became case 3 (`run_index` itself fails with 6 unresolved `consumes-contract` participants). Without the deterministic Cargo classifier, peer1-peer6 + outlier + rust-lib in the polyglot fixture no longer auto-discover as components — they classify as `NonComponent` and get dropped from the workspace's component set, breaking the contract-edge resolution. User selected Option B (override-only fixture). Eight new `additions` entries in `phase3_polyglot/.atlas/components.overrides.yaml` declare the Cargo components explicitly; L5 surface extraction still fires on their Cargo.toml manifests via the rust_surface_analyzer, preserving the per-peer `peer-one`..`peer-six` contracts the test asserts on.
+
+**Empirical polyglot baseline (post-WI-3b):**
+
+- Cold count: 48 LLM calls (+~8 from WI-2's ~40 baseline; one LLM call per retired-classifier Cargo component). Loose bound `0 < cold < 100` preserved with substantial headroom (48/100); no assertion-tightening required.
+- Wall time: 117.53s for full polyglot smoke (both tests). +16.75s from WI-2's 100.78s baseline; within natural variance for fixture-heavy tests.
+- Components classified: 24 (unchanged from WI-2).
+
+**Regression gates (all six clean):**
+
+- `cargo build --workspace`: clean.
+- `cargo test --workspace --no-fail-fast -- --skip polyglot_phase3`: 40 test-result-ok entries, 0 failures.
+- `cargo clippy --all-targets -- -D warnings`: clean (caught the dispatcher `TargetFile` dead-import mid-WI-3b).
+- `cargo fmt --check`: clean.
+- `cargo build --release --workspace`: clean (41.01s).
+- Polyglot release smoke: 2 tests pass, wall-time 117.53s, cold-count 48.
+
+**Cargo SHAs:** WI-3a `165d0a2`, WI-3b `da96fc5`, status flip (this) to follow.
 
 ### WI-4
 
