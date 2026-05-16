@@ -1,9 +1,9 @@
 //! Racket L3 classifier (Atlas vNext Phase 2 PR-9).
 //!
-//! Sibling of [`crate::python_classifier`] and
-//! [`crate::cargo_classifier`]: an L3 deterministic analyser that
-//! emits `kind: racket-package` whenever a candidate dir carries an
-//! `info.rkt` manifest (Racket's canonical package-manifest file).
+//! Sibling of [`crate::python_classifier`]: an L3 deterministic
+//! analyser that emits `kind: racket-package` whenever a candidate
+//! dir carries an `info.rkt` manifest (Racket's canonical
+//! package-manifest file).
 //!
 //! A directory with `*.rkt` files but no `info.rkt` declines — the
 //! `info.rkt` requirement follows §4 PR-9 which specifies:

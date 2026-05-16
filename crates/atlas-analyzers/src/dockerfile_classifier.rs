@@ -29,9 +29,9 @@ pub const ANALYZER_VERSION: &str = "1.0.0";
 
 /// One Dockerfile classification verdict. The L3 adapter downcasts a
 /// `Box<dyn StageOutput>` to this struct and translates onto
-/// `Classification`. Mirrors [`crate::cargo_classifier::CargoClassificationOutput`]'s
-/// shape; the `parsed` field carries the structural data PR-9 will
-/// consume for composition edges.
+/// `Classification`. Mirrors sibling classifiers' shapes; the `parsed`
+/// field carries the structural data PR-9 will consume for
+/// composition edges.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DockerfileClassificationOutput {
     pub kind: String,

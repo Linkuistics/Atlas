@@ -8,13 +8,15 @@
 //! if/else: the table is the documentation of the deterministic
 //! surface, and adding a new rule is one entry rather than a re-nest.
 //!
-//! **PR-5 note:** the Cargo classification rules previously lived
-//! here and have moved into
-//! [`atlas_analyzers::cargo_classifier::CargoClassifier`]. The
-//! L3 driver dispatches the analyser registry first; only when the
-//! registry's deterministic analysers all decline does the engine
-//! consult the rule table below. The Dockerfile-image rule similarly
-//! lives in
+//! **History:** Cargo classification rules lived here in Phase 1, then
+//! moved into the deterministic `atlas_analyzers::cargo_classifier`
+//! crate in PR-5. Phase 8 WI-3 retired that deterministic classifier;
+//! Rust components now fall through to
+//! [`atlas_analyzers::llm_classify::LlmClassifyAnalyzer`]. The L3
+//! driver still dispatches the analyser registry first; only when the
+//! remaining deterministic analysers (Dockerfile, etc.) all decline
+//! does the engine consult the rule table below. The Dockerfile-image
+//! rule lives in
 //! [`atlas_analyzers::dockerfile_classifier::DockerfileClassifier`].
 
 use std::collections::BTreeSet;
@@ -58,10 +60,11 @@ pub struct ManifestContents<'a> {
 /// `None` means no rule applied — the caller should fall back to the
 /// analyser registry's LLM-classify path.
 ///
-/// PR-5: the rule table no longer contains Cargo rules — those live
-/// in [`atlas_analyzers::cargo_classifier::CargoClassifier`]. The L3
-/// driver dispatches the registry first; the rule table here covers
-/// the remaining deterministic vocabulary (npm, pyproject, bare-git).
+/// The rule table covers the remaining deterministic non-classifier
+/// vocabulary (npm, pyproject, bare-git). Cargo rules were retired
+/// in Phase 8 WI-3 (the deterministic spine is gone; Rust components
+/// fall through to the LLM-classify analyser via the registry's L3
+/// dispatch).
 pub fn classify_deterministic(
     candidate: &Candidate,
     manifest_contents: &ManifestContents<'_>,
@@ -241,10 +244,10 @@ mod tests {
         }
     }
 
-    // Note: Cargo classification rules (workspace / bin / lib) moved
-    // to `atlas_analyzers::cargo_classifier::CargoClassifier` in PR-5.
-    // The corresponding tests live in that crate's `cargo_classifier`
-    // module.
+    // Note: Cargo classification rules moved into the deterministic
+    // `atlas_analyzers::cargo_classifier` crate in PR-5 and were
+    // retired entirely in Phase 8 WI-3. Rust components now classify
+    // via the LLM-classify analyser.
 
     #[test]
     fn bare_git_with_readme_declines_deterministic_rule() {

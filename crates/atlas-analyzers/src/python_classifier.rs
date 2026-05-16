@@ -1,7 +1,6 @@
 //! Python L3 classifier (Atlas vNext Phase 2 PR-3).
 //!
-//! Sibling of [`crate::cargo_classifier`] and
-//! [`crate::ts_js_classifier`]: an L3 deterministic analyser that
+//! Sibling of [`crate::ts_js_classifier`]: an L3 deterministic analyser that
 //! emits `kind: python-package` whenever a candidate dir carries one
 //! of the three canonical Python manifest signals:
 //!
@@ -46,9 +45,9 @@ pub const ANALYZER_ID: &str = "python-classifier";
 /// Bumped when the rule table changes.
 pub const ANALYZER_VERSION: &str = "1.0.0";
 
-/// Output shape mirroring [`crate::cargo_classifier::CargoClassificationOutput`].
-/// The L3 adapter downcasts the `Box<dyn StageOutput>` to this struct
-/// and translates onto `Classification`.
+/// Output shape mirroring sibling classifiers' `*ClassificationOutput`
+/// structs. The L3 adapter downcasts the `Box<dyn StageOutput>` to
+/// this struct and translates onto `Classification`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PythonClassificationOutput {
     /// Always `"python-package"` for Phase 2 PR-3. Future PRs may

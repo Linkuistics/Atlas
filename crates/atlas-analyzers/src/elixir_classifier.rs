@@ -1,9 +1,8 @@
 //! Elixir L3 classifier (Atlas vNext Phase 2 PR-8).
 //!
-//! Sibling of [`crate::python_classifier`] and
-//! [`crate::cargo_classifier`]: an L3 deterministic analyser that
-//! emits `kind: elixir-project` whenever a candidate dir carries
-//! a `mix.exs` manifest.
+//! Sibling of [`crate::python_classifier`]: an L3 deterministic
+//! analyser that emits `kind: elixir-project` whenever a candidate
+//! dir carries a `mix.exs` manifest.
 //!
 //! ## Why this is a separate analyser
 //!

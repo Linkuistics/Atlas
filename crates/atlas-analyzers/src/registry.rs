@@ -27,7 +27,6 @@ use std::sync::Arc;
 use atlas_index::{AnalyzerSpec, AnalyzersFile, Stage, ANALYZERS_SCHEMA_VERSION};
 use sha2::{Digest, Sha256};
 
-use crate::cargo_classifier::CargoClassifier;
 use crate::compose_classifier::ComposeClassifier;
 use crate::csharp_classifier::CsharpClassifier;
 use crate::dart_classifier::DartClassifier;
@@ -83,9 +82,11 @@ impl AnalyzerRegistry {
     /// Reference analysers shipped in this crate. Every workspace
     /// starts here; `analyzers.yaml` (when present) merges on top.
     ///
-    /// Phase 1 ships four analysers: `cargo-toml-classifier`,
+    /// Phase 1 shipped four analysers: `cargo-toml-classifier`,
     /// `dockerfile-l3` (both L3 deterministic), `llm-classify-fallback`
     /// (L3 LLM), and `rust-surface-analyzer` (L5 deterministic; PR-7).
+    /// Phase 8 WI-3 retired the deterministic `cargo-toml-classifier`;
+    /// Rust components now fall through to `llm-classify-fallback`.
     /// Phase 2 PR-1 adds `ts-js-classifier` (L3 deterministic) and
     /// `ts-js-surface-analyzer` (L5 deterministic) for TypeScript /
     /// JavaScript components. Phase 2 PR-3 adds `python-classifier`
@@ -113,7 +114,6 @@ impl AnalyzerRegistry {
     /// the matching surface analyser at L5 is the out-of-process
     /// `lispkit-surface-analyzer`.
     pub fn builtin() -> Self {
-        let cargo = Arc::new(CargoClassifier::new()) as Arc<dyn Analyzer>;
         let docker = Arc::new(DockerfileClassifier::new()) as Arc<dyn Analyzer>;
         let compose = Arc::new(ComposeClassifier::new()) as Arc<dyn Analyzer>;
         let ts_js = Arc::new(TsJsClassifier::new()) as Arc<dyn Analyzer>;
@@ -129,7 +129,6 @@ impl AnalyzerRegistry {
         let ts_js_surface = Arc::new(TsJsSurfaceAnalyzer::new()) as Arc<dyn Analyzer>;
 
         let analyzers = vec![
-            cargo.clone(),
             docker.clone(),
             compose.clone(),
             ts_js.clone(),
@@ -374,12 +373,7 @@ fn spec_for_analyzer(analyzer: &Arc<dyn Analyzer>) -> AnalyzerSpec {
         Some(atlas_index::Confidence::Binary)
     };
 
-    let applicability = if id == crate::cargo_classifier::ANALYZER_ID {
-        atlas_index::ApplicabilityPredicate {
-            file_globs: vec!["**/Cargo.toml".into()],
-            ..Default::default()
-        }
-    } else if id == crate::dockerfile_classifier::ANALYZER_ID {
+    let applicability = if id == crate::dockerfile_classifier::ANALYZER_ID {
         atlas_index::ApplicabilityPredicate {
             file_globs: vec!["**/Dockerfile".into()],
             ..Default::default()
@@ -493,11 +487,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_lists_fourteen_analysers() {
+    fn builtin_lists_thirteen_analysers() {
         let r = AnalyzerRegistry::builtin();
-        assert_eq!(r.len(), 14);
+        assert_eq!(r.len(), 13);
         let ids: Vec<&str> = r.iter_dispatch_order().map(|a| a.id()).collect();
-        assert!(ids.contains(&crate::cargo_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::compose_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::dockerfile_classifier::ANALYZER_ID));
         assert!(ids.contains(&crate::ts_js_classifier::ANALYZER_ID));
@@ -534,7 +527,7 @@ mod tests {
         let mut r = AnalyzerRegistry::builtin();
         let mut yaml = AnalyzersFile::default();
         yaml.config.insert(
-            "cargo-toml-classifier".into(),
+            "dockerfile-l3".into(),
             serde_yaml::Value::String("custom".into()),
         );
         r.merge_yaml(&yaml);
@@ -559,9 +552,9 @@ mod tests {
         // The built-in analyser instances are unchanged in count
         // (unknown spec is recorded but does not produce a runnable
         // instance).
-        assert_eq!(r.len(), 14);
+        assert_eq!(r.len(), 13);
         // The declared list grew by one.
-        assert_eq!(r.declared().analyzers.len(), 15);
+        assert_eq!(r.declared().analyzers.len(), 14);
     }
 
     #[test]
@@ -569,10 +562,10 @@ mod tests {
         let mut r = AnalyzerRegistry::builtin();
         let mut yaml = AnalyzersFile::default();
         yaml.analyzers.push(AnalyzerSpec {
-            id: crate::cargo_classifier::ANALYZER_ID.into(),
+            id: crate::dockerfile_classifier::ANALYZER_ID.into(),
             stage: Stage::L3,
             applicability: atlas_index::ApplicabilityPredicate {
-                file_globs: vec!["**/Cargo.toml".into(), "**/Cargo.lock".into()],
+                file_globs: vec!["**/Dockerfile".into(), "**/Containerfile".into()],
                 ..Default::default()
             },
             cost_class: atlas_index::CostClass::DeterministicCheap,
@@ -582,15 +575,15 @@ mod tests {
             version: "9.9.9".into(),
         });
         r.merge_yaml(&yaml);
-        assert_eq!(r.declared().analyzers.len(), 14);
-        let cargo = r
+        assert_eq!(r.declared().analyzers.len(), 13);
+        let docker = r
             .declared()
             .analyzers
             .iter()
-            .find(|s| s.id == crate::cargo_classifier::ANALYZER_ID)
+            .find(|s| s.id == crate::dockerfile_classifier::ANALYZER_ID)
             .unwrap();
-        assert_eq!(cargo.version, "9.9.9");
-        assert_eq!(cargo.applicability.file_globs.len(), 2);
+        assert_eq!(docker.version, "9.9.9");
+        assert_eq!(docker.applicability.file_globs.len(), 2);
     }
 
     #[test]
@@ -620,7 +613,6 @@ mod tests {
         // Sanity check that the analyser-id constants match the
         // analyser instances' own `id()` returns. A drift here would
         // silently break `merge_yaml`'s in-place update behaviour.
-        assert_eq!(CargoClassifier.id(), crate::cargo_classifier::ANALYZER_ID);
         assert_eq!(CsharpClassifier.id(), crate::csharp_classifier::ANALYZER_ID);
         assert_eq!(
             DockerfileClassifier.id(),

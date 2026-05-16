@@ -37,12 +37,12 @@ fn fixture_events() -> Vec<AgentEvent> {
         },
         AgentEvent::ToolCall {
             agent_id: "a-1".to_string(),
-            tool_name: "classify_cargo_component".to_string(),
+            tool_name: "classify_ts_js_component".to_string(),
             args_summary: r#"{"component_id":"x"}"#.to_string(),
         },
         AgentEvent::ToolResult {
             agent_id: "a-1".to_string(),
-            tool_name: "classify_cargo_component".to_string(),
+            tool_name: "classify_ts_js_component".to_string(),
             result_summary: r#"{"kind":"library"}"#.to_string(),
             ms: 12,
             bytes: 48,

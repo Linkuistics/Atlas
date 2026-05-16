@@ -31,6 +31,117 @@ additions:
     evidence_grade: medium
     evidence_fields: ["pr13-fixture-addition"]
     rationale: "PR-13 acceptance fixture addition (kind not auto-discoverable)."
+  # Phase 8 WI-3 retired the deterministic Cargo classifier; Rust
+  # components are no longer auto-discovered by the L3 dispatcher in
+  # the deterministic-spine smoke (no LLM hook). The eight Cargo
+  # components below were previously discovered + classified by
+  # `atlas_analyzers::cargo_classifier::CargoClassifier`; after WI-3
+  # they're declared here as override additions so the polyglot
+  # smoke's contract resolution + edge graph stays intact.
+  - id: peer1
+    kind: rust-library
+    lifecycle_roles: [build]
+    languages: [rust]
+    path_segments:
+      - path: outlier_cluster/peer1
+        content_sha: "0000000000000000000000000000000000000000000000000000000000000000"
+    manifests:
+      - outlier_cluster/peer1/Cargo.toml
+    doc_anchors: []
+    evidence_grade: medium
+    evidence_fields: ["wi3-cargo-retirement-fixture-addition"]
+    rationale: "Phase 8 WI-3 fixture: deterministic Cargo classifier retired; declared via override."
+  - id: peer2
+    kind: rust-library
+    lifecycle_roles: [build]
+    languages: [rust]
+    path_segments:
+      - path: outlier_cluster/peer2
+        content_sha: "0000000000000000000000000000000000000000000000000000000000000000"
+    manifests:
+      - outlier_cluster/peer2/Cargo.toml
+    doc_anchors: []
+    evidence_grade: medium
+    evidence_fields: ["wi3-cargo-retirement-fixture-addition"]
+    rationale: "Phase 8 WI-3 fixture: deterministic Cargo classifier retired; declared via override."
+  - id: peer3
+    kind: rust-library
+    lifecycle_roles: [build]
+    languages: [rust]
+    path_segments:
+      - path: outlier_cluster/peer3
+        content_sha: "0000000000000000000000000000000000000000000000000000000000000000"
+    manifests:
+      - outlier_cluster/peer3/Cargo.toml
+    doc_anchors: []
+    evidence_grade: medium
+    evidence_fields: ["wi3-cargo-retirement-fixture-addition"]
+    rationale: "Phase 8 WI-3 fixture: deterministic Cargo classifier retired; declared via override."
+  - id: peer4
+    kind: rust-library
+    lifecycle_roles: [build]
+    languages: [rust]
+    path_segments:
+      - path: outlier_cluster/peer4
+        content_sha: "0000000000000000000000000000000000000000000000000000000000000000"
+    manifests:
+      - outlier_cluster/peer4/Cargo.toml
+    doc_anchors: []
+    evidence_grade: medium
+    evidence_fields: ["wi3-cargo-retirement-fixture-addition"]
+    rationale: "Phase 8 WI-3 fixture: deterministic Cargo classifier retired; declared via override."
+  - id: peer5
+    kind: rust-library
+    lifecycle_roles: [build]
+    languages: [rust]
+    path_segments:
+      - path: outlier_cluster/peer5
+        content_sha: "0000000000000000000000000000000000000000000000000000000000000000"
+    manifests:
+      - outlier_cluster/peer5/Cargo.toml
+    doc_anchors: []
+    evidence_grade: medium
+    evidence_fields: ["wi3-cargo-retirement-fixture-addition"]
+    rationale: "Phase 8 WI-3 fixture: deterministic Cargo classifier retired; declared via override."
+  - id: peer6
+    kind: rust-library
+    lifecycle_roles: [build]
+    languages: [rust]
+    path_segments:
+      - path: outlier_cluster/peer6
+        content_sha: "0000000000000000000000000000000000000000000000000000000000000000"
+    manifests:
+      - outlier_cluster/peer6/Cargo.toml
+    doc_anchors: []
+    evidence_grade: medium
+    evidence_fields: ["wi3-cargo-retirement-fixture-addition"]
+    rationale: "Phase 8 WI-3 fixture: deterministic Cargo classifier retired; declared via override."
+  - id: outlier
+    kind: rust-library
+    lifecycle_roles: [build]
+    languages: [rust]
+    path_segments:
+      - path: outlier_cluster/outlier
+        content_sha: "0000000000000000000000000000000000000000000000000000000000000000"
+    manifests:
+      - outlier_cluster/outlier/Cargo.toml
+    doc_anchors: []
+    evidence_grade: medium
+    evidence_fields: ["wi3-cargo-retirement-fixture-addition"]
+    rationale: "Phase 8 WI-3 fixture: deterministic Cargo classifier retired; declared via override."
+  - id: rust-lib
+    kind: rust-library
+    lifecycle_roles: [build]
+    languages: [rust]
+    path_segments:
+      - path: rust_lib
+        content_sha: "0000000000000000000000000000000000000000000000000000000000000000"
+    manifests:
+      - rust_lib/Cargo.toml
+    doc_anchors: []
+    evidence_grade: medium
+    evidence_fields: ["wi3-cargo-retirement-fixture-addition"]
+    rationale: "Phase 8 WI-3 fixture: deterministic Cargo classifier retired; declared via override."
 
 # Plan §4 PR-13 override fixtures.
 #

@@ -1,7 +1,7 @@
 //! Dart / Flutter L3 classifier (Atlas vNext Phase 2 PR-7).
 //!
-//! Sibling of [`crate::python_classifier`] and [`crate::cargo_classifier`]:
-//! an L3 deterministic analyser that emits `kind: dart-package` or
+//! Sibling of [`crate::python_classifier`]: an L3 deterministic
+//! analyser that emits `kind: dart-package` or
 //! `kind: flutter-package` whenever a candidate dir carries a
 //! `pubspec.yaml` manifest.
 //!

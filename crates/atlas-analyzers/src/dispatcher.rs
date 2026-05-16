@@ -181,10 +181,8 @@ impl AnalyzerRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cargo_classifier::CargoClassifier;
     use crate::llm_classify::LlmClassifyAnalyzer;
     use crate::registry::AnalyzerRegistry;
-    use crate::TargetFile;
     use crate::{Analyzer, FingerprintInput};
     use atlas_index::CostClass;
     use std::collections::BTreeSet;
@@ -258,61 +256,6 @@ mod tests {
 
     struct StringOutput(&'static str);
     crate::impl_stage_output!(StringOutput);
-
-    fn cargo_target_with_lib() -> Target {
-        Target {
-            dir: PathBuf::from("/ws/x"),
-            languages: BTreeSet::new(),
-            manifests: vec![TargetFile {
-                name: "Cargo.toml".into(),
-                relpath: PathBuf::from("Cargo.toml"),
-                bytes: b"[package]\nname = \"x\"\n[lib]\npath = \"src/lib.rs\"\n".to_vec(),
-                content_sha: "abc".into(),
-            }],
-            top_level_files: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn dispatch_picks_cheapest_applicable() {
-        // Built-in registry: Cargo (deterministic-cheap) + LLM
-        // (llm-cheap). Both are applicable to a Cargo.toml. The
-        // cheapest wins; the LLM is never consulted.
-        let llm_calls = std::sync::Arc::new(std::sync::Mutex::new(0u32));
-        let _llm_hook = {
-            // `LlmClassifyAnalyzer.applies` is unconditional, so an
-            // LLM hook would be consulted if Cargo did NOT win. We
-            // install a stub hook to make the loss observable: if
-            // the dispatcher reached LLM, the call count would be
-            // non-zero.
-            let count = llm_calls.clone();
-            struct CountHook(std::sync::Arc<std::sync::Mutex<u32>>);
-            impl crate::llm_classify::LlmHook for CountHook {
-                fn classify(
-                    &self,
-                    _inputs: &serde_json::Value,
-                ) -> Result<Arc<serde_json::Value>, crate::llm_classify::LlmHookError>
-                {
-                    *self.0.lock().unwrap() += 1;
-                    Ok(Arc::new(serde_json::json!({"kind": "rust-library"})))
-                }
-            }
-            std::sync::Arc::new(CountHook(count))
-                as std::sync::Arc<dyn crate::llm_classify::LlmHook>
-        };
-        let ctx = AnalysisContext::with_llm(_llm_hook);
-
-        let registry = AnalyzerRegistry::builtin();
-        let target = cargo_target_with_lib();
-        let (outcome, _id, _version) = registry.dispatch(&ctx, &target, Stage::L3);
-        match outcome {
-            DispatchOutcome::Confident { analyzer_id, .. } => {
-                assert_eq!(analyzer_id, CargoClassifier.id());
-            }
-            other => panic!("expected Confident from cargo-toml-classifier, got {other:?}"),
-        }
-        assert_eq!(*llm_calls.lock().unwrap(), 0, "LLM must not be consulted");
-    }
 
     #[test]
     fn dispatch_falls_through_on_declines() {
@@ -508,39 +451,6 @@ mod tests {
             other => panic!("expected AllDeclined, got {other:?}"),
         }
         let _ = LlmClassifyAnalyzer; // proves symbol presence
-    }
-
-    #[test]
-    fn dispatch_returns_winning_analyser_identity() {
-        // Built-in registry: Cargo + LLM both apply at L3. The Cargo
-        // analyser wins on cost; the dispatcher must return its
-        // (id, version) tuple alongside the outcome.
-        let llm_calls = std::sync::Arc::new(std::sync::Mutex::new(0u32));
-        let _llm_hook = {
-            let count = llm_calls.clone();
-            struct CountHook(std::sync::Arc<std::sync::Mutex<u32>>);
-            impl crate::llm_classify::LlmHook for CountHook {
-                fn classify(
-                    &self,
-                    _inputs: &serde_json::Value,
-                ) -> Result<Arc<serde_json::Value>, crate::llm_classify::LlmHookError>
-                {
-                    *self.0.lock().unwrap() += 1;
-                    Ok(Arc::new(serde_json::json!({"kind": "rust-library"})))
-                }
-            }
-            std::sync::Arc::new(CountHook(count))
-                as std::sync::Arc<dyn crate::llm_classify::LlmHook>
-        };
-        let ctx = AnalysisContext::with_llm(_llm_hook);
-
-        let registry = AnalyzerRegistry::builtin();
-        let target = cargo_target_with_lib();
-        let (outcome, id, version) = registry.dispatch(&ctx, &target, Stage::L3);
-        assert!(matches!(outcome, DispatchOutcome::Confident { .. }));
-        assert_eq!(id, crate::cargo_classifier::ANALYZER_ID);
-        assert_eq!(version, crate::cargo_classifier::ANALYZER_VERSION);
-        assert_eq!(*llm_calls.lock().unwrap(), 0, "LLM must not be consulted");
     }
 
     #[test]

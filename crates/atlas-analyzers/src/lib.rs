@@ -1,17 +1,15 @@
 //! Analyser registry and three reference analysers for Atlas vNext.
 //!
 //! This crate establishes the plugin protocol described in design §5.2,
-//! §7.1, §7.3 and ships three in-process reference analysers:
+//! §7.1, §7.3 and ships the in-process reference analysers:
 //!
-//! - [`cargo_classifier::CargoClassifier`] — `Cargo.toml` → `kind:
-//!   rust-library | rust-cli | workspace`. Cheapest applicable
-//!   analyser (`CostClass::DeterministicCheap`).
 //! - [`dockerfile_classifier::DockerfileClassifier`] — `Dockerfile` →
-//!   `kind: docker-image`. Same cost class.
+//!   `kind: docker-image`. `CostClass::DeterministicCheap`.
 //! - [`llm_classify::LlmClassifyAnalyzer`] — fallback that wraps an
 //!   LLM classify call. `CostClass::LlmCheap`,
 //!   `Confidence::Declines` for cases the deterministic classifiers
-//!   handled.
+//!   handled. After Phase 8 WI-3 retired the deterministic Cargo
+//!   classifier, Rust components fall through to this analyser.
 //!
 //! Subprocess transport (design §5.2, §7.2) is Phase 2; every analyser
 //! shipped here runs in-process.
@@ -34,7 +32,6 @@
 //! deterministic; the actual cache short-circuit is wired by PR-10.
 //! The L3 dispatcher in this PR calls `analyse` directly.
 
-pub mod cargo_classifier;
 pub mod compose_classifier;
 pub mod csharp_classifier;
 pub mod csharp_surface_analyzer;
@@ -65,7 +62,6 @@ use std::sync::Arc;
 
 use atlas_index::{CostClass, Stage};
 
-pub use cargo_classifier::CargoClassifier;
 pub use compose_classifier::{ComposeClassificationOutput, ComposeClassifier, ComposeShape};
 pub use csharp_classifier::{CsharpClassificationOutput, CsharpClassifier};
 pub use csharp_surface_analyzer::{
@@ -397,7 +393,6 @@ pub trait Analyzer: Send + Sync {
 // register their own analysers call `impl_stage_output!` at their
 // definition site.
 impl_stage_output!(
-    cargo_classifier::CargoClassificationOutput,
     compose_classifier::ComposeClassificationOutput,
     csharp_classifier::CsharpClassificationOutput,
     dart_classifier::DartClassificationOutput,

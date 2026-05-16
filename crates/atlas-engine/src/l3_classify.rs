@@ -24,7 +24,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use atlas_analyzers::{
-    cargo_classifier::CargoClassificationOutput,
     compose_classifier::ComposeClassificationOutput,
     csharp_classifier::CsharpClassificationOutput,
     dart_classifier::DartClassificationOutput,
@@ -404,12 +403,6 @@ fn classification_from_output(
     analyser_id: &str,
     analyser_version: &str,
 ) -> Classification {
-    if let Some(cargo) = (*output)
-        .as_any()
-        .downcast_ref::<CargoClassificationOutput>()
-    {
-        return cargo_to_classification(cargo, analyser_id, analyser_version);
-    }
     if let Some(docker) = (*output)
         .as_any()
         .downcast_ref::<DockerfileClassificationOutput>()
@@ -479,34 +472,6 @@ fn classification_from_output(
     unknown_classification(
         "analyser produced an output type the L3 adapter does not recognise".into(),
     )
-}
-
-fn cargo_to_classification(
-    out: &CargoClassificationOutput,
-    analyser_id: &str,
-    analyser_version: &str,
-) -> Classification {
-    let kind = ComponentKind::parse(&out.kind).unwrap_or(ComponentKind::NonComponent);
-    let lifecycle_roles = out
-        .lifecycle_roles
-        .iter()
-        .filter_map(|s| LifecycleScope::parse(s))
-        .collect();
-    let mut languages = BTreeSet::new();
-    languages.insert("rust".to_string());
-    Classification {
-        kind,
-        languages,
-        build_system: out.build_system.clone(),
-        lifecycle_roles,
-        role: out.role.clone(),
-        evidence_grade: EvidenceGrade::Strong,
-        evidence_fields: out.evidence_fields.clone(),
-        rationale: out.rationale.clone(),
-        is_boundary: out.is_boundary,
-        analyser_id: analyser_id.to_string(),
-        analyser_version: analyser_version.to_string(),
-    }
 }
 
 fn docker_to_classification(

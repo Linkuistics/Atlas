@@ -1,7 +1,7 @@
 //! TypeScript / JavaScript L3 classifier.
 //!
-//! Sibling of [`crate::cargo_classifier`]: an L3 deterministic
-//! analyser that emits `kind: typescript-package` when a candidate
+//! L3 deterministic analyser that emits
+//! `kind: typescript-package` when a candidate
 //! carries both a `package.json` and a `tsconfig.json`, and
 //! `kind: javascript-package` when only a `package.json` is present.
 //!
@@ -53,9 +53,9 @@ pub const ANALYZER_ID: &str = "ts-js-classifier";
 /// Bumped when the rule table changes.
 pub const ANALYZER_VERSION: &str = "1.0.0";
 
-/// Output of the TS/JS classifier. Mirrors
-/// [`crate::cargo_classifier::CargoClassificationOutput`]'s shape so
-/// the engine's L3 adapter can downcast either output uniformly.
+/// Output of the TS/JS classifier. Mirrors sibling classifiers'
+/// `*ClassificationOutput` structs so the engine's L3 adapter can
+/// downcast each output uniformly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TsJsClassificationOutput {
     /// Kebab-case kind: `typescript-package` or `javascript-package`.
